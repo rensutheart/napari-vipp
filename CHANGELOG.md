@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.15.0a1 - 2026-09-06
+
+### Batch workflow
+
+- Rebuilt the batch window around four task-based tabs: **Setup**, **Items & outputs**, **Overrides**, and **Run & results**, with a persistent activity strip and a context-appropriate next action.
+- Setup now presents workflow identity, source pairing, destination, and run policy together. Source file discovery appears immediately in the item list, followed by background metadata and exact-content checks with per-file activity and checked-file counts.
+- Separated checking from pixel preview. **Check batch** prepares and validates a plan without calculating the representative image or saving outputs; **Preview selected** remains an explicit, optional graph calculation.
+- Added actionable recheck warnings and clearer distinctions between a full batch check, a selected-item recheck, and the read-only **Refresh file status** action.
+- Added per-item **Keep existing outputs**, **Rerun and overwrite outputs**, and **Use batch default** choices to the item context menu. Individual choices can coexist within one batch and are saved against the exact source pairing and destination, not a row number.
+- Changing only the existing-file policy updates the checked plan without repeating source inspection. Keeping existing files preserves outputs already present while still creating missing outputs; planned, existing, overwrite, and unresolved-decision counts now reflect that intent.
+- Batch configuration version 6 records individual file decisions and continues to read versions 1–5. Workflow version 6 and manifest version 5 remain unchanged. Generated batch runners preserve the same per-item policies.
+- Reworked the parameter override matrix with persistent field labels, centered values, readable node/parameter/default headers, explicit page and matching-sample selection, and separate reset-selected and reset-all actions.
+- Redesigned **Edit selected** as a resizable, clearly guided bulk editor. Only checked parameters change; other overrides remain intact.
+- Integrated the existing whole-batch Run/Bypass controls into a matching collapsible section. Distinct colours identify forced Run and Bypass choices, and the Overrides page scrolls as a whole.
+- Simplified the main graph's batch representative controls and added a direct route back to inspect that sample in the batch window.
+- Planned-output details now lead with the producing node, output kind, and format; exact file paths are secondary. Source and output reveal actions have platform-appropriate labels and icons.
+- Refined table typography, spacing, column widths, and link hit areas. Selecting a result row reveals its outputs; clicking its underlined name explicitly navigates to item review.
+- Added preparation feedback, elapsed time, per-sample node counts, and friendly node names during execution. Progress labels reserve two bottom-aligned lines to prevent ordinary wrapping from shifting the tables.
+- Reused the freshly validated Run plan at the worker handoff, removing an unnecessary second full collection scan. Exact source-content validation before use and destination checks remain in place.
+- Added an inline, human-readable final run report with elapsed time, completed/kept/failed/cancelled outcomes, output counts, and expandable failure reasons. The manifest JSON remains a separately labelled technical provenance artifact.
+- Completed runs stay in a report-review state instead of offering an ambiguous rerun action. Reviewing Setup is separate from explicitly checking and starting another run.
+- Corrected cancellation handling so a cooperative stop is not mistaken for a CPU/GPU cleanup failure. Genuine unverified cleanup still blocks further calculation until recovery.
+
+### Inspection, plots, and measurement
+
+- Rebuilt the responsive, theme-aware inspector with clearer connected-input summaries, context-aware controls, consistent spacing, and background diagnostics. Graph dragging and presentation refreshes no longer trigger unnecessary heavy inspector work.
+- Added resizable, sortable result-table windows with units and background CSV/TSV export. Sorting changes the view only; export preserves the workflow's original row order and values.
+- Added the **Intensity Histogram** analysis node for reproducible scalar or multichannel distributions with shared bin edges, explicit limits, linear or logarithmic bin spacing, counts, fractions, densities, and cumulative values.
+- Intensity Histogram records non-finite exclusions, custom-range underflow/overflow, and non-positive logarithmic exclusions in metadata. Its inspector and pop-out reuse the calculated table rather than rescanning source pixels for display changes.
+- Improved histogram and colocalization pop-outs, including channel-aware legends, less opaque overlapping histogram bars, zero-inclusive shared scatter axes, equal-axis and populated-data zoom controls, and clearer axis titles.
+- Detached scatter plots support up to 4096 bins per axis with background, memory-gated calculation. Compact and interactive estimates use bounded mass-preserving derivatives; display-only changes do not replace scientific calculations.
+- Added GPU-assisted **Measure 3D Mesh Morphology** for eligible non-negative int32 3D labels. GPU label preparation feeds the authoritative CPU marching-cubes and convex-hull finalizer; this is a hybrid implementation, not an all-GPU mesh algorithm.
+- Added GPU **Analyze Skeleton** measurement for eligible already-skeletonized boolean 2D/3D inputs, retaining the CPU reference's voxel-graph and physical calibration rules. This does not add GPU skeleton thinning.
+- Extended compute support, memory admission, cancellation/progress, and table finalization contracts for those measurement providers.
+
+### Workflow editing and scientific correctness
+
+- Reorganized the toolbar into workflow commands, preview and compute controls, graph navigation, and a persistent status/activity footer, with narrower-layout alternatives.
+- Added total and current-stage elapsed timers to **Find fastest**, independent of worker progress updates. The dialog explains that some CPU calls report only on completion and that time limits/cancellation wait for safe checkpoints; the timers do not claim measurable progress within an opaque library call.
+- Image Source accepts local image-file drops directly on its graph card and file or pixel paste with Ctrl+V/Cmd+V. File-backed sources retain their metadata; pasted colour pixels retain explicit RGB/RGBA semantics.
+- Replaced the public **ImageJ Auto Threshold (8-bit)** method selector with a fixed **ImageJ Default Threshold (8-bit)** node. Previously saved ImageJ Triangle nodes retain that separate calculation as fixed legacy compatibility, not a silent conversion to Default or generic Triangle.
+- Clarified **Minimum Threshold** as a valley-between-peaks method. Its histogram smoothing pass limit is a convergence safety bound, not an image-blurring strength, and unsuccessful convergence remains an explicit error.
+- Renamed **Clip** to **Clamp Intensity**, with explicit bound semantics and no intended change to its calculation.
+- Corrected mixed-rank T/C navigation, hidden Crop/Inspect layer lifetime, scalar images incorrectly inferred as RGB, and encoded-colour axis validation. Rendering Select/Reorder axis controls no longer silently changes saved parameters.
+- Prevented a failed replacement-source calculation from presenting unrelated cached downstream pixels as current results. Provenance-compatible completed boundaries remain available.
+- Improved cache reuse across Calculate all, bypass, and source-loading transitions while preserving scientific invalidation. Napari reslicing no longer masquerades as a source-pixel edit.
+- Corrected Combine Channels colour invalidation and saving so downstream colour composites and reopened workflows reflect authored colours consistently.
+- Added a seven-lane synthetic inspector showcase covering the current node palette and deterministic threshold phantoms for repeatable UI review.
+
+### Upgrading and remaining limits
+
+- This is an alpha release. Preserve original data and copies of workflows/configurations before resaving, and revalidate analyses affected by the changed controls or scientific contracts. New version-6 batch configurations are not readable by older VIPP releases that support only version 5.
+- The ImageJ Default/legacy Triangle implementation remains experimental and source-aligned to ImageJ 1.54p; independent ImageJ-generated golden parity is not claimed. Generic Triangle and Isodata retain their distinct contracts.
+- Check and Run validate exact source contents, so large containers or slow storage can still take time. A timer or busy indicator shows application activity, not proof that a non-cooperative CPU/GPU operation is making numerical progress.
+- Cancellation is cooperative; an active kernel, library call, or output write may need to reach a safe boundary. Existing files kept by policy are not claimed as newly calculated or scientifically verified by the current run.
+- Most workflow operations still materialize inputs. General lazy/chunked graph execution is not introduced; exact source-window pushdown retains its previously documented direct local OME-Zarr Crop Stack limits.
+- GPU acceleration remains operation-, dtype-, shape-, memory-, and environment-dependent. The optional Windows installer is explicitly unsigned; native macOS packages are explicitly unsigned, unnotarized, CPU-only, and architecture-specific.
+
 ## 0.14.0a3 - 2026-08-29
 
 ### Features
@@ -54,40 +112,9 @@
   viewer integration with the platform bindings VIPP distributes: PyQt6 on
   Windows/Linux and PySide6 on macOS. The declared `napari>=0.6` range remains
   unchanged.
-- Image Source nodes now open an image dropped directly onto their graph card.
-  After selecting an Image Source, `Ctrl+V`/`Cmd+V` does the same for a copied
-  image file or copied pixels. Local paths retain their file-backed metadata;
-  raw clipboard pixels become a normal RGB/RGBA napari layer without relying on
-  a temporary file.
 
 ### Bug Fixes
 
-- Preserved explicit RGB/RGBA semantics for pasted image pixels so Image Source
-  thumbnails no longer reinterpret encoded colours as blue/green/red
-  fluorescence channels.
-- Positional spatial-axis errors now distinguish an unselected declared channel
-  from incorrect or out-of-order source metadata and point to the relevant
-  Channel axis, Reorder Axes, or source declaration action.
-- Generated scalar images and masks ending in three or four samples now opt out
-  of napari's automatic RGB inference. Presentation failures retain calculated
-  results, report the display problem, and always clear processing indicators;
-  split RGB inspector layers also refresh in place without being mistaken for
-  encoded-colour layers themselves.
-- Luminance-capable filters and thresholds now reject scalar mode when input
-  metadata explicitly declares an RGB/RGBA axis, and identify the exact channel
-  axis to select instead of calculating a misleading component-wise result.
-- A failed calculation after replacing an Image Source no longer combines the
-  new source card with cached downstream pixels from the previous source.
-  Provenance-safe completed boundaries remain available, while incompatible
-  downstream results are cleared and the error explains what happened.
-- Inspect-layer representation changes are now atomic with respect to napari's
-  layer-list callbacks. Existing duplicate VIPP-owned Inspect layers are also
-  reconciled or removed without touching unrelated user layers with the same
-  visible name.
-- Napari display reslicing no longer counts as a live-source pixel mutation, so
-  inspecting a newly pasted source cannot continuously invalidate and restart
-  its own calculation. Deterministic axis errors are also reported before
-  accelerator probing and workload planning begin.
 - Hardened Crop selection and presentation-preview updates against napari layer-model re-entrancy, preventing the crash previously triggered by selecting a changed Crop Stack after switching compute preference.
 - Updated generated Image and Labels presentation layers to carry VIPP's axis
   names into napari when that layer API is available. Labels stay aligned to

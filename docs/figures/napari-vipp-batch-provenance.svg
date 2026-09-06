@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1000" viewBox="0 0 1440 1000" role="img" aria-labelledby="svg-title svg-desc">
+<title id="svg-title">Local collection execution, integrity checks, and provenance</title>
+<desc id="svg-desc">Run-level collection binding, deterministic planning, and representative scientific preflight precede a per-item integrity loop. Each item captures source identity, runs a fresh workflow while recording actual implementations and cleanup evidence, stages available outputs privately, reverifies every input, and promotes valid artifacts one at a time. Integrity failures withhold new publication; execution errors may still yield a recorded partial item when completed outputs pass publication gates.</desc>
+<style>text {
+  font-family: Arial, "Liberation Sans", sans-serif;
+  fill: #14213d;
+  text-rendering: geometricPrecision;
+}
+.title { font-size: 44px; font-weight: 700; letter-spacing: -0.7px; }
+.subtitle { font-size: 22px; font-weight: 400; fill: #4f617d; }
+.section { font-size: 18px; font-weight: 700; letter-spacing: 2.2px; fill: #566984; }
+.card-title { font-size: 23px; font-weight: 700; }
+.card-title-sm { font-size: 20px; font-weight: 700; }
+.card-title-xs { font-size: 18px; font-weight: 700; }
+.body { font-size: 19px; font-weight: 400; fill: #334a68; }
+.body-sm { font-size: 17px; font-weight: 400; fill: #3f5370; }
+.small { font-size: 15px; font-weight: 400; fill: #5b6d87; }
+.small-strong { font-size: 15px; font-weight: 700; fill: #4a5e79; }
+.chip-text { font-size: 13px; font-weight: 700; letter-spacing: 1.3px; }
+.step-number { font-size: 20px; font-weight: 700; fill: #ffffff; }
+.arrow-label {
+  font-size: 15px;
+  font-weight: 700;
+  fill: #4d607d;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 7px;
+  stroke-linejoin: round;
+}
+.card, .band, .outer-frame, .mini-card {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 2.4;
+}
+.outer-frame { fill: #ffffff; stroke: #a1acbc; }
+.neutral { fill: #f6f8fb; stroke: #7a879c; }
+.navy { fill: #18243a; stroke: #18243a; }
+.blue { fill: #eaf6fb; stroke: #117ea6; }
+.violet { fill: #f1ecfa; stroke: #7251b5; }
+.green { fill: #e9f6f2; stroke: #23816f; }
+.amber { fill: #fff5e2; stroke: #a9680b; }
+.rose { fill: #fceef4; stroke: #b63e72; }
+.red { fill: #fff1ef; stroke: #b42318; }
+.band-neutral { fill: #f6f8fb; stroke: #a1acbc; }
+.band-blue { fill: #edf8fc; stroke: #8fc5d8; }
+.band-violet { fill: #f4effc; stroke: #b49bdc; }
+.band-green { fill: #edf8f5; stroke: #91c8bb; }
+.band-amber { fill: #fff8ea; stroke: #d9b26a; }
+.connector, .connector-blue, .connector-violet, .connector-green,
+.connector-amber, .connector-red, .connector-light {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.7;
+  vector-effect: non-scaling-stroke;
+}
+.connector { stroke: #3e4b63; }
+.connector-blue { stroke: #117ea6; }
+.connector-violet { stroke: #7251b5; }
+.connector-green { stroke: #23816f; }
+.connector-amber { stroke: #a9680b; }
+.connector-red { stroke: #b42318; }
+.connector-light { stroke: #9aa6b7; stroke-width: 2.1; }
+.optional { stroke-dasharray: 9 7; }
+.soft-dash { stroke-dasharray: 7 7; }
+.divider { stroke: #cad1dc; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.port { stroke-width: 2; vector-effect: non-scaling-stroke; }
+.image-frame { fill: #0c1629; stroke: #65738a; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.table-grid { stroke: #c5ccd7; stroke-width: 1.2; vector-effect: non-scaling-stroke; }</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#3e4b63"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#117ea6"/></marker>
+  <marker id="arrow-violet" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#7251b5"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#23816f"/></marker>
+  <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#a9680b"/></marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#b42318"/></marker>
+</defs>
+<rect x="0" y="0" width="1440" height="1000" fill="#ffffff"/>
+<g id="title-band" aria-label="Figure title">
+<text x="60" y="62" class="title" text-anchor="start"><tspan x="60" dy="0">Local collection execution and provenance</tspan></text>
+<text x="60" y="104" class="subtitle" text-anchor="start"><tspan x="60" dy="0">Run-level planning is separated from per-item execution, staging, source reverification, and artifact promotion.</tspan></text>
+</g>
+<text x="60" y="154" class="section" text-anchor="start"><tspan x="60" dy="0">RUN-LEVEL SETUP</tspan></text>
+<line x1="60" y1="168" x2="1380" y2="168" class="divider"/>
+<g id="batch-connectors" aria-label="Batch planning item execution and integrity outcomes">
+<path d="M450 267 H517" class="connector" marker-end="url(#arrow)"/>
+<path d="M915 267 H982" class="connector" marker-end="url(#arrow)"/>
+<path d="M1185 360 V442" class="connector-violet" marker-end="url(#arrow-violet)"/>
+<text x="1203" y="410" class="arrow-label" text-anchor="start"><tspan x="1203" dy="0">approved plan</tspan></text>
+</g>
+<g id="run-level-planning" aria-label="Run-level setup steps">
+<rect x="60" y="190" width="390" height="170" rx="20" class="card blue" />
+<circle cx="98" cy="228" r="25" fill="#117ea6"/>
+<text x="98" y="235" class="step-number" text-anchor="middle"><tspan x="98" dy="0">1</tspan></text>
+<text x="140" y="236" class="card-title" text-anchor="start"><tspan x="140" dy="0">Bind local collections</tspan></text>
+<path d="M92 265h30.24l12.24 12.24v41.76h-42.48z" fill="#ffffff" stroke="#117ea6" stroke-width="3" vector-effect="non-scaling-stroke"/><path d="M122.24 265v12.24h12.24" fill="none" stroke="#117ea6" stroke-width="3" vector-effect="non-scaling-stroke"/>
+<text x="170" y="273" class="body" text-anchor="start"><tspan x="170" dy="0">folder / glob bindings</tspan><tspan x="170" dy="28">one or multiple workflow sources</tspan></text>
+<text x="255" y="329" class="small" text-anchor="middle"><tspan x="255" dy="0">source arrays remain external</tspan><tspan x="255" dy="20">to workflow JSON</tspan></text>
+<rect x="525" y="190" width="390" height="170" rx="20" class="card neutral" />
+<circle cx="563" cy="228" r="25" fill="#68758c"/>
+<text x="563" y="235" class="step-number" text-anchor="middle"><tspan x="563" dy="0">2</tspan></text>
+<text x="605" y="236" class="card-title" text-anchor="start"><tspan x="605" dy="0">Build a deterministic plan</tspan></text>
+<rect x="570" y="258" width="105" height="42" rx="9" class="mini-card" fill="#ffffff" stroke="#7a879c"/>
+<rect x="765" y="258" width="105" height="42" rx="9" class="mini-card" fill="#ffffff" stroke="#7a879c"/>
+<path d="M675 279 H757" class="connector" marker-end="url(#arrow)"/>
+<text x="720" y="320" class="body-sm" text-anchor="middle"><tspan x="720" dy="0">sorted-position pairing · output paths</tspan><tspan x="720" dy="24">collision policy</tspan></text>
+<rect x="990" y="190" width="390" height="170" rx="20" class="card violet" />
+<circle cx="1028" cy="228" r="25" fill="#7251b5"/>
+<text x="1028" y="235" class="step-number" text-anchor="middle"><tspan x="1028" dy="0">3</tspan></text>
+<text x="1070" y="226" class="card-title-sm" text-anchor="start"><tspan x="1070" dy="0">Representative scientific</tspan><tspan x="1070" dy="27">preflight</tspan></text>
+<rect x="1035" y="278" width="105" height="50" rx="10" class="mini-card optional" fill="#ffffff" stroke="#7251b5"/>
+<text x="1088" y="298" class="small" text-anchor="middle"><tspan x="1088" dy="0">optional UI</tspan></text>
+<text x="1088" y="318" class="small" text-anchor="middle"><tspan x="1088" dy="0">plan preview</tspan></text>
+<text x="1162" y="289" class="body-sm" text-anchor="start"><tspan x="1162" dy="0">Run repeats planning</tspan><tspan x="1162" dy="23">and checks a representative</tspan><tspan x="1162" dy="23">source set before items.</tspan></text>
+</g>
+<text x="60" y="420" class="section" text-anchor="start"><tspan x="60" dy="0">PER-ITEM EXECUTION &amp; INTEGRITY LOOP</tspan></text>
+<line x1="60" y1="434" x2="1380" y2="434" class="divider"/>
+<rect x="50" y="450" width="1340" height="220" rx="24" class="band band-green" />
+<g id="per-item-connectors" aria-label="Per-item sequence and integrity outcomes">
+<path d="M355 562 H382" class="connector-green" marker-end="url(#arrow-green)"/>
+<path d="M675 562 H702" class="connector-green" marker-end="url(#arrow-green)"/>
+<path d="M995 562 H1022" class="connector-green" marker-end="url(#arrow-green)"/>
+<path d="M1240 645 V727" class="connector-green" marker-end="url(#arrow-green)"/>
+<text x="1268" y="695" class="arrow-label" text-anchor="start"><tspan x="1268" dy="0">PASS</tspan></text>
+<path d="M532 645 V685 H300 V727" class="connector-red soft-dash" marker-end="url(#arrow-red)"/>
+<text x="416" y="678" class="arrow-label" text-anchor="middle"><tspan x="416" dy="0">cleanup unproven / early cancellation</tspan></text>
+<path d="M1190 645 V705 H500 V727" class="connector-red soft-dash" marker-end="url(#arrow-red)"/>
+<text x="845" y="698" class="arrow-label" text-anchor="middle"><tspan x="845" dy="0">source identity changed</tspan></text>
+</g>
+<g id="per-item-loop" aria-label="Four per-item processing steps">
+<rect x="70" y="480" width="285" height="165" rx="18" class="card blue" />
+<circle cx="104" cy="514" r="25" fill="#117ea6"/>
+<text x="104" y="521" class="step-number" text-anchor="middle"><tspan x="104" dy="0">1</tspan></text>
+<text x="140" y="523" class="card-title-xs" text-anchor="start"><tspan x="140" dy="0">Capture identity &amp; load</tspan></text>
+<text x="212.5" y="573" class="body-sm" text-anchor="middle"><tspan x="212.5" dy="0">verify every input</tspan><tspan x="212.5" dy="28">detach revision-safe payload</tspan></text>
+<rect x="390" y="480" width="285" height="165" rx="18" class="card green" />
+<circle cx="424" cy="514" r="25" fill="#23816f"/>
+<text x="424" y="521" class="step-number" text-anchor="middle"><tspan x="424" dy="0">2</tspan></text>
+<text x="460" y="523" class="card-title-xs" text-anchor="start"><tspan x="460" dy="0">Execute a fresh graph</tspan></text>
+<text x="532.5" y="573" class="body-sm" text-anchor="middle"><tspan x="532.5" dy="0">record actual implementations</tspan><tspan x="532.5" dy="28">establish cleanup evidence</tspan></text>
+<rect x="710" y="480" width="285" height="165" rx="18" class="card amber" />
+<circle cx="744" cy="514" r="25" fill="#b87409"/>
+<text x="744" y="521" class="step-number" text-anchor="middle"><tspan x="744" dy="0">3</tspan></text>
+<text x="780" y="523" class="card-title-xs" text-anchor="start"><tspan x="780" dy="0">Stage available outputs</tspan></text>
+<text x="852.5" y="573" class="body-sm" text-anchor="middle"><tspan x="852.5" dy="0">private paths only</tspan><tspan x="852.5" dy="28">completed branches may be partial</tspan></text>
+<rect x="1030" y="480" width="330" height="165" rx="18" class="card neutral" />
+<circle cx="1064" cy="514" r="25" fill="#68758c"/>
+<text x="1064" y="521" class="step-number" text-anchor="middle"><tspan x="1064" dy="0">4</tspan></text>
+<text x="1100" y="523" class="card-title-xs" text-anchor="start"><tspan x="1100" dy="0">Reverify every source</tspan></text>
+<text x="1195" y="573" class="body-sm" text-anchor="middle"><tspan x="1195" dy="0">compare captured identity</tspan><tspan x="1195" dy="28">decide whether to publish</tspan></text>
+</g>
+<g id="integrity-outcomes" aria-label="Withheld and published outcomes">
+<rect x="60" y="735" width="620" height="140" rx="22" class="card red" />
+<text x="95" y="773" class="section" text-anchor="start" style="fill:#b42318"><tspan x="95" dy="0">WITHHOLD NEW PUBLICATION</tspan></text>
+<text x="95" y="808" class="small" text-anchor="start"><tspan x="95" dy="0">Changed identity, unproven cleanup, or early cancellation keeps</tspan><tspan x="95" dy="21">staged artifacts private; the withheld decision is recorded.</tspan><tspan x="95" dy="21">Completed outputs may instead form a partial item when gates pass.</tspan></text>
+<rect x="760" y="735" width="620" height="140" rx="22" class="card amber" />
+<text x="795" y="773" class="section" text-anchor="start" style="fill:#a9680b"><tspan x="795" dy="0">PASS — PROMOTE &amp; RECORD</tspan></text>
+<rect x="795" y="790" width="550" height="55" rx="13" class="mini-card" fill="#ffffff" stroke="#a9680b"/>
+<text x="1070" y="814" class="card-title-sm" text-anchor="middle"><tspan x="1070" dy="0">Scientific outputs</tspan></text>
+<text x="1070" y="838" class="small" text-anchor="middle"><tspan x="1070" dy="0">images · masks · labels · tables</tspan></text>
+<text x="1070" y="863" class="small" text-anchor="middle"><tspan x="1070" dy="0">Atomic per eligible artifact; later failure is recorded as a partial item.</tspan></text>
+<path d="M370 875 V884" class="connector" marker-end="url(#arrow)"/>
+<path d="M1070 875 V884" class="connector" marker-end="url(#arrow)"/>
+<rect x="60" y="892" width="1320" height="45" rx="15" class="band band-neutral" />
+<text x="95" y="920" class="section" text-anchor="start"><tspan x="95" dy="0">RUN RECORDS</tspan></text>
+<text x="265" y="920" class="small" text-anchor="start"><tspan x="265" dy="0">run manifest · checkpoints · actual backend · integrity decision · published / partial / withheld / failed / cancelled</tspan></text>
+</g>
+<g id="next-item-loop" aria-label="Return to the next planned item">
+<path d="M720 937 V965 H30 V562 H62" class="connector soft-dash" marker-end="url(#arrow)"/>
+<text x="660" y="958" class="arrow-label" text-anchor="middle"><tspan x="660" dy="0">if policy continues and planned items remain</tspan></text>
+</g>
+</svg>

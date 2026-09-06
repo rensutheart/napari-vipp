@@ -26,9 +26,12 @@ from qtpy.QtGui import (
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
+    QPalette,
 )
 from qtpy.QtWidgets import (
     QApplication,
+    QBoxLayout,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QFormLayout,
@@ -44,6 +47,7 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QStackedLayout,
     QStyle,
+    QStyleOptionButton,
     QStyleOptionSlider,
     QWidget,
 )
@@ -51,13 +55,14 @@ from qtpy.QtWidgets import (
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import (
     BLOCKED_EXECUTION_ACCENT,
+    ISOLATED_TUNING_ACCENT,
     STALE_EXECUTION_ACCENT,
     ComputeBadgeKind,
     ImageSourceMimePayload,
     PortLabelMode,
     ThumbnailStatsBadgeKind,
 )
-from napari_vipp._theme import category_color, category_tint
+from napari_vipp._theme import graph_theme
 from napari_vipp._widget import (
     CACHE_KEEP_NODE_PARAM,
     CACHE_MODE_KEEP_ALL,
@@ -66,7 +71,10 @@ from napari_vipp._widget import (
     CROP_ROI_LAYER_NAME,
     CROP_ROI_LINE_WIDTH_SCALE_PARAM,
     EXAMPLE_WORKFLOWS,
+    INSPECTOR_COMPACT_FORM_BREAKPOINT,
+    INSPECTOR_STACKED_FORM_BREAKPOINT,
     INTENSITY_CONTRAST_HISTOGRAM_OPERATIONS,
+    SLICE_WISE_PROCESSING_TOOLTIP,
     AutoContrastResult,
     CollectionBatchDialog,
     ColocalizationScatterRequest,
@@ -100,6 +108,8 @@ from napari_vipp._widget import (
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
     _system_memory_bytes,
+    _ToolbarChevronButton,
+    _ToolbarCommandButton,
     _windows_memory_bytes,
 )
 from napari_vipp.core.batch import (
@@ -130,6 +140,7 @@ from napari_vipp.core.batch_demo import (
     SyntheticBatchDemo,
     validate_synthetic_batch_demo,
 )
+from napari_vipp.core.channel_colors import channel_color_int
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
@@ -201,6 +212,7 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     NODE_LIBRARY_BY_ID,
     PALETTE_NODE_LIBRARY,
+    SLICE_WISE_STACK_NOTICE,
     GraphConnection,
     GraphNode,
     OutputTunnel,
@@ -236,16 +248,23 @@ from napari_vipp.core.workflow import (
 )
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.batch_workers import CollectionBatchOperationProgress
+from napari_vipp.ui.colocalization_scatter_dialog import (
+    ColocalizationScatterDialog,
+)
 from napari_vipp.ui.compute_benchmark_dialog import NodeBenchmarkWorkerOutcome
 from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerApplyRequest,
     PipelineOptimizerWorkerOutcome,
 )
 from napari_vipp.ui.compute_setup import ComputeDeviceOption
+from napari_vipp.ui.compute_setup_dialog import ComputeSetupDialog
 from napari_vipp.ui.controls import ImageSourceResolutionPresentation
 from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
 from napari_vipp.ui.file_sources import SourceFileLoadSpec
+from napari_vipp.ui.iconography import palette_category_colors
 from napari_vipp.ui.napari_compat import viewer_camera
+from napari_vipp.ui.palette import OPERATION_ROLE
+from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 from napari_vipp.ui.presentation_settings import ThumbnailStatisticsPolicy
 from napari_vipp.ui.workflow_save_settings import WorkflowSavePolicy
 
@@ -592,6 +611,142 @@ def _view_dim_control(widget, label):
 
 def _graph_view_center(view):
     return view.mapToScene(view.viewport().rect().center())
+
+
+def _widget_test_palette(*, base: str, text: str) -> QPalette:
+    palette = QPalette()
+    alternate = (
+        QColor(base).lighter(112)
+        if QColor(base).lightness() < 128
+        else QColor(base).darker(104)
+    )
+    for role in (QPalette.Window, QPalette.Base, QPalette.Button):
+        palette.setColor(role, QColor(base))
+    palette.setColor(QPalette.AlternateBase, alternate)
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        palette.setColor(role, QColor(text))
+    palette.setColor(QPalette.Highlight, QColor("#2563eb"))
+    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#64748b"))
+    return palette
+
+
+def test_live_theme_switch_restyles_widget_tables_status_and_icons(qtbot):
+    widget = VippWidget(
+        _Viewer(np.ones((8, 8), dtype=np.float32)),
+        defer_initial_run=True,
+    )
+    qtbot.addWidget(widget)
+
+    widget.setPalette(_widget_test_palette(base="#111827", text="#f8fafc"))
+    QApplication.sendEvent(widget, QEvent(QEvent.StyleChange))
+    qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "dark")
+    dark_table_style = widget.metadata_table.styleSheet()
+    dark_version_style = widget.version_label.styleSheet()
+    dark_isolation_style = widget.isolated_tuning_panel.styleSheet()
+    dark_slider_style = widget.graph_zoom_slider.styleSheet()
+    dark_undo_icon = widget.undo_action.icon().cacheKey()
+    assert "background: #4560c4" in dark_slider_style
+    assert (
+        theme_colors(QWidget.palette(widget)).active_mode.surface.name()
+        in dark_isolation_style
+    )
+
+    widget.setPalette(_widget_test_palette(base="#ffffff", text="#111827"))
+    QApplication.sendEvent(widget, QEvent(QEvent.StyleChange))
+    qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "light")
+
+    assert widget.metadata_table.styleSheet() != dark_table_style
+    assert "#ffffff" in widget.metadata_table.styleSheet()
+    assert "#1f242c" not in widget.metadata_table.styleSheet()
+    assert widget.version_label.styleSheet() != dark_version_style
+    assert widget.isolated_tuning_panel.styleSheet() != dark_isolation_style
+    assert widget.graph_zoom_slider.styleSheet() != dark_slider_style
+    assert "background: #a0b8ff" in widget.graph_zoom_slider.styleSheet()
+    assert (
+        theme_colors(QWidget.palette(widget)).active_mode.surface.name()
+        in widget.isolated_tuning_panel.styleSheet()
+    )
+    assert widget.undo_action.icon().cacheKey() != dark_undo_icon
+    assert "#ffffff" not in widget.graph_view.backgroundBrush().color().name()
+
+
+def test_application_palette_switch_restyles_widget_and_open_child_dialog(qtbot):
+    application = QApplication.instance()
+    assert application is not None
+    original_palette = QPalette(application.palette())
+    widget = VippWidget(
+        _Viewer(np.ones((8, 8), dtype=np.float32)),
+        defer_initial_run=True,
+    )
+    dialog = ComputeSetupDialog(widget)
+    qtbot.addWidget(widget)
+    qtbot.addWidget(dialog)
+    widget.show()
+    dialog.show()
+
+    try:
+        dark = _widget_test_palette(base="#111827", text="#f8fafc")
+        application.setPalette(dark)
+        dark_muted = theme_colors(dark).muted_text.name()
+        qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "dark")
+        qtbot.waitUntil(
+            lambda: dark_muted in dialog.summary_label.styleSheet()
+        )
+        dark_style = dialog.summary_label.styleSheet()
+
+        light = _widget_test_palette(base="#ffffff", text="#111827")
+        application.setPalette(light)
+        light_muted = theme_colors(light).muted_text.name()
+        qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "light")
+        qtbot.waitUntil(
+            lambda: light_muted in dialog.summary_label.styleSheet()
+        )
+
+        assert dialog.summary_label.styleSheet() != dark_style
+        assert not callable(widget.palette)
+    finally:
+        application.setPalette(original_palette)
+        QApplication.processEvents()
+
+
+def test_napari_qss_theme_switch_restyles_alternate_widget_surfaces(qtbot):
+    from napari._qt.qt_resources import get_stylesheet
+
+    host = QMainWindow()
+    widget = VippWidget(
+        _Viewer(np.ones((8, 8), dtype=np.float32)),
+        defer_initial_run=True,
+    )
+    host.setCentralWidget(widget)
+    qtbot.addWidget(host)
+    host.show()
+
+    host.setStyleSheet(
+        get_stylesheet("light", extra_variables={"font_size": "9pt"})
+    )
+    qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "light")
+
+    host.setStyleSheet(
+        get_stylesheet("dark", extra_variables={"font_size": "9pt"})
+    )
+    qtbot.waitUntil(lambda: widget.property("vippColorScheme") == "dark")
+
+    palette = QWidget.palette(widget)
+    colors = theme_colors(palette)
+    alternate = colors.alternate_surface.name()
+
+    assert palette.color(QPalette.Base).lightnessF() < 0.5
+    assert colors.alternate_surface.lightnessF() < 0.5
+    assert alternate in widget.version_label.styleSheet()
+    assert f"background: {colors.surface.name()};" in (
+        widget.metadata_table.styleSheet()
+    )
+    assert "alternate-background-color" not in widget.metadata_table.styleSheet()
+    assert "#f7f7f7" not in widget.version_label.styleSheet()
+    assert "alternate-background-color: #f7f7f7;" not in (
+        widget.metadata_table.styleSheet()
+    )
 
 
 def test_flexible_double_spinbox_allows_decimal_typing_without_padding(qtbot):
@@ -943,6 +1098,31 @@ def test_widget_uses_one_severity_aware_message_strip(qtbot):
     assert widget.status_label.property("messageSeverity") == "neutral"
 
 
+def test_workflow_ready_status_is_concise_and_keeps_source_detail_on_hover(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    source_label = (
+        "VIPP synthetic time-lapse multichannel, VIPP synthetic volume, "
+        "VIPP synthetic colocalization"
+    )
+
+    widget._show_workflow_ready_status(source_label, snapshots_pinned=False)
+
+    assert widget.status_label.text() == "Workflow calculations complete."
+    assert source_label not in widget.status_label.text()
+    assert "Connect ports" not in widget.status_label.text()
+    assert source_label in widget.status_label.toolTip().replace("\n", " ")
+    assert widget.status_label.property("messageSeverity") == "success"
+    assert widget.status_label.property("messageActionable") is False
+
+    widget._show_workflow_ready_status(source_label, snapshots_pinned=True)
+
+    assert widget.status_label.text() == (
+        "Workflow calculations complete. Refresh only if source files changed."
+    )
+    assert "Use Refresh" in widget.status_label.toolTip()
+
+
 def test_diagnostic_failure_callbacks_classify_nonactionable_status(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -1166,6 +1346,16 @@ def test_pipeline_optimizer_action_is_custom_only(qtbot):
     widget._populate_settings_toolbar_menu()
 
     assert not widget.optimize_pipeline_button.isHidden()
+    assert (
+        widget.optimize_pipeline_button.parentWidget()
+        is widget.execution_toolbar_group
+    )
+    assert isinstance(widget.optimize_pipeline_button, _ToolbarCommandButton)
+    assert not widget.optimize_pipeline_button.icon().isNull()
+    assert (
+        widget.optimize_pipeline_button.accessibleName()
+        == "Find fastest pipeline"
+    )
     assert "Find fastest pipeline…" in {
         action.text() for action in widget.settings_menu.actions()
     }
@@ -2394,6 +2584,9 @@ def test_background_auto_run_is_detached_and_cancel_button_remains_usable(qtbot)
     assert len(pool.workers) == 1
     run_id = widget._active_pipeline_run_id
     assert run_id is not None
+    timing_key = ("background", run_id)
+    total_before_run = widget._pipeline_processing_total_seconds
+    assert timing_key in widget._pipeline_processing_active_started_at
     assert not widget.pipeline_cancel_button.isHidden()
     assert widget.pipeline_cancel_button.isEnabled()
     assert not widget.compute_mode_combo.isEnabled()
@@ -2405,6 +2598,8 @@ def test_background_auto_run_is_detached_and_cancel_button_remains_usable(qtbot)
     assert not widget.compute_mode_combo.isEnabled()
     pool.workers[0].run()
     qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None)
+    assert timing_key not in widget._pipeline_processing_active_started_at
+    assert widget._pipeline_processing_total_seconds >= total_before_run
     assert widget.compute_mode_combo.isEnabled()
 
 
@@ -2654,6 +2849,91 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     )
     gaussian_tooltip = widget.graph_view._cards["gaussian"].compute_badge.toolTip()
     assert "Host CPU" not in gaussian_tooltip
+
+
+def test_cpu_badge_distinguishes_result_backend_from_gpu_capability(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    measurement = widget.add_node_from_palette("measure_objects")
+    widget._reset_compute_decisions()
+    request = ComputeRequest(mode="auto")
+    decision = NodeExecutionDecision(
+        measurement.id,
+        measurement.operation_id,
+        NodeComputePreference(),
+        "cpu-numpy",
+        "cpu",
+        "cpu-measure_objects-v1",
+        DecisionKind.POLICY_CPU,
+        DecisionReason.WORKLOAD_UNSUPPORTED,
+        "Extended descriptors require the authoritative CPU implementation.",
+    )
+    environment = ComputeEnvironment(device_name="Host CPU")
+    report = ExecutionReport(
+        request,
+        environment,
+        plan=ExecutionPlan(
+            request.fingerprint,
+            environment.fingerprint,
+            (),
+            (decision,),
+        ),
+        actual_decisions=(decision,),
+    )
+
+    widget._accept_execution_report(report)
+
+    badge = widget.graph_view._cards[measurement.id].compute_badge
+    assert badge.text() == "CPU"
+    assert "backend used for this accepted result" in badge.toolTip()
+    assert "also has a GPU implementation for eligible inputs" in badge.toolTip()
+
+
+def test_mesh_gpu_report_uses_honest_hybrid_compute_badge(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    mesh = widget.add_node_from_palette("measure_3d_mesh_morphology")
+    widget._reset_compute_decisions()
+    request = ComputeRequest(mode="auto")
+    decision = NodeExecutionDecision(
+        mesh.id,
+        mesh.operation_id,
+        NodeComputePreference(),
+        "cuda-cupy",
+        "cupy",
+        "cupy-measure-3d-mesh-morphology-hybrid-v1",
+        DecisionKind.SELECTED,
+        DecisionReason.SELECTED_IMPLEMENTATION,
+        "Validated hybrid implementation selected.",
+    )
+    environment = ComputeEnvironment(
+        runtime_ids=("cpu-numpy", "cuda-cupy"),
+        implementation_libraries=("cpu", "cupy"),
+        device_id="cuda:0",
+        device_name="Test GPU",
+        device_class="nvidia-cuda",
+        memory_topology="discrete",
+    )
+    plan = ExecutionPlan(
+        request.fingerprint,
+        environment.fingerprint,
+        (),
+        (decision,),
+    )
+    report = ExecutionReport(
+        request,
+        environment,
+        plan=plan,
+        actual_decisions=(decision,),
+    )
+
+    widget._accept_execution_report(report)
+
+    badge = widget.graph_view._cards[mesh.id].compute_badge
+    assert badge.text() == "GPU + CPU"
+    assert "GPU discovers objects" in badge.toolTip()
+    assert "Lewiner marching-cubes is finalized on CPU" in badge.toolTip()
+    assert "when convex-hull metrics are enabled" in badge.toolTip()
 
 
 def test_dtype_repair_report_offers_one_click_atomic_visible_conversion(qtbot):
@@ -3861,6 +4141,27 @@ def test_deleting_all_nodes_leaves_empty_inspector_without_error(qtbot):
     assert widget.history_label.text() == "No history yet."
 
 
+def test_metadata_and_history_use_compact_mockup_presentation(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+
+    assert widget.metadata_group.title() == "Output metadata"
+    assert widget.metadata_table.horizontalHeader().isHidden()
+    assert not widget.metadata_table.alternatingRowColors()
+    assert widget.metadata_table.height() <= 320
+    assert widget.metadata_group.summary_label.text()
+
+    history_lines = widget.history_label.text().splitlines()
+    assert history_lines
+    assert history_lines != ["No history yet."]
+    assert len(widget._history_row_widgets) == len(history_lines)
+    assert widget.history_group.summary_label.text() == (
+        f"{len(history_lines)} "
+        f"{'step' if len(history_lines) == 1 else 'steps'}"
+    )
+
+
 def test_duplicate_node_copies_parameters_without_connections(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -3929,6 +4230,26 @@ def test_duplicate_preserves_disconnected_bypass_and_can_clear_then_reconnect(
         connection.source_id == "input" and connection.target_id == clone_id
         for connection in widget.pipeline.connections
     )
+
+
+def test_duplicate_preserves_legacy_imagej_threshold_variant(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    legacy = widget._add_node_at(
+        "imagej_auto_threshold",
+        QPointF(700.0, 300.0),
+    )
+    legacy.params["method"] = "Triangle"
+    legacy.title = "ImageJ Triangle Threshold (8-bit, legacy)"
+    before_ids = set(widget.pipeline.nodes)
+
+    widget._duplicate_node(legacy.id)
+
+    clone_id = (set(widget.pipeline.nodes) - before_ids).pop()
+    clone = widget.pipeline.nodes[clone_id]
+    assert clone.params["method"] == "Triangle"
+    assert clone.title == "ImageJ Triangle Threshold (8-bit, legacy)"
 
 
 def test_graph_fragment_copy_paste_is_atomic_and_keeps_only_internal_edges(
@@ -4019,6 +4340,30 @@ def test_graph_fragment_copy_paste_preserves_validated_bypass_intent(
     assert widget.node_bypass_checkbox.isChecked()
     assert not widget.parameter_group.isEnabled()
     assert len(widget._undo_stack) == 1
+
+
+def test_graph_fragment_copy_paste_preserves_legacy_imagej_variant_title(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    QApplication.clipboard().clear()
+    legacy = widget._add_node_at(
+        "imagej_auto_threshold",
+        QPointF(700.0, 300.0),
+    )
+    legacy.params["method"] = "Triangle"
+    legacy.title = "ImageJ Triangle Threshold (8-bit, legacy)"
+
+    widget._copy_graph_nodes((legacy.id,))
+    pasted_ids = widget._paste_graph_fragment(QPointF(1000.0, 300.0))
+
+    assert len(pasted_ids) == 1
+    pasted = widget.pipeline.nodes[pasted_ids[0]]
+    assert pasted.params["method"] == "Triangle"
+    assert pasted.title == "ImageJ Triangle Threshold (8-bit, legacy)"
 
 
 def test_single_node_copy_paste_preserves_disconnected_bypass_and_reconnects(
@@ -4551,6 +4896,207 @@ def test_undo_restores_moved_node_position(qtbot):
 
     restored = widget.graph_view._proxies["gaussian"].pos()
     assert restored == old_pos
+
+
+def test_processing_node_move_undo_preserves_runtime_cache_and_inspector(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(np.arange(4 * 16 * 18).reshape(4, 16, 18))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget._debounce_timer.stop()
+    widget.graph_view.select_node("gaussian")
+
+    widget.resize(1000, 500)
+    widget.inspector_panel.setFixedHeight(220)
+    widget.show()
+
+    # Reproduce the real graph timing: a press selects a different node and
+    # paints its parameter form immediately, while its inspector layer and
+    # display profile are deliberately deferred until after pointer release.
+    settled_refreshes = []
+
+    def track_settled_refresh(node_id, *, select_layer):
+        assert select_layer
+        source_profile = next(
+            deepcopy(profile)
+            for key, profile in widget._inspect_display_profiles.items()
+            if key[0] == "gaussian"
+        )
+        source_profile["node_id"] = node_id
+        key = widget._inspect_display_profile_key(source_profile)
+        assert key is not None
+        widget._inspect_display_profiles[key] = source_profile
+        settled_refreshes.append(node_id)
+
+    monkeypatch.setattr(
+        widget,
+        "_refresh_selected_inspector_after_selection",
+        track_settled_refresh,
+    )
+
+    graph_view = widget.graph_view
+    proxy = graph_view._proxies["threshold"]
+    old_position = QPointF(proxy.pos())
+    new_position = old_position + QPointF(120, 45)
+    start_positions = {"threshold": old_position}
+    history_size = len(widget._undo_stack)
+
+    graph_view._begin_node_pointer_gesture("threshold")
+    graph_view._handle_node_press(
+        "threshold",
+        Qt.NoModifier,
+        preserve_group_for_drag=True,
+    )
+    assert graph_view.node_pointer_gesture_active()
+    assert graph_view.node_press_dispatch_active() is False
+    assert widget._selected_node_id == "threshold"
+    assert not settled_refreshes
+
+    graph_view._move_selected_nodes_during_drag(
+        start_positions,
+        new_position - old_position,
+    )
+    graph_view._finish_node_pointer_gesture("threshold")
+    graph_view._finish_selected_node_drag(start_positions)
+    widget._on_node_moved("threshold", old_position, new_position)
+
+    assert proxy.pos() == new_position
+    assert len(widget._undo_stack) == history_size + 1
+    move_snapshot = widget._undo_stack[-1]
+
+    qtbot.waitUntil(lambda: settled_refreshes == ["threshold"], timeout=5_000)
+    settled_snapshot = widget._current_history_snapshot()
+
+    # Position is the intended history difference. The late display-profile
+    # addition is incidental UI state and must not turn the undo into a full
+    # scientific workflow restore.
+    assert move_snapshot.workflow.graph == settled_snapshot.workflow.graph
+    assert move_snapshot.workflow.metadata == settled_snapshot.workflow.metadata
+    assert (
+        move_snapshot.workflow.compute_request
+        == settled_snapshot.workflow.compute_request
+    )
+    assert move_snapshot.workflow.notes == settled_snapshot.workflow.notes
+    assert move_snapshot.workflow.positions != settled_snapshot.workflow.positions
+    assert move_snapshot.selected_node_id == settled_snapshot.selected_node_id
+    for attribute in (
+        "preview_disabled_node_ids",
+        "active_pinned_node_id",
+        "compute_mode",
+        "compute_fallback_policy",
+        "compute_node_preferences",
+        "compute_optimizer_locked_node_ids",
+    ):
+        assert getattr(move_snapshot, attribute) == getattr(
+            settled_snapshot,
+            attribute,
+        )
+    assert (
+        move_snapshot.inspect_display_profiles
+        != settled_snapshot.inspect_display_profiles
+    )
+
+    # Keep a meaningful nonzero inspector position so a full inspector rebuild
+    # cannot pass as an unchanged canvas-only undo.
+    qtbot.waitUntil(
+        lambda: widget.inspector_panel.verticalScrollBar().maximum() > 0,
+        timeout=5_000,
+    )
+    inspector_scroll = widget.inspector_panel.verticalScrollBar()
+    inspector_scroll.setValue(min(80, inspector_scroll.maximum()))
+    qtbot.waitUntil(lambda: inspector_scroll.value() > 0, timeout=5_000)
+
+    pipeline = widget.pipeline
+    outputs_container = pipeline.outputs
+    output_objects = dict(pipeline.outputs)
+    output_states_container = pipeline.output_states
+    output_state_objects = dict(pipeline.output_states)
+    node_outputs_container = pipeline.node_outputs
+    node_output_objects = {
+        node_id: tuple(values) for node_id, values in pipeline.node_outputs.items()
+    }
+    execution_states_container = pipeline.node_execution_states
+    execution_states = dict(pipeline.node_execution_states)
+    cache_lineage_container = pipeline.node_cache_lineage
+    cache_lineage = dict(pipeline.node_cache_lineage)
+    completed_node_ids = set(pipeline.completed_node_ids)
+    cache_bytes = _pipeline_cache_nbytes(pipeline)
+    selected_node_id = widget._selected_node_id
+    selected_graph_nodes = widget.graph_view.selected_node_ids()
+    primary_graph_node = widget.graph_view.primary_node_id()
+    scroll_value = inspector_scroll.value()
+
+    assert selected_node_id == "threshold"
+    assert selected_graph_nodes == ("threshold",)
+    assert primary_graph_node == "threshold"
+    assert completed_node_ids == set(pipeline.nodes)
+    assert cache_lineage
+    assert scroll_value > 0
+
+    pipeline_runs = []
+    invalidations = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: pipeline_runs.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_pipeline_cache",
+        lambda: invalidations.append(None),
+    )
+
+    # This is the same QAction invoked by the Ctrl+Z shortcut.
+    widget.undo_action.trigger()
+
+    assert widget.graph_view.node_position("threshold") == old_position
+    assert pipeline.outputs is outputs_container
+    assert all(
+        pipeline.outputs[node_id] is output
+        for node_id, output in output_objects.items()
+    )
+    assert pipeline.output_states is output_states_container
+    assert all(
+        pipeline.output_states[node_id] is state
+        for node_id, state in output_state_objects.items()
+    )
+    assert pipeline.node_outputs is node_outputs_container
+    assert {
+        node_id: tuple(id(value) for value in values)
+        for node_id, values in pipeline.node_outputs.items()
+    } == {
+        node_id: tuple(id(value) for value in values)
+        for node_id, values in node_output_objects.items()
+    }
+    assert pipeline.node_execution_states is execution_states_container
+    assert pipeline.node_execution_states == execution_states
+    assert pipeline.node_cache_lineage is cache_lineage_container
+    assert pipeline.node_cache_lineage == cache_lineage
+    assert pipeline.completed_node_ids == completed_node_ids
+    assert _pipeline_cache_nbytes(pipeline) == cache_bytes
+    assert widget._selected_node_id == selected_node_id
+    assert widget.graph_view.selected_node_ids() == selected_graph_nodes
+    assert widget.graph_view.primary_node_id() == primary_graph_node
+    assert inspector_scroll.value() == scroll_value
+    assert (
+        widget._current_history_snapshot().inspect_display_profiles
+        == settled_snapshot.inspect_display_profiles
+    )
+    assert not pipeline_runs
+    assert not invalidations
+
+    # The simulated move is a real editor change, so it correctly leaves the
+    # workflow tab dirty.  Clear that test-only state before qtbot closes the
+    # visible widget; otherwise teardown opens the interactive save prompt.
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
 
 
 def test_widget_restores_hidden_source_layer_on_close(qtbot):
@@ -5138,6 +5684,7 @@ def test_input_node_tile_binding_subtitle_updates_live(qtbot, tmp_path):
     assert card.subtitle_label.toolTip() == "Napari layer: second layer"
 
     file_path = tmp_path / "P-tau_MAGENTA.tif"
+    tifffile.imwrite(file_path, np.ones((4, 5), dtype=np.uint8))
     value = widget._image_source_value(widget.pipeline.nodes["input"])
     value.update(
         source_mode="file path",
@@ -5554,6 +6101,129 @@ def test_hidden_source_preview_cannot_replace_active_viewer_axis_labels(qtbot):
     assert preview.visible is True
     assert viewer.layers.selection.active is preview
     assert tuple(viewer.dims.axis_labels) == ("T", "Y", "X")
+
+
+def _colored_tczyx_viewer():
+    data = np.zeros((5, 3, 4, 6, 8), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("t", "time"),
+            AxisMetadata("c", "channel"),
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+        channels=(
+            ChannelMetadata(name="blue", color=0x0000FF),
+            ChannelMetadata(name="green", color=0x00FF00),
+            ChannelMetadata(name="red", color=0xFF0000),
+        ),
+    )
+    viewer = ViewerModel()
+    viewer.add_image(
+        data,
+        name="TCZYX source",
+        metadata={"vipp_image_state": state.to_dict()},
+    )
+    return viewer
+
+
+def test_colored_tczyx_inspect_napari_time_axis_updates_vipp_time(qtbot):
+    viewer = _colored_tczyx_viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    assert widget.follow_dims_checkbox.isChecked()
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("input")
+
+    qtbot.waitUntil(
+        lambda: len(widget._colored_channel_axis_layers("VIPP Inspect")) == 3,
+        timeout=5_000,
+    )
+    assert all(
+        tuple(layer.axis_labels) == ("T", "Z", "Y", "X")
+        for layer in widget._colored_channel_axis_layers("VIPP Inspect")
+    )
+    labels = tuple(str(label) for label in viewer.dims.axis_labels)
+    assert labels[-4:] == ("T", "Z", "Y", "X")
+    time_axis = labels.index("T")
+    padding_axis = next(
+        index for index, label in enumerate(labels) if label.startswith("-")
+    )
+    before = {axis.label: axis.value for axis in widget._view_dim_axes()}
+    assert tuple(before) == ("T", "Z")
+
+    viewer.dims.set_current_step(time_axis, 4)
+    after = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after["T"] == 4
+    assert after["Z"] == before["Z"]
+
+    viewer.dims.set_current_step(padding_axis, 3)
+    after_padding_move = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after_padding_move == after
+
+
+def test_tczyx_crop_surface_ignores_hidden_lower_rank_inspect_mapping(qtbot):
+    viewer = _colored_tczyx_viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("input")
+    qtbot.waitUntil(
+        lambda: len(widget._colored_channel_axis_layers("VIPP Inspect")) == 3,
+        timeout=5_000,
+    )
+
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(crop.id)
+    qtbot.waitUntil(
+        lambda: bool(widget._owned_crop_presentation_layers("crop_source"))
+        and getattr(widget._active_viewer_layer(), "metadata", {}).get(
+            "napari_vipp_kind"
+        )
+        == "crop_source",
+        timeout=5_000,
+    )
+
+    crop_source = widget._owned_crop_presentation_layers("crop_source")[0]
+    assert tuple(crop_source.axis_labels) == ("T", "C", "Z", "Y", "X")
+    assert all(
+        not layer.visible
+        for layer in widget._colored_channel_axis_layers("VIPP Inspect")
+    )
+    labels = tuple(str(label) for label in viewer.dims.axis_labels)
+    assert labels == ("T", "C", "Z", "Y", "X")
+    before = {axis.label: axis.value for axis in widget._view_dim_axes()}
+    assert tuple(before) == ("T", "C", "Z")
+    assert widget._raw_axis_for_current_step_axis(0) == labels.index("T")
+    assert widget._raw_axis_for_current_step_axis(1) == labels.index("C")
+
+    viewer.dims.set_current_step(labels.index("T"), 4)
+    after_time = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after_time == {"T": 4, "C": before["C"], "Z": before["Z"]}
+
+    viewer.dims.set_current_step(labels.index("C"), 4)
+    after = {axis.label: axis.value for axis in widget._view_dim_axes()}
+
+    assert after == {"T": 4, "C": 2, "Z": before["Z"]}
+
+    widget.graph_view.select_node("input")
+    qtbot.waitUntil(
+        lambda: len(widget._colored_channel_axis_layers("VIPP Inspect")) == 3,
+        timeout=5_000,
+    )
+    assert all(
+        layer.visible
+        for layer in widget._colored_channel_axis_layers("VIPP Inspect")
+    )
 
 
 def test_unsupported_multilevel_source_cannot_enter_preview_mode(
@@ -6155,6 +6825,7 @@ def test_image_source_node_inspects_and_selects_tiff_series(qtbot, tmp_path):
     control = widget._parameter_widgets["image_source"]
     control.mode_combo.setCurrentText("file path")
     control.path_edit.setText(str(path))
+    control.path_edit.editingFinished.emit()
     widget._refresh_image_source_options()
 
     assert control.series_combo.count() == 2
@@ -6179,6 +6850,7 @@ def test_image_source_node_loads_common_raster_file(qtbot, tmp_path):
     control = widget._parameter_widgets["image_source"]
     control.mode_combo.setCurrentText("file path")
     control.path_edit.setText(str(path))
+    control.path_edit.editingFinished.emit()
     widget._refresh_image_source_options()
 
     assert control.series_combo.count() == 1
@@ -6843,7 +7515,10 @@ def test_file_source_is_one_owned_read_only_snapshot_until_refresh(
     assert snapshot.payload.metadata["vipp_source_snapshot_policy"] == (
         "pinned until Refresh"
     )
-    assert "pinned until Refresh" in widget.status_label.text()
+    assert widget.status_label.text() == (
+        "Workflow calculations complete. Refresh only if source files changed."
+    )
+    assert "snapshots remain pinned" in widget.status_label.toolTip()
     with pytest.raises(ValueError, match="read-only"):
         frozen[0, 0] = 99
 
@@ -7589,17 +8264,22 @@ def test_view_dims_bar_responsive_modes(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
+    # The responsive bar uses the actual dock/widget width as its upper bound,
+    # so keep the host and the child in sync just as Qt's layout does in napari.
+    widget.resize(1012, widget.height())
     widget.view_dims_bar.resize(1000, 32)
     widget.view_dims_bar.sync_responsive_mode()
-    assert not widget.view_dims_bar.menu_button.isVisible()
+    assert widget.view_dims_bar.menu_button.isHidden()
     assert not _view_dim_control(widget, "Z").slider.isHidden()
 
-    widget.view_dims_bar.resize(450, 32)
+    widget.resize(612, widget.height())
+    widget.view_dims_bar.resize(600, 32)
     widget.view_dims_bar.sync_responsive_mode()
     assert not widget.view_dims_bar.menu_button.isHidden()
     assert _view_dim_control(widget, "Z").slider.isHidden()
     assert not _view_dim_control(widget, "Z").spin.isHidden()
 
+    widget.resize(272, widget.height())
     widget.view_dims_bar.resize(260, 32)
     widget.view_dims_bar.sync_responsive_mode()
     assert not widget.view_dims_bar.menu_button.isHidden()
@@ -7699,6 +8379,18 @@ def test_sample_source_axes_are_right_aligned_to_viewer_dims(qtbot):
     widget.run_pipeline()
     widget.graph_view.select_node("input")
 
+    # The initial result may still own a presentation-only stack-thumbnail
+    # scan.  Switching sources preempts that work and queues the authoritative
+    # scientific run after its cleanup, so do not read the old TCZYX state
+    # during that deliberate handoff.
+    qtbot.waitUntil(
+        lambda: [
+            axis.source_axis
+            for axis in widget.pipeline.output_states["input"].axes
+        ]
+        == [2, 3, 4],
+        timeout=10_000,
+    )
     state = widget.pipeline.output_states["input"]
     assert [axis.source_axis for axis in state.axes] == [2, 3, 4]
     assert _metadata_value(widget, "Current view") == "z=0/3"
@@ -7832,7 +8524,7 @@ def test_selecting_node_updates_inspection_layer(qtbot):
         expected_source,
     )
     assert not widget.pin_button.isHidden()
-    assert widget.pin_button.text() == "Pin selected"
+    assert widget.pin_button.text() == "Pin source"
 
 
 def test_widget_pins_threshold_as_labels(qtbot):
@@ -7849,8 +8541,9 @@ def test_widget_pins_threshold_as_labels(qtbot):
     assert not np.shares_memory(pinned.data, widget.pipeline.outputs["threshold"])
     assert not pinned.data.flags.writeable
     assert widget.graph_view._cards["threshold"]._pinned
+    pinned_color = graph_theme(widget.graph_view.palette()).pinned
     assert (
-        "border: 4px solid #facc15"
+        f"border: 4px solid {pinned_color}"
         in widget.graph_view._cards["threshold"].styleSheet()
     )
     assert widget.graph_view._cards["threshold"].pin_button.isHidden()
@@ -7982,11 +8675,13 @@ def test_fill_holes_uses_contextual_2d_and_3d_controls(qtbot):
 
     mode_control = widget._parameter_widgets["spatial_mode"]
     size_control = widget._parameter_widgets["max_hole_size"]
+    connectivity_control = widget._parameter_widgets["connectivity"]
     choices = [
         mode_control.combo.itemText(index)
         for index in range(mode_control.combo.count())
     ]
     size_label = widget.parameter_form.labelForField(size_control)
+    connectivity_label = widget.parameter_form.labelForField(connectivity_control)
     note = widget._parameter_widgets["fill_holes_scope_note"]
 
     assert choices == [
@@ -7997,13 +8692,22 @@ def test_fill_holes_uses_contextual_2d_and_3d_controls(qtbot):
     assert size_control._bounds.maximum == 3 * 12 * 12
     assert "volume (voxels)" in size_label.text()
     assert "Recommended for z-stacks" in note.text()
+    assert "use 3D ZYX" in note.text()
+    assert "complete volume" in note.text()
+    assert "Auto selected it" in note.text()
+    assert "0 fills every enclosed hole" in size_control.toolTip()
+    assert "4 in 2D; 6 in 3D" in connectivity_control.toolTip()
+    assert "8 in 2D; 26 in 3D" in connectivity_control.combo.toolTip()
+    assert "diagonal opening" in connectivity_label.toolTip()
+    assert "each YX slice is filled independently" in mode_control.toolTip()
 
     mode_control.combo.setCurrentText("2D per XY slice (advanced)")
 
     assert size_control._bounds.maximum == 12 * 12
     assert "area (pixels)" in size_label.text()
-    assert "Advanced mode" in note.text()
-    assert "open to background along Z" in note.text()
+    assert "2D YX treats each slice as a separate image" in note.text()
+    assert "opens to background through another Z slice" in note.text()
+    assert "use 3D ZYX" in note.text()
 
 
 def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
@@ -8016,10 +8720,9 @@ def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
     widget._connect_nodes("threshold", filled.id)
 
     assert "spatial_mode" not in widget._parameter_widgets
-    assert (
-        "connected YX image"
-        in widget._parameter_widgets["fill_holes_scope_note"].text()
-    )
+    note = widget._parameter_widgets["fill_holes_scope_note"].text()
+    assert "one YX plane" in note
+    assert "3D z-stack recommendation does not apply" in note
 
 
 @pytest.mark.parametrize("trailing_size", [3, 4])
@@ -8202,7 +8905,8 @@ def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
 
     widget.graph_view.select_node(labels.id)
 
-    assert widget.label_volume_group.isHidden()
+    assert not widget.label_volume_group.isHidden()
+    assert widget.label_volume_group.title() == "Object Size Distribution"
 
 
 def test_label_volume_histogram_reuses_input_distribution(
@@ -8220,16 +8924,27 @@ def test_label_volume_histogram_reuses_input_distribution(
     widget._connect_nodes(labels.id, filtered.id)
 
     calls: list[int] = []
-    original = VippWidget._label_volumes
+    original = VippWidget._object_sizes
 
-    def counted_label_volumes(values, spatial_ndim):
+    def counted_object_sizes(
+        values,
+        spatial_ndim,
+        connectivity="Face connected",
+        *,
+        progress=None,
+    ):
         calls.append(int(spatial_ndim))
-        return original(values, spatial_ndim)
+        return original(
+            values,
+            spatial_ndim,
+            connectivity,
+            progress=progress,
+        )
 
     monkeypatch.setattr(
         VippWidget,
-        "_label_volumes",
-        staticmethod(counted_label_volumes),
+        "_object_sizes",
+        staticmethod(counted_object_sizes),
     )
     widget._label_volume_cache.clear()
     widget._update_label_volume_histogram()
@@ -8299,8 +9014,10 @@ def test_slice_wise_stack_node_shows_axis_notice(qtbot):
     notice = widget._parameter_widgets["operation_notice"]
 
     assert not widget.parameter_group.isHidden()
-    assert "processes each YX slice independently" in notice.text()
-    assert "Reorder Axes" in notice.text()
+    assert notice.text() == SLICE_WISE_STACK_NOTICE
+    assert notice.toolTip() == SLICE_WISE_PROCESSING_TOOLTIP
+    assert "adjacent Z slices" in notice.toolTip()
+    assert "Reorder Axes" in notice.toolTip()
 
 
 def test_slice_wise_stack_notice_hides_irrelevant_rgb_axis_parameter(qtbot):
@@ -8341,30 +9058,48 @@ def test_palette_has_bottom_scroll_slack(qtbot):
     assert spacer.sizeHint(0).height() >= 36
 
 
-def test_palette_uses_category_colors(qtbot):
+def test_palette_uses_readable_text_tinted_rows_and_icons(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
     image_data = _palette_category(widget, "Image Data")
     image_source = _palette_item(widget, "input")
-    assert image_data.foreground(0).color().name() == category_color("Image Data")
-    assert image_data.background(0).color().name() == category_tint("Image Data")
-    assert image_source.foreground(0).color().name() == category_color("Image Data")
+    image_text, image_tint, _image_accent = palette_category_colors(
+        "Image Data",
+        widget.palette.palette(),
+    )
+    assert image_data.foreground(0).color() == image_text
+    assert image_data.background(0).color() == image_tint
+    assert image_data.foreground(1).color() == image_text
+    assert image_data.background(1).color() == image_tint
+    assert image_source.foreground(0).color() == image_text
+    assert not image_data.icon(0).isNull()
+    assert not image_source.icon(0).isNull()
 
     filtering = _palette_category(widget, "Filtering")
     gaussian = _palette_item(widget, "gaussian_blur")
-
-    assert filtering.foreground(0).color().name() == category_color("Filtering")
-    assert filtering.background(0).color().name() == category_tint("Filtering")
-    assert gaussian.foreground(0).color().name() == category_color("Filtering")
+    filtering_text, filtering_tint, _filtering_accent = palette_category_colors(
+        "Filtering",
+        widget.palette.palette(),
+    )
+    assert filtering.foreground(0).color() == filtering_text
+    assert filtering.background(0).color() == filtering_tint
+    assert gaussian.foreground(0).color() == filtering_text
+    assert not filtering.icon(0).isNull()
+    assert not gaussian.icon(0).isNull()
 
     label_operations = _palette_category(widget, "Label Operations")
     label_node = _palette_item(widget, "label_connected_components")
-    assert label_operations.foreground(0).color().name() == category_color(
-        "Label Operations"
+    label_text, label_tint, _label_accent = palette_category_colors(
+        "Label Operations",
+        widget.palette.palette(),
     )
-    assert label_node.foreground(0).color().name() == category_color("Label Operations")
+    assert label_operations.foreground(0).color() == label_text
+    assert label_operations.background(0).color() == label_tint
+    assert label_node.foreground(0).color() == label_text
+    assert not label_operations.icon(0).isNull()
+    assert not label_node.icon(0).isNull()
 
 
 def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
@@ -8409,12 +9144,32 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(utilities, "Convert Dtype")
     assert _palette_child_by_text(intensity, "Rescale Intensity")
     assert _palette_child_by_text(intensity, "Normalize")
-    assert _palette_child_by_text(intensity, "Clip")
+    clamp = _palette_child_by_text(intensity, "Clamp Intensity")
+    assert "nearest bound without rescaling" in clamp.toolTip(0)
     assert _palette_child_by_text(intensity, "Linear Scale + Offset")
     assert _palette_child_by_text(intensity, "Gamma Correction")
     assert _palette_child_by_text(math_logic, "Calculate New Image")
     assert _palette_child_by_text(math_logic, "Add")
     assert _palette_child_by_text(math_logic, "Logical XOR")
+
+
+def test_clamp_intensity_inspector_explains_clamping_semantics(qtbot):
+    viewer = _Viewer(np.arange(16, dtype=np.uint16).reshape(4, 4))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("clip_intensity")
+    widget._connect_nodes("input", node.id)
+    widget._select_node(node.id)
+
+    assert widget.selected_title.text() == "Clamp Intensity"
+    assert "values below Minimum become Minimum" in widget.selected_title.toolTip()
+    cutoff = next(
+        parameter
+        for parameter in widget.pipeline.operation_spec("clip_intensity").parameters
+        if parameter.name == "cutoff_mode"
+    )
+    assert "does not remove background" in cutoff.tooltip
 
 
 def test_set_pixel_size_uses_numeric_entries_without_sliders(qtbot):
@@ -8565,11 +9320,65 @@ def test_rescale_axes_uses_numeric_entry_without_sliders(qtbot):
     assert x_scale.value_box.maximumWidth() == 122
     assert x_scale.value_box.lineEdit().alignment() == Qt.AlignCenter
     assert x_scale.value_box.lineEdit().textMargins().left() == 0
-    assert widget._parameter_widgets["x_scale_reset"].width() == 20
+    reset = widget._parameter_widgets["x_scale_reset"]
+    assert reset.width() == 20
+    assert reset.autoRaise()
+    assert x_scale.layout().itemAt(0).widget() is x_scale.value_box
+    assert x_scale.layout().itemAt(1).widget() is reset
+    assert x_scale.layout().stretch(0) == 0
+    assert x_scale.layout().stretch(2) == 1
 
     x_scale.value_box.setValue(20.25)
 
     assert widget.pipeline.nodes[node.id].params["x_scale"] == 20.25
+
+
+def test_rescale_axes_reset_is_visible_adjacent_and_stays_inline_longer(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    dark_palette = _widget_test_palette(base="#111827", text="#f8fafc")
+    # Reproduce napari QSS exposing an application/button role that does not
+    # match the readable text role on the owning inspector surface.
+    dark_palette.setColor(QPalette.ButtonText, QColor("#000000"))
+    widget.setPalette(dark_palette)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    widget._apply_theme_styles()
+
+    x_scale = widget._parameter_widgets["x_scale"]
+    reset = widget._parameter_widgets["x_scale_reset"]
+    icon = reset.icon().pixmap(reset.iconSize()).toImage()
+    visible_pixels = [
+        icon.pixelColor(x, y)
+        for y in range(icon.height())
+        for x in range(icon.width())
+        if icon.pixelColor(x, y).alpha() > 0
+    ]
+    assert visible_pixels
+    assert max(pixel.lightness() for pixel in visible_pixels) > 80
+
+    layout = x_scale.layout()
+    x_scale.resize(300, x_scale.sizeHint().height())
+    layout.activate()
+    gap = reset.geometry().left() - x_scale.value_box.geometry().right() - 1
+    assert 0 <= gap <= layout.spacing()
+
+    inline_width = (
+        INSPECTOR_STACKED_FORM_BREAKPOINT
+        + INSPECTOR_COMPACT_FORM_BREAKPOINT
+    ) // 2
+    widget.inspector_content.resize(inline_width, 700)
+    widget.inspector_viewport.resize(inline_width, 700)
+    widget._sync_inspector_responsive_layout()
+    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapLongRows
+
+    widget.inspector_content.resize(INSPECTOR_STACKED_FORM_BREAKPOINT - 1, 700)
+    widget.inspector_viewport.resize(INSPECTOR_STACKED_FORM_BREAKPOINT - 1, 700)
+    widget._sync_inspector_responsive_layout()
+    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapAllRows
 
 
 def test_rescale_axes_warns_for_inferred_yx_without_presenting_q_as_z(qtbot):
@@ -8963,8 +9772,9 @@ def test_born_wolf_psf_auto_marks_unresolved_metadata_red(qtbot):
 
     assert not wavelength.isEnabled()
     assert status.text() == "Unresolved"
-    assert "#f87171" in status.styleSheet()
-    assert "#f87171" in label.styleSheet()
+    error_color = theme_colors(QWidget.palette(widget)).error.foreground.name()
+    assert error_color in status.styleSheet()
+    assert error_color in label.styleSheet()
 
     widget._parameter_widgets["auto_parameters"].checkbox.setChecked(False)
 
@@ -9248,9 +10058,10 @@ def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
 
     assert "threshold_scope" not in widget._parameter_widgets
     assert not widget._parameter_widgets
-    assert not widget.parameter_group.isHidden()
+    assert widget.parameter_group.isHidden()
     assert not widget.rescale_input_histogram_group.isHidden()
-    assert widget.rescale_input_histogram_scope_row.isHidden()
+    assert not widget.rescale_input_histogram_scope_row.isHidden()
+    assert not widget.histogram_scope_combo.isEnabled()
     assert widget.rescale_input_histogram_group.title() == "Input Histogram"
 
 
@@ -9262,14 +10073,17 @@ def test_global_threshold_scope_remains_visible_for_shape_only_2d_input(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert "threshold_scope" in widget._parameter_widgets
-    notes = []
-    for row in range(widget.parameter_form.rowCount()):
-        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
-        if item is not None:
-            notes.append(item.widget())
-    assert any(
-        isinstance(note, QLabel) and "unresolved" in note.text().casefold()
-        for note in notes
+    assert not widget.parameter_group.isHidden()
+    scope = widget._parameter_widgets["threshold_scope"]
+    assert widget.parameter_form.labelForField(scope).text() == "Histogram scope"
+    assert [scope.combo.itemText(index) for index in range(scope.combo.count())] == [
+        "Stack histogram",
+        "Slice histogram",
+    ]
+    assert "complete input" in scope.toolTip()
+    assert all(
+        axis.confidence == "shape-inferred"
+        for axis in widget.pipeline.input_state_for_node(node.id).axes
     )
 
 
@@ -9286,7 +10100,7 @@ def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
     assert not widget.parameter_group.isHidden()
     control = widget._parameter_widgets["threshold_scope"]
     label = widget.parameter_form.labelForField(control)
-    assert label.text() == "Threshold uses"
+    assert label.text() == "Histogram scope"
     assert control.combo.itemText(0) == "Stack histogram"
     assert control.combo.itemText(1) == "Slice histogram"
     assert widget.pipeline.nodes[node.id].params["threshold_scope"] == (
@@ -9908,10 +10722,9 @@ def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert not widget.rescale_input_histogram_group.isHidden()
-    assert widget.rescale_input_histogram_scope_row.isHidden()
-    assert widget.rescale_input_histogram_group.title() == (
-        "Input Histogram (Stack histogram)"
-    )
+    assert not widget.rescale_input_histogram_scope_row.isHidden()
+    assert widget.histogram_scope_combo.isEnabled()
+    assert widget.rescale_input_histogram_group.title() == "Input Histogram"
     stack_markers = {
         label: value
         for label, value, _color in widget.rescale_input_histogram_plot._markers
@@ -9920,9 +10733,7 @@ def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):
 
     widget._parameter_widgets["threshold_scope"].combo.setCurrentText("Slice histogram")
 
-    assert widget.rescale_input_histogram_group.title() == (
-        "Input Histogram (Slice histogram)"
-    )
+    assert widget.rescale_input_histogram_group.title() == "Input Histogram"
     slice_markers = {
         label: value
         for label, value, _color in widget.rescale_input_histogram_plot._markers
@@ -9937,6 +10748,9 @@ def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     widget.graph_view.select_node("threshold")
+    # A stack distribution is independent of the displayed Z slice. The
+    # inspector's default slice distribution correctly changes when Z changes.
+    widget.histogram_scope_combo.setCurrentText("Stack histogram")
 
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
@@ -9988,7 +10802,7 @@ def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch
     widget._update_histogram()
     viewer.dims.set_current_step(0, 1)
 
-    assert calls["count"] == 1
+    assert calls["count"] == 1, calls
 
 
 @pytest.mark.parametrize(
@@ -10315,7 +11129,27 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
         widget.pipeline.nodes[coloc.id].params["channel_2_threshold"],
     )
 
-    widget._on_colocalization_scatter_threshold_changed(1, 12.5)
+    plot = widget.colocalization_scatter_plot
+    plot_rect = plot._plot_rect()
+    start = QPoint(
+        plot._x_from_value(plot._threshold_1, plot_rect),
+        plot_rect.bottom() - 20,
+    )
+    target = QPoint(
+        plot_rect.left() + plot_rect.width() // 3,
+        start.y(),
+    )
+    expected_threshold = float(
+        np.round(plot._value_from_x(target.x(), plot_rect), 2)
+    )
+
+    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(plot, pos=target)
+
+    # Moving the guide is presentation-only: authoring and recalculation wait
+    # until the user finishes the gesture.
+    assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Costes auto"
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=target)
     widget._debounce_timer.stop()
 
     assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Manual"
@@ -10323,14 +11157,14 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     assert threshold_2_control.isEnabled()
     assert np.isclose(
         widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
-        12.5,
+        expected_threshold,
     )
     widget.colocalization_scatter_colormap_combo.setCurrentText("Magma")
 
     assert widget.colocalization_scatter_plot._colormap == "Magma"
 
 
-def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
+def test_scatter_node_popout_can_zoom_to_independent_native_ranges(qtbot):
     data = np.arange(16, dtype=np.float32).reshape(4, 4)
     widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
@@ -10352,6 +11186,12 @@ def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
     plot = widget.colocalization_scatter_plot
     assert (plot._channel_1_min, plot._channel_1_max) == (0.0, 15.0)
     assert (plot._channel_2_min, plot._channel_2_max) == (500.0, 515.0)
+    assert (
+        plot._display_channel_1_min,
+        plot._display_channel_1_max,
+        plot._display_channel_2_min,
+        plot._display_channel_2_max,
+    ) == (0.0, 515.0, 0.0, 515.0)
     result = widget._colocalization_scatter_cache[
         widget._current_colocalization_scatter_key
     ]
@@ -10368,6 +11208,24 @@ def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
         500.0,
         515.0,
     )
+    assert not dialog.zoom_to_data_checkbox.isChecked()
+    assert dialog.equal_axes_checkbox.isChecked()
+    assert (
+        dialog.plot._display_channel_1_min,
+        dialog.plot._display_channel_1_max,
+        dialog.plot._display_channel_2_min,
+        dialog.plot._display_channel_2_max,
+    ) == (0.0, 515.0, 0.0, 515.0)
+
+    dialog.zoom_to_data_checkbox.setChecked(True)
+    dialog.equal_axes_checkbox.setChecked(False)
+
+    assert (
+        dialog.plot._display_channel_1_min,
+        dialog.plot._display_channel_1_max,
+        dialog.plot._display_channel_2_min,
+        dialog.plot._display_channel_2_max,
+    ) == (0.0, 15.0, 500.0, 515.0)
     plot_rect = dialog.plot._plot_rect()
     assert abs(dialog.plot._x_from_value(7.5, plot_rect) - plot_rect.center().x()) <= 1
     assert (
@@ -10467,6 +11325,169 @@ def test_scatter_popout_colormap_is_linked_without_recomputing_density(
     assert dialog.colormap_combo.currentText() == "Gray"
     assert widget.colocalization_scatter_plot._colormap == "Gray"
     assert dialog.plot._colormap == "Gray"
+    assert not session.dirty
+
+
+def test_scatter_popout_density_settings_target_detached_owner_and_reject_stale(
+    qtbot,
+):
+    data = np.arange(64, dtype=np.float32).reshape(8, 8)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    owner = widget.add_node_from_palette("colocalized_voxels")
+    selected = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", owner.id, target_port=0)
+    widget._connect_nodes("input", owner.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(owner.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None and dialog.isVisible()
+    widget.graph_view.select_node(selected.id)
+    assert widget._selected_node_id == selected.id
+    assert widget._colocalization_scatter_dialog_node_id == owner.id
+
+    owner_params = dict(owner.params)
+    selected_params = dict(selected.params)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    original_density = dialog._density_counts
+
+    dialog.configure_visualization(
+        density_bins=64,
+        range_percentile=90.0,
+        log_counts=dialog.log_density,
+        export_size=dialog.export_size,
+    )
+    dialog.densitySettingsChanged.emit(64, 90.0)
+
+    assert len(pool.workers) == 1
+    first = pool.workers[0].request
+    assert first.node_id == owner.id
+    assert first.bins == 64
+    assert first.range_percentile == 90.0
+    assert owner.params == owner_params
+    assert selected.params == selected_params
+    assert not session.dirty
+
+    dialog.configure_visualization(
+        density_bins=96,
+        range_percentile=80.0,
+        log_counts=dialog.log_density,
+        export_size=dialog.export_size,
+    )
+    dialog.densitySettingsChanged.emit(96, 80.0)
+
+    assert len(pool.workers) == 2
+    second = pool.workers[1].request
+    assert first.cancel_event is not None and first.cancel_event.is_set()
+    assert second.node_id == owner.id
+    assert second.bins == 96
+    assert second.range_percentile == 80.0
+    assert widget._active_colocalization_scatter_dialog_run_id == second.run_id
+
+    def finished_result(request):
+        return ColocalizationScatterResult(
+            request.run_id,
+            request.key,
+            request.node_id,
+            request.threshold_mode,
+            request.threshold_1,
+            request.threshold_2,
+            intensity_min=10.0,
+            intensity_max=55.0,
+            density_counts=np.ones(
+                (request.bins, request.bins),
+                dtype=np.float64,
+            ),
+            roi_voxels=request.bins * request.bins,
+            colocalized_voxels=request.bins,
+            density_key=request.density_key,
+            channel_1_min=10.0,
+            channel_1_max=50.0,
+            channel_2_min=15.0,
+            channel_2_max=55.0,
+            range_percentile=request.range_percentile,
+            full_channel_1_min=0.0,
+            full_channel_1_max=63.0,
+            full_channel_2_min=0.0,
+            full_channel_2_max=63.0,
+        )
+
+    widget._on_colocalization_scatter_dialog_owner_finished(
+        finished_result(first)
+    )
+
+    assert widget._active_colocalization_scatter_dialog_run_id == second.run_id
+    assert dialog._density_counts is original_density
+    assert first.key not in widget._colocalization_scatter_cache
+
+    widget._on_colocalization_scatter_dialog_owner_finished(
+        finished_result(second)
+    )
+
+    assert widget._active_colocalization_scatter_dialog_run_id is None
+    assert dialog._density_counts is not original_density
+    assert dialog._density_counts.shape == (96, 96)
+    assert dialog.populated_range_percentile == 80.0
+    assert widget._selected_node_id == selected.id
+    assert owner.params == owner_params
+    assert selected.params == selected_params
+    assert not session.dirty
+
+
+def test_scatter_popout_log_density_is_local_when_owner_is_not_selected(qtbot):
+    data = np.arange(64, dtype=np.float32).reshape(8, 8)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    owner = widget.add_node_from_palette("colocalized_voxels")
+    selected = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", owner.id, target_port=0)
+    widget._connect_nodes("input", owner.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(owner.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None and dialog.isVisible()
+    widget.graph_view.select_node(selected.id)
+
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+    owner_params = dict(owner.params)
+    selected_params = dict(selected.params)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    inspector_log_density = widget.colocalization_scatter_log_checkbox.isChecked()
+    previous_image = dialog.plot._image
+
+    dialog.log_density_checkbox.setChecked(not dialog.log_density)
+
+    assert dialog.plot._image is not previous_image
+    assert pool.workers == []
+    assert widget._selected_node_id == selected.id
+    assert widget.colocalization_scatter_log_checkbox.isChecked() == (
+        inspector_log_density
+    )
+    assert owner.params == owner_params
+    assert selected.params == selected_params
     assert not session.dirty
 
 
@@ -10570,6 +11591,41 @@ def test_colocalization_scatter_percentile_clips_density_not_exact_counts():
     assert roi_voxels == 5
     assert colocalized_voxels == 4
     assert int(density.sum()) < roi_voxels
+
+
+def test_colocalization_scatter_preserves_full_ranges_for_popout_zoom():
+    channel_1 = np.asarray([0.0, 1.0, 2.0, 3.0, 10_000.0])
+    channel_2 = np.asarray([-10_000.0, 100.0, 101.0, 102.0, 103.0])
+
+    result = _prepare_colocalization_scatter_density(
+        channel_1,
+        channel_2,
+        threshold_1=0.0,
+        threshold_2=0.0,
+        roi_mask=None,
+        intensity_max=255.0,
+        bins=32,
+        range_percentile=80.0,
+        include_full_ranges=True,
+    )
+    (
+        _density,
+        _roi_voxels,
+        _colocalized_voxels,
+        density_x_min,
+        density_x_max,
+        density_y_min,
+        density_y_max,
+        full_x_min,
+        full_x_max,
+        full_y_min,
+        full_y_max,
+    ) = result
+
+    assert (full_x_min, full_x_max) == (0.0, 10_000.0)
+    assert (full_y_min, full_y_max) == (-10_000.0, 103.0)
+    assert (density_x_min, density_x_max) != (full_x_min, full_x_max)
+    assert (density_y_min, density_y_max) != (full_y_min, full_y_max)
 
 
 def test_colocalization_scatter_density_is_cooperatively_cancellable(monkeypatch):
@@ -11332,7 +12388,7 @@ def test_pipeline_edit_invalidates_colocalization_scatter_cache(qtbot):
     assert widget._colocalization_scatter_serial == old_serial + 1
 
 
-def test_4096_bin_node_queues_capped_inspector_density_with_visible_notice(
+def test_4096_bin_node_queues_full_density_with_bounded_inspector_notice(
     qtbot,
     monkeypatch,
 ):
@@ -11365,12 +12421,15 @@ def test_4096_bin_node_queues_capped_inspector_density_with_visible_notice(
     widget._update_colocalization_scatter()
 
     assert len(queued) == 1
-    assert queued[0].bins == 1_024
+    assert queued[0].bins == 4_096
     assert scatter.params["bins"] == 4_096
-    assert "capped at 1,024 x 1,024 bins" in (
+    assert "Density was computed at 4,096 x 4,096 bins" in (
         widget.colocalization_scatter_summary.text()
     )
-    assert "graph operation keeps its requested 4,096-bin histogram" in (
+    assert "compact inspector and live drag estimate" in (
+        widget.colocalization_scatter_summary.toolTip()
+    )
+    assert "pop-out retains the full-resolution density" in (
         widget.colocalization_scatter_summary.toolTip()
     )
 
@@ -11499,10 +12558,7 @@ def test_inspector_shows_histogram_before_metadata(qtbot):
 
     layout = widget.inspector_content.layout()
 
-    assert layout.indexOf(widget.label_volume_group) < layout.indexOf(
-        widget.histogram_group
-    )
-    assert layout.indexOf(widget.histogram_group) < layout.indexOf(
+    assert layout.indexOf(widget.histograms_section) < layout.indexOf(
         widget.metadata_group
     )
 
@@ -12001,7 +13057,9 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
     assert widget.left_panel_toggle._direction() == -1
     assert widget.right_panel_toggle._direction() == 1
 
+    widget.status_label.setText("Existing useful status")
     widget.left_panel_toggle.click()
+    assert widget.status_label.text() == "Existing useful status"
     widget.right_panel_toggle.click()
 
     assert widget.palette_panel.isHidden()
@@ -12011,7 +13069,9 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
     assert widget.left_panel_toggle.toolTip() == "Show node library"
     assert widget.right_panel_toggle.toolTip() == "Show inspector"
 
+    widget.status_label.setText("Existing useful status")
     widget.left_panel_toggle.click()
+    assert widget.status_label.text() == "Existing useful status"
     widget.right_panel_toggle.click()
 
     assert not widget.palette_panel.isHidden()
@@ -12020,6 +13080,77 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
     assert widget.right_panel_toggle._expanded
     assert widget.left_panel_toggle.toolTip() == "Hide node library"
     assert widget.right_panel_toggle.toolTip() == "Hide inspector"
+
+
+def test_node_library_compact_toggle_does_not_replace_status(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.show()
+    monkeypatch.setattr(
+        widget,
+        "_node_library_has_expanded_room",
+        lambda _sizes=None: True,
+    )
+
+    widget.status_label.setText("Existing useful status")
+    widget.palette_panel.collapse_button.click()
+    qtbot.waitUntil(lambda: widget.palette_panel.is_compact)
+    assert widget.status_label.text() == "Existing useful status"
+
+    widget.palette_panel.compact_rail.expand_button.click()
+    qtbot.waitUntil(lambda: not widget.palette_panel.is_compact)
+    assert widget.status_label.text() == "Existing useful status"
+
+
+def test_node_library_context_menu_adds_unconnected_node_at_view_center(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    tree = widget.palette_panel.palette
+    item = next(
+        candidate
+        for candidate in tree._operation_items  # noqa: SLF001
+        if candidate.data(0, OPERATION_ROLE) == "gaussian_blur"
+    )
+    before_node_ids = set(widget.pipeline.nodes)
+    before_connections = tuple(widget.pipeline.connections)
+    expected_position = widget.graph_view.suggest_node_position()
+
+    menu = tree._context_menu_for_item(item)  # noqa: SLF001
+    add_action = next(
+        action for action in menu.actions() if action.text() == "Add to workflow"
+    )
+    add_action.trigger()
+
+    added_node_id = (set(widget.pipeline.nodes) - before_node_ids).pop()
+    assert widget.pipeline.nodes[added_node_id].operation_id == "gaussian_blur"
+    assert tuple(widget.pipeline.connections) == before_connections
+    assert widget.graph_view.node_positions()[added_node_id] == pytest.approx(
+        (expected_position.x(), expected_position.y())
+    )
+
+
+def test_narrow_node_library_expand_keeps_rail_and_opens_full_search(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.palette_panel.set_compact(True)
+    monkeypatch.setattr(
+        widget,
+        "_node_library_has_expanded_room",
+        lambda _sizes=None: False,
+    )
+
+    widget.palette_panel.compact_rail.expand_button.click()
+    qtbot.waitUntil(widget.palette_panel.popup.isVisible)
+
+    assert widget.palette_panel.is_compact
+    assert widget._node_library_user_compact is False
+    assert widget.palette_panel.popup.title_label.text() == "Search all nodes"
+    assert widget.palette_panel.popup._search_edit is widget.palette_search
+    assert "too narrow" in widget.status_label.text()
 
 
 def test_dock_widget_chrome_is_restored_when_hosted(qtbot):
@@ -12086,6 +13217,135 @@ def test_floating_dock_window_has_standard_maximize_controls(qtbot):
     assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
 
 
+def test_floating_dock_configuration_waits_for_title_bar_drag_release(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    QApplication.processEvents()
+    dock.setFloating(True)
+    QApplication.processEvents()
+
+    drag_active = True
+    retry_delays: list[int] = []
+    released_for: list[QDockWidget] = []
+    monkeypatch.setattr(
+        widget,
+        "_floating_dock_drag_active",
+        lambda: drag_active,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_schedule_floating_dock_configuration",
+        lambda delay_ms=0: retry_delays.append(delay_ms),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_release_floating_size_constraints",
+        lambda current_dock: released_for.append(current_dock),
+    )
+    flags_during_drag = dock.windowFlags()
+
+    widget._configure_floating_dock_window()
+
+    assert retry_delays
+    assert retry_delays[-1] > 0
+    assert released_for == []
+    assert dock.windowFlags() == flags_during_drag
+
+    drag_active = False
+    widget._configure_floating_dock_window()
+
+    assert released_for
+    assert all(current_dock is dock for current_dock in released_for)
+    assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
+
+
+def test_floating_dock_configuration_ignores_stale_unowned_mouse_press(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    QApplication.processEvents()
+    dock.setFloating(True)
+    QApplication.processEvents()
+
+    # A hidden widget can leave Qt's synthetic global button state pressed
+    # even though no widget owns a mouse grab anymore.  That is not an active
+    # dock tear-off and must not postpone native-window flag normalization.
+    monkeypatch.setattr(
+        QApplication,
+        "mouseButtons",
+        staticmethod(lambda: Qt.LeftButton),
+    )
+    monkeypatch.setattr(
+        QWidget,
+        "mouseGrabber",
+        staticmethod(lambda: None),
+    )
+
+    widget._configure_floating_dock_window()
+
+    assert dock.windowFlags() & Qt.WindowMaximizeButtonHint
+    assert dock.windowFlags() & Qt.WindowMinimizeButtonHint
+    assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
+
+
+def test_pending_floating_dock_configuration_does_not_retry_after_redock(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    QApplication.processEvents()
+    dock.setFloating(True)
+    QApplication.processEvents()
+
+    retry_delays: list[int] = []
+    released_for: list[QDockWidget] = []
+    monkeypatch.setattr(widget, "_floating_dock_drag_active", lambda: True)
+    monkeypatch.setattr(
+        widget,
+        "_schedule_floating_dock_configuration",
+        lambda delay_ms=0: retry_delays.append(delay_ms),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_release_floating_size_constraints",
+        lambda current_dock: released_for.append(current_dock),
+    )
+
+    widget._configure_floating_dock_window()
+    assert len(retry_delays) == 1
+
+    dock.setFloating(False)
+    QApplication.processEvents()
+    retries_after_redock = len(retry_delays)
+    # Model the already-queued timer firing after QMainWindow has accepted the
+    # dock again.  It must stop here instead of scheduling an endless retry.
+    widget._configure_floating_dock_window()
+
+    assert len(retry_delays) == retries_after_redock
+    assert released_for == []
+
+
 def test_floating_dock_releases_stale_size_limits_on_both_axes(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer, defer_initial_run=True)
@@ -12139,7 +13399,7 @@ def test_floating_dock_releases_stale_size_limits_on_both_axes(qtbot):
 
     assert host.minimumSize() == QSize(440, 260)
     assert host.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
-    assert host.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+    assert host.sizePolicy().verticalPolicy() == QSizePolicy.Ignored
     assert widget.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
     assert widget.sizePolicy().verticalPolicy() == QSizePolicy.Ignored
 
@@ -12258,6 +13518,61 @@ def test_initial_bottom_dock_size_is_applied_once(qtbot):
     assert dock.height() == 120
 
 
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "wrapper"])
+def test_dock_location_change_expands_right_dock_and_restores_bottom_policy(
+    qtbot,
+    wrapped,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    # napari's QtViewerDockWidget applies this policy using only the initial
+    # dock area.  Without a location-aware repair it remains vertically
+    # bounded after a bottom dock is dragged to the right.
+    widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+    dock_content = widget
+    content_targets = [widget]
+    if wrapped:
+        dock_content = QWidget()
+        dock_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        wrapper_layout = QStackedLayout(dock_content)
+        wrapper_layout.addWidget(widget)
+        content_targets.append(dock_content)
+    window = QMainWindow()
+    window.setCentralWidget(QWidget())
+    dock = QDockWidget("VIPP Workflow", window)
+    dock.setWidget(dock_content)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    qtbot.addWidget(window)
+    window.resize(1_600, 900)
+    window.show()
+    QApplication.processEvents()
+    widget._ensure_dock_widget_chrome()
+
+    window.addDockWidget(Qt.RightDockWidgetArea, dock)
+    qtbot.waitUntil(
+        lambda: all(
+            target.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+            and target.sizePolicy().verticalPolicy() == QSizePolicy.Expanding
+            for target in content_targets
+        )
+    )
+    QApplication.processEvents()
+
+    assert window.dockWidgetArea(dock) == Qt.RightDockWidgetArea
+    assert dock.height() >= int(window.contentsRect().height() * 0.9)
+    assert dock_content.height() >= dock.height() - 64
+
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    qtbot.waitUntil(
+        lambda: all(
+            target.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+            and target.sizePolicy().verticalPolicy() == QSizePolicy.Ignored
+            for target in content_targets
+        )
+    )
+
+    assert window.dockWidgetArea(dock) == Qt.BottomDockWidgetArea
+
+
 def test_initial_dock_size_is_not_applied_while_floating(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -12279,9 +13594,14 @@ def test_histogram_updates_for_selected_node(qtbot):
 
     assert widget.histogram_group.title() == "Output Histogram"
     assert not widget.histogram_scope_row.isHidden()
-    assert widget.histogram_scope_combo.currentText() == "Slice"
+    assert widget.histogram_scope_combo.currentText() == "Slice histogram"
+    assert widget.rescale_input_histogram_scope_combo is widget.histogram_scope_combo
+    assert widget.rescale_input_histogram_log_checkbox is widget.histogram_log_checkbox
     assert not widget.histogram_log_checkbox.isChecked()
     assert widget.histogram_plot._counts.size > 0
+    assert widget.histogram_plot._title == "Output"
+    assert widget.histogram_plot._x_axis_label == "Intensity (a.u.)"
+    assert widget.histogram_plot._y_axis_label == "Voxels"
 
     widget.histogram_log_checkbox.setChecked(True)
     assert widget.histogram_plot._log_scale
@@ -12299,8 +13619,10 @@ def test_histogram_scope_is_hidden_for_2d_outputs(qtbot):
 
     widget.graph_view.select_node("input")
 
-    assert widget.histogram_group.title() == "Output Histogram"
-    assert widget.histogram_scope_row.isHidden()
+    assert widget.histogram_group.title() == "Source Histogram"
+    assert widget.histogram_plot._title == "Source data"
+    assert not widget.histogram_scope_row.isHidden()
+    assert not widget.histogram_scope_combo.isEnabled()
     assert widget.histogram_plot._counts.sum() == data.size
 
 
@@ -12318,7 +13640,7 @@ def test_histogram_can_switch_between_slice_and_stack(qtbot):
     assert widget.histogram_plot._x_min_label == "0"
     assert widget.histogram_plot._x_max_label == "0"
 
-    widget.histogram_scope_combo.setCurrentText("Stack")
+    widget.histogram_scope_combo.setCurrentText("Stack histogram")
 
     assert widget.histogram_plot._counts.size == 256
     assert widget.histogram_plot._counts.sum() == 60
@@ -12369,7 +13691,8 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
         "out_min",
     ]
     assert not widget.rescale_input_histogram_group.isHidden()
-    assert widget.rescale_input_histogram_scope_row.isHidden()
+    assert not widget.rescale_input_histogram_scope_row.isHidden()
+    assert not widget.histogram_scope_combo.isEnabled()
     assert widget.histogram_group.title() == "Output Histogram"
     assert widget.rescale_input_histogram_plot._counts.size == 256
     assert widget.histogram_plot._counts.size == 256
@@ -12385,11 +13708,12 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
     widget.rescale_input_histogram_log_checkbox.setChecked(True)
 
     assert widget.rescale_input_histogram_plot._log_scale
+    assert widget.histogram_plot._log_scale
 
     widget.graph_view.select_node("input")
 
     assert widget.rescale_input_histogram_group.isHidden()
-    assert widget.histogram_group.title() == "Output Histogram"
+    assert widget.histogram_group.title() == "Source Histogram"
 
 
 @pytest.mark.parametrize(
@@ -12423,7 +13747,129 @@ def test_intensity_contrast_nodes_show_input_and_output_histograms(
     widget.rescale_input_histogram_scope_combo.setCurrentText("Stack histogram")
 
     assert widget.rescale_input_histogram_plot._counts.sum() == 200.0
-    assert widget.histogram_plot._counts.sum() == 100.0
+    assert widget.histogram_plot._counts.sum() == 200.0
+
+
+def test_normalize_inspector_names_methods_and_explains_signed_output(qtbot):
+    data = np.arange(16, dtype=np.uint8).reshape(4, 4)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("normalize_image")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    widget._debounce_timer.stop()
+
+    method = widget._parameter_widgets["method"]
+    assert [
+        method.combo.itemText(index) for index in range(method.combo.count())
+    ] == [
+        "Min–max (0–1)",
+        "Z-score (mean/SD; signed)",
+        "Robust z-score (median/MAD; signed)",
+        "Maximum absolute value",
+        "Reference mean/SD (signed)",
+        "Percentile (0–1)",
+    ]
+    assert [
+        method.combo.itemData(index) for index in range(method.combo.count())
+    ] == [
+        "min-max",
+        "z-score",
+        "robust-z-score",
+        "maximum-absolute",
+        "reference-z-score",
+        "percentile",
+    ]
+
+    method.combo.setCurrentIndex(method.combo.findData("z-score"))
+    widget._debounce_timer.stop()
+
+    guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "Values below the mean become negative." in guidance
+    assert "Min–max (0–1)" in guidance
+    assert "non-negative output" in guidance
+    assert "visible Clamp Intensity node downstream" in guidance
+    assert "minimum to 0" in guidance
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("robust-z-score"))
+    widget._debounce_timer.stop()
+
+    robust_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "median" in robust_guidance
+    assert "negative" in robust_guidance
+    assert "1.4826" in widget._parameter_widgets[
+        "operation_notice"
+    ].toolTip()
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("maximum-absolute"))
+    widget._debounce_timer.stop()
+
+    maximum_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "preserves zero" in maximum_guidance
+    assert "sign" in maximum_guidance
+    assert "−1" in maximum_guidance
+    assert "1" in maximum_guidance
+
+
+def test_normalize_inspector_shows_only_parameters_for_selected_method(qtbot):
+    data = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("normalize_image")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    widget._debounce_timer.stop()
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("percentile"))
+    widget._debounce_timer.stop()
+
+    assert "low_percentile" in widget._parameter_widgets
+    assert "high_percentile" in widget._parameter_widgets
+    assert "reference_mean" not in widget._parameter_widgets
+    assert "reference_standard_deviation" not in widget._parameter_widgets
+    low_percentile = widget._parameter_widgets["low_percentile"]
+    high_percentile = widget._parameter_widgets["high_percentile"]
+    assert widget.parameter_form.labelForField(low_percentile).text() == (
+        "Low percentile"
+    )
+    assert widget.parameter_form.labelForField(high_percentile).text() == (
+        "High percentile"
+    )
+    assert low_percentile.value() == 1.0
+    assert high_percentile.value() == 99.0
+    percentile_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "0" in percentile_guidance
+    assert "1" in percentile_guidance
+    assert "clip" in percentile_guidance.casefold()
+
+    method = widget._parameter_widgets["method"]
+    method.combo.setCurrentIndex(method.combo.findData("reference-z-score"))
+    widget._debounce_timer.stop()
+
+    assert "low_percentile" not in widget._parameter_widgets
+    assert "high_percentile" not in widget._parameter_widgets
+    assert "reference_mean" in widget._parameter_widgets
+    assert "reference_standard_deviation" in widget._parameter_widgets
+    reference_mean = widget._parameter_widgets["reference_mean"]
+    reference_sd = widget._parameter_widgets["reference_standard_deviation"]
+    assert widget.parameter_form.labelForField(reference_mean).text() == (
+        "Reference mean"
+    )
+    assert widget.parameter_form.labelForField(reference_sd).text() == (
+        "Reference SD"
+    )
+    assert reference_mean.value() == 0.0
+    assert reference_sd.value() == 1.0
+    assert "greater than zero" in reference_sd.toolTip()
+    reference_guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "saved reference mean and SD" in reference_guidance
+    assert "each image" in reference_guidance
+    assert "negative" in reference_guidance
 
 
 def test_intensity_contrast_histogram_membership_follows_palette_category():
@@ -12554,15 +14000,19 @@ def test_input_histogram_scope_switches_between_slice_and_stack(qtbot):
     assert widget.rescale_input_histogram_scope_combo.currentText() == (
         "Slice histogram"
     )
-    assert widget.histogram_scope_combo.currentText() == "Slice"
+    assert widget.histogram_scope_combo.currentText() == "Slice histogram"
+    assert (
+        widget.rescale_input_histogram_scope_combo
+        is widget.histogram_scope_combo
+    )
     assert widget.rescale_input_histogram_plot._counts.sum() == 100.0
     assert widget.histogram_plot._counts.sum() == 100.0
 
     widget.rescale_input_histogram_scope_combo.setCurrentText("Stack histogram")
 
     assert widget.rescale_input_histogram_plot._counts.sum() == 200.0
-    assert widget.histogram_scope_combo.currentText() == "Slice"
-    assert widget.histogram_plot._counts.sum() == 100.0
+    assert widget.histogram_scope_combo.currentText() == "Stack histogram"
+    assert widget.histogram_plot._counts.sum() == 200.0
 
 
 def test_rescale_cutoff_modes_keep_inactive_parameters_from_driving_output(qtbot):
@@ -12630,7 +14080,7 @@ def test_rescale_cutoff_modes_keep_inactive_parameters_from_driving_output(qtbot
         (
             "clip_intensity",
             {"cutoff_mode": "Values", "minimum": 90.0, "maximum": 10.0},
-            "Clip minimum must not exceed",
+            "Clamp minimum must not exceed",
         ),
         (
             "hysteresis_threshold",
@@ -12723,7 +14173,11 @@ def test_binary_threshold_shows_input_histogram_marker(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert not widget.rescale_input_histogram_group.isHidden()
-    assert widget.histogram_group.title() == "Output Histogram"
+    assert widget.histogram_group.title() == "Foreground Occupancy"
+    assert not widget.histogram_group.isHidden()
+    assert widget.histogram_plot._title == "Output"
+    assert widget.histogram_plot._x_axis_label == "Mask value"
+    assert widget.histogram_plot._y_axis_label == "Voxels"
 
     widget._parameter_widgets["threshold"].value_box.setValue(128.0)
 
@@ -13393,7 +14847,8 @@ def test_composite_to_rgb_invalid_manual_mapping_is_preserved_and_warned(qtbot):
     assert "2 entries" in status.text()
     assert "selected axis has 3" in status.text()
     assert "'not-a-colour'" in status.text()
-    assert "#f59e0b" in status.styleSheet()
+    warning_color = theme_colors(QWidget.palette(widget)).warning.foreground.name()
+    assert warning_color in status.styleSheet()
 
 
 def test_composite_to_rgb_assignment_edit_updates_status_immediately(qtbot):
@@ -13582,9 +15037,8 @@ def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
         timeout=5_000,
     )
 
-    control = widget._parameter_widgets["preview_channel"]
-    assert control.slider.minimum() == 0
-    assert control.slider.maximum() == 2
+    assert "preview_channel" not in widget._parameter_widgets
+    assert widget.output_selector_combo.count() == 3
 
     calls = []
 
@@ -13605,8 +15059,7 @@ def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
         return None
 
     monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
-    widget.pipeline.set_param(split.id, "preview_channel", 2)
-    widget._update_thumbnails()
+    widget.output_selector_combo.setCurrentIndex(2)
 
     qtbot.waitUntil(lambda: ((2, 4, 5), 30) in calls, timeout=5_000)
 
@@ -13651,7 +15104,6 @@ def _assert_split_channel_presentation(
     viewer,
     node_id: str,
     output_port: int,
-    saved_preview_channel: int,
 ):
     outputs = widget.pipeline.node_outputs[node_id]
     states = widget.pipeline.node_output_states[node_id]
@@ -13682,19 +15134,13 @@ def _assert_split_channel_presentation(
         f"{expected_value} to {expected_value}"
     )
 
-    control = widget._parameter_widgets["preview_channel"]
-    assert control.value() == output_port
-    used_ports = widget._used_split_channel_ports(node_id)
-    expected_bounds = (
-        (output_port, output_port) if len(used_ports) == 1 else (0, len(outputs) - 1)
-    )
-    assert (control.slider.minimum(), control.slider.maximum()) == expected_bounds
-    assert widget.pipeline.nodes[node_id].params["preview_channel"] == (
-        saved_preview_channel
-    )
+    assert "preview_channel" not in widget._parameter_widgets
+    assert widget.output_selector_combo.currentData() == output_port
+    assert widget._inspector_output_port_by_node[node_id] == output_port
+    assert widget.pipeline.nodes[node_id].params["preview_channel"] == output_port
 
 
-def test_split_channels_presentation_follows_distinct_used_output_ports(qtbot):
+def test_split_channels_presentation_selection_is_independent_of_used_ports(qtbot):
     data = np.zeros((3, 2, 4, 5), dtype=np.uint16)
     data[0] = 10
     data[1] = 20
@@ -13712,10 +15158,13 @@ def test_split_channels_presentation_follows_distinct_used_output_ports(qtbot):
 
     widget._connect_nodes(split.id, first_consumer.id, source_port=2)
     assert widget._used_split_channel_ports(split.id) == (2,)
-    _assert_split_channel_presentation(widget, viewer, split.id, 2, 0)
+    _assert_split_channel_presentation(widget, viewer, split.id, 0)
 
-    # Replacing the sole connection must immediately switch every display surface,
-    # while leaving the workflow's saved fallback selection untouched.
+    widget.output_selector_combo.setCurrentIndex(2)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2)
+
+    # Graph routing and inspector presentation are separate concerns. Replacing
+    # or adding consumers must not silently change the user's display choice.
     widget._connect_nodes(
         split.id,
         first_consumer.id,
@@ -13723,15 +15172,12 @@ def test_split_channels_presentation_follows_distinct_used_output_ports(qtbot):
         source_port=1,
     )
     assert widget._used_split_channel_ports(split.id) == (1,)
-    _assert_split_channel_presentation(widget, viewer, split.id, 1, 0)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2)
 
-    widget.pipeline.set_param(split.id, "preview_channel", 2)
     widget._connect_nodes(split.id, second_consumer.id, source_port=1)
     assert widget._used_split_channel_ports(split.id) == (1,)
-    _assert_split_channel_presentation(widget, viewer, split.id, 1, 2)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2)
 
-    # Two distinct used ports are ambiguous, so presentation falls back to the
-    # saved selector even though two consumers of one port were not ambiguous.
     widget._connect_nodes(
         split.id,
         second_consumer.id,
@@ -13739,16 +15185,16 @@ def test_split_channels_presentation_follows_distinct_used_output_ports(qtbot):
         source_port=0,
     )
     assert widget._used_split_channel_ports(split.id) == (0, 1)
-    _assert_split_channel_presentation(widget, viewer, split.id, 2, 2)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2)
 
     widget._delete_node(second_consumer.id)
     assert widget._used_split_channel_ports(split.id) == (1,)
-    _assert_split_channel_presentation(widget, viewer, split.id, 1, 2)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2)
 
-    # Deleting the sole remaining consumer must refresh back to the saved selector.
+    # Removing consumers likewise preserves the explicitly selected display.
     widget._delete_node(first_consumer.id)
     assert widget._used_split_channel_ports(split.id) == ()
-    _assert_split_channel_presentation(widget, viewer, split.id, 2, 2)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2)
 
 
 def test_extract_channel_thumbnail_uses_selected_semantic_channel(qtbot):
@@ -14006,6 +15452,45 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     assert _metadata_value(widget, "Dimensions") == "t=2, c=1, z=4, y=5, x=6"
     assert _metadata_value(widget, "Channels") == "1"
     assert "1. Select Axis Slice: kept c axis (1)[2..2]" in widget.history_label.text()
+
+
+def test_select_axis_slice_render_keeps_legacy_removal_semantics(qtbot):
+    data = np.zeros((5, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("select_axis_slice")
+    widget._connect_nodes("input", node.id)
+    modern_params = dict(node.params)
+    node.params.clear()
+    node.params.update({"axis": 0, "index": 2})
+
+    widget._render_parameters(node.id)
+    control = widget._parameter_widgets["axis_slice"]
+
+    assert node.params == {"axis": 0, "index": 2}
+    assert control.value()["remove_axes"] == "0"
+    assert control.value()["remove_indices"] == "2"
+    # Restore current-schema state before the workflow-tab teardown snapshot.
+    node.params.clear()
+    node.params.update(modern_params)
+
+
+def test_reorder_axes_render_does_not_rewrite_authored_order(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("reorder_axes")
+    widget._connect_nodes("input", node.id)
+    widget.pipeline.set_param(node.id, "order", "YXZ")
+
+    widget._render_parameters(node.id)
+    widget._refresh_selected_parameter_controls()
+
+    assert widget.pipeline.nodes[node.id].params["order"] == "YXZ"
 
 
 def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
@@ -14608,7 +16093,10 @@ def test_loaded_workflow_highlights_uncalculated_manual_frontier(qtbot, tmp_path
         BLOCKED_EXECUTION_ACCENT in restored.graph_view._cards[selected.id].styleSheet()
     )
     assert restored.calculate_all_button.property("attentionRequired") is True
-    assert STALE_EXECUTION_ACCENT in restored.calculate_all_button.styleSheet()
+    warning_color = theme_colors(
+        QWidget.palette(restored)
+    ).warning.foreground.name()
+    assert warning_color in restored.calculate_all_button.styleSheet()
 
 
 def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
@@ -14651,7 +16139,7 @@ def test_graph_focus_button_recenters_canvas_and_preserves_zoom(qtbot):
     qtbot.mouseClick(widget.graph_focus_button, Qt.LeftButton)
 
     focused_center = _graph_view_center(widget.graph_view)
-    assert widget.graph_focus_button.text() == "Focus"
+    assert widget.graph_focus_button.accessibleName() == "Focus workflow graph"
     assert "without changing zoom" in widget.graph_focus_button.toolTip()
     assert abs(focused_center.x() - graph_center.x()) <= 1.0
     assert abs(focused_center.y() - graph_center.y()) <= 1.0
@@ -15428,7 +16916,8 @@ def test_deconvolution_psf_note_separates_passes_and_actionable_size_warning(qtb
     note = widget._parameter_widgets["operation_notice"]
     text = note.text()
     assert note.property("preflightStatus") == "warning"
-    assert "#cbd5e1" in note.styleSheet()
+    muted_color = theme_colors(QWidget.palette(widget)).muted_text.name()
+    assert muted_color in note.styleSheet()
     assert "PSF preflight: Warning" in text
     assert "CHECKS PASSED" in text
     assert "conventional-widefield Nyquist estimate is met" in text
@@ -15475,9 +16964,13 @@ def test_richardson_lucy_baseline_controls_include_safety_guidance(qtbot):
 def test_richardson_lucy_inspector_controls_can_shrink(qtbot, operation_id):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)
+    wide_width = INSPECTOR_STACKED_FORM_BREAKPOINT + 200
+    widget.inspector_content.resize(wide_width, 700)
+    widget.inspector_viewport.resize(wide_width, 700)
 
     node = widget.add_node_from_palette(operation_id)
     widget.graph_view.select_node(node.id)
+    widget._sync_inspector_responsive_layout()
 
     assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapLongRows
     assert widget.selected_title.wordWrap()
@@ -15503,8 +16996,17 @@ def test_richardson_lucy_inspector_controls_can_shrink(qtbot, operation_id):
     )
     assert all(control.slider.minimumWidth() == 72 for control in slider_controls)
 
+    narrow_width = INSPECTOR_STACKED_FORM_BREAKPOINT - 1
+    widget.inspector_content.resize(narrow_width, 700)
+    widget.inspector_viewport.resize(narrow_width, 700)
+    widget._sync_inspector_responsive_layout()
+    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapAllRows
+
     gaussian = widget.add_node_from_palette("gaussian_blur")
+    widget.inspector_content.resize(wide_width, 700)
+    widget.inspector_viewport.resize(wide_width, 700)
     widget.graph_view.select_node(gaussian.id)
+    widget._sync_inspector_responsive_layout()
     assert widget.parameter_form.rowWrapPolicy() == QFormLayout.DontWrapRows
 
 
@@ -16091,6 +17593,107 @@ def test_affecting_background_request_cancels_active_run_and_remembers_manual(
     assert "input" in widget._pending_dirty_node_ids
     assert measurements.id in widget._pending_manual_node_ids
     assert "Canceling" in widget.status_label.text()
+
+
+def test_calculate_all_during_cold_run_keeps_upstream_worker_and_cache(
+    qtbot,
+    monkeypatch,
+):
+    calls = {"subtract_background": 0}
+    original = NODE_LIBRARY_BY_ID["subtract_background"]
+
+    def counted_subtract_background(data, **kwargs):
+        calls["subtract_background"] += 1
+        return original.function(data, **kwargs)
+
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "subtract_background",
+        replace(original, function=counted_subtract_background),
+    )
+    widget = VippWidget(
+        _Viewer(np.ones((12, 12), dtype=np.float32) * 20),
+        initial_compute_mode=ComputeMode.CPU,
+        defer_initial_run=True,
+    )
+    qtbot.addWidget(widget)
+    run_pipeline = widget.run_pipeline
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    subtract = widget.add_node_from_palette("subtract_background")
+    histogram = widget.add_node_from_palette("intensity_histogram")
+    # Intensity Histogram deliberately defaults to automatic recalculation. This
+    # regression exercises Calculate All's manual-frontier handoff, so opt this
+    # instance out explicitly instead of contradicting the node's product default.
+    widget.pipeline.set_node_auto_recalculate(histogram.id, False)
+    widget._connect_nodes("input", subtract.id)
+    widget._connect_nodes(subtract.id, histogram.id)
+    monkeypatch.setattr(widget, "run_pipeline", run_pipeline)
+    widget._debounce_timer.stop()
+    assert widget._active_pipeline_run_id is None
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget.background_all_checkbox.setChecked(True)
+    widget._pending_dirty_node_ids.clear()
+    widget._last_pipeline_source_signature = None
+    widget.pipeline.node_execution_states[histogram.id] = EXECUTION_NOT_CALCULATED
+    widget.pipeline.node_execution_messages[histogram.id] = ""
+    calls["subtract_background"] = 0
+
+    widget.run_pipeline()
+
+    assert len(pool.workers) == 1
+    first_worker = pool.workers[0]
+    first_request = first_worker.request
+    assert first_request.dirty_node_ids is None
+    assert widget._active_pipeline_run_id == first_request.run_id
+    assert widget._last_pipeline_source_signature is None
+    assert first_request.manual_node_ids is None
+    assert widget._manual_node_ids_needing_calculation() == {histogram.id}
+    assert not first_request.cancel_event.is_set()
+    widget.pipeline.nodes[histogram.id].params["bin_count"] = 32
+
+    widget._calculate_all_nodes()
+
+    assert widget._active_pipeline_run_id == first_request.run_id
+    assert not first_request.cancel_event.is_set()
+    assert widget._pending_dirty_node_ids == {histogram.id}
+    assert widget._pending_manual_node_ids == {histogram.id}
+    assert len(pool.workers) == 1
+    assert "without restarting upstream work" in widget.status_label.text()
+
+    widget._calculate_all_nodes()
+
+    assert widget._active_pipeline_run_id == first_request.run_id
+    assert not first_request.cancel_event.is_set()
+    assert widget._pending_dirty_node_ids == {histogram.id}
+    assert widget._pending_manual_node_ids == {histogram.id}
+    assert len(pool.workers) == 1
+    assert "already queued" in widget.status_label.text()
+
+    first_worker.run()
+    qtbot.waitUntil(lambda: len(pool.workers) == 2, timeout=5_000)
+    assert calls["subtract_background"] == 1
+    assert widget.pipeline.nodes[subtract.id].params["resolved_spatial_ndim"] == 2
+    assert widget.pipeline.nodes[histogram.id].params["bin_count"] == 32
+
+    follow_up_worker = pool.workers[1]
+    follow_up_request = follow_up_worker.request
+    assert follow_up_request.dirty_node_ids == frozenset({histogram.id})
+    assert follow_up_request.manual_node_ids == frozenset({histogram.id})
+    assert subtract.id in follow_up_request.cached_outputs
+    assert subtract.id in follow_up_request.completed_node_ids
+    assert "input" in follow_up_request.cached_compute_provenance
+    assert subtract.id in follow_up_request.cached_compute_provenance
+
+    started = []
+    follow_up_worker.signals.node_started.connect(
+        lambda payload: started.append(payload[1])
+    )
+    follow_up_worker.run()
+
+    assert subtract.id not in started
+    assert calls["subtract_background"] == 1
+    assert widget.pipeline.node_execution_states[histogram.id] == EXECUTION_READY
 
 
 def test_cancelled_run_with_independent_pending_work_restarts(qtbot, monkeypatch):
@@ -17069,7 +18672,7 @@ def test_thumbnail_statistics_progress_and_cancel_use_shared_toolbar(qtbot):
     widget._show_thumbnail_contrast_busy(2, 100)
     widget.graph_view.select_node("input")
 
-    assert widget.pipeline_cancel_button.text() == "Cancel thumbnails"
+    assert widget.pipeline_cancel_button.text() == "Stop"
     assert widget.pipeline_cancel_button.isEnabled()
     widget._on_thumbnail_contrast_limit_progress(
         ThumbnailContrastProgress(
@@ -17241,7 +18844,7 @@ def test_full_batch_preempts_thumbnail_statistics_then_resumes_once(
     assert widget._pending_collection_batch_start == (dialog, values)
     assert cancel_event.is_set()
     assert run_id in widget._thumbnail_contrast_discarded_run_ids
-    assert widget.pipeline_cancel_button.text() == "Cancel queued batch"
+    assert widget.pipeline_cancel_button.text() == "Stop"
     assert widget.pipeline_cancel_button.isEnabled()
     assert "input" not in widget._thumbnail_statistics_presentations
     assert "releasing thumbnail resources" in (
@@ -19306,6 +20909,8 @@ def test_low_ram_crop_dismissal_survives_reselect_until_condition_changes(
 
     widget.graph_view.select_node("input")
     first_control = widget._parameter_widgets["image_source"]
+    assert first_control.series_combo.currentData() == 0
+    assert "Saved selection" in first_control.series_combo.currentText()
     assert first_control.memory_repair_panel.isVisibleTo(first_control)
     first_control.memory_repair_dismiss_button.click()
     assert first_control.memory_repair_panel.isHidden()
@@ -19585,6 +21190,300 @@ def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
     assert widget.pipeline.node_outputs[deconvolution.id][0] is manual_output
     assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
     assert widget.pipeline.outputs[composite.id] is not None
+
+
+def test_combine_channel_colour_edit_updates_cached_state_without_restacking(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("gamma_correction")
+    second = widget.add_node_from_palette("gamma_correction")
+    combined = widget.add_node_from_palette("combine_channels")
+    composite = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget._connect_nodes(first.id, combined.id, target_port=0)
+    widget._connect_nodes(second.id, combined.id, target_port=1)
+    widget._connect_nodes(combined.id, composite.id)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    upstream_ids = {"input", first.id, second.id}
+    upstream_outputs = {
+        node_id: widget.pipeline.outputs[node_id] for node_id in upstream_ids
+    }
+    combined_output = widget.pipeline.outputs[combined.id]
+    assert upstream_ids <= widget.pipeline.completed_node_ids
+
+    executed: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        executed.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    refreshed_thumbnails: list[str] = []
+    original_update_thumbnail = widget._update_node_thumbnail
+
+    def counted_update_thumbnail(node_id, *args, **kwargs):
+        refreshed_thumbnails.append(node_id)
+        return original_update_thumbnail(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget, "_update_node_thumbnail", counted_update_thumbnail)
+    inspect_refreshes = []
+    pinned_refreshes = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_inspection_layer_if_active",
+        lambda: inspect_refreshes.append(True),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_pinned_layer_if_active",
+        lambda: pinned_refreshes.append(True),
+    )
+    widget._selected_node_id = combined.id
+    widget._on_channel_color_changed(1, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._pending_dirty_node_ids == {composite.id}
+    assert refreshed_thumbnails == [combined.id]
+    assert inspect_refreshes == []
+    assert pinned_refreshes == []
+    assert widget.pipeline.outputs[combined.id] is combined_output
+    assert combined.id in widget.pipeline.completed_node_ids
+    assert widget.pipeline.node_execution_states[combined.id] == EXECUTION_READY
+    assert (
+        widget.pipeline.output_states[combined.id].channels[1].color
+        == channel_color_int("Blue")
+    )
+    assert upstream_ids <= widget.pipeline.completed_node_ids
+    assert all(
+        widget.pipeline.outputs[node_id] is output
+        for node_id, output in upstream_outputs.items()
+    )
+
+    widget.run_pipeline(force_sync=True)
+
+    assert executed == [composite.id]
+    assert upstream_ids <= widget.pipeline.completed_node_ids
+    assert all(
+        widget.pipeline.outputs[node_id] is output
+        for node_id, output in upstream_outputs.items()
+    )
+
+
+def test_combine_channel_colour_edit_reuses_cache_with_pruned_ancestors(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    authored = PrototypePipeline()
+    authored.reset_empty_graph()
+    first = authored.add_node("gamma_correction")
+    second = authored.add_node("gamma_correction")
+    combined = authored.add_node("combine_channels")
+    composite = authored.add_node("composite_to_rgb")
+    assert authored.connect("input", first.id).success
+    assert authored.connect("input", second.id).success
+    assert authored.connect(first.id, combined.id, target_port=0).success
+    assert authored.connect(second.id, combined.id, target_port=1).success
+    assert authored.connect(combined.id, composite.id).success
+    retained = frozenset({combined.id, composite.id})
+    compute_request = ComputeRequest(mode=ComputeMode.CPU)
+
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=147,
+            workflow=serialize_workflow(authored),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="Test image",
+            source_payloads={},
+            compute_request=compute_request,
+            retain_node_ids=retained,
+            prune_unretained=True,
+        )
+    )
+    assert initial.error == ""
+    assert initial.pipeline is not None
+    assert initial.pipeline.outputs[first.id] is None
+    assert initial.pipeline.outputs[second.id] is None
+    assert {"input", first.id, second.id} <= set(
+        initial.pipeline.node_cache_lineage
+    )
+
+    widget = VippWidget(
+        _Viewer(data, metadata={"axes": "YX"}),
+        defer_initial_run=True,
+    )
+    qtbot.addWidget(widget)
+    widget.pipeline = initial.pipeline
+    widget._pending_dirty_node_ids.clear()
+    widget._build_graph_from_pipeline()
+    widget._selected_node_id = combined.id
+    monkeypatch.setattr(
+        widget,
+        "_refresh_channel_color_presentations",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_sync_current_workflow_tab_state",
+        lambda: None,
+    )
+
+    widget._on_channel_color_changed(1, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._pending_dirty_node_ids == {composite.id}
+    assert combined.id in widget.pipeline.completed_node_ids
+    fast_state = widget.pipeline.output_states[combined.id]
+    assert fast_state.channels[1].color == channel_color_int("Blue")
+
+    cached_request = PipelineRunRequest(
+        run_id=148,
+        workflow=serialize_workflow(widget.pipeline),
+        input_data=data,
+        input_metadata={"axes": "YX"},
+        input_name="Test image",
+        source_payloads={},
+        compute_request=compute_request,
+        dirty_node_ids=frozenset(widget._pending_dirty_node_ids),
+        cached_outputs=dict(widget.pipeline.outputs),
+        cached_output_states=dict(widget.pipeline.output_states),
+        cached_node_outputs={
+            node_id: list(outputs)
+            for node_id, outputs in widget.pipeline.node_outputs.items()
+        },
+        cached_node_output_states={
+            node_id: list(states)
+            for node_id, states in widget.pipeline.node_output_states.items()
+        },
+        cached_execution_states=dict(widget.pipeline.node_execution_states),
+        cached_execution_messages=dict(widget.pipeline.node_execution_messages),
+        cached_compute_provenance={
+            **widget.pipeline.node_cache_lineage,
+            **widget.pipeline.node_compute_provenance,
+        },
+        completed_node_ids=frozenset(widget.pipeline.completed_node_ids),
+        retain_node_ids=retained,
+        prune_unretained=True,
+    )
+    started: list[str] = []
+    updated = execute_pipeline_request(
+        cached_request,
+        node_started_callback=started.append,
+    )
+
+    assert updated.error == ""
+    assert updated.pipeline is not None
+    assert started == [composite.id]
+    assert updated.pipeline.outputs[first.id] is None
+    assert updated.pipeline.outputs[second.id] is None
+
+    recomputed = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=149,
+            workflow=serialize_workflow(widget.pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="Test image",
+            source_payloads={},
+            compute_request=compute_request,
+        )
+    )
+    assert recomputed.error == ""
+    assert recomputed.pipeline is not None
+    assert recomputed.pipeline.output_states[combined.id] == fast_state
+
+
+def test_combine_channel_colour_edit_does_not_rebase_an_already_dirty_cache(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("gamma_correction")
+    second = widget.add_node_from_palette("gamma_correction")
+    third = widget.add_node_from_palette("gamma_correction")
+    combined = widget.add_node_from_palette("combine_channels")
+    widget.pipeline.set_param(combined.id, "input_count", 3)
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget._connect_nodes("input", third.id)
+    widget._connect_nodes(first.id, combined.id, target_port=0)
+    widget._connect_nodes(second.id, combined.id, target_port=1)
+    widget._connect_nodes(third.id, combined.id, target_port=2)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    cached_state = widget.pipeline.output_states[combined.id]
+
+    widget._selected_node_id = combined.id
+    widget._on_combine_channels_input_count_changed(2)
+    widget._debounce_timer.stop()
+    monkeypatch.setattr(
+        widget,
+        "_refresh_channel_color_presentations",
+        lambda *_args, **_kwargs: None,
+    )
+    widget._on_channel_color_changed(0, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._pending_dirty_node_ids == {combined.id}
+    assert widget.pipeline.output_states[combined.id] is cached_state
+
+
+def test_combine_channel_colour_edit_stays_inside_isolated_tuning(qtbot):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("gamma_correction")
+    second = widget.add_node_from_palette("gamma_correction")
+    combined = widget.add_node_from_palette("combine_channels")
+    composite = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget._connect_nodes(first.id, combined.id, target_port=0)
+    widget._connect_nodes(second.id, combined.id, target_port=1)
+    widget._connect_nodes(combined.id, composite.id)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    combined_output = widget.pipeline.outputs[combined.id]
+
+    widget._select_node(combined.id)
+    assert widget._start_isolated_tuning(combined.id) is True
+    widget._on_channel_color_changed(1, "Blue")
+    widget._debounce_timer.stop()
+
+    assert widget._isolated_tuning_node_id == combined.id
+    assert widget._isolated_tuning_has_changes is True
+    assert widget._pending_dirty_node_ids == set()
+    assert widget.pipeline.outputs[combined.id] is combined_output
+    assert widget.pipeline.node_execution_states[combined.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[composite.id] == EXECUTION_BLOCKED
+    assert (
+        widget.pipeline.output_states[combined.id].channels[1].color
+        == channel_color_int("Blue")
+    )
+
+    assert widget._apply_isolated_tuning(run=False) is True
+    assert widget._isolated_tuning_node_id is None
+    assert widget._pending_dirty_node_ids == {composite.id}
 
 
 def test_keep_cached_node_survives_low_memory_pruning(qtbot):
@@ -19906,6 +21805,209 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
     assert note_id in widget.graph_view._notes
 
 
+def test_immediate_graph_note_add_undo_redo_does_not_recalculate(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    widget._debounce_timer.stop()
+    pipeline_runs = []
+    invalidations = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: pipeline_runs.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_pipeline_cache",
+        lambda: invalidations.append(None),
+    )
+    selected_before = widget._selected_node_id
+
+    note_id = widget._add_graph_note("Review threshold", QPointF(25, 35))
+
+    assert selected_before == "gaussian"
+    assert widget._selected_node_id != selected_before
+    assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+
+    widget.undo()
+
+    assert note_id not in widget._graph_notes
+    assert note_id not in widget.graph_view._notes
+
+    widget.redo()
+
+    assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+    assert not pipeline_runs
+    assert not invalidations
+
+
+def test_graph_note_move_undo_redo_preserves_scientific_runtime(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.arange(4 * 16 * 18).reshape(4, 16, 18)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget._debounce_timer.stop()
+    note_id = widget._add_graph_note(
+        "Review threshold",
+        QPointF(25, 35),
+        attached_node="gaussian",
+    )
+
+    pipeline = widget.pipeline
+    runtime_containers = {
+        name: getattr(pipeline, name)
+        for name in (
+            "nodes",
+            "outputs",
+            "output_states",
+            "node_outputs",
+            "node_output_states",
+            "completed_node_ids",
+            "node_compute_provenance",
+            "node_cache_lineage",
+            "node_execution_states",
+            "node_execution_messages",
+        )
+    }
+    node_refs = dict(pipeline.nodes)
+    output_refs = dict(pipeline.outputs)
+    output_state_refs = dict(pipeline.output_states)
+    node_output_refs = {
+        node_id: tuple(outputs) for node_id, outputs in pipeline.node_outputs.items()
+    }
+    node_output_state_refs = {
+        node_id: tuple(states)
+        for node_id, states in pipeline.node_output_states.items()
+    }
+    completed_node_ids = set(pipeline.completed_node_ids)
+    compute_provenance = dict(pipeline.node_compute_provenance)
+    cache_lineage = dict(pipeline.node_cache_lineage)
+    execution_states = dict(pipeline.node_execution_states)
+    execution_messages = dict(pipeline.node_execution_messages)
+    pending_dirty_node_ids = set(widget._pending_dirty_node_ids)
+    pending_manual_node_ids = set(widget._pending_manual_node_ids)
+    stale_compute_badges = set(widget._stale_compute_badge_node_ids)
+    source_signature = widget._last_pipeline_source_signature
+    card_refs = dict(widget.graph_view._cards)
+    pipeline_run_pending = widget._pipeline_run_pending
+    assert completed_node_ids == set(pipeline.nodes)
+    assert set(execution_states.values()) == {EXECUTION_READY}
+    assert not pending_dirty_node_ids
+    assert not stale_compute_badges
+    assert not pipeline_run_pending
+
+    pipeline_runs = []
+    invalidations = []
+    original_invalidate = widget._invalidate_pipeline_cache
+
+    def track_pipeline_run(*args, **kwargs):
+        pipeline_runs.append((args, kwargs))
+
+    def track_invalidation():
+        invalidations.append(None)
+        original_invalidate()
+
+    monkeypatch.setattr(widget, "run_pipeline", track_pipeline_run)
+    monkeypatch.setattr(widget, "_invalidate_pipeline_cache", track_invalidation)
+
+    def assert_scientific_runtime_unchanged():
+        for name, container in runtime_containers.items():
+            assert getattr(pipeline, name) is container
+        assert all(
+            pipeline.nodes[node_id] is node for node_id, node in node_refs.items()
+        )
+        assert all(
+            pipeline.outputs[node_id] is output
+            for node_id, output in output_refs.items()
+        )
+        assert all(
+            pipeline.output_states[node_id] is state
+            for node_id, state in output_state_refs.items()
+        )
+        assert {
+            node_id: tuple(id(output) for output in outputs)
+            for node_id, outputs in pipeline.node_outputs.items()
+        } == {
+            node_id: tuple(id(output) for output in outputs)
+            for node_id, outputs in node_output_refs.items()
+        }
+        assert {
+            node_id: tuple(id(state) for state in states)
+            for node_id, states in pipeline.node_output_states.items()
+        } == {
+            node_id: tuple(id(state) for state in states)
+            for node_id, states in node_output_state_refs.items()
+        }
+        assert pipeline.completed_node_ids == completed_node_ids
+        assert pipeline.node_compute_provenance == compute_provenance
+        assert pipeline.node_cache_lineage == cache_lineage
+        assert pipeline.node_execution_states == execution_states
+        assert pipeline.node_execution_messages == execution_messages
+        assert widget._pending_dirty_node_ids == pending_dirty_node_ids
+        assert widget._pending_manual_node_ids == pending_manual_node_ids
+        assert widget._stale_compute_badge_node_ids == stale_compute_badges
+        assert widget._last_pipeline_source_signature == source_signature
+        assert widget._pipeline_run_pending == pipeline_run_pending
+        assert widget._active_pipeline_run_id is None
+        assert not widget._debounce_timer.isActive()
+        assert all(
+            widget.graph_view._cards[node_id] is card
+            for node_id, card in card_refs.items()
+        )
+        assert not pipeline_runs
+        assert not invalidations
+
+    old_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    moved_note_pos = QPointF(140, 155)
+    widget.graph_view._notes[note_id].setPos(moved_note_pos)
+    widget._on_graph_note_moved(note_id, old_note_pos, moved_note_pos)
+
+    assert widget._graph_notes[note_id].position == (140.0, 155.0)
+    assert_scientific_runtime_unchanged()
+
+    widget.undo()
+
+    assert widget._graph_notes[note_id].position == (25.0, 35.0)
+    assert widget.graph_view._notes[note_id].pos() == old_note_pos
+    assert widget.graph_view._notes[note_id].isSelected()
+    assert_scientific_runtime_unchanged()
+
+    widget.redo()
+
+    assert widget._graph_notes[note_id].position == (140.0, 155.0)
+    assert widget.graph_view._notes[note_id].pos() == moved_note_pos
+    assert_scientific_runtime_unchanged()
+
+    old_node_pos = QPointF(widget.graph_view.node_position("gaussian"))
+    old_attached_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    moved_node_pos = old_node_pos + QPointF(80, 30)
+    widget.graph_view.apply_node_positions({"gaussian": moved_node_pos})
+    widget._on_node_moved("gaussian", old_node_pos, moved_node_pos)
+
+    assert widget.graph_view._notes[note_id].pos() == (
+        old_attached_note_pos + QPointF(80, 30)
+    )
+    widget.undo()
+    assert widget.graph_view.node_position("gaussian") == old_node_pos
+    assert widget.graph_view._notes[note_id].pos() == old_attached_note_pos
+    assert_scientific_runtime_unchanged()
+
+    widget.redo()
+    assert widget.graph_view.node_position("gaussian") == moved_node_pos
+    assert widget.graph_view._notes[note_id].pos() == (
+        old_attached_note_pos + QPointF(80, 30)
+    )
+    assert_scientific_runtime_unchanged()
+
+
 def test_graph_note_editor_wraps_text_to_dialog_width(qtbot, monkeypatch):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -19948,6 +22050,108 @@ def test_delete_node_removes_attached_graph_notes_with_undo(qtbot):
     assert note_id in widget._graph_notes
     assert widget._graph_notes[note_id].attached_node == "gaussian"
     assert note_id in widget.graph_view._notes
+
+
+def test_palette_drop_appends_to_terminal_output_as_one_undoable_edit(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    source_rect = widget.graph_view.node_scene_rect("threshold")
+    assert source_rect is not None
+
+    state, message = widget._node_append_preview_state(
+        "remove_small_objects",
+        "threshold",
+        0,
+    )
+    assert state == "compatible"
+    assert "Drop to add" in message
+
+    node = widget._append_node_to_output(
+        "remove_small_objects",
+        "threshold",
+        0,
+        QPointF(),
+    )
+
+    assert node is not None
+    assert GraphConnection("threshold", node.id, 0, 0) in widget.pipeline.connections
+    appended_rect = widget.graph_view.node_scene_rect(node.id)
+    assert appended_rect is not None
+    assert appended_rect.left() > source_rect.right()
+    assert "Added 'Remove Small Objects' after 'Otsu Threshold'" in (
+        widget.status_label.text()
+    )
+
+    widget.undo()
+    assert node.id not in widget.pipeline.nodes
+    assert all(
+        connection.target_id != node.id for connection in widget.pipeline.connections
+    )
+
+    widget.redo()
+    assert node.id in widget.pipeline.nodes
+    assert GraphConnection("threshold", node.id, 0, 0) in widget.pipeline.connections
+
+
+def test_palette_drop_rejects_an_occupied_output_without_history_change(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    nodes_before = tuple(widget.pipeline.nodes)
+    connections_before = tuple(widget.pipeline.connections)
+    can_undo_before = widget._history.can_undo
+
+    state, message = widget._node_append_preview_state(
+        "remove_small_objects",
+        "gaussian",
+        0,
+    )
+    result = widget._append_node_to_output(
+        "remove_small_objects",
+        "gaussian",
+        0,
+        QPointF(),
+    )
+
+    assert state == "incompatible"
+    assert "already feeds" in message
+    assert result is None
+    assert tuple(widget.pipeline.nodes) == nodes_before
+    assert tuple(widget.pipeline.connections) == connections_before
+    assert widget._history.can_undo == can_undo_before
+
+
+def test_palette_drop_uses_primary_compatible_input_on_multi_input_node(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    source = widget._add_node_at("gaussian_blur", QPointF(900.0, 500.0))
+
+    state, _message = widget._node_append_preview_state(
+        "richardson_lucy_deconvolution",
+        source.id,
+        0,
+    )
+    node = widget._append_node_to_output(
+        "richardson_lucy_deconvolution",
+        source.id,
+        0,
+        QPointF(),
+    )
+
+    assert state == "compatible"
+    assert node is not None
+    matching = [
+        connection
+        for connection in widget.pipeline.connections
+        if connection.source_id == source.id and connection.target_id == node.id
+    ]
+    assert len(matching) == 1
+    assert matching[0].target_port == 0
 
 
 def test_insert_node_on_connection_full_splice_moves_downstream(qtbot, monkeypatch):
@@ -20153,8 +22357,9 @@ def test_split_axis_insert_mapping_dialog_switches_axis_options(qtbot):
     qtbot.addWidget(dialog)
 
     assert dialog.selected_mapping() == z_mapping
-    assert dialog.tree.palette().base().color().name() == "#1f242c"
-    assert dialog.tree.palette().alternateBase().color().name() == "#252b35"
+    colors = custom_paint_colors(dialog.palette())
+    assert dialog.tree.palette().base().color() == colors.surface
+    assert dialog.tree.palette().alternateBase().color() == colors.alternate_surface
 
     dialog.axis_combo.setCurrentIndex(1)
 
@@ -20621,9 +22826,10 @@ def test_connection_insert_dialog_uses_subtle_alternating_rows(qtbot):
 
     base = dialog.tree.palette().base().color()
     alternate = dialog.tree.palette().alternateBase().color()
+    colors = custom_paint_colors(dialog.palette())
 
-    assert base.name() == "#1f242c"
-    assert alternate.name() == "#252b35"
+    assert base == colors.surface
+    assert alternate == colors.alternate_surface
     assert abs(base.lightness() - alternate.lightness()) <= 10
 
 
@@ -20722,121 +22928,122 @@ def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
     assert widget.graph_view._notes[note_id].pos() == messy_note_pos
 
 
-def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
-    viewer = _Viewer()
-    widget = VippWidget(viewer)
-    qtbot.addWidget(widget)
-
-    expanded_width = widget._expanded_toolbar_required_width()
-    widget.resize(expanded_width + 100, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.settings_menu_button.isHidden() is False
-    assert widget.settings_menu_button.text() == "Settings"
-    assert widget.settings_menu_button.minimumWidth() >= 96
-    assert widget.background_all_checkbox.isHidden()
-    assert widget.follow_dims_checkbox.isHidden()
-    assert widget.thumbnail_toolbar_group.isHidden() is False
-    assert widget.preview_mode_combo.isHidden() is False
-    assert widget.thumbnail_contrast_combo.isHidden() is False
-    assert widget.thumbnail_scope_combo.isHidden() is False
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden() is False
-    assert widget.save_workflow_button.isHidden() is False
-    assert widget.export_button.isHidden() is False
-    assert widget.auto_structure_button.text() == "Auto structure graph"
-
-    widget.resize(1400, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.thumbnail_toolbar_group.isHidden()
-    assert widget.preview_mode_combo.isHidden() is False
-    assert widget.thumbnail_contrast_combo.isHidden() is False
-    assert widget.thumbnail_scope_combo.isHidden() is False
-    assert widget.thumbnail_colormap_combo.isHidden() is False
-    assert widget.zoom_toolbar_field.isHidden() is False
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden()
-
-    widget.resize(1200, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.graph_zoom_reset_button.isHidden() is False
-    assert widget.graph_zoom_label.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-
-    widget.resize(1000, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.zoom_toolbar_field.isHidden()
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.graph_zoom_reset_button.isHidden() is False
-    assert widget.graph_zoom_label.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-
-    widget.resize(expanded_width + 100, 600)
-    widget._sync_toolbar_responsive_mode()
-
-    assert widget.settings_menu_button.isHidden() is False
-    assert widget.background_all_checkbox.isHidden()
-    assert widget.follow_dims_checkbox.isHidden()
-    assert widget.thumbnail_toolbar_group.isHidden() is False
-    assert widget.preview_mode_combo.isHidden() is False
-    assert widget.thumbnail_contrast_combo.isHidden() is False
-    assert widget.thumbnail_scope_combo.isHidden() is False
-    assert widget.graph_zoom_slider.isHidden() is False
-    assert widget.save_workflow_button.isHidden() is False
-    assert widget.export_button.isHidden() is False
-    assert widget.compute_status_label.isHidden() is False
-    assert widget.auto_structure_button.text() == "Auto structure graph"
-
-
-@pytest.mark.parametrize(
-    ("width", "compute_visible", "zoom_visible"),
-    (
-        (1400, True, True),
-        (1200, False, True),
-        (1100, False, False),
-        (1051, False, False),
-        (1050, False, False),
-        (1000, False, False),
-    ),
-)
-def test_toolbar_compute_stages_preserve_primary_action_width(
-    qtbot,
-    width,
-    compute_visible,
-    zoom_visible,
-):
-    widget = VippWidget(_Viewer())
-    qtbot.addWidget(widget)
+def _show_toolbar_at_width(widget, qtbot, width: int) -> None:
     widget.setFixedWidth(width)
+    widget.resize(width, 600)
     widget.show()
     qtbot.waitExposed(widget)
     widget._sync_toolbar_responsive_mode()
     QApplication.processEvents()
 
-    assert widget.compute_toolbar_group.isHidden() is (not compute_visible)
-    assert widget.compute_status_label.isHidden()
-    assert widget.zoom_toolbar_field.isHidden() is (not zoom_visible)
-    assert (
-        widget.calculate_all_button.width()
-        >= widget.calculate_all_button.minimumSizeHint().width()
-    )
-    assert widget.settings_menu_button.geometry().right() < widget.width()
 
-
-def test_long_compute_summary_collapses_before_compressing_primary_action(qtbot):
+@pytest.mark.parametrize(
+    ("width", "expected_mode"),
+    ((1400, "wide"), (900, "medium"), (640, "narrow")),
+)
+def test_toolbar_file_actions_remain_visible_at_every_width(
+    qtbot,
+    width,
+    expected_mode,
+):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    widget.setFixedWidth(1600)
-    widget.show()
-    qtbot.waitExposed(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget._populate_settings_toolbar_menu()
+
+    assert widget._toolbar_layout_mode == expected_mode
+    for button, tooltip_word in (
+        (widget.new_workflow_button, "New"),
+        (widget.load_workflow_button, "Open"),
+        (widget.save_workflow_button, "Save"),
+    ):
+        assert not button.isHidden()
+        assert not button.icon().isNull()
+        assert tooltip_word.lower() in button.toolTip().lower()
+
+    settings_labels = {
+        action.text()
+        for action in widget.settings_menu.actions()
+        if not action.isSeparator() and action.text()
+    }
+    assert not {"New workflow", "Open workflow", "Save workflow"} & settings_labels
+
+
+@pytest.mark.parametrize(
+    (
+        "width",
+        "mode",
+        "batch_text",
+        "preview_text",
+        "calculate_text",
+        "arrange_text",
+        "document_texts",
+    ),
+    (
+        (
+            1400,
+            "wide",
+            "Batch workflow",
+            "Preview",
+            "Calculate all",
+            "Auto Arrange",
+            ("New", "Open", "Save"),
+        ),
+        (1000, "medium", "Batch", "Preview", "Calculate", "Arrange", ("", "", "")),
+        (640, "narrow", "", "", "", "", ("", "", "")),
+    ),
+)
+def test_toolbar_labels_follow_responsive_mode(
+    qtbot,
+    width,
+    mode,
+    batch_text,
+    preview_text,
+    calculate_text,
+    arrange_text,
+    document_texts,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert widget._toolbar_layout_mode == mode
+    assert widget.batch_button.text() == batch_text
+    assert widget.preview_menu_button.text() == preview_text
+    assert widget.calculate_all_button.text() == calculate_text
+    assert (
+        tuple(
+            button.text()
+            for button in (
+                widget.new_workflow_button,
+                widget.load_workflow_button,
+                widget.save_workflow_button,
+            )
+        )
+        == document_texts
+    )
+    if mode == "narrow":
+        assert widget.auto_structure_button.isHidden()
+        for button in (
+            widget.new_workflow_button,
+            widget.load_workflow_button,
+            widget.save_workflow_button,
+            widget.batch_button,
+            widget.preview_menu_button,
+            widget.calculate_all_button,
+        ):
+            assert not button.icon().isNull()
+    else:
+        assert not widget.auto_structure_button.isHidden()
+        assert widget.auto_structure_button.text() == arrange_text
+
+
+def test_toolbar_compute_summary_stays_with_execution_controls_until_narrow(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
 
     def decision(node_id, *, gpu=False, fallback=False):
         return NodeExecutionDecision(
@@ -20886,55 +23093,93 @@ def test_long_compute_summary_collapses_before_compressing_primary_action(qtbot)
 
     assert widget.compute_status_label.text() == ("Auto · 1 GPU / 4 CPU · 1 fallback")
     assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden()
+    assert widget.compute_status_label.isHidden() is False
     assert (
         widget.calculate_all_button.width()
         >= widget.calculate_all_button.minimumSizeHint().width()
     )
 
-    widget._accepted_compute_decisions = {"cpu-1": decisions["cpu-1"]}
-    widget._sync_compute_toolbar_summary()
-    QApplication.processEvents()
+    _show_toolbar_at_width(widget, qtbot, 640)
 
-    assert widget.compute_status_label.text() == "Auto · 1 CPU"
-    assert widget.compute_status_label.isHidden() is False
+    assert widget._toolbar_layout_mode == "narrow"
+    assert widget.compute_toolbar_group.isHidden()
+    assert widget.compute_status_label.isHidden()
 
 
-def test_load_precedes_save_and_batch_is_separated_from_exports(
-    qtbot,
-):
+def test_toolbar_has_separators_only_after_save_and_preview(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    layout = widget.workflow_toolbar_layout
+    layout = widget.command_toolbar_layout
 
-    load_index = layout.indexOf(widget.load_workflow_button)
-    save_index = layout.indexOf(widget.save_workflow_button)
-    left_separator_index = layout.indexOf(widget._batch_toolbar_left_separator)
-    batch_index = layout.indexOf(widget.batch_button)
-    leave_batch_index = layout.indexOf(widget.leave_batch_button)
-    right_separator_index = layout.indexOf(widget._batch_toolbar_right_separator)
-    export_index = layout.indexOf(widget.export_button)
-    export_ome_index = layout.indexOf(widget.export_ome_button)
+    direct_widgets = [
+        item.widget()
+        for index in range(layout.count())
+        if (item := layout.itemAt(index)).widget() is not None
+    ]
+    separators = [item for item in direct_widgets if isinstance(item, QFrame)]
 
+    assert widget.main_toolbar_layout is widget.command_toolbar_layout
+    assert separators == [
+        widget._toolbar_document_separator,
+        widget._toolbar_preview_separator,
+    ]
     assert (
-        load_index
-        < save_index
-        < left_separator_index
-        < batch_index
-        < leave_batch_index
-        < right_separator_index
-        < export_index
-        < export_ome_index
+        layout.indexOf(widget.document_toolbar_group)
+        < layout.indexOf(widget._toolbar_document_separator)
+        < layout.indexOf(widget.workflow_toolbar_group)
+        < layout.indexOf(widget._toolbar_preview_separator)
+        < layout.indexOf(widget.execution_toolbar_group)
+        < layout.indexOf(widget.utility_toolbar_group)
     )
-    assert isinstance(widget._batch_toolbar_left_separator, QFrame)
-    assert isinstance(widget._batch_toolbar_right_separator, QFrame)
+
+    document_layout = widget.document_toolbar_group.layout()
+    document_buttons = [
+        document_layout.itemAt(index).widget()
+        for index in range(document_layout.count())
+        if document_layout.itemAt(index).widget() is not None
+    ]
+    workflow_layout = widget.workflow_toolbar_group.layout()
+    workflow_buttons = [
+        workflow_layout.itemAt(index).widget()
+        for index in range(workflow_layout.count())
+        if workflow_layout.itemAt(index).widget() is not None
+    ]
+
+    assert document_buttons == [
+        widget.new_workflow_button,
+        widget.load_workflow_button,
+        widget.save_workflow_button,
+    ]
+    assert workflow_buttons[-1] is widget.preview_menu_button
+    assert workflow_buttons.index(widget.batch_button) < workflow_buttons.index(
+        widget.preview_menu_button
+    )
     assert widget.leave_batch_button.isHidden()
+    separator_color = theme_colors(QWidget.palette(widget)).border.name()
+    for separator in separators:
+        assert separator.frameShape() == QFrame.VLine
+        assert separator.frameShadow() == QFrame.Plain
+        assert separator.lineWidth() == 1
+        assert "border-left: 1px solid" in separator.styleSheet()
+        assert separator_color in separator.styleSheet()
+        assert "margin: 4px 5px" in separator.styleSheet()
+
+    for width in (1400, 900, 640):
+        _show_toolbar_at_width(widget, qtbot, width)
+        assert not widget._toolbar_document_separator.isHidden()
+        assert not widget._toolbar_preview_separator.isHidden()
+
+
+def test_batch_dialog_load_precedes_save_and_activity(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
 
     widget.batch_navigator.set_session(2, 0, "0001_a", ["a.npy"])
     batch_buttons = [
         button
         for button in widget.findChildren(QPushButton)
-        if button.text() == "Batch workspace..."
+        if button.text() == "Batch workflow"
     ]
     assert batch_buttons == [widget.batch_button]
 
@@ -20942,147 +23187,747 @@ def test_load_precedes_save_and_batch_is_separated_from_exports(
     qtbot.addWidget(dialog)
     config_layout = dialog.load_config_button.parentWidget().layout()
     assert (
-        config_layout.indexOf(dialog.load_config_button)
+        0 <= config_layout.indexOf(dialog.load_config_button)
         < config_layout.indexOf(dialog.save_config_button)
-        < config_layout.indexOf(dialog.demo_config_button)
-        < config_layout.indexOf(dialog.batch_activity_strip)
+        < config_layout.indexOf(dialog.more_button)
     )
+    outer_layout = dialog.layout()
+    assert (
+        0 <= outer_layout.indexOf(dialog.config_row)
+        < outer_layout.indexOf(dialog.tabs)
+        < outer_layout.indexOf(dialog.footer)
+    )
+    assert dialog.footer.layout().indexOf(dialog.batch_activity_strip) >= 0
+    assert dialog.demo_config_button.isHidden()
+    assert dialog.demo_action in dialog.more_menu.actions()
 
 
-def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_toolbar_utility_group_stays_right_aligned_and_consolidated(qtbot, width):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
-    widget.show()
-    qtbot.waitExposed(widget)
-    widget._sync_toolbar_responsive_mode()
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    utility_layout = widget.utility_toolbar_group.layout()
+    utility_buttons = [
+        utility_layout.itemAt(index).widget()
+        for index in range(utility_layout.count())
+        if utility_layout.itemAt(index).widget() is not None
+    ]
+    assert utility_buttons == [
+        widget.version_label,
+        widget.undo_button,
+        widget.redo_button,
+        widget.settings_menu_button,
+    ]
+    assert widget.version_label.parentWidget() is widget.utility_toolbar_group
+    assert not widget.version_label.isHidden()
+    assert not [
+        label
+        for label in widget.findChildren(QLabel)
+        if label.text() == "VIPP Workflow"
+    ]
+    assert widget.settings_menu_button.menu() is widget.settings_menu
+    assert not widget.settings_menu_button.icon().isNull()
+
+    toolbar = widget.command_toolbar_layout.parentWidget()
+    utility_right = widget.utility_toolbar_group.mapTo(
+        toolbar,
+        widget.utility_toolbar_group.rect().bottomRight(),
+    ).x()
+    assert toolbar.contentsRect().right() - utility_right <= 8
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+def test_toolbar_preview_menu_owns_presentation_controls(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    assert widget.preview_menu_button.menu() is widget.preview_display_menu
+    assert isinstance(widget.preview_menu_button, QPushButton)
+    widget._populate_preview_display_menu()
+    actions = widget.preview_display_menu.actions()
+
+    assert [action.text() for action in actions] == ["Preview display settings"]
+    assert widget._preview_menu_action is actions[0]
+    panel = actions[0].defaultWidget()
+    assert panel is widget._preview_menu_panel
+    assert panel.objectName() == "VippPreviewDisplayPanel"
+    assert panel.minimumWidth() >= 360
+    headings = panel.findChildren(QLabel, "VippPreviewDisplayHeading")
+    assert [heading.text() for heading in headings] == ["Preview display settings"]
+    assert headings[0].isEnabled()
+    notes = panel.findChildren(QLabel, "VippPreviewDisplayNote")
+    assert [note.text() for note in notes] == [
+        "Presentation only · analysis pixels are unchanged"
+    ]
+    colors = theme_colors(QWidget.palette(widget))
+    assert colors.text.name() in panel.styleSheet()
+    assert colors.muted_text.name() in panel.styleSheet()
+    assert colors.border.name() in widget.preview_display_menu.styleSheet()
+    assert set(widget._preview_menu_combos) == {
+        "Mode",
+        "Contrast",
+        "Range",
+        "Colormap",
+        "Detail",
+        "Port labels",
+    }
+    sources = {
+        "Mode": widget.preview_mode_combo,
+        "Contrast": widget.thumbnail_contrast_combo,
+        "Range": widget.thumbnail_scope_combo,
+        "Colormap": widget.thumbnail_colormap_combo,
+        "Detail": widget.thumbnail_resolution_combo,
+        "Port labels": widget.port_label_mode_combo,
+    }
+    for label, source in sources.items():
+        picker = widget._preview_menu_combos[label]
+        assert isinstance(picker, QComboBox)
+        assert picker.currentText() == source.currentText()
+        assert picker.count() == source.count()
+        assert picker.toolTip() == source.toolTip()
+
+
+@pytest.mark.parametrize(
+    ("width", "compute_hidden", "compute_in_settings"),
+    ((1400, False, False), (900, False, False), (640, True, True)),
+)
+def test_toolbar_compute_overflow_is_used_only_in_narrow_mode(
+    qtbot,
+    width,
+    compute_hidden,
+    compute_in_settings,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget._populate_settings_toolbar_menu()
+    settings_labels = [
+        action.text()
+        for action in widget.settings_menu.actions()
+        if not action.isSeparator() and action.text()
+    ]
+    compute_entries = [
+        label for label in settings_labels if label.startswith("Compute preference")
+    ]
+
+    assert widget.compute_toolbar_group.isHidden() is compute_hidden
+    assert bool(compute_entries) is compute_in_settings
+
+
+def test_toolbar_compute_overflow_respects_active_run_lock(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 640)
+
+    widget._active_pipeline_run_id = "run-1"
+    widget._sync_compute_policy_editability()
+    widget._populate_settings_toolbar_menu()
+
+    compute_menu = next(
+        action.menu()
+        for action in widget.settings_menu.actions()
+        if action.text().startswith("Compute preference")
+    )
+    strict_action = next(
+        action
+        for action in widget.settings_menu.actions()
+        if action.text() == "Fail if a selected GPU cannot run"
+    )
+    assert compute_menu is not None
+    assert not compute_menu.isEnabled()
+    assert not strict_action.isEnabled()
+
+
+@pytest.mark.parametrize("width", (1400, 1280, 1120, 1000, 900))
+def test_toolbar_live_content_compacts_without_clipping(qtbot, width):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.leave_batch_button.show()
+    widget.compute_status_label.setText("Custom · 1 GPU / 4 CPU · 1 fallback")
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+    assert (
+        widget.optimize_pipeline_button.parentWidget()
+        is widget.execution_toolbar_group
+    )
+    if widget.compute_toolbar_group.isHidden():
+        widget._populate_settings_toolbar_menu()
+        assert any(
+            action.text().startswith("Compute preference")
+            for action in widget.settings_menu.actions()
+        )
+
+
+@pytest.mark.parametrize(
+    ("width", "allowed_texts", "compute_hidden"),
+    (
+        (1400, ("Find fastest",), False),
+        (900, ("Find fastest", "Fastest", ""), False),
+        (640, ("",), True),
+    ),
+)
+def test_toolbar_custom_keeps_find_fastest_directly_available_at_every_width(
+    qtbot,
+    monkeypatch,
+    width,
+    allowed_texts,
+    compute_hidden,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    qtbot.addWidget(widget)
+    # This layout test authors a compute policy on a shown editor. Discard that
+    # test-only change when qtbot closes it, instead of blocking on a save prompt.
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Discard)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("custom")
+        )
+    widget._compute_mode = ComputeMode.CUSTOM
+    widget._sync_compute_toolbar_summary()
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert not widget.optimize_pipeline_button.isHidden()
+    assert widget.optimize_pipeline_button.isVisibleTo(widget)
+    # Medium widths compact against the host font's measured size, not a fixed
+    # English-label breakpoint. All three presentations keep the same action.
+    assert widget.optimize_pipeline_button.text() in allowed_texts
+    assert not widget.optimize_pipeline_button.icon().isNull()
+    assert (
+        widget.optimize_pipeline_button.accessibleName()
+        == "Find fastest pipeline"
+    )
+    assert widget.compute_toolbar_group.isHidden() is compute_hidden
+    execution_layout = widget.execution_toolbar_group.layout()
+    execution_widgets = [
+        execution_layout.itemAt(index).widget()
+        for index in range(execution_layout.count())
+        if execution_layout.itemAt(index).widget() is not None
+    ]
+    assert execution_widgets == [
+        widget.calculate_all_button,
+        widget.compute_toolbar_group,
+        widget.optimize_pipeline_button,
+    ]
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_toolbar_hides_find_fastest_outside_custom(qtbot, width):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert widget._compute_mode is not ComputeMode.CUSTOM
+    assert widget.optimize_pipeline_button.isHidden()
+    assert not widget.optimize_pipeline_button.isVisibleTo(widget)
+
+
+def test_toolbar_narrow_context_keeps_refresh_and_graph_focus(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, 640)
+
+    assert not widget.refresh_button.isHidden()
+    assert not widget.graph_focus_button.isHidden()
+    assert widget.refresh_button.text() == ""
+    assert widget.graph_focus_button.text() == ""
+    assert not widget.refresh_button.icon().isNull()
+    assert not widget.graph_focus_button.icon().isNull()
+
+
+@pytest.mark.parametrize("width", (1120, 1000, 900))
+def test_toolbar_medium_context_keeps_match_count_and_right_aligned_actions(
+    qtbot,
+    width,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_search_edit.setText("otsu")
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    assert widget._toolbar_layout_mode == "medium"
+    assert widget.graph_search_status.text() == "1 match"
+    assert not widget.graph_search_status.isHidden()
+    action_layout = widget.context_actions_group.layout()
+    action_widgets = [
+        action_layout.itemAt(index).widget()
+        for index in range(action_layout.count())
+        if action_layout.itemAt(index).widget() is not None
+    ]
+    assert action_widgets == [
+        widget.refresh_button,
+        widget.graph_focus_button,
+        widget.auto_structure_button,
+        widget.tunnel_manager_button,
+    ]
+    assert all(not button.isHidden() for button in action_widgets)
+
+    context = widget.context_toolbar_group
+    assert context.minimumSizeHint().width() <= context.width()
+    for button in action_widgets:
+        assert button.width() >= button.minimumSizeHint().width()
+    status_right = widget.graph_search_status.mapTo(
+        context,
+        widget.graph_search_status.rect().bottomRight(),
+    ).x()
+    actions_left = widget.context_actions_group.mapTo(
+        context,
+        widget.context_actions_group.rect().topLeft(),
+    ).x()
+    assert actions_left > status_right
+    if not widget.zoom_toolbar_field.isHidden():
+        actions_right = widget.context_actions_group.mapTo(
+            context,
+            widget.context_actions_group.rect().bottomRight(),
+        ).x()
+        zoom_left = widget.zoom_toolbar_field.mapTo(
+            context,
+            widget.zoom_toolbar_field.rect().topLeft(),
+        ).x()
+        assert 0 <= zoom_left - actions_right <= (
+            context.layout().spacing() + 2
+        )
+
+
+@pytest.mark.parametrize(
+    ("width", "cache_visible"),
+    ((1400, True), (900, True), (640, False)),
+)
+def test_toolbar_busy_footer_elides_long_status_without_clipping(
+    qtbot,
+    width,
+    cache_visible,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, width)
+
+    widget.cache_status_label.setText("Cache and memory " + "very long " * 24)
+    widget._set_pipeline_busy(True, "gaussian")
+    widget.pipeline_busy_label.setText("Processing " + "a long operation " * 20)
     QApplication.processEvents()
 
-    fields = (
-        (
-            widget.preview_toolbar_label,
-            widget.preview_mode_combo,
-        ),
-        (
-            widget.contrast_toolbar_label,
-            widget.thumbnail_contrast_combo,
-        ),
-        (
-            widget.contrast_range_toolbar_label,
-            widget.thumbnail_scope_combo,
-        ),
-        (
-            widget.mono_toolbar_label,
-            widget.thumbnail_colormap_combo,
-        ),
-        (
-            widget.zoom_toolbar_label,
-            widget.zoom_toolbar_controls,
-        ),
-        (
-            widget.compute_toolbar_label,
-            widget.compute_mode_combo,
-        ),
+    assert (
+        widget.status_toolbar_widget.minimumSizeHint().width()
+        <= widget.status_toolbar_widget.width()
     )
-    controls = [control for _label, control in fields]
-
-    def rect_in_toolbar(child):
-        return child.rect().translated(child.mapTo(widget, QPoint(0, 0)))
-
-    def horizontal_gap(first, second):
-        if first.right() < second.left():
-            return second.left() - first.right()
-        if second.right() < first.left():
-            return first.left() - second.right()
-        return 0
-
-    label_left_edges = []
-    for label, control in fields:
-        assert label.alignment() & Qt.AlignRight
-        label_rect = rect_in_toolbar(label)
-        control_rect = rect_in_toolbar(control)
-        label_left_edges.append(label_rect.left())
-        own_gap = horizontal_gap(label_rect, control_rect)
-        assert 0 < own_gap <= 6
-        other_gaps = [
-            horizontal_gap(label_rect, rect_in_toolbar(other))
-            for other in controls
-            if other is not control
-        ]
-        assert own_gap < min(other_gaps)
-
-    assert label_left_edges[0] == min(label_left_edges)
-
-    widget.hide()
-    widget.setFixedWidth(1400)
-    widget._sync_toolbar_responsive_mode()
-    assert widget.thumbnail_toolbar_group.isHidden()
-    assert widget.zoom_toolbar_field.isHidden() is False
-    assert widget.compute_toolbar_group.isHidden() is False
-    assert widget.compute_status_label.isHidden()
-    assert widget._toolbar_zoom_separator.isHidden()
-    assert widget._toolbar_action_separator.isHidden() is False
-
-    widget.setFixedWidth(1000)
-    widget._sync_toolbar_responsive_mode()
-    assert widget.thumbnail_toolbar_group.isHidden()
-    assert widget.zoom_toolbar_field.isHidden()
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-    assert widget._toolbar_zoom_separator.isHidden()
-    assert widget._toolbar_action_separator.isHidden()
-
-    widget.setFixedWidth(700)
-    widget._sync_toolbar_responsive_mode()
-    assert widget.compute_toolbar_group.isHidden()
-    assert widget.compute_status_label.isHidden()
-    assert widget._toolbar_compute_separator.isHidden()
-    assert widget.settings_menu_button.isHidden() is False
+    assert widget.cache_status_label.isHidden() is (not cache_visible)
+    assert not widget.pipeline_activity_group.isHidden()
+    assert widget.pipeline_cancel_button.text() == "Stop"
+    widget._set_pipeline_busy(False)
 
 
-def test_toolbar_fields_do_not_clip_with_larger_font(qtbot):
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_status_toolbar_height_is_stable_when_progress_appears(
+    qtbot,
+    width,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget.resize(width, 700)
+    QApplication.processEvents()
+
+    idle_height = widget.status_toolbar_widget.height()
+    assert idle_height >= widget.status_toolbar_widget.minimumHeight()
+    assert widget.status_toolbar_widget.maximumHeight() > idle_height
+
+    widget._set_pipeline_busy(True, "gaussian")
+    widget.pipeline_busy_bar.setRange(0, 100)
+    widget.pipeline_busy_bar.setValue(48)
+    QApplication.processEvents()
+
+    assert widget.status_toolbar_widget.height() == idle_height
+
+    widget._set_pipeline_busy(False)
+    QApplication.processEvents()
+
+    assert widget.status_toolbar_widget.height() == idle_height
+
+
+def test_status_toolbar_baseline_does_not_clip_wrapped_actionable_error(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 640)
+    baseline_height = widget.status_toolbar_widget.height()
+    widget._set_status(
+        "The image source could not be read because its saved location is no "
+        "longer available. Choose the source again, then recalculate the "
+        "workflow to continue.",
+        severity="error",
+        actionable=True,
+    )
+    QApplication.processEvents()
+
+    required_height = widget.status_label.heightForWidth(
+        max(widget.status_label.width(), 1)
+    )
+    assert widget.status_label.height() >= required_height
+    assert widget.status_toolbar_widget.height() >= required_height
+    assert widget.status_toolbar_widget.height() > baseline_height
+
+    widget.status_label.setText("Workflow ready.")
+    QApplication.processEvents()
+
+    assert widget.status_toolbar_widget.height() == baseline_height
+
+
+def test_status_toolbar_progress_stop_and_run_activity_stay_synchronized(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
+
+    status_widgets = [
+        widget.status_toolbar_layout.itemAt(index).widget()
+        for index in range(widget.status_toolbar_layout.count())
+        if widget.status_toolbar_layout.itemAt(index).widget() is not None
+    ]
+    assert widget.workflow_toolbar_layout is widget.status_toolbar_layout
+    assert status_widgets == [
+        widget.status_label,
+        widget.cache_status_label,
+        widget.pipeline_activity_group,
+        widget.run_activity_button,
+    ]
+    activity_widgets = [
+        widget.pipeline_activity_layout.itemAt(index).widget()
+        for index in range(widget.pipeline_activity_layout.count())
+        if widget.pipeline_activity_layout.itemAt(index).widget() is not None
+    ]
+    assert activity_widgets == [
+        widget.pipeline_busy_label,
+        widget.pipeline_busy_bar,
+        widget.pipeline_cancel_button,
+    ]
+    assert widget.run_activity_button.menu() is widget.run_activity_menu
+    assert isinstance(widget.run_activity_button, _ToolbarChevronButton)
+    assert widget.pipeline_activity_group.isHidden()
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_cancel_button.isHidden()
+
+    widget._set_pipeline_busy(True, "gaussian")
+    widget.pipeline_busy_bar.setRange(0, 100)
+    widget.pipeline_busy_bar.setValue(63)
+    widget.pipeline_busy_bar.setTextVisible(True)
+    widget._sync_run_activity_button()
+
+    assert not widget.pipeline_busy_label.isHidden()
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert not widget.pipeline_cancel_button.isHidden()
+    assert not widget.pipeline_activity_group.isHidden()
+    assert widget.pipeline_cancel_button.text() == "Stop"
+    assert widget.run_activity_button.text() == "Run activity · 1"
+
+    activity_right = widget.pipeline_activity_group.mapTo(
+        widget.status_toolbar_widget,
+        widget.pipeline_activity_group.rect().bottomRight(),
+    ).x()
+    run_activity_left = widget.run_activity_button.mapTo(
+        widget.status_toolbar_widget,
+        widget.run_activity_button.rect().topLeft(),
+    ).x()
+    assert 0 <= run_activity_left - activity_right <= (
+        widget.status_toolbar_layout.spacing() + 2
+    )
+    assert (
+        widget.pipeline_activity_group.x()
+        > widget.status_toolbar_widget.contentsRect().center().x()
+    )
+    assert (
+        widget.pipeline_activity_group.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Maximum
+    )
+    activity_spacing = widget.pipeline_activity_layout.spacing()
+    label_to_bar = (
+        widget.pipeline_busy_bar.geometry().left()
+        - widget.pipeline_busy_label.geometry().right()
+    )
+    bar_to_stop = (
+        widget.pipeline_cancel_button.geometry().left()
+        - widget.pipeline_busy_bar.geometry().right()
+    )
+    assert 0 <= label_to_bar <= activity_spacing + 2
+    assert 0 <= bar_to_stop <= activity_spacing + 2
+
+    widget._populate_run_activity_menu()
+    assert [action.text() for action in widget.run_activity_menu.actions()] == [
+        "Run activity details"
+    ]
+    assert widget._run_activity_action.defaultWidget() is widget._run_activity_panel
+    assert widget._run_activity_panel.objectName() == "VippRunActivityPanel"
+    assert "Gaussian Blur" in widget._run_activity_value_labels["current"].text()
+    assert "63%" in widget._run_activity_value_labels["current"].text()
+    assert widget._run_activity_value_labels["current"].isEnabled()
+    assert widget._run_activity_value_labels["recent"].wordWrap()
+    assert "total this session" in widget._run_activity_value_labels[
+        "pipeline_time"
+    ].text()
+    assert widget._run_activity_stop_button is not None
+    stop_clicks = []
+    widget.pipeline_cancel_button.clicked.connect(lambda: stop_clicks.append(True))
+
+    widget._run_activity_stop_button.click()
+
+    assert stop_clicks == [True]
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_activity_group.isHidden()
+    widget._populate_run_activity_menu()
+    assert (
+        widget._run_activity_value_labels["current"].text()
+        == "No calculations running"
+    )
+    assert widget._run_activity_value_labels["recent"].text().startswith(
+        "Processing: Gaussian Blur"
+    )
+    assert widget._run_activity_stop_button is None
+
+
+@pytest.mark.parametrize(
+    ("base", "text"),
+    (("#111827", "#f8fafc"), ("#ffffff", "#111827")),
+)
+def test_run_activity_panel_uses_readable_palette_roles(qtbot, base, text):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    palette = _widget_test_palette(base=base, text=text)
+    widget.setPalette(palette)
+
+    widget._populate_run_activity_menu()
+
+    colors = theme_colors(palette)
+    panel = widget._run_activity_panel
+    assert panel is not None
+    assert colors.text.name() in panel.styleSheet()
+    assert colors.muted_text.name() in panel.styleSheet()
+    assert colors.info.foreground.name() in panel.styleSheet()
+    assert colors.border.name() in widget.run_activity_menu.styleSheet()
+    assert all(
+        label.isEnabled()
+        for label in widget._run_activity_value_labels.values()
+    )
+
+
+def test_pipeline_processing_time_is_separate_idempotent_and_live(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    clock = [100.0]
+    monkeypatch.setattr("napari_vipp._widget.monotonic", lambda: clock[0])
+    widget._pipeline_processing_total_seconds = 0.0
+    widget._pipeline_processing_active_started_at.clear()
+
+    background_key = ("background", 41)
+    widget._begin_pipeline_processing_timing(background_key)
+    clock[0] = 102.5
+    total, current = widget._pipeline_processing_time_snapshot()
+    assert total == pytest.approx(2.5)
+    assert current == pytest.approx(2.5)
+
+    widget._populate_run_activity_menu()
+    timing_text = widget._run_activity_value_labels["pipeline_time"].text()
+    assert "2.5 s total this session" in timing_text
+    assert "2.5 s current" in timing_text
+    assert widget._pipeline_processing_total_seconds == 0.0
+
+    clock[0] = 104.0
+    assert widget._finish_pipeline_processing_timing(
+        background_key
+    ) == pytest.approx(4.0)
+    assert widget._finish_pipeline_processing_timing(background_key) is None
+    assert widget._pipeline_processing_total_seconds == pytest.approx(4.0)
+
+    with widget._measure_synchronous_pipeline_processing():
+        clock[0] = 105.25
+    assert widget._pipeline_processing_total_seconds == pytest.approx(5.25)
+
+    widget._set_pipeline_busy(True, "gaussian")
+    clock[0] = 112.0
+    widget._set_pipeline_busy(False)
+    assert widget._pipeline_processing_total_seconds == pytest.approx(5.25)
+
+
+def test_status_toolbar_uses_available_width_for_full_memory_summary(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1800)
+
+    memory_summary = (
+        "Cache 25.3 MB (Keep all) | RAM free 13.6 GB / 31.9 GB | "
+        "Commit free 33.8 GB / 71.9 GB"
+    )
+    widget.cache_status_label.setText(memory_summary)
+    widget._set_pipeline_busy(True, "gaussian")
+    QApplication.processEvents()
+
+    assert widget.cache_status_label.maximumWidth() > 420
+    assert QLabel.text(widget.cache_status_label) == memory_summary
+    assert "Commit free 33.8 GB / 71.9 GB" in QLabel.text(
+        widget.cache_status_label
+    )
+    widget._set_pipeline_busy(False)
+
+
+def test_toolbar_text_buttons_do_not_clip_with_larger_font(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     font = widget.font()
     font.setPointSizeF(max(font.pointSizeF() * 1.5, 13.0))
     widget.setFont(font)
-    expanded_width = widget._expanded_toolbar_required_width()
-    widget.setFixedWidth(expanded_width + 100)
-    widget.resize(expanded_width + 100, 700)
-    widget.show()
-    qtbot.waitExposed(widget)
-    widget._sync_toolbar_responsive_mode()
-    QApplication.processEvents()
+    _show_toolbar_at_width(widget, qtbot, 2000)
 
-    labels = (
-        widget.preview_toolbar_label,
-        widget.contrast_toolbar_label,
-        widget.contrast_range_toolbar_label,
-        widget.mono_toolbar_label,
-        widget.zoom_toolbar_label,
-        widget.compute_toolbar_label,
+    assert widget._toolbar_layout_mode == "wide"
+    for button in (
+        widget.new_workflow_button,
+        widget.load_workflow_button,
+        widget.save_workflow_button,
+        widget.batch_button,
+        widget.preview_menu_button,
+        widget.calculate_all_button,
+        widget.auto_structure_button,
+    ):
+        assert button.width() >= button.minimumSizeHint().width()
+        assert button.height() >= button.minimumSizeHint().height()
+
+
+def test_toolbar_command_icons_have_breathing_room_and_preview_chevron(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 1400)
+
+    assert "padding: 2px 5px" in widget.command_toolbar_widget.styleSheet()
+    for button in (
+        widget.new_workflow_button,
+        widget.load_workflow_button,
+        widget.save_workflow_button,
+        widget.batch_button,
+        widget.calculate_all_button,
+        widget.refresh_button,
+        widget.graph_focus_button,
+        widget.auto_structure_button,
+        widget.tunnel_manager_button,
+    ):
+        assert isinstance(button, _ToolbarCommandButton)
+        assert button.iconSize() == QSize(18, 18)
+        assert button.property("text") == button.text()
+
+    preview = widget.preview_menu_button
+    assert preview.text() == "Preview"
+    assert "menu-indicator { image: none" in preview.styleSheet()
+    assert "padding-right: 22px" in preview.styleSheet()
+    assert preview.property("chevronVisible") is True
+    assert not preview._chevron_indicator.isHidden()
+    assert preview.rect().contains(preview._chevron_indicator.geometry())
+    preview_option = preview._toolbar_style_option()
+    batch_option = widget.batch_button._toolbar_style_option()
+    assert not bool(preview_option.features & QStyleOptionButton.HasMenu)
+    preview_contents = preview.style().subElementRect(
+        QStyle.SE_PushButtonContents,
+        preview_option,
+        preview,
     )
-    combos = (
-        widget.preview_mode_combo,
-        widget.thumbnail_contrast_combo,
-        widget.thumbnail_scope_combo,
-        widget.thumbnail_colormap_combo,
+    batch_contents = widget.batch_button.style().subElementRect(
+        QStyle.SE_PushButtonContents,
+        batch_option,
+        widget.batch_button,
     )
-    for label in labels:
-        assert label.width() >= label.sizeHint().width()
-        assert label.height() >= label.sizeHint().height()
-    for combo in combos:
-        assert combo.width() >= combo.minimumSizeHint().width()
-        assert combo.height() >= combo.minimumSizeHint().height()
-    assert widget.settings_menu_button.geometry().right() < widget.width()
+    assert preview_contents.left() == batch_contents.left()
+    assert (
+        preview._chevron_indicator.geometry().left() - preview_contents.right()
+        >= 4
+    )
+
+    run_activity = widget.run_activity_button
+    assert isinstance(run_activity, _ToolbarChevronButton)
+    assert run_activity.text() == "Run activity"
+    assert "menu-indicator { image: none" in run_activity.styleSheet()
+    assert "padding-right: 22px" in run_activity.styleSheet()
+    assert run_activity.property("chevronVisible") is True
+    assert not run_activity._chevron_indicator.isHidden()
+    assert run_activity.rect().contains(run_activity._chevron_indicator.geometry())
+    assert not bool(
+        run_activity._toolbar_style_option().features
+        & QStyleOptionButton.HasMenu
+    )
+    run_activity_contents = run_activity.style().subElementRect(
+        QStyle.SE_PushButtonContents,
+        run_activity._toolbar_style_option(),
+        run_activity,
+    )
+    assert (
+        run_activity._chevron_indicator.geometry().left()
+        - run_activity_contents.right()
+        >= 4
+    )
+
+    _show_toolbar_at_width(widget, qtbot, 900)
+    assert preview.text() == "Preview"
+    assert preview.property("chevronVisible") is True
+    assert not preview._chevron_indicator.isHidden()
+    assert run_activity.text() == "Run activity"
+    assert run_activity.property("chevronVisible") is True
+    assert not run_activity._chevron_indicator.isHidden()
+
+    _show_toolbar_at_width(widget, qtbot, 640)
+    assert preview.text() == ""
+    assert preview.property("chevronVisible") is False
+    assert preview._chevron_indicator.isHidden()
+    assert run_activity.text() == ""
+    assert run_activity.property("chevronVisible") is False
+    assert run_activity._chevron_indicator.isHidden()
 
 
-def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
+def test_toolbar_compaction_remeasures_nested_groups_after_layout_changes(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    _show_toolbar_at_width(widget, qtbot, 1600)
+    for width in (900, 1400):
+        widget.setFixedWidth(width)
+        QApplication.processEvents()
+        widget._sync_toolbar_responsive_mode()
+        QApplication.processEvents()
+
+    assert widget.new_workflow_button.text() == "New"
+    assert widget.batch_button.text() == "Batch workflow"
+    assert widget.preview_menu_button.text() == "Preview"
+    assert widget.calculate_all_button.text() == "Calculate all"
+    assert not widget.compute_toolbar_group.isHidden()
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+def test_toolbar_settings_menu_consolidates_actions_not_preview_controls(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
+    widget.setFixedWidth(1400)
     widget._sync_toolbar_responsive_mode()
     widget._populate_settings_toolbar_menu()
 
@@ -21096,7 +23941,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Run all in background" in labels
     assert "Link napari/VIPP sliders" in labels
     assert "Compute setup and memory…" in labels
-    assert "Port labels" in labels
+    assert "Port labels" not in labels
     assert "Cache mode" in labels
     assert "Auto memory guard" in labels
     assert "Preview mode" not in labels
@@ -21130,7 +23975,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert cache_limit_widget.findChild(QLabel).font() == widget.settings_menu.font()
     assert cache_limit_widget.findChild(QSpinBox).font() == widget.settings_menu.font()
 
-    widget.resize(1200, 600)
+    widget.setFixedWidth(640)
     widget._sync_toolbar_responsive_mode()
     widget._populate_settings_toolbar_menu()
     labels = [
@@ -21138,10 +23983,11 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
         for action in widget.settings_menu.actions()
         if not action.isSeparator() and action.text()
     ]
-    assert "Preview mode" in labels
-    assert "Thumbnail contrast" in labels
-    assert "Contrast range" in labels
-    assert "Monochrome colormap" in labels
+    assert "Preview mode" not in labels
+    assert "Thumbnail contrast" not in labels
+    assert "Contrast range" not in labels
+    assert "Monochrome colormap" not in labels
+    assert any(label.startswith("Compute preference") for label in labels)
 
     save_thumbnail_action = next(
         action
@@ -21153,36 +23999,52 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert widget.save_thumbnail_visibility_checkbox.isChecked()
 
 
-def test_settings_menu_controls_port_label_mode(qtbot):
+def test_settings_menu_headings_are_bold_normal_color_labels(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._populate_settings_toolbar_menu()
+
+    headings = {
+        action.text(): action
+        for action in widget.settings_menu.actions()
+        if action.text() in {"Workflow actions", "Compute", "Workflow settings"}
+    }
+    assert set(headings) == {"Workflow actions", "Compute", "Workflow settings"}
+    menu_color = widget.settings_menu.palette().color(
+        QPalette.Active, QPalette.WindowText
+    )
+    for action in headings.values():
+        label = action.defaultWidget()
+        assert isinstance(label, QLabel)
+        assert not action.isEnabled()
+        assert label.isEnabled()
+        assert label.font().bold()
+        assert label.palette().color(QPalette.Active, QPalette.WindowText) == menu_color
+
+
+def test_preview_menu_controls_port_label_mode(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.port_label_mode_combo.currentText() == "Ambiguous only"
     assert widget.graph_view.port_label_mode == PortLabelMode.AMBIGUOUS_ONLY
-    widget._populate_settings_toolbar_menu()
-    submenu = next(
-        action.menu()
-        for action in widget.settings_menu.actions()
-        if action.text() == "Port labels"
-    )
-    actions = {action.text(): action for action in submenu.actions()}
-    assert list(actions) == ["Ambiguous only", "Show all", "Hide all"]
+    widget._populate_preview_display_menu()
+    picker = widget._preview_menu_combos["Port labels"]
+    assert [picker.itemText(index) for index in range(picker.count())] == [
+        "Ambiguous only",
+        "Show all",
+        "Hide all",
+    ]
 
-    actions["Show all"].trigger()
+    picker.setCurrentText("Show all")
 
     assert widget.port_label_mode_combo.currentText() == "Show all"
     assert widget.graph_view.port_label_mode == PortLabelMode.SHOW_ALL
     assert widget.status_label.text().startswith("Port labels set to Show all")
 
-    widget._populate_settings_toolbar_menu()
-    submenu = next(
-        action.menu()
-        for action in widget.settings_menu.actions()
-        if action.text() == "Port labels"
-    )
-    checked = [action.text() for action in submenu.actions() if action.isChecked()]
-    assert checked == ["Show all"]
+    widget._populate_preview_display_menu()
+    assert widget._preview_menu_combos["Port labels"].currentText() == "Show all"
 
 
 def test_palette_registry_nodes_are_constructible():
@@ -21196,6 +24058,21 @@ def test_palette_registry_nodes_are_constructible():
         expected_params = {param.name: param.default for param in spec.parameters}
         if spec.id == "input":
             expected_params["axis_declaration"] = ""
+        if spec.id == "imagej_auto_threshold":
+            expected_params["method"] = "Default"
+        if spec.id == "select_axis_slice":
+            expected_params.update(
+                {
+                    "axes": "",
+                    "indices": "",
+                    "ranges": "",
+                    "range_mode": True,
+                    "remove_axes": "",
+                    "remove_indices": "",
+                }
+            )
+        if spec.id == "intensity_histogram":
+            expected_params["_vipp_auto_recalculate"] = True
         if spec.id == "composite_to_rgb":
             expected_params.update(
                 {
@@ -21309,7 +24186,11 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
         widget.pipeline.node_execution_states[measurements.id]
         == EXECUTION_NOT_CALCULATED
     )
-    assert widget.table_group.isHidden()
+    assert widget.table_group.isHidden() is False
+    assert widget.table_summary.text() == "No result yet."
+    assert widget.table_calculate_button.text() == "Calculate"
+    assert widget.table_calculate_button.isEnabled()
+    assert widget.table_calculate_button.property("attentionRequired") is True
 
     widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
 
@@ -21333,6 +24214,292 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     assert not widget.thumbnail_checkbox.isHidden()
     assert widget.thumbnail_checkbox.isEnabled()
     assert "label_id" in path.read_text(encoding="utf-8")
+
+
+def test_intensity_histogram_shows_exact_preview_and_reusable_popout(qtbot):
+    data = np.arange(256, dtype=np.uint16).reshape(16, 16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    histogram = widget.add_node_from_palette("intensity_histogram")
+    widget._connect_nodes("input", histogram.id)
+    widget.graph_view.select_node(histogram.id)
+
+    assert widget.histograms_section.title() == "Histogram"
+    assert widget.pipeline.node_auto_recalculate(histogram.id)
+    assert widget.auto_recalculate_checkbox.isChecked()
+    assert widget.pipeline.node_execution_states[histogram.id] == EXECUTION_READY
+    assert widget.histograms_section.summary_label.text().startswith("256 bins")
+    assert not widget.histogram_value_combo.isHidden()
+    assert not widget.histogram_result_plot.isHidden()
+    assert widget.histogram_popout_button.isEnabled()
+
+    result = widget.pipeline.outputs[histogram.id]
+    assert isinstance(result, TableData)
+    assert result.row_count == 256
+    assert result.histogram_metadata is not None
+    assert result.histogram_metadata.binned_value_count == data.size
+    assert widget.histograms_section.summary_label.text().startswith("256 bins")
+    assert widget.table_preview.rowCount() > 0
+    assert widget.histogram_popout_button.isEnabled()
+    np.testing.assert_array_equal(
+        np.asarray(widget.histogram_result_plot.y_values).reshape(-1),
+        np.ones(256, dtype=np.float64),
+    )
+
+    widget.histogram_value_combo.setCurrentText("Cumulative fraction")
+    assert np.asarray(widget.histogram_result_plot.y_values).reshape(-1)[-1] == (
+        pytest.approx(1.0)
+    )
+    widget._open_histogram_dialog()
+    assert widget._histogram_dialog is not None
+    assert widget._histogram_dialog.isVisible()
+    assert widget._histogram_dialog.table is result
+    assert widget._histogram_dialog.y_value_name == "Cumulative fraction"
+    assert widget._histogram_dialog.calculation_parameters == {
+        "bin_count": 256,
+        "range_mode": "Data range",
+        "custom_min": 0.0,
+        "custom_max": 1.0,
+        "bin_spacing": "Linear",
+    }
+
+    dialog_controls = widget._histogram_dialog.calculation_controls
+    dialog_controls["range_mode"].combo.setCurrentText("Custom range")
+    assert "custom_min" in widget._parameter_widgets
+    assert "custom_max" in widget._parameter_widgets
+    dialog_controls["custom_min"].value_box.setValue(0.25)
+    dialog_controls["custom_max"].value_box.setValue(128.0)
+    dialog_controls["bin_spacing"].combo.setCurrentText("Logarithmic")
+    assert widget._parameter_widgets["custom_min"].value() == pytest.approx(0.25)
+    assert widget._parameter_widgets["custom_max"].value() == pytest.approx(128.0)
+    assert widget._parameter_widgets["bin_spacing"].value() == "Logarithmic"
+
+    widget._parameter_widgets["bin_spacing"].combo.setCurrentText("Linear")
+    assert widget._histogram_dialog.calculation_parameters["bin_spacing"] == "Linear"
+    widget._parameter_widgets["range_mode"].combo.setCurrentText("Data range")
+    assert "custom_min" not in widget._parameter_widgets
+    assert "custom_max" not in widget._parameter_widgets
+    assert not dialog_controls["custom_min"].isVisible()
+    assert widget.pipeline.nodes[histogram.id].params["custom_min"] == pytest.approx(
+        0.25
+    )
+    assert widget.pipeline.nodes[histogram.id].params["custom_max"] == pytest.approx(
+        128.0
+    )
+
+    widget._parameter_widgets["bin_count"].value_box.setValue(128)
+    assert widget._histogram_dialog.calculation_parameters["bin_count"] == 128
+    qtbot.waitUntil(
+        lambda: widget.pipeline.node_execution_states[histogram.id]
+        == EXECUTION_READY
+        and widget.pipeline.outputs[histogram.id].row_count == 128,
+        timeout=3_000,
+    )
+    assert widget.pipeline.outputs[histogram.id].row_count == 128
+    assert widget.pipeline.node_execution_states[histogram.id] == EXECUTION_READY
+
+    widget._histogram_dialog.calculation_controls[
+        "bin_count"
+    ].value_box.setValue(64)
+    assert widget.pipeline.nodes[histogram.id].params["bin_count"] == 64
+    assert widget._parameter_widgets["bin_count"].value() == 64
+    qtbot.waitUntil(
+        lambda: widget.pipeline.node_execution_states[histogram.id]
+        == EXECUTION_READY
+        and widget.pipeline.outputs[histogram.id].row_count == 64,
+        timeout=3_000,
+    )
+    assert widget.pipeline.outputs[histogram.id].row_count == 64
+    assert widget._histogram_dialog.table is widget.pipeline.outputs[histogram.id]
+
+    widget.graph_view.select_node("input")
+    source_params = dict(widget.pipeline.nodes["input"].params)
+    widget._histogram_dialog.calculation_controls[
+        "bin_count"
+    ].value_box.setValue(48)
+    assert widget.pipeline.nodes[histogram.id].params["bin_count"] == 48
+    assert widget.pipeline.nodes["input"].params == source_params
+    qtbot.waitUntil(
+        lambda: widget.pipeline.node_execution_states[histogram.id]
+        == EXECUTION_READY
+        and widget.pipeline.outputs[histogram.id].row_count == 48,
+        timeout=3_000,
+    )
+    assert widget.pipeline.outputs[histogram.id].row_count == 48
+    deselected_result = widget.pipeline.outputs[histogram.id]
+    assert widget._histogram_dialog.table is deselected_result
+    assert widget._histogram_dialog.plot.bin_edges.size == 49
+    assert widget._histogram_dialog.plot.values.shape == (1, 48)
+    assert widget._histogram_dialog.summary_label.text().startswith("48 bins")
+    widget.undo()
+    assert widget.pipeline.nodes[histogram.id].params["bin_count"] == 64
+    assert widget._histogram_dialog.calculation_parameters["bin_count"] == 64
+    widget.redo()
+    assert widget.pipeline.nodes[histogram.id].params["bin_count"] == 48
+    assert widget._histogram_dialog.calculation_parameters["bin_count"] == 48
+    widget.graph_view.select_node(histogram.id)
+
+    widget.auto_recalculate_checkbox.setChecked(False)
+    retained = widget.pipeline.outputs[histogram.id]
+    widget._histogram_dialog.calculation_controls[
+        "bin_count"
+    ].value_box.setValue(32)
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.node_execution_states[histogram.id] == EXECUTION_STALE
+    assert widget.pipeline.outputs[histogram.id] is retained
+    assert "stale" in widget.histogram_semantic_summary.text().casefold()
+    assert widget.table_calculate_button.text() == "Recalculate"
+    assert not widget.table_calculate_button.isHidden()
+    assert widget._histogram_dialog.table is retained
+    assert "stale" in widget._histogram_dialog.summary_label.text().casefold()
+    widget._histogram_dialog.close()
+
+
+def test_deselected_histogram_popout_tracks_background_result_owner(qtbot):
+    data = np.arange(256, dtype=np.uint16).reshape(16, 16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    histogram = widget.add_node_from_palette("intensity_histogram")
+    widget._connect_nodes("input", histogram.id)
+    widget.graph_view.select_node(histogram.id)
+    widget._open_histogram_dialog()
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+
+    dialog = widget._histogram_dialog
+    assert dialog is not None
+    assert dialog.table is widget.pipeline.outputs[histogram.id]
+    assert dialog.plot.values.shape == (1, 256)
+
+    widget.graph_view.select_node("input")
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: True
+    dialog.calculation_controls["bin_count"].value_box.setValue(32)
+
+    qtbot.waitUntil(lambda: len(pool.workers) == 1, timeout=3_000)
+    assert widget._active_pipeline_run_id is not None
+    pool.workers[0].run()
+    qtbot.waitUntil(
+        lambda: widget._active_pipeline_run_id is None
+        and widget.pipeline.outputs[histogram.id].row_count == 32,
+        timeout=5_000,
+    )
+
+    updated_result = widget.pipeline.outputs[histogram.id]
+    assert dialog.table is updated_result
+    assert dialog.plot.bin_edges.size == 33
+    assert dialog.plot.values.shape == (1, 32)
+    assert dialog.summary_label.text().startswith("32 bins")
+
+
+def test_deselected_histogram_popout_marks_upstream_edit_stale_until_accepted(
+    qtbot,
+):
+    data = np.zeros((16, 16), dtype=np.float32)
+    data[4:12, 4:12] = 1.0
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    histogram = widget.add_node_from_palette("intensity_histogram")
+    widget._connect_nodes("gaussian", histogram.id)
+    widget.graph_view.select_node(histogram.id)
+    widget._open_histogram_dialog()
+
+    dialog = widget._histogram_dialog
+    assert dialog is not None
+    retained_table = dialog.table
+    retained_edges = dialog.plot.bin_edges.copy()
+    retained_values = dialog.plot.values.copy()
+    assert retained_table is widget.pipeline.outputs[histogram.id]
+    assert "stale" not in dialog.summary_label.text().casefold()
+
+    widget.graph_view.select_node("gaussian")
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: True
+    widget._parameter_widgets["sigma"].value_box.setValue(2.0)
+
+    qtbot.waitUntil(lambda: len(pool.workers) == 1, timeout=3_000)
+    assert widget._active_pipeline_run_id is not None
+    assert dialog.table is retained_table
+    np.testing.assert_array_equal(dialog.plot.bin_edges, retained_edges)
+    np.testing.assert_array_equal(dialog.plot.values, retained_values)
+    assert "stale" in dialog.summary_label.text().casefold()
+
+    pool.workers[0].run()
+    qtbot.waitUntil(
+        lambda: widget._active_pipeline_run_id is None
+        and widget.pipeline.outputs[histogram.id] is not retained_table,
+        timeout=5_000,
+    )
+
+    accepted_table = widget.pipeline.outputs[histogram.id]
+    assert dialog.table is accepted_table
+    assert "stale" not in dialog.summary_label.text().casefold()
+
+
+def test_histogram_popout_is_scoped_to_its_workflow_tab(qtbot):
+    data = np.arange(256, dtype=np.uint16).reshape(16, 16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+
+    first_histogram = widget.add_node_from_palette("intensity_histogram")
+    widget._connect_nodes("input", first_histogram.id)
+    widget.graph_view.select_node(first_histogram.id)
+    widget._open_histogram_dialog()
+
+    first_session = widget._workflow_tabs.current
+    first_dialog = widget._histogram_dialog
+    first_result = widget.pipeline.outputs[first_histogram.id]
+    assert first_session is not None
+    assert first_dialog is not None and first_dialog.isVisible()
+    assert first_dialog.table is first_result
+
+    widget._new_workflow()
+
+    second_session = widget._workflow_tabs.current
+    assert second_session is not None and second_session is not first_session
+    assert not first_dialog.isVisible()
+    assert first_session.runtime_cache["_histogram_dialog"] is first_dialog
+    assert (
+        first_session.runtime_cache["_histogram_dialog_node_id"]
+        == first_histogram.id
+    )
+    assert widget._histogram_dialog is None
+    assert widget._histogram_dialog_node_id == ""
+
+    # Fresh tabs deliberately reuse generated node ids.  This makes the test
+    # prove session ownership rather than passing only because the second tab
+    # happens not to contain the first dialog's node id.
+    second_histogram = widget.add_node_from_palette("intensity_histogram")
+    assert second_histogram.id == first_histogram.id
+    second_params = dict(widget.pipeline.nodes[second_histogram.id].params)
+
+    first_dialog.calculation_controls["bin_count"].value_box.setValue(17)
+
+    assert widget.pipeline.nodes[second_histogram.id].params == second_params
+    assert not widget._debounce_timer.isActive()
+
+    first_index = widget._workflow_tabs.index_of(first_session.session_id)
+    assert widget._activate_workflow_tab(first_index, check_safety=False)
+    assert widget._histogram_dialog is first_dialog
+    assert widget._histogram_dialog_node_id == first_histogram.id
+    assert first_dialog.table is first_result
+    assert widget.pipeline.outputs[first_histogram.id] is first_result
+    assert widget.pipeline.nodes[first_histogram.id].params["bin_count"] == 256
+    assert not first_dialog.isVisible()
+
+    widget.graph_view.select_node(first_histogram.id)
+    widget._open_histogram_dialog()
+    assert widget._histogram_dialog is first_dialog
+    assert first_dialog.isVisible()
+    assert first_dialog.table is first_result
+    assert first_dialog.calculation_parameters["bin_count"] == 256
+    first_dialog.close()
 
 
 def test_select_table_columns_uses_detected_column_checklist(qtbot):
@@ -21469,6 +24636,69 @@ def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):
     assert widget.pipeline.outputs[measurements.id].row_count == 0
 
 
+@pytest.mark.parametrize(
+    "operation_id",
+    ("measure_objects", "colocalization_metrics"),
+)
+def test_table_output_nodes_hide_isolated_tuning_in_inspector_and_graph_menu(
+    qtbot,
+    monkeypatch,
+    operation_id,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8)), metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    table_node = widget.add_node_from_palette(operation_id)
+    widget.graph_view.select_node(table_node.id)
+
+    assert widget.isolated_tuning_checkbox.isHidden()
+
+    action_labels: list[str] = []
+
+    def inspect_exec(menu, _pos):
+        action_labels.extend(
+            action.text()
+            for action in menu.actions()
+            if not action.isSeparator()
+        )
+        return None
+
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", inspect_exec)
+    widget.graph_view._show_node_context_menu(table_node.id, QPoint(0, 0))
+
+    assert "Tune node in isolation" not in action_labels
+
+
+def test_capable_image_node_keeps_temporarily_disabled_isolation_action(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8)), metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    image_node = widget.add_node_from_palette("gaussian_blur")
+    widget.graph_view.select_node(image_node.id)
+
+    assert not widget.isolated_tuning_checkbox.isHidden()
+    assert not widget.isolated_tuning_checkbox.isEnabled()
+    assert "downstream" in widget.isolated_tuning_checkbox.toolTip().casefold()
+
+    isolated_actions: list[tuple[bool, str]] = []
+
+    def inspect_exec(menu, _pos):
+        isolated_actions.extend(
+            (action.isEnabled(), action.toolTip())
+            for action in menu.actions()
+            if action.text() == "Tune node in isolation"
+        )
+        return None
+
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", inspect_exec)
+    widget.graph_view._show_node_context_menu(image_node.id, QPoint(0, 0))
+
+    assert isolated_actions
+    assert isolated_actions[0][0] is False
+    assert "downstream" in isolated_actions[0][1].casefold()
+
+
 def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
     qtbot,
     monkeypatch,
@@ -21491,12 +24721,29 @@ def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
     monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
 
     inspector_layout = widget.inspector_content.layout()
-    assert inspector_layout.indexOf(widget.isolated_tuning_checkbox) == (
-        inspector_layout.indexOf(widget.keep_cached_checkbox) + 1
+    assert inspector_layout.indexOf(widget.behavior_section) >= 0
+    behavior_layout = widget.behavior_section.content_widget.layout()
+    assert behavior_layout.indexOf(widget.isolated_tuning_checkbox) == (
+        behavior_layout.indexOf(widget.keep_cached_checkbox) + 1
     )
+    assert behavior_layout.indexOf(widget.isolated_tuning_panel) == -1
+    parameters_layout = widget.parameter_group.content_widget.layout()
+    assert parameters_layout.indexOf(widget.isolated_tuning_panel) == 0
+    widget.behavior_section.setExpanded(False)
     widget.isolated_tuning_checkbox.setChecked(True)
+    assert not widget.behavior_section.isExpanded()
+    assert widget.parameter_group.isExpanded()
+    widget.isolated_tuning_panel.resize(640, 120)
+    widget._sync_inspector_responsive_layout()
+    assert (
+        widget.isolated_tuning_actions_layout.direction()
+        == QBoxLayout.LeftToRight
+    )
     widget.graph_view.select_node("input")
     assert not widget.isolated_tuning_panel.isHidden()
+    assert not widget.parameter_group.isHidden()
+    assert widget.apply_isolated_tuning_button.isEnabled()
+    assert widget.cancel_isolated_tuning_button.isEnabled()
     assert not widget.isolated_tuning_checkbox.isChecked()
     assert not widget.isolated_tuning_checkbox.isEnabled()
     widget.graph_view.select_node("gaussian")
@@ -21507,6 +24754,21 @@ def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
     assert widget._isolated_tuning_node_id == "gaussian"
     assert not widget.isolated_tuning_panel.isHidden()
     assert widget.graph_view._cards["gaussian"]._isolated_tuning
+    assert (
+        ISOLATED_TUNING_ACCENT
+        in widget.graph_view._cards["gaussian"].styleSheet()
+    )
+    assert (
+        STALE_EXECUTION_ACCENT
+        not in widget.graph_view._cards["gaussian"].styleSheet()
+    )
+    active_mode = theme_colors(QWidget.palette(widget)).active_mode
+    assert active_mode.surface.name() in widget.isolated_tuning_panel.styleSheet()
+    assert active_mode.border.name() in widget.isolated_tuning_panel.styleSheet()
+    assert (
+        active_mode.foreground.name()
+        in widget.isolated_tuning_status.styleSheet()
+    )
     assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_BLOCKED
     assert (
         BLOCKED_EXECUTION_ACCENT in widget.graph_view._cards["threshold"].styleSheet()
@@ -21530,7 +24792,68 @@ def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
     assert widget._isolated_tuning_node_id is None
     assert widget.isolated_tuning_panel.isHidden()
     assert not widget.isolated_tuning_checkbox.isChecked()
+    assert (
+        ISOLATED_TUNING_ACCENT
+        not in widget.graph_view._cards["gaussian"].styleSheet()
+    )
     assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
+
+
+def test_isolated_tuning_status_panel_height_is_stable_across_messages(qtbot):
+    widget = VippWidget(
+        _Viewer(np.ones((10, 10), dtype=np.float32), metadata={"axes": "YX"})
+    )
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.pipeline.nodes["gaussian"].title = (
+        "Gaussian Blur with a deliberately long tuning title"
+    )
+    widget.graph_view.select_node("gaussian")
+    widget.isolated_tuning_checkbox.setChecked(True)
+    candidates = set(widget._isolated_tuning_status_messages("gaussian"))
+
+    for panel_width in (560, 280):
+        widget.isolated_tuning_panel.resize(panel_width, 120)
+        widget._sync_inspector_responsive_layout()
+        stable_geometry: set[tuple[int, int, int, int, int]] = set()
+        status_texts: set[str] = set()
+        for changed, state in (
+            (False, EXECUTION_READY),
+            (True, EXECUTION_STALE),
+            (True, EXECUTION_RUNNING),
+            (True, EXECUTION_READY),
+            (True, EXECUTION_ERROR),
+        ):
+            widget._isolated_tuning_has_changes = changed
+            widget.pipeline.node_execution_states["gaussian"] = state
+            widget._sync_isolated_tuning_ui()
+            QApplication.processEvents()
+            stable_geometry.add(
+                (
+                    widget.isolated_tuning_panel.height(),
+                    widget.isolated_tuning_panel.minimumHeight(),
+                    widget.isolated_tuning_panel.maximumHeight(),
+                    widget.isolated_tuning_status.height(),
+                    widget.parameter_form_widget.mapTo(
+                        widget.parameter_group.content_widget,
+                        QPoint(0, 0),
+                    ).y(),
+                )
+            )
+            status_text = widget.isolated_tuning_status.text()
+            assert status_text in candidates
+            status_texts.add(status_text)
+
+        assert len(status_texts) == 5
+        assert len(stable_geometry) == 1
+        panel_height, minimum_height, maximum_height, *_ = stable_geometry.pop()
+        assert panel_height == minimum_height == maximum_height
+        assert widget.isolated_tuning_status.minimumHeight() == (
+            widget.isolated_tuning_status.maximumHeight()
+        )
+
+    widget.cancel_isolated_tuning_button.click()
 
 
 def test_cancel_isolated_tuning_restores_parameters_and_cached_results(qtbot):
@@ -21643,23 +24966,20 @@ def test_isolated_tuning_recalculates_a_manual_root_without_auto_mode(
     qtbot,
     monkeypatch,
 ):
-    image = np.zeros((9, 9), dtype=np.float32)
-    image[1:4, 1:4] = 10
+    image = np.arange(81, dtype=np.float32).reshape(9, 9)
     widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
     widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
-    threshold = widget.add_node_from_palette("binary_threshold")
-    labels = widget.add_node_from_palette("label_connected_components")
-    measurements = widget.add_node_from_palette("measure_objects")
-    selected = widget.add_node_from_palette("select_table_columns")
-    widget.pipeline.set_param(threshold.id, "threshold", 5)
-    widget._connect_nodes("input", threshold.id)
-    widget._connect_nodes(threshold.id, labels.id)
-    widget._connect_nodes(labels.id, measurements.id)
-    widget._connect_nodes(measurements.id, selected.id)
-    widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
-    widget.graph_view.select_node(measurements.id)
+    racc = widget.add_node_from_palette("racc_index")
+    descendant = widget.add_node_from_palette("gaussian_blur")
+    widget.pipeline.set_param(racc.id, "channel_1_threshold", 0.0)
+    widget.pipeline.set_param(racc.id, "channel_2_threshold", 0.0)
+    widget._connect_nodes("input", racc.id, target_port=0)
+    widget._connect_nodes("input", racc.id, target_port=1)
+    widget._connect_nodes(racc.id, descendant.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={racc.id})
+    widget.graph_view.select_node(racc.id)
     calls: list[str] = []
     original_run_node = widget.pipeline._run_node
 
@@ -21669,22 +24989,20 @@ def test_isolated_tuning_recalculates_a_manual_root_without_auto_mode(
 
     monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
     widget.isolated_tuning_checkbox.setChecked(True)
-    current = bool(
-        widget.pipeline.nodes[measurements.id].params["include_shape_descriptors"]
-    )
-    widget._on_param_changed("include_shape_descriptors", not current)
+    current = float(widget.pipeline.nodes[racc.id].params["theta_degrees"])
+    widget._on_param_changed("theta_degrees", current - 5.0)
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
 
-    assert calls == [measurements.id]
-    assert not widget.pipeline.node_auto_recalculate(measurements.id)
-    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
-    assert widget.pipeline.node_execution_states[selected.id] == EXECUTION_BLOCKED
+    assert calls == [racc.id]
+    assert not widget.pipeline.node_auto_recalculate(racc.id)
+    assert widget.pipeline.node_execution_states[racc.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[descendant.id] == EXECUTION_BLOCKED
 
     widget.apply_isolated_tuning_button.click()
 
-    assert calls == [measurements.id, selected.id]
-    assert widget.pipeline.node_execution_states[selected.id] == EXECUTION_READY
+    assert calls == [racc.id, descendant.id]
+    assert widget.pipeline.node_execution_states[descendant.id] == EXECUTION_READY
 
 
 def test_calculate_all_releases_isolation_in_all_automatic_graph(
@@ -21934,7 +25252,7 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
 
     widget.run_pipeline(force_sync=True)
 
-    assert widget.calculate_all_button.text() == "Calculate all"
+    assert widget.calculate_all_button.accessibleName() == "Calculate all"
     assert widget.pipeline.node_execution_states[measurements.id] == (
         EXECUTION_NOT_CALCULATED
     )
@@ -21950,7 +25268,8 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
         intensity.id,
     }
     assert widget.calculate_all_button.property("attentionRequired") is True
-    assert STALE_EXECUTION_ACCENT in widget.calculate_all_button.styleSheet()
+    warning_color = theme_colors(QWidget.palette(widget)).warning.foreground.name()
+    assert warning_color in widget.calculate_all_button.styleSheet()
     for node_id in (measurements.id, intensity.id):
         card = widget.graph_view._cards[node_id]
         assert STALE_EXECUTION_ACCENT in card.styleSheet()
@@ -21982,7 +25301,7 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
         intensity.id,
     }
     assert widget.calculate_all_button.property("attentionRequired") is True
-    assert STALE_EXECUTION_ACCENT in widget.calculate_all_button.styleSheet()
+    assert warning_color in widget.calculate_all_button.styleSheet()
 
     widget.calculate_all_button.click()
 
@@ -22676,6 +25995,14 @@ def test_leave_batch_mode_clears_representative_source_overrides(qtbot, tmp_path
     qtbot.addWidget(widget)
     demo = widget._create_collection_batch_demo(tmp_path / "demo")
     widget._batch_collection_dialog(config_path=demo.config_path)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and not widget._debounce_timer.isActive()
+        ),
+        timeout=5_000,
+    )
 
     assert widget._interactive_collection_batch_items
     assert widget._interactive_collection_source_paths
@@ -22940,10 +26267,10 @@ def test_batch_setting_edit_cancels_zero_override_sample_detection(
     started = threading.Event()
     release = threading.Event()
 
-    def delayed_execute(prepared):
+    def delayed_execute(prepared, **kwargs):
         started.set()
         release.wait(timeout=5)
-        return original_execute(prepared)
+        return original_execute(prepared, **kwargs)
 
     monkeypatch.setattr(
         batch_workers,
@@ -22963,8 +26290,13 @@ def test_batch_setting_edit_cancels_zero_override_sample_detection(
 
         assert not restored._batch_workspace_preview_contexts
         assert restored_dialog.source_detection_progress.isHidden()
-        assert restored_dialog.preview_button.isEnabled()
-        assert restored_dialog.run_button.isEnabled()
+        # The empty Items tab is disabled. Retry through Setup's Check action,
+        # not the old Preview button (now Recheck all inside that disabled tab).
+        assert restored_dialog.next_button.isEnabled()
+        assert restored_dialog.next_button.text() == "Check batch"
+        assert not restored_dialog._checking_plan
+        # Settings changed: Run needs a new checked plan.
+        assert not restored_dialog.run_button.isEnabled()
         assert "not checked" in restored_dialog.batch_activity_status.text().lower()
         assert "settings changed" in restored_dialog.preview_status.text().lower()
     finally:
@@ -23050,7 +26382,8 @@ def test_workflow_load_rebinds_saved_overrides_to_unchanged_sources(
         ),
         timeout=10_000,
     )
-    qtbot.mouseClick(restored_dialog.run_button, Qt.LeftButton)
+    restored_dialog._request_run()
+    qtbot.waitUntil(lambda: bool(starts), timeout=10_000)
     assert len(starts) == 1
     assert starts[0][0] is restored_dialog
     assert starts[0][1]["expected_items"] == restored_dialog._preview_result.items
@@ -23260,9 +26593,9 @@ def test_collection_batch_dialog_defaults(qtbot):
     assert not dialog.workflow_checkbox.isEnabled()
     assert values["save_python_script"] is True
     assert values["continue_on_error"] is True
-    assert dialog.load_config_button.text() == "Load..."
+    assert dialog.load_config_button.text() == "Open config"
     assert not dialog.load_config_button.isEnabled()
-    assert dialog.save_config_button.text() == "Save..."
+    assert dialog.save_config_button.text() == "Save config"
     assert not dialog.save_config_button.isEnabled()
     assert dialog.demo_config_button.text() == "Demo..."
     assert not dialog.demo_config_button.isEnabled()
@@ -24041,6 +27374,20 @@ def test_async_batch_navigation_commits_only_the_latest_requested_item(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    qtbot.waitUntil(
+        lambda: (
+            dialog._preview_result is not None
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and not widget._debounce_timer.isActive()
+        ),
+        timeout=5_000,
+    )
+    assert widget._interactive_collection_batch_index == 0, (
+        widget._interactive_collection_batch_index,
+        widget._interactive_collection_batch_requested_index,
+        widget.status_label.text(),
+    )
     monkeypatch.setattr(
         widget,
         "_file_source_should_load_async",
@@ -24083,6 +27430,7 @@ def test_partial_representative_failure_keeps_failed_item_selected(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     failed_primary = np.load(demo.root / "inputs" / "primary" / "02_two_objects.npy")
     calls = 0
 
@@ -24091,18 +27439,30 @@ def test_partial_representative_failure_keeps_failed_item_selected(
         calls += 1
         widget.pipeline.outputs["input"] = failed_primary
         widget.pipeline.outputs["batch_output_1"] = None
-        raise RuntimeError("downstream representative failure")
+        widget._show_interactive_collection_batch_preview_error(
+            1, "downstream representative failure", graph_may_be_partial=True,
+        )
 
-    monkeypatch.setattr(widget.pipeline, "run", fail_after_source)
+    # Simulate a partial failure at the dispatcher boundary; execution may use
+    # a detached pipeline, so patching the live pipeline.run misses that path.
+    monkeypatch.setattr(widget, "run_pipeline", fail_after_source)
 
     assert widget._preview_interactive_collection_batch_item(1, force_sync=True)
+
+    qtbot.waitUntil(
+        lambda: widget._interactive_collection_batch_requested_index == -1,
+        timeout=5_000,
+    )
 
     assert widget._interactive_collection_batch_index == 1
     assert widget._interactive_collection_batch_failed_index == 1
     assert widget.batch_navigator.current_index == 1
     assert "02_two_objects.npy" in widget.batch_navigator.sources_label.text()
     assert "preview failed" in widget.batch_navigator.representative_label.text()
-    assert not dialog.run_button.isEnabled()
+    # The failed optional preview stays visible, but is no longer active work.
+    # A separately checked batch can run through its detached execution path.
+    assert not dialog._representative_pending
+    assert dialog.run_button.isEnabled()
     np.testing.assert_array_equal(widget.pipeline.outputs["input"], failed_primary)
     assert widget.pipeline.outputs["batch_output_1"] is None
 
@@ -24117,17 +27477,27 @@ def test_run_stops_when_reviewed_source_changes_in_place(qtbot, tmp_path):
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    qtbot.waitUntil(
+        lambda: dialog._preview_result is not None and dialog.run_button.isEnabled(),
+        timeout=5_000,
+    )
     reviewed = np.array(widget.pipeline.outputs["input"], copy=True)
     source_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
     np.save(source_path, np.full(reviewed.shape, 65535, dtype=np.uint16))
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isEnabled(), (
+        dialog._representative_pending, dialog._checking_plan,
+        dialog.preview_status.text(), widget.status_label.text(),
+    )
+    dialog._request_run()
+    qtbot.waitUntil(lambda: dialog._preview_result is None, timeout=10_000)
 
     assert dialog._preview_result is None
     assert "Press Refresh" in dialog.preview_status.text()
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
     np.testing.assert_array_equal(widget.pipeline.outputs["input"], reviewed)
-    assert "pinned earlier revision" in (
+    assert "A reviewed source changed" in (
         widget.batch_navigator.representative_label.text()
     )
 
@@ -24155,11 +27525,13 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
     assert "Loaded" in dialog.preview_status.text()
     plan_calls = []
     expected_plans = []
-    original_preview = widget._collection_batch_controller.preview
+    from napari_vipp.ui import batch_workers
+
+    original_preview = batch_workers.execute_prepared_collection_batch_preview
     original_prepare = widget._prepare_collection_batch_run
 
-    def tracked_preview(**kwargs):
-        result = original_preview(**kwargs)
+    def tracked_preview(prepared, **kwargs):
+        result = original_preview(prepared, **kwargs)
         plan_calls.append(result)
         return result
 
@@ -24168,8 +27540,8 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
         return original_prepare(**kwargs)
 
     monkeypatch.setattr(
-        widget._collection_batch_controller,
-        "preview",
+        batch_workers,
+        "execute_prepared_collection_batch_preview",
         tracked_preview,
     )
     monkeypatch.setattr(
@@ -24190,8 +27562,11 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
         ),
     )
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    dialog._request_run()
+    qtbot.waitUntil(
+        lambda: not dialog._run_preparing and not widget._collection_batch_running,
+        timeout=10_000,
+    )
 
     assert len(plan_calls) == 1
     assert expected_plans == [plan_calls[0].items]
@@ -24259,15 +27634,15 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
     )
     preview_calls: list[dict[str, object]] = []
 
-    def suggested_preview(**values):
-        preview_calls.append(values)
+    def suggested_preview(prepared, **_kwargs):
+        preview_calls.append(prepared.config)
         binding = next(
-            item for item in values["source_bindings"] if item["node_id"] == source_id
+            item for item in prepared.config.sources if item.node_id == source_id
         )
         if len(preview_calls) == 1:
-            assert binding["axis_declaration"] == ""
+            assert binding.axis_declaration is None
             raise error
-        assert binding["axis_declaration"] == "QYX -> ZYX"
+        assert binding.axis_declaration == declaration
         return successful_preview
 
     started: list[tuple[CollectionBatchDialog, dict[str, object]]] = []
@@ -24276,8 +27651,7 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
         started.append((active_dialog, values))
 
     monkeypatch.setattr(
-        widget._collection_batch_controller,
-        "preview",
+        "napari_vipp.ui.batch_workers.execute_prepared_collection_batch_preview",
         suggested_preview,
     )
     monkeypatch.setattr(widget, "_start_collection_batch_worker", record_start)
@@ -24310,8 +27684,9 @@ def test_direct_run_applies_qyx_z_stack_suggestion_and_retries_once(
         lambda: pytest.fail("Direct Run must not invoke Preview batch."),
     )
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
 
+    qtbot.waitUntil(lambda: bool(started), timeout=10_000)
     assert suggestion_applications == [(("automatic", False, ""), True)]
     assert len(preview_calls) == 2
     control = next(
@@ -24379,8 +27754,25 @@ def test_batch_worker_nested_progress_and_safe_cancel_reach_retained_dialog(
 
     monkeypatch.setattr(batch_workers, "run_batch", wait_for_cancel)
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(started.is_set, timeout=5_000)
+    qtbot.waitUntil(
+        lambda: not dialog._checking_plan
+        and widget._active_source_load_id is None
+        and widget._active_pipeline_run_id is None
+        and not widget._source_load_pending
+        and not widget._pipeline_run_pending
+        and not widget._debounce_timer.isActive(),
+        timeout=10_000,
+    )
+    dialog._request_run()
+    qtbot.waitUntil(
+        lambda: started.is_set() or (
+            not dialog._run_preparing and not widget._collection_batch_running
+        ), timeout=5_000,
+    )
+    assert started.is_set(), (
+        dialog.preview_status.text(), dialog.batch_activity_status.text(),
+        widget.status_label.text(),
+    )
     qtbot.waitUntil(
         lambda: "GPU tile 2 of 5" in dialog.operation_progress_label.text(),
         timeout=5_000,
@@ -24454,6 +27846,21 @@ def test_loaded_batch_compute_request_wins_until_toolbar_changes(qtbot, tmp_path
     assert dialog._loaded_compute_request is None
 
 
+def _wait_for_collection_batch_graph_idle(qtbot, widget):
+    """Finish optional graph work before exercising full-batch run controls."""
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and widget._active_pipeline_run_id is None
+            and not widget._source_load_pending
+            and not widget._pipeline_run_pending
+            and not widget._debounce_timer.isActive()
+            and widget._interactive_collection_batch_requested_index < 0
+        ),
+        timeout=10_000,
+    )
+
+
 def test_edited_batch_settings_run_on_first_click_without_repreview(
     qtbot,
     monkeypatch,
@@ -24465,7 +27872,7 @@ def test_edited_batch_settings_run_on_first_click_without_repreview(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     edited_output = tmp_path / "edited-results"
 
     dialog.output_edit.setText(str(edited_output))
@@ -24476,9 +27883,22 @@ def test_edited_batch_settings_run_on_first_click_without_repreview(
         "_preview_batch",
         lambda: pytest.fail("Run must not force an optional preview."),
     )
-
+    # Edited settings require the explicit metadata-only Check action. The
+    # first subsequent Run must succeed without an optional graph preview.
+    assert dialog._check_batch()
+    qtbot.waitUntil(lambda: not dialog._checking_plan, timeout=5_000)
+    assert dialog._preview_result is not None
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    qtbot.waitUntil(
+        lambda: (
+            not dialog._run_preparing
+            and not widget._collection_batch_running
+            and (edited_output / BATCH_MANIFEST_FILENAME).is_file()
+        ),
+        timeout=10_000,
+    )
 
     assert (edited_output / BATCH_MANIFEST_FILENAME).is_file()
     assert "3 completed" in dialog.run_progress_label.text()
@@ -24627,15 +28047,22 @@ def test_run_stops_when_reviewed_fixed_batch_source_changes(qtbot, tmp_path):
     dialog.output_edit.setText(str(tmp_path / "outputs"))
     dialog.format_combo.setCurrentText("npy")
     assert dialog._preview_batch()
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     reviewed = np.array(widget.pipeline.outputs[output.id], copy=True)
 
     np.save(fixed_path, np.full((4, 5), 99, dtype=np.uint16))
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    qtbot.waitUntil(
+        lambda: not dialog._run_preparing and dialog._preview_result is None,
+        timeout=10_000,
+    )
 
     assert dialog._preview_result is None
-    assert "Press Refresh" in dialog.preview_status.text()
+    assert "Press Refresh" in dialog.preview_status.text(), (
+        dialog.preview_status.text(), dialog.preview_status.toolTip()
+    )
     assert not (tmp_path / "outputs" / BATCH_MANIFEST_FILENAME).exists()
     np.testing.assert_array_equal(widget.pipeline.outputs[output.id], reviewed)
 
@@ -24651,6 +28078,7 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     previous = np.array(widget.pipeline.outputs["batch_output_1"], copy=True)
     source_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
     np.save(source_path, np.full(previous.shape, 41, dtype=np.uint16))
@@ -24670,13 +28098,18 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     qtbot.waitUntil(
         lambda: (
             widget._interactive_collection_batch_requested_index == -1
-            and dialog.run_button.isEnabled()
+            and not dialog._representative_pending
         ),
         timeout=5_000,
     )
 
     assert dialog._preview_result is None
     assert not np.array_equal(widget.pipeline.outputs["batch_output_1"], previous)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    assert dialog._check_batch()
+    qtbot.waitUntil(lambda: not dialog._checking_plan, timeout=5_000)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
@@ -24702,6 +28135,9 @@ def test_batch_continues_in_origin_tab_while_new_workflow_is_edited(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     origin = widget._workflow_tabs.current
     assert origin is not None
     started = threading.Event()
@@ -24779,6 +28215,9 @@ def test_inactive_batch_failure_is_presented_when_origin_tab_is_reactivated(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     origin = widget._workflow_tabs.current
     assert origin is not None
     started = threading.Event()
@@ -24894,7 +28333,9 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     assert dialog.preview_table.rowCount() == 3
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
 
     np.save(
         demo.root / "inputs" / "primary" / "04_added.npy",
@@ -24905,7 +28346,7 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
         np.zeros((8, 8), dtype=np.uint16),
     )
     preview_calls = 0
-    original_preview = widget._collection_batch_controller.preview
+    original_preview = widget._collection_batch_controller.prepare_preview
 
     def tracked_preview(**kwargs):
         nonlocal preview_calls
@@ -24914,7 +28355,7 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
 
     monkeypatch.setattr(
         widget._collection_batch_controller,
-        "preview",
+        "prepare_preview",
         tracked_preview,
     )
     monkeypatch.setattr(
@@ -24923,6 +28364,14 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
         lambda: pytest.fail("Run-plan refresh must not calculate a representative."),
     )
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(
+        lambda: (
+            not dialog._run_preparing
+            and dialog._preview_result is not None
+            and dialog.preview_table.rowCount() == 4
+        ),
+        timeout=10_000,
+    )
 
     assert preview_calls == 1
     assert dialog.preview_table.rowCount() == 4
@@ -24930,6 +28379,8 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     assert "review it" in dialog.preview_status.text().lower()
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
 
+    dialog.tabs.setCurrentIndex(3)
+    assert dialog.run_button.isVisible() and dialog.run_button.isEnabled()
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
@@ -24958,7 +28409,7 @@ def test_error_policy_collision_cancel_preserves_existing_output(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
-    collision_path = Path(dialog.preview_table.item(0, 2).toolTip().splitlines()[0])
+    collision_path = dialog._preview_result.items[0].outputs[0].path
     collision_path.parent.mkdir(parents=True, exist_ok=True)
     collision_path.write_bytes(b"collision")
     prompts: list[tuple[tuple[Path, ...], Path]] = []
@@ -24973,9 +28424,11 @@ def test_error_policy_collision_cancel_preserves_existing_output(
     # The first click safely refreshes a newly changed destination plan. The
     # second asks about the now-reviewed collision instead of reporting a run
     # failure.
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
+    qtbot.waitUntil(lambda: not dialog._run_preparing, timeout=5_000)
     assert prompts == []
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
+    qtbot.waitUntil(lambda: bool(prompts), timeout=5_000)
 
     assert len(prompts) == 1
     assert collision_path.resolve() in {path.resolve() for path in prompts[0][0]}
@@ -24990,10 +28443,12 @@ def test_error_policy_collision_cancel_preserves_existing_output(
     assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.ERROR.value
 
 
+@pytest.mark.parametrize("keep_other_item", [False, True])
 def test_error_policy_collision_confirmation_overwrites_for_one_run(
     qtbot,
     tmp_path,
     monkeypatch,
+    keep_other_item,
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -25002,9 +28457,14 @@ def test_error_policy_collision_confirmation_overwrites_for_one_run(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
-    collision_path = Path(dialog.preview_table.item(0, 2).toolTip().splitlines()[0])
+    collision_path = dialog._preview_result.items[0].outputs[0].path
     collision_path.parent.mkdir(parents=True, exist_ok=True)
     collision_path.write_bytes(b"collision")
+    kept_path = None
+    if keep_other_item:
+        kept_path = dialog._preview_result.items[1].outputs[0].path
+        kept_path.write_bytes(b"item choice must be retained")
+        dialog._set_item_file_policy(1, "skip")
     prompts: list[tuple[tuple[Path, ...], Path]] = []
     monkeypatch.setattr(
         widget,
@@ -25014,9 +28474,10 @@ def test_error_policy_collision_confirmation_overwrites_for_one_run(
         ),
     )
 
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
+    qtbot.waitUntil(lambda: not dialog._run_preparing, timeout=5_000)
     assert prompts == []
-    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    dialog._request_run()
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
         lambda: not widget._collection_batch_running and manifest_path.is_file(),
@@ -25026,6 +28487,9 @@ def test_error_policy_collision_confirmation_overwrites_for_one_run(
     assert len(prompts) == 1
     assert collision_path.resolve() in {path.resolve() for path in prompts[0][0]}
     assert collision_path.read_bytes() != b"collision"
+    if kept_path is not None:
+        assert kept_path.read_bytes() == b"item choice must be retained"
+        assert kept_path.resolve() not in {path.resolve() for path in prompts[0][0]}
     assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.ERROR.value
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert (
@@ -25156,12 +28620,17 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
     assert dialog.isVisible()
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     assert dialog.preview_table.rowCount() == 3
 
+    dialog.tabs.setCurrentIndex(1)
     assert dialog.select_preview_item(1)
     qtbot.mouseClick(dialog.preview_item_button, Qt.LeftButton)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     assert widget.batch_navigator.current_index == 1
     widget.batch_navigator.slider.setValue(2)
+    _wait_for_collection_batch_graph_idle(qtbot, widget)
     assert widget.batch_navigator.current_index == 2
     assert dialog.preview_table.currentRow() == 2
     qtbot.waitUntil(
@@ -25172,12 +28641,15 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
         timeout=5_000,
     )
 
+    dialog.tabs.setCurrentIndex(3)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     manifest_path = demo.root / "results" / BATCH_MANIFEST_FILENAME
     qtbot.waitUntil(
         lambda: (
             widget._pending_collection_batch_start is None
             and not widget._collection_batch_running
+            and not dialog._run_in_progress
+            and not dialog._run_preparing
             and manifest_path.is_file()
         ),
         timeout=15_000,
@@ -25185,7 +28657,7 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
 
     assert dialog.isVisible()
     assert dialog.run_progress_bar.value() == 3
-    assert [dialog.preview_table.item(row, 4).text() for row in range(3)] == [
+    assert [dialog.preview_table.item(row, 5).text() for row in range(3)] == [
         "Completed",
         "Completed",
         "Completed",
@@ -25195,8 +28667,9 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     assert widget.batch_navigator.progress_bar.value() == 3
     assert manifest_path.is_file()
     assert dialog._preview_result is None
-    assert "Historical preflight" in dialog.preview_status.text()
-    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=1_000)
+    assert dialog.results_panel.has_run_report
+    assert not dialog.run_button.isEnabled()
+    assert dialog.next_button.text() == "View run report"
 
     qtbot.mouseClick(dialog.close_button, Qt.LeftButton)
     assert dialog.isHidden()
@@ -25210,8 +28683,10 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     assert len(widget._interactive_collection_batch_items) == 3
     assert not widget.batch_navigator.isHidden()
     assert widget.batch_navigator.slider.isEnabled()
-    assert "previous plan" in widget.batch_navigator.representative_label.text()
-    assert dialog.run_button.text() == "Run batch"
+    assert widget._interactive_collection_batch_plan_stale
+    assert not widget.batch_navigator.representative_label.isHidden()
+    assert "Settings changed" in dialog.preview_status.text()
+    assert not dialog.run_button.isEnabled()
     assert dialog.demo_guide_label.isHidden()
     assert widget._active_collection_batch_dialog is dialog
 
@@ -25238,7 +28713,7 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
         lambda *_args, **_kwargs: QMessageBox.Yes,
     )
 
-    qtbot.mouseClick(dialog.demo_config_button, Qt.LeftButton)
+    dialog.demo_action.trigger()
 
     demo_root = tmp_path / SYNTHETIC_BATCH_DEMO_DIRNAME
     assert (demo_root / BATCH_WORKFLOW_FILENAME).is_file()
@@ -25260,17 +28735,15 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
         demo_root / "inputs" / "reference"
     )
     assert dialog.output_edit.text() == str(demo_root / "results")
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     assert dialog.preview_table.rowCount() == 3
-    assert dialog.preview_table.item(0, 2).text().count("\n") == 2
-    assert dialog.preview_table.item(0, 3).text().splitlines() == [
-        "new",
-        "new",
-        "new",
-    ]
+    assert dialog.preview_table.item(0, 2).text() == "2 paired"
+    assert dialog.preview_table.item(0, 3).text() == "3 to create"
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
     assert not dialog.demo_guide_label.isHidden()
     assert "Ready-to-run batch demo" in dialog.demo_guide_label.text()
     assert dialog.demo_path_edit.text() == str(demo_root)
-    assert dialog.run_button.text() == "Run demo batch"
+    assert dialog.run_button.text() == "Run 3 items"
     assert "Demo ready" in dialog.preview_status.text()
     assert "3 paired items" in dialog.preview_status.text()
     assert "9 outputs" in dialog.preview_status.text()
@@ -25399,13 +28872,12 @@ def test_open_batch_example_builds_a_ready_to_run_workspace(
     assert dialog is not None
     assert dialog.isVisible()
     assert dialog._demo == SyntheticBatchDemo.from_root(demo_root)
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     assert dialog.preview_table.rowCount() == 3
-    assert dialog.preview_table.item(0, 3).text().splitlines() == [
-        "new",
-        "new",
-        "new",
-    ]
-    assert dialog.run_button.text() == "Run demo batch"
+    assert dialog.preview_table.item(0, 2).text() == "2 paired"
+    assert dialog.preview_table.item(0, 3).text() == "3 to create"
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
+    assert dialog.run_button.text() == "Run 3 items"
     assert "Demo ready" in dialog.preview_status.text()
 
 
@@ -25804,9 +29276,13 @@ def test_collection_batch_preview_reports_new_collision_and_terminal_fallback(
     dialog.format_combo.setCurrentText("npy")
     dialog._preview_batch()
 
+    qtbot.waitUntil(lambda: dialog._preview_result is not None, timeout=5_000)
     assert dialog.preview_table.rowCount() == 1
-    assert "exists; collision" in dialog.preview_table.item(0, 3).text()
-    assert "collision" in dialog.preview_status.text().lower()
+    assert dialog.preview_table.item(0, 3).text() == "1 existing"
+    assert dialog.preview_table.item(0, 4).text() == "Review"
+    assert dialog.preview_table.item(0, 5).text() == "Needs decision"
+    assert dialog._preview_result.collision_count == 1
+    assert existing_path.read_bytes() == b"already here"
     assert "save the final graph results" in dialog.preview_status.text()
 
 
@@ -26680,6 +30156,76 @@ def test_scatter_threshold_drag_and_recalculation_pause_share_one_undo_point(
     assert widget.pipeline.nodes[coloc.id].params == initial_params
 
 
+def test_scatter_popout_threshold_drag_targets_its_owner_after_selection_changes(
+    qtbot,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8)), metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    owner = widget.add_node_from_palette("racc_index")
+    selected = widget.add_node_from_palette("racc_index")
+    widget._connect_nodes("input", owner.id, target_port=0)
+    widget._connect_nodes("input", owner.id, target_port=1)
+    widget._debounce_timer.stop()
+    owner_initial = dict(owner.params)
+    selected_initial = dict(selected.params)
+
+    dialog = ColocalizationScatterDialog(widget)
+    qtbot.addWidget(dialog)
+    dialog.set_density(
+        np.ones((16, 16), dtype=np.float64),
+        threshold_1=float(owner.params["channel_1_threshold"]),
+        threshold_2=float(owner.params["channel_2_threshold"]),
+        intensity_min=0.0,
+        intensity_max=100.0,
+        roi_voxels=256,
+        colocalized_voxels=64,
+    )
+    dialog.thresholdChanged.connect(
+        widget._on_colocalization_scatter_threshold_changed
+    )
+    dialog.plot.gestureStarted.connect(
+        lambda: widget._begin_colocalization_threshold_scrub(dialog.plot)
+    )
+    dialog.plot.gestureFinished.connect(
+        lambda: widget._end_colocalization_threshold_scrub(dialog.plot)
+    )
+    widget._colocalization_scatter_dialog = dialog
+    widget._colocalization_scatter_dialog_node_id = owner.id
+    dialog.show()
+
+    widget.graph_view.select_node(selected.id)
+    widget._update_colocalization_scatter()
+
+    assert dialog.isVisible()
+    plot_rect = dialog.plot._plot_rect()
+    start = QPoint(
+        dialog.plot._x_from_value(dialog.plot._threshold_1, plot_rect),
+        plot_rect.bottom() - 20,
+    )
+    target = QPoint(plot_rect.center().x(), start.y())
+    expected = float(
+        np.round(dialog.plot._value_from_x(target.x(), plot_rect), 2)
+    )
+
+    qtbot.mousePress(dialog.plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(dialog.plot, pos=target)
+
+    assert owner.params == owner_initial
+    assert selected.params == selected_initial
+
+    qtbot.mouseRelease(dialog.plot, Qt.LeftButton, pos=target)
+    widget._debounce_timer.stop()
+    qtbot.waitUntil(
+        lambda: widget._active_colocalization_scatter_dialog_run_id is None,
+        timeout=5_000,
+    )
+
+    assert owner.params["threshold_mode"] == "Manual"
+    assert owner.params["channel_1_threshold"] == expected
+    assert selected.params == selected_initial
+    assert dialog.summary_label.text().startswith("Exact:")
+
+
 def test_deferred_pipeline_refresh_remains_owned_by_origin_workflow_tab(
     qtbot,
 ):
@@ -27381,7 +30927,7 @@ def test_pin_button_visible_for_selected_image_node(qtbot):
 
     widget.graph_view.select_node("gaussian")
     assert not widget.pin_button.isHidden()
-    assert widget.pin_button.text() == "Pin selected"
+    assert widget.pin_button.text() == "Pin node"
 
     widget.graph_view.select_node(measurements.id)
     assert widget.pin_button.isHidden()
@@ -27424,7 +30970,7 @@ def test_selecting_another_node_does_not_clear_pin(qtbot):
     assert widget.graph_view._cards["threshold"].pin_button.isHidden()
     assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
     assert not widget.pin_button.isHidden()
-    assert widget.pin_button.text() == "Pin selected"
+    assert widget.pin_button.text() == "Pin node"
 
 
 def test_selected_pinned_node_shows_unpin_in_inspector(qtbot):
@@ -27435,7 +30981,7 @@ def test_selected_pinned_node_shows_unpin_in_inspector(qtbot):
     widget.graph_view.select_node("threshold")
     widget.pin_node("threshold")
 
-    assert widget.pin_button.text() == "Unpin selected"
+    assert widget.pin_button.text() == "Unpin node"
     assert not widget.pin_button.isHidden()
 
 
@@ -29226,9 +32772,10 @@ def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
         "complete input"
         in widget._parameter_widgets["crop_roi_summary"].text().casefold()
     )
-    retained_roi_layers = widget._owned_crop_presentation_layers("crop_roi")
-    assert retained_roi_layers
-    assert all(not layer.visible for layer in retained_roi_layers)
+    qtbot.waitUntil(
+        lambda: not widget._owned_crop_presentation_layers(),
+        timeout=2_000,
+    )
     assert widget.graph_view._cards[crop.id]._bypassed
     assert (
         widget.graph_view._cards[crop.id]._compute_badge_kind
@@ -29247,6 +32794,25 @@ def test_safe_bypass_inspector_is_shared_and_keeps_parameters_dormant(qtbot):
     assert not ready
     assert "bypassed" in reason.casefold()
     assert not widget.node_benchmark_button.isEnabled()
+
+    widget.node_bypass_checkbox.setChecked(False)
+
+    assert widget.pipeline.nodes[crop.id].execution_mode == "run"
+    assert widget.pipeline.nodes[crop.id].params == stored
+    assert widget.parameter_group.isEnabled()
+    assert widget._parameter_widgets["top"].isEnabled()
+    expected = data[:, 2:, :]
+    qtbot.waitUntil(
+        lambda: tuple(widget.pipeline.outputs[crop.id].shape) == expected.shape,
+        timeout=2_000,
+    )
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], expected)
+    qtbot.waitUntil(
+        lambda: bool(widget._owned_crop_presentation_layers("crop_source"))
+        and bool(widget._owned_crop_presentation_layers("crop_roi")),
+        timeout=2_000,
+    )
+    assert all(layer.visible for layer in widget._owned_crop_presentation_layers())
 
 
 def test_safe_bypass_hides_sources_writers_and_multi_output_nodes(qtbot):
@@ -29699,11 +33265,23 @@ def test_batch_aggregate_bypass_profile_plans_and_dispatches_atomically(qtbot):
     )
 
 
-@pytest.mark.parametrize("table_case", ("labels-to-table", "table-to-table"))
-def test_table_output_bypasses_never_request_or_store_card_shadows(
-    qtbot,
-    table_case,
-):
+def test_non_table_to_table_node_hides_and_rejects_bypass(qtbot):
+    widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget.pipeline.add_output_tunnel("Table acceptance", measurements.id, 0)
+
+    widget._select_node(measurements.id)
+
+    assert widget.node_bypass_checkbox.isHidden()
+    with pytest.raises(ValueError, match="materializes a table from labels"):
+        widget.pipeline.set_node_execution_mode(measurements.id, "bypass")
+
+
+def test_table_to_table_bypass_never_requests_or_stores_card_shadows(qtbot):
     widget = VippWidget(_Viewer(np.arange(64, dtype=np.uint16).reshape(8, 8)))
     qtbot.addWidget(widget)
     qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
@@ -29712,23 +33290,21 @@ def test_table_output_bypasses_never_request_or_store_card_shadows(
     measurements = widget.add_node_from_palette("measure_objects")
     widget._connect_nodes(labels.id, measurements.id)
     manual_node_ids = {measurements.id}
-    table_node = measurements
-    if table_case == "table-to-table":
-        table_data = TableData(("label",), ((1,),), name="measurements")
-        table_state = TableState(
-            1,
-            1,
-            ("label",),
-            source_name="measurements",
-        )
-        widget.pipeline.outputs[measurements.id] = table_data
-        widget.pipeline.output_states[measurements.id] = table_state
-        widget.pipeline.node_outputs[measurements.id] = [table_data]
-        widget.pipeline.node_output_states[measurements.id] = [table_state]
-        widget.pipeline.completed_node_ids.add(measurements.id)
-        widget.pipeline.node_execution_states[measurements.id] = EXECUTION_READY
-        table_node = widget.add_node_from_palette("add_metadata_columns")
-        widget._connect_nodes(measurements.id, table_node.id)
+    table_data = TableData(("label",), ((1,),), name="measurements")
+    table_state = TableState(
+        1,
+        1,
+        ("label",),
+        source_name="measurements",
+    )
+    widget.pipeline.outputs[measurements.id] = table_data
+    widget.pipeline.output_states[measurements.id] = table_state
+    widget.pipeline.node_outputs[measurements.id] = [table_data]
+    widget.pipeline.node_output_states[measurements.id] = [table_state]
+    widget.pipeline.completed_node_ids.add(measurements.id)
+    widget.pipeline.node_execution_states[measurements.id] = EXECUTION_READY
+    table_node = widget.add_node_from_palette("add_metadata_columns")
+    widget._connect_nodes(measurements.id, table_node.id)
     widget.pipeline.add_output_tunnel("Table acceptance", table_node.id, 0)
     widget.pipeline.set_node_execution_mode(table_node.id, "bypass")
 
@@ -30044,6 +33620,14 @@ def test_safe_bypass_history_restores_disconnected_persisted_mode(qtbot, monkeyp
 
 
 def _press_slider_handle(qtbot, slider) -> QPoint:
+    parent = slider.parentWidget()
+    while parent is not None:
+        if isinstance(parent, QScrollArea):
+            parent.ensureWidgetVisible(slider, 12, 12)
+            QApplication.processEvents()
+            break
+        parent = parent.parentWidget()
+    slider.ensurePolished()
     option = QStyleOptionSlider()
     slider.initStyleOption(option)
     handle = slider.style().subControlRect(
@@ -31146,6 +34730,101 @@ def test_auto_contrast_button_updates_scale_and_offset(qtbot):
     assert output.max() == 255
 
 
+def test_auto_contrast_helper_explains_its_one_shot_parameter_update(qtbot):
+    widget = VippWidget(_Viewer(np.arange(256, dtype=np.uint8).reshape(16, 16)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+
+    assert widget.auto_contrast_group.title() == "Set scale + offset from input"
+    assert widget.auto_contrast_button.text() == "Calculate and apply"
+
+    saturation_label = widget.auto_contrast_form.labelForField(
+        widget.auto_saturation_control
+    )
+    assert saturation_label.text() == "Tail exclusion (%)"
+
+    saturation_tooltip = widget.auto_saturation_control.toolTip().casefold()
+    assert "total percentage" in saturation_tooltip
+    assert "equally" in saturation_tooltip
+    assert "low and high tails" in saturation_tooltip
+    assert "0.175" in saturation_tooltip
+    assert "only" in saturation_tooltip
+    assert saturation_label.toolTip() == widget.auto_saturation_control.toolTip()
+
+    action_tooltip = widget.auto_contrast_button.toolTip().casefold()
+    assert "every finite input value" in action_tooltip
+    assert "scale and offset" in action_tooltip
+    assert "0 and 255" in action_tooltip
+    assert "shown above" in action_tooltip
+    assert "saved with the workflow" in action_tooltip
+
+
+def test_auto_contrast_noop_shows_exact_applied_parameters_without_rerun(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+    widget._debounce_timer.stop()
+    widget.pipeline.set_param(node.id, "alpha", 1.0)
+    widget.pipeline.set_param(node.id, "beta", 0.0)
+    widget._render_parameters(node.id)
+    widget.auto_saturation_control.value_box.setValue(0.0)
+
+    runs = []
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: runs.append((args, kwargs)),
+    )
+    history_size = len(widget._undo_stack)
+
+    widget.auto_contrast_button.click()
+
+    params = widget.pipeline.nodes[node.id].params
+    assert params["alpha"] == 1.0
+    assert params["beta"] == 0.0
+    assert widget._parameter_widgets["alpha"].value() == 1.0
+    assert widget._parameter_widgets["beta"].value() == 0.0
+    assert len(widget._undo_stack) == history_size
+    assert not runs
+
+    result_text = widget.auto_contrast_result_label.text().casefold()
+    assert "already" in result_text
+    assert "input range" in result_text
+    assert "0" in result_text
+    assert "255" in result_text
+    assert "scale 1" in result_text
+    assert "offset 0" in result_text
+
+
+def test_manual_scale_edit_immediately_clears_auto_contrast_result(qtbot):
+    data = np.arange(100, dtype=np.uint8).reshape(10, 10)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+    widget.auto_saturation_control.value_box.setValue(0.0)
+    widget.auto_contrast_button.click()
+
+    assert widget.auto_contrast_result_label.text().startswith("Applied:")
+
+    widget._parameter_widgets["alpha"].value_box.setValue(4.0)
+    widget._debounce_timer.stop()
+
+    assert widget.pipeline.nodes[node.id].params["alpha"] == 4.0
+    assert widget.auto_contrast_result_label.text() == (
+        "Scale and Offset above are the values this node will use."
+    )
+
+
 def test_auto_contrast_button_uses_connected_explicit_rgb_semantics(qtbot):
     data = np.array(
         [[[0, 0, 0], [100, 0, 0], [0, 100, 0], [0, 0, 100]]],
@@ -31369,3 +35048,148 @@ def test_large_auto_contrast_ignores_stale_setting_result(qtbot):
     assert params["beta"] == 1.0
     assert len(widget._undo_stack) == undo_count
     assert "stale result was ignored" in widget.status_label.text()
+
+
+def test_palette_append_to_terminal_output_is_atomic_and_undoable(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    widget._history.clear()
+    before_node_ids = set(widget.pipeline.nodes)
+    source_position = QPointF(widget.graph_view.node_position("threshold"))
+
+    node = widget._append_node_to_output(
+        "remove_small_objects",
+        "threshold",
+        0,
+        source_position,
+    )
+
+    assert node is not None
+    assert set(widget.pipeline.nodes) == before_node_ids | {node.id}
+    assert GraphConnection("threshold", node.id, 0, 0) in widget.pipeline.connections
+    assert widget.graph_view.node_position(node.id).x() > source_position.x()
+    assert len(widget._undo_stack) == 1
+
+    widget.undo()
+
+    assert set(widget.pipeline.nodes) == before_node_ids
+    assert not any(
+        connection.source_id == "threshold"
+        and connection.target_id == node.id
+        for connection in widget.pipeline.connections
+    )
+
+    widget.redo()
+
+    assert node.id in widget.pipeline.nodes
+    assert GraphConnection("threshold", node.id, 0, 0) in widget.pipeline.connections
+
+
+def test_palette_append_signal_is_wired_to_terminal_append(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    widget._history.clear()
+    before_node_ids = set(widget.pipeline.nodes)
+
+    widget.graph_view.node_append_requested.emit(
+        "remove_small_objects",
+        "threshold",
+        0,
+        QPointF(widget.graph_view.node_position("threshold")),
+    )
+
+    appended_ids = set(widget.pipeline.nodes) - before_node_ids
+    assert len(appended_ids) == 1
+    appended_id = appended_ids.pop()
+    assert GraphConnection("threshold", appended_id, 0, 0) in (
+        widget.pipeline.connections
+    )
+    assert len(widget._undo_stack) == 1
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "source_id", "reason_fragment"),
+    (
+        ("median_filter", "gaussian", "already"),
+        ("merge_tables", "threshold", "cannot"),
+    ),
+)
+def test_palette_append_rejects_occupied_or_incompatible_output_without_edits(
+    qtbot,
+    monkeypatch,
+    operation_id,
+    source_id,
+    reason_fragment,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    widget._history.clear()
+    before_node_ids = set(widget.pipeline.nodes)
+    before_connections = tuple(widget.pipeline.connections)
+    before_counters = deepcopy(widget.pipeline._counters)
+
+    state, reason = widget._node_append_preview_state(
+        operation_id,
+        source_id,
+        0,
+    )
+    node = widget._append_node_to_output(
+        operation_id,
+        source_id,
+        0,
+        QPointF(widget.graph_view.node_position(source_id)),
+    )
+
+    assert state == "incompatible"
+    assert reason_fragment in reason.casefold()
+    assert node is None
+    assert set(widget.pipeline.nodes) == before_node_ids
+    assert tuple(widget.pipeline.connections) == before_connections
+    assert widget.pipeline._counters == before_counters
+    assert len(widget._undo_stack) == 0
+
+
+def test_palette_append_uses_first_compatible_input_for_multi_input_node(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *_args, **_kwargs: None)
+    assert widget.pipeline.disconnect("gaussian", "threshold", target_port=0)
+    widget.graph_view.remove_connection(
+        "gaussian",
+        "threshold",
+        target_port=0,
+        notify=False,
+    )
+    widget._history.clear()
+
+    state, _reason = widget._node_append_preview_state(
+        "richardson_lucy_deconvolution",
+        "gaussian",
+        0,
+    )
+    node = widget._append_node_to_output(
+        "richardson_lucy_deconvolution",
+        "gaussian",
+        0,
+        QPointF(widget.graph_view.node_position("gaussian")),
+    )
+
+    assert state == "compatible"
+    assert node is not None
+    incoming = [
+        connection
+        for connection in widget.pipeline.connections
+        if connection.target_id == node.id
+    ]
+    assert incoming == [GraphConnection("gaussian", node.id, 0, 0)]
+    assert widget.pipeline.input_port_count(node.id) == 2
+    assert len(widget._undo_stack) == 1

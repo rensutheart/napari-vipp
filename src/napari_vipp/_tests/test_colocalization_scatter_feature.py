@@ -21,10 +21,13 @@ from napari_vipp.core.operations import (
 from napari_vipp.core.pipeline import (
     COLOCALIZATION_THRESHOLD_OPERATIONS,
     NODE_LIBRARY_BY_ID,
+    PALETTE_NODE_LIBRARY,
     SAME_SHAPE_GRID_OPERATIONS,
     PrototypePipeline,
     SourcePayload,
+    grouped_palette_specs,
 )
+from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 
 def test_populated_ranges_are_native_independent_and_roi_restricted():
@@ -302,6 +305,38 @@ def test_scatter_pipeline_nodes_are_registered(operation_id, input_count):
     assert parameters["range_percentile"].default == 100.0
     assert operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS
     assert operation_id in SAME_SHAPE_GRID_OPERATIONS
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+    ],
+)
+def test_legacy_scatter_raster_nodes_are_hidden_but_still_loadable(operation_id):
+    palette_ids = {spec.id for spec in PALETTE_NODE_LIBRARY}
+    grouped_ids = {
+        spec.id
+        for subcategories in grouped_palette_specs().values()
+        for specs in subcategories.values()
+        for spec in specs
+    }
+
+    assert operation_id in NODE_LIBRARY_BY_ID
+    assert operation_id not in palette_ids
+    assert operation_id not in grouped_ids
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    legacy_node = pipeline.add_node(operation_id)
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_legacy_node = next(
+        node for node in restored["nodes"] if node.operation_id == operation_id
+    )
+
+    assert restored_legacy_node.id == legacy_node.id
+    assert restored_legacy_node.operation_id == operation_id
 
 
 def test_scatter_pipeline_metadata_is_explicit_rgb():

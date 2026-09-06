@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="980" viewBox="0 0 1440 980" role="img" aria-labelledby="svg-title svg-desc">
+<title id="svg-title">Conceptual software architecture of napari-vipp</title>
+<desc id="svg-desc">Interactive napari use, generated Python, and local collection batch execution converge on a shared Qt-free scientific core. Source payloads and normalized I/O feed the typed workflow graph and operation catalog. The isolated executor selects CPU reference kernels or eligible CUDA segments, and accepted results become napari layers or durable run records.</desc>
+<style>text {
+  font-family: Arial, "Liberation Sans", sans-serif;
+  fill: #14213d;
+  text-rendering: geometricPrecision;
+}
+.title { font-size: 44px; font-weight: 700; letter-spacing: -0.7px; }
+.subtitle { font-size: 22px; font-weight: 400; fill: #4f617d; }
+.section { font-size: 18px; font-weight: 700; letter-spacing: 2.2px; fill: #566984; }
+.card-title { font-size: 23px; font-weight: 700; }
+.card-title-sm { font-size: 20px; font-weight: 700; }
+.card-title-xs { font-size: 18px; font-weight: 700; }
+.body { font-size: 19px; font-weight: 400; fill: #334a68; }
+.body-sm { font-size: 17px; font-weight: 400; fill: #3f5370; }
+.small { font-size: 15px; font-weight: 400; fill: #5b6d87; }
+.small-strong { font-size: 15px; font-weight: 700; fill: #4a5e79; }
+.chip-text { font-size: 13px; font-weight: 700; letter-spacing: 1.3px; }
+.step-number { font-size: 20px; font-weight: 700; fill: #ffffff; }
+.arrow-label {
+  font-size: 15px;
+  font-weight: 700;
+  fill: #4d607d;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 7px;
+  stroke-linejoin: round;
+}
+.card, .band, .outer-frame, .mini-card {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 2.4;
+}
+.outer-frame { fill: #ffffff; stroke: #a1acbc; }
+.neutral { fill: #f6f8fb; stroke: #7a879c; }
+.navy { fill: #18243a; stroke: #18243a; }
+.blue { fill: #eaf6fb; stroke: #117ea6; }
+.violet { fill: #f1ecfa; stroke: #7251b5; }
+.green { fill: #e9f6f2; stroke: #23816f; }
+.amber { fill: #fff5e2; stroke: #a9680b; }
+.rose { fill: #fceef4; stroke: #b63e72; }
+.red { fill: #fff1ef; stroke: #b42318; }
+.band-neutral { fill: #f6f8fb; stroke: #a1acbc; }
+.band-blue { fill: #edf8fc; stroke: #8fc5d8; }
+.band-violet { fill: #f4effc; stroke: #b49bdc; }
+.band-green { fill: #edf8f5; stroke: #91c8bb; }
+.band-amber { fill: #fff8ea; stroke: #d9b26a; }
+.connector, .connector-blue, .connector-violet, .connector-green,
+.connector-amber, .connector-red, .connector-light {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.7;
+  vector-effect: non-scaling-stroke;
+}
+.connector { stroke: #3e4b63; }
+.connector-blue { stroke: #117ea6; }
+.connector-violet { stroke: #7251b5; }
+.connector-green { stroke: #23816f; }
+.connector-amber { stroke: #a9680b; }
+.connector-red { stroke: #b42318; }
+.connector-light { stroke: #9aa6b7; stroke-width: 2.1; }
+.optional { stroke-dasharray: 9 7; }
+.soft-dash { stroke-dasharray: 7 7; }
+.divider { stroke: #cad1dc; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.port { stroke-width: 2; vector-effect: non-scaling-stroke; }
+.image-frame { fill: #0c1629; stroke: #65738a; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.table-grid { stroke: #c5ccd7; stroke-width: 1.2; vector-effect: non-scaling-stroke; }</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#3e4b63"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#117ea6"/></marker>
+  <marker id="arrow-violet" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#7251b5"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#23816f"/></marker>
+  <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#a9680b"/></marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#b42318"/></marker>
+</defs>
+<rect x="0" y="0" width="1440" height="980" fill="#ffffff"/>
+<g id="title-band" aria-label="Figure title">
+<text x="60" y="62" class="title" text-anchor="start"><tspan x="60" dy="0">Conceptual software architecture</tspan></text>
+<text x="60" y="104" class="subtitle" text-anchor="start"><tspan x="60" dy="0">Interactive and reusable routes converge on one metadata-aware workflow model and isolated scientific executor.</tspan></text>
+</g>
+<text x="60" y="155" class="section" text-anchor="start"><tspan x="60" dy="0">ENTRY SURFACES</tspan></text>
+<g id="architecture-backgrounds" aria-label="Architecture lane backgrounds">
+<rect x="60" y="180" width="430" height="215" rx="22" class="outer-frame" />
+<rect x="530" y="180" width="380" height="215" rx="22" class="outer-frame" />
+<rect x="950" y="180" width="430" height="215" rx="22" class="outer-frame" />
+<rect x="100" y="430" width="1240" height="320" rx="26" class="band band-green" />
+<rect x="60" y="810" width="330" height="130" rx="18" class="card blue" />
+<rect x="420" y="810" width="270" height="130" rx="18" class="card green" />
+<rect x="720" y="810" width="270" height="130" rx="18" class="card green optional" />
+<rect x="1020" y="810" width="360" height="130" rx="18" class="card amber" />
+</g>
+<g id="architecture-connectors" aria-label="Architecture dependencies and execution flow">
+<path d="M275 395 V507" class="connector-violet" marker-end="url(#arrow-violet)"/>
+<path d="M720 395 V507" class="connector" marker-end="url(#arrow)"/>
+<path d="M1165 395 V507" class="connector" marker-end="url(#arrow)"/>
+<path d="M480 607 H542" class="connector-green" marker-end="url(#arrow-green)"/>
+<path d="M890 607 H952" class="connector-green" marker-end="url(#arrow-green)"/>
+<path d="M1210 700 V722 Q1210 738 1194 738 H852 Q836 738 836 722 V700" class="connector-amber" marker-end="url(#arrow-amber)"/>
+<text x="1025" y="719" class="arrow-label" text-anchor="middle"><tspan x="1025" dy="0">run a fresh item</tspan></text>
+<path d="M360 810 V774 H310 V708" class="connector-blue" marker-end="url(#arrow-blue)"/>
+<path d="M720 700 V780" class="connector-green"/>
+<circle cx="720" cy="780" r="6" fill="#23816f"/>
+<path d="M720 780 H555 V802" class="connector-green" marker-end="url(#arrow-green)"/>
+<path d="M720 780 H855 V802" class="connector-green optional" marker-end="url(#arrow-green)"/>
+<path d="M1130 700 V802" class="connector-amber" marker-end="url(#arrow-amber)"/>
+</g>
+<g id="interactive-entry" aria-label="Interactive napari dock and application layer">
+<text x="80" y="212" class="card-title" text-anchor="start"><tspan x="80" dy="0">Interactive napari dock</tspan></text>
+<rect x="80" y="230" width="150" height="75" rx="14" class="card navy" />
+<rect x="96" y="247" width="48" height="40" rx="8" class="image-frame" />
+<circle cx="114" cy="267" r="13" fill="#2f8ab5"/>
+<circle cx="130" cy="267" r="13" fill="#9b4f86"/>
+<text x="158" y="258" class="card-title-sm" text-anchor="start" style="fill:#ffffff"><tspan x="158" dy="0">napari</tspan></text>
+<text x="158" y="285" class="small" text-anchor="start" style="fill:#e8edf5"><tspan x="158" dy="0">layers</tspan></text>
+<path d="M230 268 H252" class="connector-violet" marker-end="url(#arrow-violet)"/>
+<path d="M252 287 H230" class="connector-blue" marker-end="url(#arrow-blue)"/>
+<rect x="260" y="230" width="205" height="75" rx="14" class="card violet" />
+<text x="362" y="260" class="card-title-sm" text-anchor="middle"><tspan x="362" dy="0">VIPP interface</tspan></text>
+<text x="362" y="287" class="small" text-anchor="middle"><tspan x="362" dy="0">palette · graph · inspector</tspan></text>
+<rect x="80" y="308" width="385" height="70" rx="12" class="card violet" />
+<text x="272" y="332" class="card-title-sm" text-anchor="middle"><tspan x="272" dy="0">VIPP application layer</tspan></text>
+<text x="272" y="349" class="small" text-anchor="middle"><tspan x="272" dy="0">composition · source snapshots · workers</tspan><tspan x="272" dy="18">stale-result rejection</tspan></text>
+</g>
+<g id="generated-code-entry" aria-label="Generated Python and command line entry">
+<text x="720" y="222" class="card-title" text-anchor="middle"><tspan x="720" dy="0">Generated Python / CLI</tspan></text>
+<path d="M567 254h35.7l14.45 14.45v49.3h-50.15z" fill="#ffffff" stroke="#68758c" stroke-width="3" vector-effect="non-scaling-stroke"/><path d="M602.7 254v14.45h14.45" fill="none" stroke="#68758c" stroke-width="3" vector-effect="non-scaling-stroke"/>
+<text x="770" y="269" class="body" text-anchor="middle"><tspan x="770" dy="0">embedded workflow definition</tspan><tspan x="770" dy="33">shared headless contract</tspan></text>
+<text x="720" y="352" class="small" text-anchor="middle"><tspan x="720" dy="0">workflow export does not require a completed run</tspan></text>
+</g>
+<g id="batch-entry" aria-label="Local collection batch entry">
+<text x="1165" y="222" class="card-title" text-anchor="middle"><tspan x="1165" dy="0">Local collection batch</tspan></text>
+<rect x="995" y="252" width="130" height="52" rx="12" class="mini-card" fill="#ffffff" stroke="#68758c"/>
+<rect x="1205" y="252" width="130" height="52" rx="12" class="mini-card" fill="#ffffff" stroke="#68758c"/>
+<path d="M1125 278 H1197" class="connector" marker-end="url(#arrow)"/>
+<text x="1060" y="283" class="body-sm" text-anchor="middle"><tspan x="1060" dy="0">collections</tspan></text>
+<text x="1270" y="283" class="body-sm" text-anchor="middle"><tspan x="1270" dy="0">planned items</tspan></text>
+<text x="1165" y="338" class="body-sm" text-anchor="middle"><tspan x="1165" dy="0">deterministic plan · preflight</tspan><tspan x="1165" dy="28">fresh detached graph per item</tspan></text>
+</g>
+<g id="shared-core" aria-label="Shared Qt-free scientific core">
+<rect x="125" y="446" width="350" height="32" rx="8" fill="#edf8f5"/>
+<rect x="545" y="446" width="745" height="32" rx="8" fill="#edf8f5"/>
+<text x="140" y="468" class="section" text-anchor="start"><tspan x="140" dy="0">SHARED QT-FREE SCIENTIFIC CORE</tspan></text>
+<text x="565" y="468" class="small-strong" text-anchor="start"><tspan x="565" dy="0">scientific contracts throughout: axes · physical grid · source revision · actual backend record</tspan></text>
+<rect x="140" y="515" width="340" height="185" rx="18" class="card green" />
+<text x="310" y="552" class="card-title" text-anchor="middle"><tspan x="310" dy="0">Workflow graph</tspan><tspan x="310" dy="29">&amp; operation catalog</tspan></text>
+<text x="310" y="620" class="body-sm" text-anchor="middle"><tspan x="310" dy="0">typed DAG · ports · parameters</tspan><tspan x="310" dy="27">ImageState · axis/grid contracts</tspan><tspan x="310" dy="27">runtime cache owned by the graph</tspan></text>
+<rect x="550" y="515" width="340" height="185" rx="18" class="card green" />
+<text x="720" y="552" class="card-title" text-anchor="middle"><tspan x="720" dy="0">Execution planner</tspan><tspan x="720" dy="29">&amp; isolated runner</tspan></text>
+<text x="720" y="620" class="body-sm" text-anchor="middle"><tspan x="720" dy="0">dirty subgraph · manual barriers</tspan><tspan x="720" dy="27">progress · cancellation</tspan><tspan x="720" dy="27">atomic node commits</tspan></text>
+<rect x="960" y="515" width="340" height="185" rx="18" class="card amber" />
+<text x="1130" y="552" class="card-title" text-anchor="middle"><tspan x="1130" dy="0">Persistence &amp; batch</tspan><tspan x="1130" dy="29">publication</tspan></text>
+<text x="1130" y="620" class="body-sm" text-anchor="middle"><tspan x="1130" dy="0">workflow JSON · generated Python</tspan><tspan x="1130" dy="27">plan · stage · reverify · promote</tspan><tspan x="1130" dy="27">manifests · per-item provenance</tspan></text>
+</g>
+<text x="60" y="790" class="section" text-anchor="start"><tspan x="60" dy="0">SUPPORTING SYSTEMS</tspan></text>
+<g id="supporting-systems" aria-label="I/O compute backends and outputs">
+<text x="225" y="844" class="card-title-sm" text-anchor="middle"><tspan x="225" dy="0">Source payloads &amp; I/O</tspan></text>
+<text x="225" y="877" class="body-sm" text-anchor="middle"><tspan x="225" dy="0">napari snapshots · TIFF · OME-Zarr</tspan><tspan x="225" dy="27">NumPy · optional readers</tspan></text>
+<text x="555" y="844" class="card-title-sm" text-anchor="middle"><tspan x="555" dy="0">CPU scientific kernels</tspan></text>
+<text x="555" y="879" class="body-sm" text-anchor="middle"><tspan x="555" dy="0">authoritative</tspan><tspan x="555" dy="27">portable baseline</tspan></text>
+<text x="855" y="838" class="card-title-sm" text-anchor="middle"><tspan x="855" dy="0">Optional CUDA</tspan><tspan x="855" dy="24">acceleration</tspan></text>
+<text x="855" y="892" class="body-sm" text-anchor="middle"><tspan x="855" dy="0">CuPy / CuPyX segments</tspan><tspan x="855" dy="24">visible CPU fallback</tspan></text>
+<text x="1200" y="844" class="card-title-sm" text-anchor="middle"><tspan x="1200" dy="0">Results &amp; run records</tspan></text>
+<text x="1200" y="877" class="body-sm" text-anchor="middle"><tspan x="1200" dy="0">napari layers · images · tables</tspan><tspan x="1200" dy="27">workflows · manifests · provenance</tspan></text>
+</g>
+</svg>

@@ -302,22 +302,34 @@ resolved threshold controls remain visible but disabled; switching to Manual
 enables them with the same values. The scatter plot is therefore a threshold
 review and tuning view, not an additional metric.
 
-`Colocalization Scatter Plot` and `Masked Colocalization Scatter Plot` expose
-the density as an RGB workflow output. Histogram bins and output pixels are
-separate parameters (up to 4096 on each axis). The rendered axes use
-independent native-intensity populated ranges, with an optional symmetric
-percentile clip; the default 100% setting includes the exact ROI min/max. This
-display-only clipping never changes a metric population or threshold.
+New interactive workflows should use `Colocalization Metrics` or `Masked
+Colocalization Metrics` and open the inspector scatter in its resizable window.
+The legacy `Colocalization Scatter Plot` and `Masked Colocalization Scatter
+Plot` operations are hidden from the palette but remain executable for existing
+workflows and headless jobs that require a durable RGB raster. Their histogram
+bins and output pixels are separate parameters (up to 4096 on each axis). The
+rendered axes use independent native-intensity populated ranges, with an
+optional symmetric percentile clip; the default 100% setting includes the
+exact ROI min/max. This display-only clipping never changes a metric population
+or threshold.
 
 The inspector can open its prepared density in a resizable interactive dialog.
 Threshold movement is reflected immediately with a labelled histogram count
 estimate while the normal asynchronous calculation supplies the exact count.
-PNG and TIFF export render the plot at its current on-screen pixel dimensions.
-For bounded GUI memory, inspector and popout densities use at most 1024 bins per
-axis; the UI reports when a graph node requested more. This presentation cap
-does not alter the graph operation, which still supports 4096 histogram bins.
+The dialog exposes density resolution, a symmetric populated-range percentile,
+log-density rendering, zero/full versus populated-range zoom, equal axis scale,
+and an explicit square export size. The full native ROI extrema and the
+percentile-clipped density bounds are retained separately, so the zoom toggle
+has an honest reference extent. At 100%, those extents may coincide. PNG and
+TIFF export render natively at the selected export dimensions.
+The popout density supports up to 4096 bins per axis, matching the legacy graph
+operation. High-resolution densities use a background calculation and measured
+host-memory preflight. The compact inspector and live threshold-drag estimate
+use a mass-preserving representation of at most 1024 bins per axis, while the
+popout retains and renders the complete requested density.
 Threshold-only updates reuse the compatible density and rescan the full ROI for
-authoritative counts. Density caches have an explicit byte budget.
+authoritative counts. Pop-out display edits do not dirty or invalidate the
+workflow. Density caches have an explicit byte budget.
 
 ## RACC-Like Index
 

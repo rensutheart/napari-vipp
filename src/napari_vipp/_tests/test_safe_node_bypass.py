@@ -57,6 +57,9 @@ def test_bypass_capability_is_derived_from_operation_schema_and_live_graph() -> 
     writer = pipeline.add_node("save_output")
 
     assert NODE_LIBRARY_BY_ID["gaussian_blur"].supports_bypass
+    assert NODE_LIBRARY_BY_ID["binary_threshold"].supports_bypass
+    assert NODE_LIBRARY_BY_ID["add_metadata_columns"].supports_bypass
+    assert not NODE_LIBRARY_BY_ID["measure_objects"].supports_bypass
     assert not NODE_LIBRARY_BY_ID["input"].supports_bypass
     assert not NODE_LIBRARY_BY_ID["split_channels"].supports_bypass
     assert not NODE_LIBRARY_BY_ID["save_output"].supports_bypass
@@ -70,11 +73,24 @@ def test_bypass_capability_is_derived_from_operation_schema_and_live_graph() -> 
         pipeline.set_node_execution_mode(writer.id, "bypass")
 
 
-def test_every_single_output_operation_inherits_bypass_except_true_boundaries() -> None:
-    assert len(NODE_LIBRARY) == 114
+def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> None:
+    assert len(NODE_LIBRARY) == 115
     assert {spec.id for spec in NODE_LIBRARY if not spec.supports_bypass} == {
         "input",
+        "analyze_skeleton",
         "born_wolf_psf",
+        "colocalization_metrics",
+        "event_localization",
+        "intensity_histogram",
+        "label_overlap_association",
+        "masked_colocalization_metrics",
+        "measure_3d_mesh_morphology",
+        "measure_objects",
+        "measure_objects_intensity",
+        "measure_overall_skeleton_network",
+        "measure_skeleton_branches",
+        "nearest_object_distance",
+        "object_colocalization_metrics",
         "split_axis",
         "skeleton_graph_tables",
         "skeleton_keypoints",
@@ -847,7 +863,125 @@ def test_dirty_sibling_rebinds_valid_bypass_cache_copy_to_exact_upstream(
     )
 
 
-def test_labels_to_table_measurement_can_alias_labels_through_a_tunnel() -> None:
+def test_incremental_bypass_shadow_reuses_validated_upstream_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    subtract = pipeline.add_node("subtract_background")
+    gamma = pipeline.add_node("gamma_correction")
+    downstream = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", subtract.id).success
+    assert pipeline.connect(subtract.id, gamma.id).success
+    assert pipeline.connect(gamma.id, downstream.id).success
+    pipeline.set_param(gamma.id, "gamma", 0.8)
+
+    subtract_calls = 0
+    original_subtract = NODE_LIBRARY_BY_ID["subtract_background"]
+
+    def tracked_subtract(
+        data,
+        radius=50.0,
+        light_background=False,
+        disable_smoothing=False,
+        clip_negative=True,
+        spatial_mode="2D YX",
+        resolved_spatial_ndim=None,
+        progress=None,
+        channel_axis=None,
+    ):
+        del (
+            radius,
+            light_background,
+            disable_smoothing,
+            clip_negative,
+            spatial_mode,
+            resolved_spatial_ndim,
+            channel_axis,
+        )
+        nonlocal subtract_calls
+        subtract_calls += 1
+        if progress is not None:
+            progress.report(1, 1, "tracked subtract")
+        return np.array(data, copy=True)
+
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "subtract_background",
+        replace(original_subtract, function=tracked_subtract),
+    )
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    initial_result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=16,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="incremental-bypass-shadow",
+            source_payloads={},
+        )
+    )
+    assert initial_result.error == ""
+    initial = initial_result.pipeline
+    assert initial is not None
+    assert subtract_calls == 1
+    assert initial.set_node_execution_mode(gamma.id, "bypass")
+
+    started: list[str] = []
+    progress_events: list[tuple[str, int, int, str]] = []
+    shadows: list[PipelinePresentationShadowResult] = []
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=17,
+            workflow=serialize_workflow(initial),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="incremental-bypass-shadow",
+            source_payloads={},
+            dirty_node_ids=frozenset({gamma.id}),
+            cached_outputs=dict(initial.outputs),
+            cached_output_states=dict(initial.output_states),
+            cached_node_outputs={
+                node_id: list(outputs)
+                for node_id, outputs in initial.node_outputs.items()
+            },
+            cached_node_output_states={
+                node_id: list(states)
+                for node_id, states in initial.node_output_states.items()
+            },
+            completed_node_ids=frozenset(initial.completed_node_ids),
+            cached_execution_states=dict(initial.node_execution_states),
+            cached_execution_messages=dict(initial.node_execution_messages),
+            cached_compute_provenance={
+                **initial.node_cache_lineage,
+                **initial.node_compute_provenance,
+            },
+            presentation_shadow_node_ids=frozenset({gamma.id}),
+        ),
+        node_started_callback=started.append,
+        presentation_shadow_callback=shadows.append,
+        progress_callback=lambda node_id, current, total, message: (
+            progress_events.append((node_id, current, total, message))
+        ),
+    )
+
+    assert result.error == ""
+    completed = result.pipeline
+    assert completed is not None
+    assert started == [gamma.id, downstream.id]
+    assert subtract_calls == 1
+    assert all(node_id != subtract.id for node_id, *_rest in progress_events)
+    assert completed.outputs[gamma.id] is completed.outputs[subtract.id]
+    assert completed.output_states[gamma.id] is completed.output_states[subtract.id]
+    assert len(shadows) == 1
+    assert shadows[0].error == ""
+    np.testing.assert_array_equal(
+        shadows[0].output,
+        operations.gamma_correction(completed.outputs[subtract.id], gamma=0.8),
+    )
+
+
+def test_labels_to_table_measurement_is_a_permanent_bypass_boundary() -> None:
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     threshold = pipeline.add_node("binary_threshold")
@@ -858,33 +992,12 @@ def test_labels_to_table_measurement_can_alias_labels_through_a_tunnel() -> None
     assert pipeline.connect(threshold.id, labels.id).success
     assert pipeline.connect(labels.id, measurement.id).success
     pipeline.add_output_tunnel("Labels alias", measurement.id)
-    assert pipeline.set_node_execution_mode(measurement.id, "bypass")
-    data = np.zeros((8, 8), dtype=np.float32)
-    data[1:3, 1:3] = 1
-    data[5:7, 5:7] = 1
 
-    result = execute_pipeline_request(
-        PipelineRunRequest(
-            run_id=12,
-            workflow=serialize_workflow(pipeline),
-            input_data=data,
-            input_metadata={"axes": "YX"},
-            input_name="labels-alias",
-            source_payloads={},
-            target_node_ids=frozenset({measurement.id}),
-        )
-    )
-
-    assert result.error == ""
-    completed = result.pipeline
-    assert completed is not None
-    assert completed.output_ports(measurement.id)[0].output_type == "labels"
-    assert completed.outputs[measurement.id] is completed.outputs[labels.id]
-    assert (
-        completed.output_states[measurement.id]
-        is completed.output_states[labels.id]
-    )
-    assert not isinstance(completed.outputs[measurement.id], TableData)
+    assert not pipeline.node_supports_bypass(measurement.id)
+    reason = pipeline.node_bypass_block_reason(measurement.id)
+    assert "materializes a table from labels data" in reason
+    with pytest.raises(ValueError, match="materializes a table from labels data"):
+        pipeline.set_node_execution_mode(measurement.id, "bypass")
 
 
 def test_table_transform_bypass_preserves_exact_table_cache_and_batch_output() -> None:

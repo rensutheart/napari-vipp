@@ -30,7 +30,7 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"com{index}" for index in range(1, 10)}
     | {f"lpt{index}" for index in range(1, 10)}
 )
-_SAFE_PAX_KEYS = frozenset({"mtime"})
+_SAFE_PAX_KEYS = frozenset({"mtime", "path"})
 
 
 class SdistCanonicalizationError(ValueError):
@@ -92,6 +92,15 @@ def _validate_pax_headers(member: tarfile.TarInfo) -> None:
             f"archive member {member.name!r} has unsupported PAX metadata: "
             + ", ".join(sorted(unexpected))
         )
+    if "path" in member.pax_headers:
+        # TarFile resolves a PAX path into TarInfo.name before validation.
+        # It must pass exactly the same portable relative-path checks; do not
+        # treat a safe short tar header as authority for an unsafe override.
+        pax_parts = _member_path_parts(member.pax_headers["path"])
+        if pax_parts != _member_path_parts(member.name):
+            raise SdistCanonicalizationError(
+                f"archive member {member.name!r} has inconsistent PAX path metadata"
+            )
 
 
 def _validate_members(members: Sequence[tarfile.TarInfo]) -> None:
@@ -149,6 +158,9 @@ def _validate_members(members: Sequence[tarfile.TarInfo]) -> None:
 def _canonical_member(member: tarfile.TarInfo, epoch: int) -> tarfile.TarInfo:
     canonical = copy.copy(member)
     canonical.mtime = epoch
+    # Strip source headers, including redundant path overrides. TarFile emits
+    # a deterministic path header only when the resolved long/Unicode name
+    # cannot fit a plain ASCII tar name. Never truncate or rename that path.
     canonical.pax_headers = {}
     return canonical
 
@@ -240,7 +252,7 @@ def _validate_canonical_output(
                 raise SdistCanonicalizationError(
                     f"canonical output changed archive member {original.name!r}"
                 )
-            if actual.mtime != epoch or actual.pax_headers:
+            if actual.mtime != epoch or set(actual.pax_headers) - {"path"}:
                 raise SdistCanonicalizationError(
                     f"canonical metadata validation failed for {actual.name!r}"
                 )

@@ -87,7 +87,7 @@ from napari_vipp.core.metadata import (
     apply_axis_declaration,
 )
 from napari_vipp.core.operations import save_array_output
-from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.pipeline import MANUAL_RUN_SKIP, PrototypePipeline, SourcePayload
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
@@ -116,7 +116,7 @@ if TYPE_CHECKING:
     from napari_vipp.core.execution import ComputePlanner
 
 BATCH_CONFIG_TYPE = "napari-vipp-batch-config"
-BATCH_CONFIG_VERSION = 5
+BATCH_CONFIG_VERSION = 6
 BATCH_MANIFEST_TYPE = "napari-vipp-batch-manifest"
 BATCH_MANIFEST_VERSION = 5
 
@@ -192,6 +192,9 @@ class BatchExecutionProgress:
     current: int
     total: int
     message: str = ""
+    node_title: str = ""
+    node_current: int = 0
+    node_total: int = 0
 
 
 class BatchExecutionError(RuntimeError):
@@ -401,6 +404,49 @@ class BatchOutputConfig:
 
 
 @dataclass(frozen=True)
+class BatchItemFilePolicy:
+    """A file decision pinned to exact paired sources and output destinations."""
+
+    item_key: str
+    policy: ExistingFilePolicy
+    batch_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.item_key, str) or not _HASH_PATTERN.fullmatch(
+            self.item_key
+        ):
+            raise ValueError(
+                "Batch item file policy needs a lowercase SHA-256 item key."
+            )
+        if self.policy not in (ExistingFilePolicy.SKIP, ExistingFilePolicy.OVERWRITE):
+            raise ValueError("Batch item file policy must be skip or overwrite.")
+        if not isinstance(self.policy, ExistingFilePolicy):
+            raise TypeError("Batch item file policy must use ExistingFilePolicy.")
+        _require_text(self.batch_id, "Batch item file policy batch_id")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "item_key": self.item_key,
+            "policy": self.policy.value,
+            "batch_id": self.batch_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> BatchItemFilePolicy:
+        data = _require_object(value, "Batch item file policy")
+        _reject_unknown_keys(
+            data, {"item_key", "policy", "batch_id"}, "Batch item file policy"
+        )
+        return cls(
+            _required_text(data, "item_key", "Batch item file policy"),
+            ExistingFilePolicy(
+                _required_text(data, "policy", "Batch item file policy")
+            ),
+            _required_text(data, "batch_id", "Batch item file policy"),
+        )
+
+
+@dataclass(frozen=True)
 class BatchConfig:
     """Versioned configuration for a reproducible local collection run."""
 
@@ -419,6 +465,7 @@ class BatchConfig:
     base_dir: Path | None = field(default=None, compare=False, repr=False)
     parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = ()
     node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = ()
+    item_file_policies: tuple[BatchItemFilePolicy, ...] = ()
 
     def __post_init__(self) -> None:
         _require_text(str(self.workflow_file), "Batch config workflow_file")
@@ -441,6 +488,27 @@ class BatchConfig:
             )
         if not isinstance(self.existing_file_policy, ExistingFilePolicy):
             raise ValueError("Batch config existing_file_policy is invalid.")
+        if any(
+            not isinstance(entry, BatchItemFilePolicy)
+            for entry in self.item_file_policies
+        ):
+            raise TypeError(
+                "Batch config item_file_policies must contain "
+                "BatchItemFilePolicy entries."
+            )
+        _reject_duplicate_ids(
+            (entry.item_key for entry in self.item_file_policies), "item file policy"
+        )
+        object.__setattr__(
+            self,
+            "item_file_policies",
+            tuple(
+                sorted(
+                    self.item_file_policies,
+                    key=lambda entry: entry.item_key,
+                )
+            ),
+        )
         if self.pairing_policy != PAIRING_POLICY:
             raise ValueError(
                 f"Unsupported batch pairing policy: {self.pairing_policy!r}."
@@ -502,6 +570,10 @@ class BatchConfig:
             document["node_execution_overrides"] = (
                 batch_node_execution_overrides_document(self.node_execution_overrides)
             )
+        if self.item_file_policies:
+            document["item_file_policies"] = [
+                entry.to_dict() for entry in self.item_file_policies
+            ]
         return document
 
     @classmethod
@@ -530,18 +602,21 @@ class BatchConfig:
             2,
             3,
             4,
+            5,
             BATCH_CONFIG_VERSION,
         }:
             raise ValueError(
                 f"Unsupported batch config version: {raw_version!r}. "
-                f"Expected version 1, 2, 3, 4, or {BATCH_CONFIG_VERSION}."
+                f"Expected version 1, 2, 3, 4, 5, or {BATCH_CONFIG_VERSION}."
             )
         if raw_version == 1:
             allowed.remove("compute")
-        if raw_version in {4, BATCH_CONFIG_VERSION}:
+        if raw_version >= 4:
             allowed.add("parameter_overrides")
-        if raw_version == BATCH_CONFIG_VERSION:
+        if raw_version >= 5:
             allowed.add("node_execution_overrides")
+        if raw_version >= 6:
+            allowed.add("item_file_policies")
         _reject_unknown_keys(data, allowed, "Batch config")
         workflow = _require_object(data.get("workflow"), "Batch config workflow")
         _reject_unknown_keys(workflow, {"file", "sha256"}, "Batch config workflow")
@@ -563,6 +638,9 @@ class BatchConfig:
             raise ValueError("Batch config sources must be a list.")
         if not isinstance(raw_outputs, list):
             raise ValueError("Batch config outputs must be a list.")
+        raw_item_policies = data.get("item_file_policies", [])
+        if not isinstance(raw_item_policies, list):
+            raise ValueError("Batch config item_file_policies must be a list.")
         policy_text = _required_text(
             defaults, "existing_file_policy", "batch config defaults"
         )
@@ -605,6 +683,9 @@ class BatchConfig:
                 defaults, "image_format", "batch config defaults"
             ),
             existing_file_policy=policy,
+            item_file_policies=tuple(
+                BatchItemFilePolicy.from_dict(entry) for entry in raw_item_policies
+            ),
             save_workflow_snapshot=_required_bool(
                 artifacts, "save_workflow_snapshot", "batch config artifacts"
             ),
@@ -736,6 +817,79 @@ class BatchPlan:
             for item in self.items
             for output in item.outputs
         )
+
+
+@dataclass(frozen=True, slots=True)
+class BatchPreflightProgress:
+    """Read-only presentation event; never an authorization to run a batch.
+
+    ``current`` / ``total`` count inspected source containers, not samples:
+    a microscope file can expand into several image items. ``source_paths``
+    is a cheap directory inventory emitted before metadata or content reads.
+    Only the successful return from :func:`preflight_batch` is a checked plan.
+    """
+
+    phase: str
+    current: int = 0
+    total: int = 0
+    source_node_id: str = ""
+    source_title: str = ""
+    path: Path | None = None
+    source_paths: tuple[tuple[str, str, tuple[Path, ...]], ...] = ()
+    byte_current: int = 0
+    byte_total: int = 0
+    item_count: int = 0
+    message: str = ""
+    plan: BatchPlan | None = None
+    warning: bool = False
+
+
+def _check_preflight_cancelled(
+    cancel_callback: Callable[[], bool] | None,
+) -> None:
+    if cancel_callback is not None and cancel_callback():
+        raise OperationCancelled("Batch check cancelled.")
+
+
+def _report_preflight_progress(
+    callback: Callable[[BatchPreflightProgress], None] | None,
+    event: BatchPreflightProgress,
+) -> None:
+    if callback is not None:
+        try:
+            callback(event)
+        except Exception:
+            # A presentation consumer cannot weaken or interrupt validation.
+            pass
+
+
+def _preflight_source_progress(
+    callback: Callable[[BatchPreflightProgress], None] | None,
+    event: BatchPreflightProgress,
+) -> Callable[[int, int, str], None] | None:
+    """Coalesce chunk-level hashing reports before queuing UI updates."""
+
+    if callback is None:
+        return None
+    last_reported = float("-inf")
+
+    def report(current: int, total: int, message: str) -> None:
+        nonlocal last_reported
+        now = time.monotonic()
+        if current not in (0, total) and now - last_reported < 0.1:
+            return
+        last_reported = now
+        _report_preflight_progress(
+            callback,
+            replace(
+                event,
+                byte_current=int(current),
+                byte_total=int(total),
+                message=str(message),
+            ),
+        )
+
+    return report
 
 
 @dataclass(frozen=True)
@@ -1274,11 +1428,23 @@ def _best_effort_unlink(path: Path) -> None:
             return
 
 
-def build_batch_plan(config: BatchConfig) -> BatchPlan:
-    """Resolve source pairing and every output path without loading image data."""
+def build_batch_plan(
+    config: BatchConfig,
+    *,
+    progress_callback: Callable[[BatchPreflightProgress], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> BatchPlan:
+    """Resolve pairing and destinations, with exact source-content identities.
+
+    Image pixels are not decoded, but every source byte is read for its content
+    fingerprint. Expose the complete cheap directory inventory before those
+    potentially long reads so callers can immediately display pending files.
+    """
     source_lists: dict[str, list[_BatchSourceItem]] = {}
     counts: dict[str, int] = {}
+    inventories: dict[str, list[Path]] = {}
     for source in config.sources:
+        _check_preflight_cancelled(cancel_callback)
         input_dir = config.resolve_path(source.input_dir)
         if not input_dir.is_dir():
             raise ValueError(f"Batch source '{source.title}' folder does not exist.")
@@ -1288,10 +1454,61 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
                 f"No files matched '{source.pattern}' for "
                 f"batch source '{source.title}'."
             )
-        source_items = _expand_source_items(
-            paths,
-            axis_declaration=source.axis_declaration,
-        )
+        inventories[source.node_id] = paths
+    total = sum(len(paths) for paths in inventories.values())
+    completed = 0
+    _report_preflight_progress(
+        progress_callback,
+        BatchPreflightProgress(
+            "discovered",
+            total=total,
+            source_paths=tuple(
+                (source.node_id, source.title, tuple(inventories[source.node_id]))
+                for source in config.sources
+            ),
+            message=f"Found {total} source files. Checking metadata and exact content.",
+        ),
+    )
+    for source in config.sources:
+        source_items: list[_BatchSourceItem] = []
+        for path in inventories[source.node_id]:
+            _check_preflight_cancelled(cancel_callback)
+            checking = BatchPreflightProgress(
+                "checking",
+                current=completed,
+                total=total,
+                source_node_id=source.node_id,
+                source_title=source.title,
+                path=path,
+                message=f"Reading image metadata: {path.name}",
+            )
+            _report_preflight_progress(progress_callback, checking)
+            expanded = _expand_source_items(
+                [path],
+                axis_declaration=source.axis_declaration,
+                cancel_callback=cancel_callback,
+                progress_callback=_preflight_source_progress(
+                    progress_callback, checking
+                ),
+            )
+            source_items.extend(expanded)
+            completed += 1
+            unavailable = any(item.source_item is None for item in expanded)
+            _report_preflight_progress(
+                progress_callback,
+                replace(
+                    checking,
+                    phase="checked",
+                    current=completed,
+                    item_count=len(expanded),
+                    warning=unavailable,
+                    message=(
+                        "Image metadata unavailable; reading is deferred to the run."
+                        if unavailable
+                        else "Image metadata and exact source content checked."
+                    ),
+                ),
+            )
         _verify_configured_source_items(source, source_items)
         source_lists[source.node_id] = source_items
         counts[source.title] = len(source_items)
@@ -1305,8 +1522,19 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
 
     output_dir = config.resolve_path(config.output_dir)
     primary_id = config.sources[0].node_id
+    _report_preflight_progress(
+        progress_callback,
+        BatchPreflightProgress(
+            "planning",
+            current=completed,
+            total=total,
+            item_count=expected,
+            message="Checking source pairing and output destinations.",
+        ),
+    )
     items: list[BatchItemPlan] = []
     for item_index in range(expected):
+        _check_preflight_cancelled(cancel_callback)
         source_items = {
             source.node_id: source_lists[source.node_id][item_index]
             for source in config.sources
@@ -1369,6 +1597,7 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
 
     target_counts: dict[str, int] = {}
     for item in items:
+        _check_preflight_cancelled(cancel_callback)
         for output in item.outputs:
             key = os.path.normcase(str(output.path.resolve(strict=False)))
             target_counts[key] = target_counts.get(key, 0) + 1
@@ -1377,6 +1606,7 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
     )
     resolved_items = []
     for item in items:
+        _check_preflight_cancelled(cancel_callback)
         resolved_outputs = []
         for output in item.outputs:
             key = os.path.normcase(str(output.path.resolve(strict=False)))
@@ -1391,7 +1621,80 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
                 )
             )
         resolved_items.append(replace(item, outputs=tuple(resolved_outputs)))
-    return BatchPlan(config, tuple(resolved_items), output_dir)
+    return BatchPlan(
+        config, apply_batch_item_file_policies(config, resolved_items), output_dir
+    )
+
+
+def batch_item_file_policy_key(config: BatchConfig, item: BatchItemPlan) -> str | None:
+    """Address exact paired samples and destinations, never a transient row index.
+
+    This reads checked in-memory identities only, not any source or output file.
+    Changing the workflow, paired source contents/selector, or output paths must
+    not silently transfer permission to overwrite an unrelated item.
+    """
+    if (
+        not item.outputs
+        or not item.source_paths
+        or set(item.source_items) != set(item.source_paths)
+    ):
+        return None
+    document = {
+        "workflow": config.workflow_sha256,
+        "sources": {
+            node_id: [
+                os.path.normcase(str(item.source_paths[node_id])),
+                batch_source_item_override_key(node_id, source_item),
+            ]
+            for node_id, source_item in item.source_items.items()
+        },
+        "outputs": sorted(
+            (output.node_id, os.path.normcase(str(output.path)))
+            for output in item.outputs
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def apply_batch_item_file_policies(
+    config: BatchConfig, items
+) -> tuple[BatchItemPlan, ...]:
+    """Resolve file choices without weakening protected paths or rereading inputs."""
+    configured = {entry.item_key: entry for entry in config.item_file_policies}
+    observed = set()
+    specs = {output.node_id: output for output in config.outputs}
+    resolved = []
+    for item in items:
+        key = batch_item_file_policy_key(config, item) if configured else None
+        choice = configured.get(key)
+        if choice is not None:
+            if key in observed:
+                raise ValueError(
+                    "Per-item file choices require unique exact batch items."
+                )
+            observed.add(key)
+        outputs = tuple(
+            replace(
+                output,
+                existing_file_policy=_resolved_existing_file_policy(
+                    config,
+                    specs[output.node_id],
+                    choice.policy if choice else None,
+                ),
+            )
+            for output in item.outputs
+        )
+        resolved.append(replace(item, outputs=outputs))
+    unmatched = set(configured) - observed
+    if unmatched:
+        names = ", ".join(configured[key].batch_id for key in sorted(unmatched)[:3])
+        raise ValueError(
+            "Per-item file choices no longer match the checked workflow, sources, "
+            f"or destinations ({names}). Reset item choices and check batch again."
+        )
+    return tuple(resolved)
 
 
 def bind_batch_plan_source_items(
@@ -1586,8 +1889,14 @@ def run_batch(
     compute_registry: ComputeRegistry | None = None,
     compute_planner: ComputePlanner | None = None,
     performance_history_path: str | Path | None = None,
+    preparation_progress_callback: (
+        Callable[[BatchPreflightProgress], None] | None
+    ) = None,
 ) -> BatchRunResult:
     """Execute a deterministic batch plan with checkpointed provenance."""
+    _report_preflight_progress(
+        preparation_progress_callback, BatchPreflightProgress("execution_setup")
+    )
     effective_request = effective_batch_compute_request(config, compute_request)
     workflow_sha256 = scientific_workflow_hash(workflow)
     _authored_pipeline, fixed_source_paths = _validated_batch_pipeline(
@@ -1626,6 +1935,7 @@ def run_batch(
         ),
     )
     plan = _with_fixed_source_collisions(plan, fixed_source_paths.values())
+    plan = replace(plan, items=apply_batch_item_file_policies(config, plan.items))
     if plan.has_collisions:
         collisions = _collision_paths(plan)
         preview = ", ".join(collisions[:3])
@@ -1638,11 +1948,16 @@ def run_batch(
         plan,
         config,
         fixed_source_paths,
+        progress_callback=preparation_progress_callback,
     )
     # Resolve and deserialize every item-specific graph before creating any
     # run artifacts. Invalid substitutions therefore fail closed before the
     # first item can start or publish output.
     _validate_no_inert_parameter_overrides(pipeline, plan)
+    _report_preflight_progress(
+        preparation_progress_callback,
+        BatchPreflightProgress("pipelines", total=len(plan.items)),
+    )
     item_workflows = {
         item.index: workflow_with_parameter_overrides(
             profile_workflow,
@@ -1661,6 +1976,12 @@ def run_batch(
             atomic_bypass_profile=bool(config.node_execution_overrides),
         )
         item_pipelines[index] = item_pipeline
+        _report_preflight_progress(
+            preparation_progress_callback,
+            BatchPreflightProgress(
+                "pipelines", current=len(item_pipelines), total=len(item_workflows)
+            ),
+        )
     item_workflow_hashes = {
         index: scientific_workflow_hash(document)
         for index, document in item_workflows.items()
@@ -1672,6 +1993,10 @@ def run_batch(
         profile_workflow,
     )
     plan.output_dir.mkdir(parents=True, exist_ok=True)
+
+    _report_preflight_progress(
+        preparation_progress_callback, BatchPreflightProgress("artifacts")
+    )
 
     workflow_label = str(workflow_path or config.workflow_file)
     config_label = str(config_path or BATCH_CONFIG_FILENAME)
@@ -1788,8 +2113,9 @@ def run_batch(
                 item_index=item_plan.index,
                 item_total=total,
                 batch_id=item_plan.batch_id,
-                pipeline=pipeline,
+                pipeline=item_pipeline,
                 callback=execution_progress_callback,
+                target_node_ids=frozenset(output_node_ids),
             )
             try:
                 source_paths = _item_source_paths(
@@ -1837,9 +2163,7 @@ def run_batch(
                         prune_unretained=True,
                         cancel_event=cancel_event,
                         performance_history_path=performance_history_path,
-                        atomic_bypass_profile=bool(
-                            config.node_execution_overrides
-                        ),
+                        atomic_bypass_profile=bool(config.node_execution_overrides),
                     ),
                     node_started_callback=node_started,
                     node_finished_callback=node_finished,
@@ -1942,6 +2266,7 @@ def run_batch(
                             item_total=total,
                             batch_id=item_plan.batch_id,
                             node_id=output_plan.node_id,
+                            node_title=output_plan.node_title,
                             operation_id="batch_stage_output",
                             current=output_index,
                             total=len(item_plan.outputs),
@@ -2004,6 +2329,7 @@ def run_batch(
                             item_total=total,
                             batch_id=item_plan.batch_id,
                             node_id=output_plan.node_id,
+                            node_title=output_plan.node_title,
                             operation_id="batch_stage_output",
                             current=output_index + 1,
                             total=len(item_plan.outputs),
@@ -2111,6 +2437,7 @@ def run_batch(
                             item_total=total,
                             batch_id=item_plan.batch_id,
                             node_id=staged.plan.node_id,
+                            node_title=staged.plan.node_title,
                             operation_id="batch_publish_output",
                             current=staged_position,
                             total=len(staged_items),
@@ -2170,6 +2497,7 @@ def run_batch(
                             item_total=total,
                             batch_id=item_plan.batch_id,
                             node_id=staged.plan.node_id,
+                            node_title=staged.plan.node_title,
                             operation_id="batch_publish_output",
                             current=staged_position + 1,
                             total=len(staged_items),
@@ -2363,6 +2691,7 @@ def _report_batch_phase(
     current: int,
     total: int,
     message: str,
+    node_title: str = "",
 ) -> None:
     _report_execution_progress(
         callback,
@@ -2375,6 +2704,7 @@ def _report_batch_phase(
             current=current,
             total=total,
             message=message,
+            node_title=node_title,
         ),
     )
 
@@ -2386,6 +2716,7 @@ def _batch_execution_callbacks(
     batch_id: str,
     pipeline: PrototypePipeline,
     callback: Callable[[BatchExecutionProgress], None] | None,
+    target_node_ids: frozenset[str] | None = None,
 ) -> tuple[
     Callable[[str], None],
     Callable[[Any], None],
@@ -2396,9 +2727,18 @@ def _batch_execution_callbacks(
 
     state = {"node_id": ""}
     completed_node_ids: list[str] = []
+    started_node_ids: set[str] = set()
+    node_total = len(
+        pipeline.plan_execution(
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=pipeline.manual_node_ids(),
+            target_node_ids=target_node_ids,
+        ).runnable_node_ids
+    )
 
     def node_started(node_id: str) -> None:
         state["node_id"] = str(node_id)
+        started_node_ids.add(str(node_id))
         node = pipeline.nodes.get(state["node_id"])
         _report_execution_progress(
             callback,
@@ -2411,11 +2751,15 @@ def _batch_execution_callbacks(
                 current=0,
                 total=0,
                 message="Node started.",
+                node_title="" if node is None else node.title,
+                node_current=len(started_node_ids),
+                node_total=node_total,
             ),
         )
 
     def node_finished(result: Any) -> None:
         completed_node_ids.append(str(result.node_id))
+        node = pipeline.nodes.get(str(result.node_id))
         _report_execution_progress(
             callback,
             BatchExecutionProgress(
@@ -2427,6 +2771,9 @@ def _batch_execution_callbacks(
                 current=1,
                 total=1,
                 message="Node completed.",
+                node_title="" if node is None else node.title,
+                node_current=len(started_node_ids),
+                node_total=node_total,
             ),
         )
         state["node_id"] = ""
@@ -2437,6 +2784,7 @@ def _batch_execution_callbacks(
         operation_total: int,
         message: str,
     ) -> None:
+        node = pipeline.nodes.get(state["node_id"])
         _report_execution_progress(
             callback,
             BatchExecutionProgress(
@@ -2448,6 +2796,9 @@ def _batch_execution_callbacks(
                 current=int(current),
                 total=int(operation_total),
                 message=str(message),
+                node_title="" if node is None else node.title,
+                node_current=len(started_node_ids),
+                node_total=node_total,
             ),
         )
 
@@ -2464,8 +2815,11 @@ def preflight_batch(
     *,
     workflow_path: str | Path | None = None,
     allow_collisions: bool = False,
+    progress_callback: Callable[[BatchPreflightProgress], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> BatchPlan:
     """Validate and plan a batch, raising before any artifact is modified."""
+    _check_preflight_cancelled(cancel_callback)
     workflow_sha256 = scientific_workflow_hash(workflow)
     _authored_pipeline, fixed_source_paths = _validated_batch_pipeline(
         workflow,
@@ -2475,8 +2829,28 @@ def preflight_batch(
     )
     _effective_workflow, pipeline = _effective_batch_pipeline(workflow, config)
     plan = _with_fixed_source_collisions(
-        build_batch_plan(config),
+        build_batch_plan(
+            config,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        ),
         fixed_source_paths.values(),
+    )
+    _check_preflight_cancelled(cancel_callback)
+    file_total = sum(
+        len({item.source_paths[source.node_id] for item in plan.items})
+        for source in config.sources
+    )
+    _report_preflight_progress(
+        progress_callback,
+        BatchPreflightProgress(
+            "planning",
+            current=file_total,
+            total=file_total,
+            item_count=len(plan.items),
+            plan=plan,
+            message="Sources resolved. Checking destinations and parameter mappings.",
+        ),
     )
     _validate_no_inert_parameter_overrides(pipeline, plan)
     if plan.has_collisions and not allow_collisions:
@@ -2491,6 +2865,19 @@ def preflight_batch(
         plan,
         config,
         fixed_source_paths,
+        progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
+    )
+    _check_preflight_cancelled(cancel_callback)
+    _report_preflight_progress(
+        progress_callback,
+        BatchPreflightProgress(
+            "complete",
+            current=file_total,
+            total=file_total,
+            item_count=len(plan.items),
+            message="Batch inputs, destinations, and representative axes checked.",
+        ),
     )
     return plan
 
@@ -2604,9 +2991,7 @@ def _validate_effective_batch_output_contract(
     for output in config.outputs:
         node = pipeline.nodes.get(output.node_id)
         if node is None:
-            raise ValueError(
-                f"Effective batch output {output.node_id!r} is missing."
-            )
+            raise ValueError(f"Effective batch output {output.node_id!r} is missing.")
         ports = pipeline.output_ports(output.node_id)
         if not ports:
             raise ValueError(
@@ -2724,12 +3109,19 @@ def _resolved_output_format(config: BatchConfig, output: BatchOutputConfig) -> s
 
 
 def _resolved_existing_file_policy(
-    config: BatchConfig, output: BatchOutputConfig
+    config: BatchConfig,
+    output: BatchOutputConfig,
+    item_policy: ExistingFilePolicy | None = None,
 ) -> ExistingFilePolicy:
-    if output.overwrite == "yes":
-        return ExistingFilePolicy.OVERWRITE
+    # An explicit keep is always safe; replacing a protected output is not.
+    if item_policy is ExistingFilePolicy.SKIP:
+        return item_policy
     if output.overwrite == "no":
         return ExistingFilePolicy.ERROR
+    if item_policy is not None:
+        return item_policy
+    if output.overwrite == "yes":
+        return ExistingFilePolicy.OVERWRITE
     return config.existing_file_policy
 
 
@@ -2900,6 +3292,9 @@ def _preflight_representative_scientific_contract(
     plan: BatchPlan,
     config: BatchConfig,
     fixed_source_paths: dict[str, Path],
+    *,
+    progress_callback: Callable[[BatchPreflightProgress], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> dict[str, SourceItem]:
     """Validate one representative's axis contract before any run artifacts."""
     if not plan.items:
@@ -2924,6 +3319,10 @@ def _preflight_representative_scientific_contract(
     summaries: list[str] = []
     generic_undeclared: list[tuple[str, str, str, str]] = []
     fixed_source_items: dict[str, SourceItem] = {}
+    file_total = sum(
+        len({planned.source_paths[source.node_id] for planned in plan.items})
+        for source in config.sources
+    )
     contract_pipeline = PrototypePipeline()
     contract_pipeline.restore_graph(
         pipeline.nodes.values(),
@@ -2931,13 +3330,30 @@ def _preflight_representative_scientific_contract(
         pipeline.output_tunnels.values(),
     )
     for node_id, node in contract_pipeline.nodes.items():
+        _check_preflight_cancelled(cancel_callback)
         if node.operation_id != "input":
             continue
         path = source_paths[node_id]
         binding = bindings.get(node_id)
         title = binding.title if binding is not None else node.title
+        contract_event = BatchPreflightProgress(
+            "contract",
+            current=file_total,
+            total=file_total,
+            source_node_id=node_id,
+            source_title=title,
+            path=path,
+            item_count=len(plan.items),
+            message=(
+                "Checking representative workflow axes and re-verifying source "
+                f"content: {path.name}"
+            ),
+        )
+        _report_preflight_progress(progress_callback, contract_event)
         try:
             inspection = inspect_image_source(path)
+        except OperationCancelled:
+            raise
         except Exception:
             # A source that cannot be inspected at all remains an item-specific
             # read failure governed by continue_on_error.
@@ -2975,6 +3391,8 @@ def _preflight_representative_scientific_contract(
                 strides=(0,) * len(selected.shape),
                 writeable=False,
             )
+        except OperationCancelled:
+            raise
         except Exception as exc:
             summaries.append(f"{title}: metadata contract unavailable")
             _raise_batch_scientific_preflight_error(
@@ -2996,6 +3414,10 @@ def _preflight_representative_scientific_contract(
             bundle = capture_local_source_bundle(
                 path,
                 source_format=inspection.format,
+                cancel_callback=cancel_callback,
+                progress_callback=_preflight_source_progress(
+                    progress_callback, contract_event
+                ),
             )
             if expected_source_item is None:
                 source_item = resolve_source_item(
@@ -3031,6 +3453,8 @@ def _preflight_representative_scientific_contract(
                 generic_undeclared.append(
                     (node_id, title, raw_state.axis_order, inspection.format)
                 )
+        except OperationCancelled:
+            raise
         except Exception as exc:
             summaries.append(
                 f"{title}: raw {raw_state.axis_order}"
@@ -3056,6 +3480,7 @@ def _preflight_representative_scientific_contract(
             axis_semantics_resolved=True,
             source_item=source_item,
         )
+    _check_preflight_cancelled(cancel_callback)
     try:
         contract_pipeline.preflight_axis_contract(payloads)
     except Exception as exc:
@@ -3074,7 +3499,10 @@ def _raise_batch_scientific_preflight_error(
     generic_undeclared: list[tuple[str, str, str, str]],
     pipeline: PrototypePipeline | None = None,
 ) -> None:
-    if isinstance(exc, BatchScientificPreflightError):
+    # A changed immutable source is not an image-axis mismatch. Preserve the
+    # typed revision error so callers can require Refresh and explicit review,
+    # including when fixed sources are verified during metadata preflight.
+    if isinstance(exc, (BatchScientificPreflightError, SourceChangedError)):
         raise exc
     source_summary = "; ".join(summaries) or "unavailable"
     guidance = ""
@@ -3336,9 +3764,7 @@ def _source_payloads_for_item(
             plan_record.update(
                 {
                     "crop_node_id": window_decision.plan.crop_node_id,
-                    "decoded_output_bytes": (
-                        window_decision.plan.decoded_output_bytes
-                    ),
+                    "decoded_output_bytes": (window_decision.plan.decoded_output_bytes),
                 }
             )
         effective_provenance = (
@@ -4047,6 +4473,8 @@ def _expand_source_items(
     paths: list[Path],
     *,
     axis_declaration: AxisDeclaration | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[_BatchSourceItem]:
     """Expand multi-series containers through the shared source inspector."""
 
@@ -4061,11 +4489,14 @@ def _expand_source_items(
         *MICROSCOPE_SUFFIXES,
     }
     for path in paths:
+        _check_preflight_cancelled(cancel_callback)
         if path.suffix.lower() not in inspectable_suffixes:
             items.append(_BatchSourceItem(path))
             continue
         try:
             inspection = inspect_image_source(path)
+        except OperationCancelled:
+            raise
         except Exception as exc:
             if path.suffix.lower() not in MICROSCOPE_SUFFIXES:
                 items.append(_BatchSourceItem(path))
@@ -4079,6 +4510,8 @@ def _expand_source_items(
             bundle = capture_local_source_bundle(
                 path,
                 source_format=inspection.format,
+                cancel_callback=cancel_callback,
+                progress_callback=progress_callback,
             )
             resolved_items = {
                 series.index: _resolved_batch_source_item(
@@ -4090,6 +4523,8 @@ def _expand_source_items(
                 )
                 for series in inspection.series
             }
+        except OperationCancelled:
+            raise
         except Exception as exc:
             raise ValueError(
                 f"Could not resolve batch SourceItems for {path}: {exc}"
@@ -4463,6 +4898,7 @@ __all__ = [
     "BatchConfig",
     "BatchExecutionError",
     "BatchExecutionProgress",
+    "BatchItemFilePolicy",
     "BatchItemPlan",
     "BatchItemRecord",
     "BatchManifest",
@@ -4473,6 +4909,7 @@ __all__ = [
     "BatchOutputRecord",
     "BatchParameterOverride",
     "BatchPlan",
+    "BatchPreflightProgress",
     "BatchRunResult",
     "BatchSourceConfig",
     "BatchSourceParameterOverrides",
@@ -4483,6 +4920,8 @@ __all__ = [
     "atomic_write_json",
     "atomic_write_text",
     "batch_config_hash",
+    "apply_batch_item_file_policies",
+    "batch_item_file_policy_key",
     "bind_batch_plan_source_items",
     "batch_source_item_override_key",
     "effective_batch_compute_request",

@@ -7,18 +7,19 @@ from dataclasses import dataclass
 from html import escape
 
 import numpy as np
-from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
-from qtpy.QtGui import QBrush, QColor, QPainter, QPen
+from qtpy.QtCore import QEvent, QRect, QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtGui import QBrush, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -27,6 +28,8 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.ui.controls import _configure_numeric_spin_box
+from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.sliders import SliderColors, VippSlider, slider_colors
 
 
 @dataclass(frozen=True)
@@ -41,13 +44,21 @@ class AxisSliceOption:
         return self.name.upper() if len(self.name) == 1 else self.name
 
 
-def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
+def _axis_heading_text(
+    option: AxisSliceOption,
+    *,
+    mode: str = "keep",
+    palette=None,
+) -> str:
+    colors = theme_colors(palette or QApplication.palette())
     accent = "#fbbf24" if mode == "remove" else "#93c5fd"
     return (
         f"<span style='font-weight: 700; color: {accent};'>"
         f"{escape(option.title)}</span>"
-        f"<span style='color: #d1d5db;'>&nbsp;({escape(option.axis_type)})</span>"
-        f"<span style='color: #94a3b8;'>&nbsp;-&nbsp;size {int(option.size)}</span>"
+        f"<span style='color: {colors.text.name()};'>&nbsp;"
+        f"({escape(option.axis_type)})</span>"
+        f"<span style='color: {colors.muted_text.name()};'>&nbsp;-&nbsp;"
+        f"size {int(option.size)}</span>"
     )
 
 
@@ -92,6 +103,7 @@ class AxisIntervalSlider(QWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
+        colors = self._paint_colors()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         left = 8
@@ -100,15 +112,18 @@ class AxisIntervalSlider(QWidget):
         start_x = self._x_for_value(self._start)
         end_x = self._x_for_value(self._end)
 
-        painter.setPen(QPen(QColor("#4b5563"), 4, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(QPen(colors.groove, 6, Qt.SolidLine, Qt.RoundCap))
         painter.drawLine(left, center_y, right, center_y)
-        painter.setPen(QPen(QColor("#60a5fa"), 4, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(QPen(colors.fill, 6, Qt.SolidLine, Qt.RoundCap))
         painter.drawLine(start_x, center_y, end_x, center_y)
 
-        painter.setPen(QPen(QColor("#93c5fd"), 1))
-        painter.setBrush(QBrush(QColor("#1d4ed8")))
+        painter.setPen(QPen(colors.handle_border, 1))
+        painter.setBrush(QBrush(colors.handle))
         painter.drawEllipse(start_x - 6, center_y - 6, 12, 12)
         painter.drawEllipse(end_x - 6, center_y - 6, 12, 12)
+
+    def _paint_colors(self) -> SliderColors:
+        return slider_colors(self.palette())
 
     def mousePressEvent(self, event) -> None:
         x = self._event_x(event)
@@ -202,11 +217,12 @@ class AxisSelectionRow(QWidget):
         self.option = option
         self._updating = False
         self._gesture_active = False
+        self._applying_theme_style = False
         maximum = max(option.size - 1, 0)
 
         self.title_label = QLabel()
         self.title_label.setTextFormat(Qt.RichText)
-        self.title_label.setText(_axis_heading_text(option))
+        self.title_label.setText(_axis_heading_text(option, palette=self.palette()))
         self.title_label.setToolTip(
             f"{option.title}: {option.axis_type} axis, size {option.size}"
         )
@@ -225,7 +241,7 @@ class AxisSelectionRow(QWidget):
         self.range_slider = AxisIntervalSlider(0, maximum)
         self.start_box = QSpinBox()
         self.end_box = QSpinBox()
-        self.index_slider = QSlider(Qt.Horizontal)
+        self.index_slider = VippSlider(Qt.Horizontal)
         self.index_box = QSpinBox()
         for box in (self.start_box, self.end_box, self.index_box):
             _configure_numeric_spin_box(box)
@@ -293,10 +309,11 @@ class AxisSelectionRow(QWidget):
         layout.addLayout(header)
         layout.addWidget(self.range_panel)
         layout.addWidget(self.remove_panel)
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setStyleSheet("color: #334155; background: #334155; max-height: 1px;")
-        layout.addWidget(divider)
+        self.divider = QFrame()
+        self.divider.setFrameShape(QFrame.HLine)
+        layout.addWidget(self.divider)
+
+        self._apply_theme_style()
 
         self.set_range(start, maximum if end is None else end, emit=False)
         self.set_index(index, emit=False)
@@ -377,16 +394,66 @@ class AxisSelectionRow(QWidget):
         button.setCheckable(True)
         button.setMinimumHeight(24)
         button.setMinimumWidth(58)
-        button.setStyleSheet(
-            "QToolButton { border: 1px solid #4b5563; border-radius: 4px; "
-            "padding: 2px 7px; color: #d1d5db; background: #111827; }"
-            "QToolButton:checked { border-color: #60a5fa; color: #ffffff; "
-            "background: #2563eb; }"
-        )
         return button
 
     def _refresh_mode_styles(self) -> None:
-        self.title_label.setText(_axis_heading_text(self.option, mode=self.mode()))
+        self.title_label.setText(
+            _axis_heading_text(
+                self.option,
+                mode=self.mode(),
+                palette=self.palette(),
+            )
+        )
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if not self._applying_theme_style and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        ):
+            self._apply_theme_style()
+
+    def _apply_theme_style(self) -> None:
+        if self._applying_theme_style:
+            return
+        self._applying_theme_style = True
+        try:
+            parent = self.parentWidget()
+            palette = (
+                QWidget.palette(parent)
+                if parent is not None
+                else QWidget.palette(self)
+            )
+            colors = theme_colors(palette)
+            button_style = (
+                "QToolButton {"
+                f" border: 1px solid {colors.border.name()};"
+                " border-radius: 4px; padding: 2px 7px;"
+                f" color: {colors.text.name()};"
+                f" background: {colors.raised_surface.name()};"
+                " }"
+                "QToolButton:checked {"
+                f" border-color: {colors.info.border.name()};"
+                f" color: {colors.info.foreground.name()};"
+                f" background: {colors.info.surface.name()};"
+                " }"
+            )
+            self.keep_button.setStyleSheet(button_style)
+            self.remove_button.setStyleSheet(button_style)
+            self.divider.setStyleSheet(
+                f"color: {colors.border.name()};"
+                f" background: {colors.border.name()}; max-height: 1px;"
+            )
+            self.title_label.setText(
+                _axis_heading_text(
+                    self.option,
+                    mode=self.mode(),
+                    palette=palette,
+                )
+            )
+            self.range_slider.update()
+        finally:
+            self._applying_theme_style = False
 
     def _on_range_slider_changed(self, start: int, end: int) -> None:
         if self._updating:
@@ -703,29 +770,28 @@ class ReorderAxesControl(QWidget):
         super().__init__(parent)
         self._options: list[AxisSliceOption] = []
         self._updating = False
+        self._applying_theme_style = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(7)
 
-        title = QLabel("Output axis order")
-        title.setStyleSheet("font-weight: 600;")
-        layout.addWidget(title)
+        self.title_label = QLabel("Output axis order")
+        self.title_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.title_label)
 
-        hint = QLabel("Drag axes up or down. The top item becomes axis 0.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #94a3b8;")
-        layout.addWidget(hint)
+        self.hint_label = QLabel("Drag axes up or down. The top item becomes axis 0.")
+        self.hint_label.setWordWrap(True)
+        layout.addWidget(self.hint_label)
 
-        warning = QLabel(
+        self.warning_label = QLabel(
             "This transposes pixels together with their existing axis records "
             "and calibration. It does not rename or reinterpret axes (for "
             "example, Q remains Q). Use Declare axes on a batch source when the "
             "file's reported axis names need an explicit interpretation."
         )
-        warning.setWordWrap(True)
-        warning.setStyleSheet("color: #fbbf24;")
-        layout.addWidget(warning)
+        self.warning_label.setWordWrap(True)
+        layout.addWidget(self.warning_label)
 
         self.list_widget = AxisOrderListWidget()
         self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
@@ -755,8 +821,9 @@ class ReorderAxesControl(QWidget):
         layout.addLayout(button_row)
 
         self.serialized_label = QLabel()
-        self.serialized_label.setStyleSheet("color: #64748b;")
         layout.addWidget(self.serialized_label)
+
+        self._apply_theme_style()
 
         self.move_up_button.clicked.connect(lambda: self._move_selected(-1))
         self.move_down_button.clicked.connect(lambda: self._move_selected(1))
@@ -862,6 +929,95 @@ class ReorderAxesControl(QWidget):
         else:
             self.serialized_label.setText("Workflow value: input order")
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if not self._applying_theme_style and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        ):
+            self._apply_theme_style()
+
+    def _apply_theme_style(self) -> None:
+        if self._applying_theme_style:
+            return
+        self._applying_theme_style = True
+        try:
+            parent = self.parentWidget()
+            palette = (
+                QWidget.palette(parent)
+                if parent is not None
+                else QWidget.palette(self)
+            )
+            colors = theme_colors(palette)
+            self.title_label.setStyleSheet(
+                f"font-weight: 600; color: {colors.text.name()};"
+            )
+            self.hint_label.setStyleSheet(f"color: {colors.muted_text.name()};")
+            self.warning_label.setStyleSheet(
+                f"color: {colors.warning.foreground.name()};"
+            )
+            self.serialized_label.setStyleSheet(
+                f"color: {colors.muted_text.name()};"
+            )
+        finally:
+            self._applying_theme_style = False
+
+
+class _ColumnActionLayout(QLayout):
+    """Wrap column actions at their readable size, including in narrow docks."""
+
+    def __init__(self):
+        super().__init__()
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(6)
+
+    def addItem(self, item) -> None:  # noqa: N802
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index):  # noqa: N802
+        return self._items[index] if 0 <= index < self.count() else None
+
+    def takeAt(self, index):  # noqa: N802
+        return self._items.pop(index) if 0 <= index < self.count() else None
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._arrange(QRect(0, 0, width, 0), measure_only=True)
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def setGeometry(self, rect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._arrange(rect, measure_only=False)
+
+    def _arrange(self, rect, *, measure_only: bool) -> int:
+        x, y = rect.x(), rect.y()
+        line_height = 0
+        for item in self._items:
+            size = item.sizeHint().expandedTo(item.minimumSize())
+            if x > rect.x() and x + size.width() > rect.right() + 1:
+                x = rect.x()
+                y += line_height + self.spacing()
+                line_height = 0
+            if not measure_only:
+                item.setGeometry(QRect(x, y, size.width(), size.height()))
+            x += size.width() + self.spacing()
+            line_height = max(line_height, size.height())
+        return y - rect.y() + line_height
+
 
 class SelectTableColumnsControl(QWidget):
     """Checklist control for keeping and ordering table columns."""
@@ -879,22 +1035,22 @@ class SelectTableColumnsControl(QWidget):
         super().__init__(parent)
         self._columns: tuple[str, ...] = ()
         self._updating = False
+        self._applying_theme_style = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(7)
 
-        title = QLabel("Columns to keep")
-        title.setStyleSheet("font-weight: 600;")
-        layout.addWidget(title)
+        self.title_label = QLabel("Columns to keep")
+        self.title_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.title_label)
 
-        hint = QLabel(
+        self.hint_label = QLabel(
             "Tick columns to include in the output table. Drag or move rows to "
             "control output order."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #94a3b8;")
-        layout.addWidget(hint)
+        self.hint_label.setWordWrap(True)
+        layout.addWidget(self.hint_label)
 
         self.list_widget = AxisOrderListWidget()
         self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
@@ -914,9 +1070,7 @@ class SelectTableColumnsControl(QWidget):
         self.list_widget.itemSelectionChanged.connect(self._sync_button_state)
         layout.addWidget(self.list_widget)
 
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.setSpacing(6)
+        button_row = _ColumnActionLayout()
         self.select_all_button = QPushButton("Select all")
         self.deselect_all_button = QPushButton("Deselect all")
         self.move_up_button = QPushButton("Move up")
@@ -927,13 +1081,13 @@ class SelectTableColumnsControl(QWidget):
         button_row.addWidget(self.move_up_button)
         button_row.addWidget(self.move_down_button)
         button_row.addWidget(self.reset_button)
-        button_row.addStretch(1)
         layout.addLayout(button_row)
 
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet("color: #64748b;")
         layout.addWidget(self.summary_label)
+
+        self._apply_theme_style()
 
         self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
         self.deselect_all_button.clicked.connect(lambda: self._set_all_checked(False))
@@ -1069,6 +1223,51 @@ class SelectTableColumnsControl(QWidget):
             )
             return
         self.summary_label.setText(f"Selected {selected} of {total} columns.")
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if not self._applying_theme_style and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+        ):
+            self._apply_theme_style()
+
+    def _apply_theme_style(self) -> None:
+        if self._applying_theme_style:
+            return
+        self._applying_theme_style = True
+        try:
+            parent = self.parentWidget()
+            palette = (
+                QWidget.palette(parent)
+                if parent is not None
+                else QWidget.palette(self)
+            )
+            colors = theme_colors(palette)
+            self.title_label.setStyleSheet(
+                f"font-weight: 600; color: {colors.text.name()};"
+            )
+            self.hint_label.setStyleSheet(f"color: {colors.muted_text.name()};")
+            self.summary_label.setStyleSheet(
+                f"color: {colors.muted_text.name()};"
+            )
+            # Napari can style Base/Text without updating AlternateBase. Bind
+            # every list surface to the same normalized theme colors so dark
+            # themes never inherit white alternating rows from the OS palette.
+            self.list_widget.setStyleSheet(
+                "QListWidget {"
+                f" background-color: {colors.surface.name()};"
+                f" alternate-background-color: {colors.alternate_surface.name()};"
+                f" color: {colors.text.name()};"
+                f" border: 1px solid {colors.border.name()};"
+                "}"
+                "QListWidget::item:selected {"
+                f" background-color: {colors.info.surface.name()};"
+                f" color: {colors.info.foreground.name()};"
+                "}"
+            )
+        finally:
+            self._applying_theme_style = False
 
     def _emit_value_changed(self, *_args) -> None:
         self._sync_button_state()

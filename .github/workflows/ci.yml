@@ -50,10 +50,45 @@ jobs:
         run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build distributions
-        run: python -m build
+        run: |
+          # Match both native installer builders. Their clean-tag verification
+          # compares metadata too, not only the application source files.
+          python -m pip install "build==1.5.0" "setuptools==82.0.1" "wheel==0.47.0"
+          python -m build --no-isolation
 
       - name: Canonicalize source distribution
         run: python scripts/canonicalize_sdist.py dist/*.tar.gz
+
+      - name: Verify an independent clean-source distribution build
+        run: |
+          replica_source=$(mktemp -d "$RUNNER_TEMP/vipp-repro-source-XXXXXX")
+          replica_dist=$(mktemp -d "$RUNNER_TEMP/vipp-repro-dist-XXXXXX")
+          git archive HEAD | tar -x -C "$replica_source"
+          python -m build --no-isolation "$replica_source" --outdir "$replica_dist"
+          python "$replica_source/scripts/canonicalize_sdist.py" "$replica_dist"/*.tar.gz
+          python -m twine check "$replica_dist"/*
+          REPLICA_DIST="$replica_dist" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          def inventory(directory):
+              paths = sorted(Path(directory).iterdir())
+              assert len(paths) == 2, paths
+              assert sum(path.name.endswith('.whl') for path in paths) == 1, paths
+              assert sum(path.name.endswith('.tar.gz') for path in paths) == 1, paths
+              return {
+                  path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in paths
+              }
+
+          original = inventory('dist')
+          replica = inventory(os.environ['REPLICA_DIST'])
+          assert original == replica, {'original': original, 'replica': replica}
+          print('Independent wheel and canonical source archive are byte-identical:')
+          print(json.dumps(original, indent=2, sort_keys=True))
+          PY
 
       - name: Reject retired provider files in release archives
         run: |
@@ -168,6 +203,9 @@ jobs:
     env:
       PYTEST_QT_API: pyqt6
       QT_QPA_PLATFORM: offscreen
+      # The offscreen plugin does not discover native Windows/macOS fonts.
+      # Without this, layout tests measure placeholder boxes, not rendered text.
+      QT_QPA_FONTDIR: ${{ matrix.os == 'windows-latest' && 'C:/Windows/Fonts' || matrix.os == 'macos-latest' && '/System/Library/Fonts' || '/usr/share/fonts/truetype/dejavu' }}
 
     steps:
       - name: Check out repository
@@ -192,7 +230,9 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Run tests
-        run: python -m pytest
+        run: |
+          python -c "from qtpy.QtWidgets import QApplication; from qtpy.QtGui import QFontDatabase; app = QApplication([]); families = QFontDatabase.families(); assert families, 'Headless Qt has no real fonts; rendered layout checks would be invalid'; print(f'Headless Qt: {len(families)} font families available')"
+          python -m pytest -o faulthandler_timeout=120 --durations=25
 
   napari-compatibility:
     name: >-
@@ -240,6 +280,7 @@ jobs:
       QT_API: ${{ matrix.qt-api }}
       PYTEST_QT_API: ${{ matrix.qt-api }}
       QT_QPA_PLATFORM: offscreen
+      QT_QPA_FONTDIR: ${{ matrix.os == 'windows-latest' && 'C:/Windows/Fonts' || matrix.os == 'macos-latest' && '/System/Library/Fonts' || '/usr/share/fonts/truetype/dejavu' }}
       VIPP_EXPECTED_NAPARI: ${{ matrix.expected-napari }}
       VIPP_EXPECTED_QT_API: ${{ matrix.qt-api }}
 
@@ -295,10 +336,12 @@ jobs:
           src/napari_vipp/_tests/test_napari_compat.py
           src/napari_vipp/_tests/test_napari_runtime_compatibility.py
           src/napari_vipp/_tests/test_graph_clipboard_ui.py
+          src/napari_vipp/_tests/test_batch_footer_layout.py
+          src/napari_vipp/_tests/test_ui_toolbar_controls.py
           src/napari_vipp/_tests/test_widget.py::test_hidden_source_preview_cannot_replace_active_viewer_axis_labels
           src/napari_vipp/_tests/test_widget.py::test_label_pipeline_inspects_and_pins_integer_labels
           src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis
           src/napari_vipp/_tests/test_widget.py::test_pasted_qimage_becomes_unique_rgb_layer_bound_to_source
           src/napari_vipp/_tests/test_widget.py::test_pasted_qimage_does_not_autobind_other_empty_sources
-          src/napari_vipp/_tests/test_widget.py::test_split_channels_presentation_follows_distinct_used_output_ports
+          src/napari_vipp/_tests/test_widget.py::test_split_channels_presentation_selection_is_independent_of_used_ports
           src/napari_vipp/_tests/test_widget.py::test_reorder_axes_updates_metadata_axes

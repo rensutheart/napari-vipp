@@ -1680,6 +1680,50 @@ def test_host_finalizer_terminates_even_an_alternate_branch_join_path():
     registry.close()
 
 
+def test_host_node_on_alternate_branch_splits_device_component() -> None:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    upstream = pipeline.add_node("median_filter")
+    host_bridge = pipeline.add_node("gaussian_blur")
+    downstream = pipeline.add_node("unsharp_mask")
+    join = pipeline.add_node("add_images")
+    assert pipeline.connect("input", upstream.id).success
+    assert pipeline.connect(upstream.id, host_bridge.id).success
+    assert pipeline.connect(host_bridge.id, downstream.id).success
+    assert pipeline.connect(upstream.id, join.id, target_port=0).success
+    assert pipeline.connect(downstream.id, join.id, target_port=1).success
+
+    runtime = _FakeRuntime()
+    registry, specs = _registry(
+        runtime,
+        (
+            ("median_filter", _device_copy),
+            ("unsharp_mask", _device_copy),
+            ("add_images", _device_add),
+        ),
+    )
+    request = _request()
+
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    assert tuple(segment.node_ids for segment in plan.segments) == (
+        (upstream.id,),
+        (downstream.id, join.id),
+    )
+    assert tuple(type(unit) for unit in plan.units) == (
+        HostExecutionUnit,
+        DeviceSegmentUnit,
+        HostExecutionUnit,
+        DeviceSegmentUnit,
+    )
+    registry.close()
+
+
 def test_cancellation_after_payload_transfer_skips_finalizer_and_cleans_up():
     global _HOST_FINALIZER_RUNTIME
 

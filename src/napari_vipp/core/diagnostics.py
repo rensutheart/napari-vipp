@@ -24,6 +24,7 @@ from napari_vipp.core.operations import exact_integer_percentiles
 
 if TYPE_CHECKING:
     from napari_vipp.core.metadata import ImageState
+    from napari_vipp.core.progress import ProgressContext
 
 DIAGNOSTIC_CHUNK_ELEMENTS = 1_048_576
 DISPLAY_HISTOGRAM_BINS = 128
@@ -820,7 +821,12 @@ def provisional_generated_layer_contrast_limits(
     return (0.0, 1.0)
 
 
-def label_volumes(labels, spatial_ndim: int) -> np.ndarray:
+def label_volumes(
+    labels,
+    spatial_ndim: int,
+    *,
+    progress: ProgressContext | None = None,
+) -> np.ndarray:
     """Count each positive label within each independent leading-axis block.
 
     The final ``spatial_ndim`` axes form one spatial block. Leading axes (for
@@ -832,16 +838,78 @@ def label_volumes(labels, spatial_ndim: int) -> np.ndarray:
     if arr.size == 0:
         return np.array([], dtype=np.int64)
     volumes: list[np.ndarray] = []
-    for block in _spatial_blocks(arr, spatial_ndim):
+    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+    total_blocks = int(np.prod(leading_shape, dtype=np.int64)) if leading_shape else 1
+    for block_index, block in enumerate(_spatial_blocks(arr, spatial_ndim), 1):
+        if progress is not None:
+            progress.check_cancelled()
         foreground = np.asarray(block)
         foreground = foreground[foreground > 0]
         if foreground.size == 0:
+            if progress is not None:
+                progress.report(block_index, total_blocks, "Inspecting label objects")
             continue
         _labels, counts = np.unique(foreground, return_counts=True)
         volumes.append(counts.astype(np.int64, copy=False))
+        if progress is not None:
+            progress.report(block_index, total_blocks, "Inspecting label objects")
     if not volumes:
         return np.array([], dtype=np.int64)
     return np.concatenate(volumes)
+
+
+def object_sizes(
+    objects,
+    spatial_ndim: int,
+    connectivity: str = "Face connected",
+    *,
+    progress: ProgressContext | None = None,
+) -> np.ndarray:
+    """Return exact per-object sizes for labels or a Boolean mask.
+
+    Positive integer label IDs identify objects directly. Boolean masks are
+    connected-component labeled independently within every leading-axis block,
+    using the same face/full connectivity choices as Remove Small Objects.
+    """
+
+    arr = np.asarray(objects)
+    spatial_ndim = _validated_spatial_ndim(arr, spatial_ndim)
+    if arr.size == 0:
+        return np.array([], dtype=np.int64)
+    if arr.dtype != np.dtype(bool):
+        if not np.issubdtype(arr.dtype, np.integer):
+            raise TypeError("Object-size diagnostics require Boolean or integer data.")
+        return label_volumes(arr, spatial_ndim, progress=progress)
+
+    normalized_connectivity = str(connectivity).strip().lower()
+    if normalized_connectivity == "face connected":
+        rank = 1
+    elif normalized_connectivity in {"full connectivity", "fully connected"}:
+        rank = spatial_ndim
+    else:
+        raise ValueError(
+            "Connectivity must be 'Face connected' or 'Full connectivity'."
+        )
+    structure = ndi.generate_binary_structure(spatial_ndim, rank)
+    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+    total_blocks = int(np.prod(leading_shape, dtype=np.int64)) if leading_shape else 1
+    sizes: list[np.ndarray] = []
+    for block_index, block in enumerate(_spatial_blocks(arr, spatial_ndim), 1):
+        if progress is not None:
+            progress.check_cancelled()
+        component_labels, count = ndi.label(block, structure=structure)
+        if count:
+            sizes.append(
+                np.bincount(component_labels.ravel())[1:].astype(
+                    np.int64,
+                    copy=False,
+                )
+            )
+        if progress is not None:
+            progress.report(block_index, total_blocks, "Inspecting mask objects")
+    if not sizes:
+        return np.array([], dtype=np.int64)
+    return np.concatenate(sizes)
 
 
 def largest_label_volume(labels, spatial_ndim: int) -> int:
@@ -862,32 +930,8 @@ def largest_object_size(
     connected`` uses rank-1 connectivity and ``Full connectivity`` uses the
     full spatial rank.
     """
-    arr = np.asarray(objects)
-    spatial_ndim = _validated_spatial_ndim(arr, spatial_ndim)
-    if arr.size == 0:
-        return 0
-    if arr.dtype != np.dtype(bool):
-        return largest_label_volume(arr, spatial_ndim)
-
-    normalized_connectivity = str(connectivity).strip().lower()
-    if normalized_connectivity == "face connected":
-        rank = 1
-    elif normalized_connectivity in {"full connectivity", "fully connected"}:
-        rank = spatial_ndim
-    else:
-        raise ValueError(
-            "Connectivity must be 'Face connected' or 'Full connectivity'."
-        )
-    structure = ndi.generate_binary_structure(spatial_ndim, rank)
-    largest = 0
-    for block in _spatial_blocks(arr, spatial_ndim):
-        component_labels, count = ndi.label(block, structure=structure)
-        if count:
-            largest = max(
-                largest,
-                int(np.bincount(component_labels.ravel())[1:].max()),
-            )
-    return largest
+    sizes = object_sizes(objects, spatial_ndim, connectivity)
+    return int(sizes.max()) if sizes.size else 0
 
 
 def _iter_finite_numeric_chunks(data) -> Iterator[np.ndarray]:
@@ -1181,5 +1225,6 @@ __all__ = [
     "label_volumes",
     "largest_label_volume",
     "largest_object_size",
+    "object_sizes",
     "provisional_generated_layer_contrast_limits",
 ]

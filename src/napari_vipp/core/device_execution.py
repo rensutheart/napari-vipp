@@ -2199,26 +2199,34 @@ def _device_components(
             registry,
         )
 
-    # A direct host-finalizer edge advances the downstream residency epoch.  An
-    # alternate compatible path must not accidentally reunite both sides of the
-    # boundary in the same undirected component (for example, a branch/join
-    # where the join consumes both an upstream image and a finalized table).
-    residency_epoch = {node_id: 0 for node_id in eligible}
-    incoming: dict[str, list[str]] = {node_id: [] for node_id in eligible}
+    def can_share_residency(source: str, target: str) -> bool:
+        if source not in eligible or target not in eligible:
+            return False
+        if _host_finalizer_ref(eligible[source][1]):
+            return False
+        return compatible(source, target)
+
+    # Every host, incompatible-device, or host-finalizer edge advances the
+    # downstream residency generation.  This makes device components convex in
+    # the execution DAG: an alternate compatible branch can no longer reunite
+    # device nodes on opposite sides of a boundary into one undirected segment,
+    # which would otherwise collapse a valid graph into segment -> host -> same
+    # segment and create a false execution-unit cycle.
+    order_set = set(order)
+    residency_epoch = {node_id: 0 for node_id in order}
+    incoming: dict[str, list[str]] = {node_id: [] for node_id in order}
     for connection in connections:
         if (
-            connection.source_id in eligible
-            and connection.target_id in eligible
-            and compatible(connection.source_id, connection.target_id)
+            connection.source_id in order_set
+            and connection.target_id in order_set
         ):
             incoming[connection.target_id].append(connection.source_id)
     for node_id in order:
-        if node_id not in eligible:
-            continue
         predecessors = incoming[node_id]
         if predecessors:
             residency_epoch[node_id] = max(
-                residency_epoch[source] + bool(_host_finalizer_ref(eligible[source][1]))
+                residency_epoch[source]
+                + (not can_share_residency(source, node_id))
                 for source in predecessors
             )
 
@@ -2228,14 +2236,9 @@ def _device_components(
         target = connection.target_id
         if source not in eligible or target not in eligible:
             continue
-        # A finalizer converts the source node's transferred private payload to
-        # a public host scalar/table.  Upstream device nodes may share its
-        # segment, but no downstream node may observe the private payload.
-        if _host_finalizer_ref(eligible[source][1]):
+        if not can_share_residency(source, target):
             continue
         if residency_epoch[source] != residency_epoch[target]:
-            continue
-        if not compatible(source, target):
             continue
         adjacency[source].add(target)
         adjacency[target].add(source)

@@ -25,8 +25,10 @@ from napari_vipp.core.io import (
     SourceInspection,
     inspect_image_source,
     inspect_image_state,
+    normalize_local_image_source_path,
     read_image,
     read_image_exact_window,
+    validate_local_image_source_path,
 )
 from napari_vipp.core.io.errors import annotate_image_source_exception
 from napari_vipp.core.metadata import (
@@ -136,7 +138,7 @@ def load_frozen_file_source_snapshot(
             "canonical SourceItem."
         )
     effective_declaration = saved_declaration or requested_declaration
-    source = Path(path).expanduser().resolve(strict=False)
+    source = normalize_local_image_source_path(path)
     _check_boundary_cancelled(
         cancel_callback,
         "before validating the source",
@@ -145,6 +147,7 @@ def load_frozen_file_source_snapshot(
         item=series_index,
     )
     try:
+        source = validate_local_image_source_path(source)
         container = capture_local_source_bundle(
             source,
             cancel_callback=cancel_callback,
@@ -199,7 +202,16 @@ def load_frozen_file_source_snapshot(
     effective_series_index = int(series_index)
     preinspected: SourceInspection | None = None
     preinspected_item = None
-    if inspector is not None or reader is None or exact_window_request is not None:
+    default_reader_selects_saved_key = bool(
+        expected_source_item is not None
+        and source.suffix.casefold() == ".czi"
+        and expected_source_item.reader.implementation == "czifile"
+    )
+    if (
+        inspector is not None
+        or exact_window_request is not None
+        or (reader is None and not default_reader_selects_saved_key)
+    ):
         selected_inspector = inspect_image_source if inspector is None else inspector
         try:
             preinspected = selected_inspector(source)
@@ -263,7 +275,18 @@ def load_frozen_file_source_snapshot(
         item=series_index,
     )
     try:
-        dataset = selected_reader(source, series_index=effective_series_index)
+        if (
+            requested_key
+            and default_reader_selects_saved_key
+            and selected_reader is read_image
+        ):
+            dataset = selected_reader(
+                source,
+                series_index=effective_series_index,
+                item_key=requested_key,
+            )
+        else:
+            dataset = selected_reader(source, series_index=effective_series_index)
     except Exception as exc:
         annotate_image_source_exception(
             exc,
@@ -305,6 +328,10 @@ def load_frozen_file_source_snapshot(
             item=preinspected_item.key,
         )
         raise error
+    # A canonical item key may resolve to a different ordinal after a reader
+    # upgrade.  Persist the ordinal actually returned by the verified reader;
+    # the stable key remains authoritative for future loads.
+    effective_series_index = int(dataset.selected_series.index)
     backend = _dataset_reader_backend(dataset)
     _check_boundary_cancelled(
         cancel_callback,

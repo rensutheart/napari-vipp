@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-08-29
+Last reviewed: 2026-09-06
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -39,22 +39,19 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.14.0a3` is the current alpha release. Its official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a3),
+`0.15.0a1` is the release target for this source tree. Its official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a1),
 checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.14.0a3/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.14.0a3/) and
+[PyPI package](https://pypi.org/project/napari-vipp/0.15.0a1/), and
+[numbered](https://rensutheart.github.io/vipp-mkdocs/0.15.0a1/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-the release surfaces. The unchanged expensive installer-lifecycle evidence
-remains traceable to `v0.13.0a8`, while the shared GPU execution evidence is
-refreshed for a3 because Safe Node Bypass changes residency and provenance.
-The reviewed provider catalogue remains traceable to `v0.13.0a8`,
-while `v0.13.0a9` supplies the
-intervening correctness record, as detailed in the
-[qualification baseline](release-qualification-baseline.md). The current line
-provides:
+the release surfaces. This alpha changes core/UI, batch configuration, shared
+execution, and scientific/GPU measurement domains. Affected evidence and
+unchanged installer-lifecycle carry-forward boundaries are recorded in the
+[qualification baseline](release-qualification-baseline.md); a version change
+alone does not qualify or invalidate a domain. The current line provides:
 
-- SourceItem v1 through workflow schema 6 and batch config/manifest schema 5,
+- SourceItem v1 through workflow schema 6, batch config 6, and manifest schema 5,
   with stable selected-item identity, reader evidence, source revision, axes,
   metadata, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
@@ -65,6 +62,10 @@ provides:
   direct Crop Stack;
 - reviewed numeric per-SourceItem batch overrides and retained Batch-workspace
   restore, activity, and overwrite-confirmation behavior;
+- a four-stage batch workflow with per-item keep/overwrite choices, background
+  checks, explicit preview, and readable result/failure reports;
+- responsive connected-input inspection, sortable/exportable measurement
+  tables, scalar/multichannel Intensity Histogram, and interactive plot pop-outs;
 - decoded-memory preflight, truthful source-load progress and cancellation, and
   Windows setup capacity, phase, heartbeat, and log presentation;
 - native CPU-only Apple Silicon and Intel installers, plus PySide6/PyQt6
@@ -74,8 +75,9 @@ provides:
 - PSF/restoration, segmentation and cleanup, measurement, skeleton,
   colocalization, and spatial-association workflows; and
 - a deliberately bounded CuPy/CuPyX CUDA catalogue, including binary Remove
-  Outliers and basic object measurements through the normal CUDA installation,
-  with CPU as the portable scientific reference and fallback.
+  Outliers, basic object measurements, hybrid 3D mesh morphology, and
+  already-skeletonized boolean skeleton analysis through the normal CUDA
+  installation, with CPU as the portable scientific reference and fallback.
 
 Important remaining limits are:
 
@@ -96,11 +98,12 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The current release is the `0.14.0a3` responsive crop, safe bypass, bounded
-source-window, workflow-editing, and napari 0.9 compatibility alpha. It carries
-the `0.14.0a2` native macOS installer and `0.14.0a1` Source-Aware Loading and
-Per-Sample Batch contracts forward. The implementation records appear below;
-the detailed 0.13 sections remain delivered contract records.
+The `0.15.0a1` release consolidates the batch, inspector, measurement, and
+workflow-interface overhaul. New major features are deferred until final
+changed-domain checks, exact-commit CI, artifact qualification, and the updated
+illustrated manual are complete. See the [release notes](../release-notes.md)
+for the complete user-facing changes. The implementation records below retain
+their original delivered versions, including the 0.14 and 0.13 milestones.
 
 ### Delivered Record: `0.13.0a9` Correctness Rollup
 
@@ -967,6 +970,21 @@ exact scientific region reads.
 - Continue publication-grade validation packs for watershed, colocalization,
   object association, skeleton/network topology, real PSFs/deconvolution,
   microscope metadata, interrupted batch, and OME-Zarr round-tripping.
+
+## Pending Correctness Follow-Ups
+
+### Binary Threshold: Above / Below Selection
+
+- [ ] Add an explicit above/below foreground option to Binary Threshold.
+  Confirmed on 2026-09-05: both the CPU operation
+  (`core/operations.py::binary_threshold`) and CuPy provider
+  (`core/gpu/cupy_binary_threshold.py::binary_threshold`) use strict `>`;
+  the node declaration in `core/pipeline.py` exposes no direction parameter.
+  Preserve strictly-above behavior for existing workflows. Define and explain
+  equality handling, expose the choice clearly in the inspector, and carry it
+  through saved workflows, batch execution, and generated Python/export.
+  Verify CPU/GPU parity with below/equal/above-threshold and non-finite inputs.
+  This is a recorded follow-up, not an implemented fix or release commitment.
 
 ## Continuous Product And Release Gates
 

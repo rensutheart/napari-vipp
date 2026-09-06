@@ -152,7 +152,16 @@ def test_otsu_to_connected_components_planning_never_scans_source_values(
     )
 
     assert result.error == ""
-    assert planner.array_facts == {}
+    assert set(planner.array_facts) == {node_id}
+    (otsu_output_facts,) = planner.array_facts[node_id]
+    assert otsu_output_facts.shape == image.shape
+    assert otsu_output_facts.dtype == "bool"
+    assert otsu_output_facts.element_count == image.size
+    assert otsu_output_facts.completeness is FactCompleteness.COMPLETE
+    assert otsu_output_facts.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(
+        otsu_output_facts.guarantees
+    )
     (workload,) = tuple(
         item
         for item in planner.workloads

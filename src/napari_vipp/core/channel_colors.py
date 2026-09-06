@@ -54,6 +54,17 @@ def channel_color_int(name: Any) -> int | None:
 def color_value_to_rgb(value: Any) -> np.ndarray | None:
     if value is None:
         return None
+    if isinstance(value, (list, tuple, np.ndarray)):
+        try:
+            values = np.asarray(value, dtype=np.float32).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+        if values.size not in {3, 4} or not np.all(np.isfinite(values[:3])):
+            return None
+        rgb = values[:3]
+        if float(np.max(rgb)) > 1.0:
+            rgb = rgb / 255.0
+        return np.clip(rgb, 0.0, 1.0).astype(np.float32, copy=False)
     if isinstance(value, np.integer):
         value = int(value)
     if isinstance(value, int):

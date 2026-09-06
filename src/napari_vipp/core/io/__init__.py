@@ -26,6 +26,10 @@ from napari_vipp.core.io.registry import (
     read_image_exact_window,
     write_image,
 )
+from napari_vipp.core.io.source_paths import (
+    normalize_local_image_source_path,
+    validate_local_image_source_path,
+)
 
 __all__ = [
     "WRITE_FORMATS",
@@ -42,8 +46,10 @@ __all__ = [
     "as_image_source_error",
     "inspect_image_state",
     "inspect_image_source",
+    "normalize_local_image_source_path",
     "read_image",
     "read_image_exact_window",
+    "validate_local_image_source_path",
     "write_image",
     "write_ome_zarr_analysis_dataset",
 ]

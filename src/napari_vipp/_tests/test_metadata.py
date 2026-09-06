@@ -19,11 +19,13 @@ from napari_vipp.core.metadata import (
     image_state_from_array,
     infer_axis_metadata_from_shape,
     metadata_table_rows,
+    table_data_quality_rows,
     transform_image_state,
     transform_multi_input_image_state,
     transform_split_output_state,
     with_channel_colors,
 )
+from napari_vipp.core.tables import TableData, table_state_from_data
 
 
 def test_metadata_table_exposes_text_acquisition_fields() -> None:
@@ -45,6 +47,35 @@ def test_metadata_table_exposes_text_acquisition_fields() -> None:
     assert rows["Objective"] == "Plan Apo 60x"
     assert rows["Instrument"] == "Example scope"
     assert rows["Detector"] == "Example camera"
+
+
+def test_table_metadata_uses_field_language_and_exact_quality_counts() -> None:
+    table = TableData(
+        ("label_id", "mean", "ratio", "note"),
+        (
+            (1, 2.5, float("nan"), "ok"),
+            (2, float("inf"), 0.5, None),
+            (3, float("-inf"), 1.5, "review"),
+        ),
+        table_kind="object measurements",
+    )
+    state = table_state_from_data(table, history=("Measured 3 objects",))
+
+    structural = {row.label: row.value for row in metadata_table_rows(state)}
+    quality = {row.label: row.value for row in table_data_quality_rows(table)}
+
+    assert structural["Rows"] == "3"
+    assert structural["Fields"] == "4"
+    assert structural["Field names"] == "label_id, mean, ratio, note"
+    assert "Columns" not in structural
+    assert quality == {
+        "Numeric values": "9",
+        "NaN values": "1",
+        "Infinite values": "2",
+        "Missing values": "1",
+        "Rows with NaN/Inf": "3",
+        "Fields with NaN/Inf": "2 (mean, ratio)",
+    }
 
 
 def test_shape_only_channel_guess_is_marked_inferred_not_explicit():
@@ -959,15 +990,15 @@ def test_threshold_history_never_infers_rgb_conversion_from_x_size():
         ),
         (
             "clip_intensity",
-            "Clip",
+            "Clamp Intensity",
             {"cutoff_mode": "Data range", "minimum": 2.0, "maximum": 4.0},
-            "Clip: full data range preserved (no clipping)",
+            "Clamp Intensity: full data range preserved (no clipping)",
         ),
         (
             "clip_intensity",
-            "Clip",
+            "Clamp Intensity",
             {"cutoff_mode": "Values", "minimum": 2.0, "maximum": 4.0},
-            "Clip: explicit values 2..4",
+            "Clamp Intensity: explicit values 2..4",
         ),
     ],
 )
@@ -986,6 +1017,60 @@ def test_intensity_cutoff_history_records_only_active_mode(
         operation_id=operation_id,
         operation_title=title,
         params=params,
+    )
+
+    assert output_state.history[-1] == expected
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "expected"),
+    [
+        (
+            "min-max",
+            {},
+            "Normalize: finite-value minimum/maximum; output 0..1",
+        ),
+        (
+            "z-score",
+            {},
+            "Normalize: finite-value mean/population SD; signed output",
+        ),
+        (
+            "robust-z-score",
+            {},
+            "Normalize: finite-value median/normal-consistent MAD; signed output",
+        ),
+        (
+            "maximum-absolute",
+            {},
+            "Normalize: finite-value maximum absolute magnitude; signed output",
+        ),
+        (
+            "reference-z-score",
+            {"reference_mean": 12.5, "reference_standard_deviation": 2.5},
+            "Normalize: saved reference mean 12.5, SD 2.5; signed output",
+        ),
+        (
+            "percentile",
+            {"low_percentile": 2.0, "high_percentile": 98.0},
+            "Normalize: exact finite-value percentiles 2..98; clipped output 0..1",
+        ),
+    ],
+)
+def test_normalize_history_records_the_active_numeric_contract(
+    method,
+    params,
+    expected,
+):
+    data = np.arange(6, dtype=np.float32).reshape(2, 3)
+    input_state = image_state_from_array(data, layer_metadata={"axes": "YX"})
+
+    output_state = transform_image_state(
+        data.copy(),
+        input_state,
+        operation_id="normalize_image",
+        operation_title="Normalize",
+        params={"method": method, **params},
     )
 
     assert output_state.history[-1] == expected

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from napari_vipp.core.batch import (
@@ -12,7 +12,9 @@ from napari_vipp.core.batch import (
     BATCH_WORKFLOW_FILENAME,
     DEFAULT_BATCH_SOURCE_PATTERN,
     BatchConfig,
+    BatchItemFilePolicy,
     BatchPlan,
+    BatchPreflightProgress,
     ExistingFilePolicy,
     atomic_write_json,
     bind_batch_plan_source_items,
@@ -31,6 +33,12 @@ from napari_vipp.core.batch_setup import (
 )
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.source_identity import (
+    LocalSourceIdentity,
+    SourceChangedError,
+    local_source_identity_from_bundle,
+    verify_local_source_identity,
+)
 from napari_vipp.ui.batch import BatchPreviewResult, BatchPreviewRow
 
 WorkflowDocumentProvider = Callable[[], dict]
@@ -49,25 +57,43 @@ class PreparedCollectionBatchPreview:
     explicit_outputs: bool
     verification_config: BatchConfig | None = None
     verification_workflow_path: Path | None = None
+    reviewed_result: BatchPreviewResult | None = None
+    recheck_indices: tuple[int, ...] = ()
+    reviewed_identities: tuple[tuple[Path, LocalSourceIdentity], ...] = ()
 
 
 def execute_prepared_collection_batch_preview(
     prepared: PreparedCollectionBatchPreview,
+    *,
+    progress_callback: Callable[[BatchPreflightProgress], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> BatchPreviewResult:
     """Plan one frozen request without touching Qt, pixels, or destinations."""
 
+    if prepared.reviewed_result is not None:
+        return _recheck_reviewed_batch_items(prepared, cancel_callback=cancel_callback)
     if prepared.verification_config is not None:
         preflight_batch(
             prepared.workflow,
             prepared.verification_config,
             workflow_path=prepared.verification_workflow_path,
             allow_collisions=True,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
         )
     plan = preflight_batch(
         prepared.workflow,
         prepared.config,
         workflow_path=prepared.workflow_path,
         allow_collisions=True,
+        progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
+    )
+    _verify_reviewed_source_identities(
+        prepared,
+        plan,
+        progress_callback=progress_callback,
+        cancel_callback=cancel_callback,
     )
     return _batch_preview_result(
         plan,
@@ -75,6 +101,97 @@ def execute_prepared_collection_batch_preview(
         preview_limit=prepared.preview_limit,
         explicit_outputs=prepared.explicit_outputs,
     )
+
+
+def _verify_reviewed_source_identities(
+    prepared, plan, *, progress_callback, cancel_callback
+):
+    """Compare the hashes just captured by preflight instead of hashing twice."""
+    observed = {}
+    for item in plan.items:
+        for node_id, source_item in item.source_items.items():
+            path = Path(item.source_paths[node_id]).resolve()
+            observed.setdefault(path, set()).add(
+                local_source_identity_from_bundle(source_item.container)
+            )
+    remaining = []
+    for path, expected in prepared.reviewed_identities:
+        captured = observed.get(Path(path).resolve())
+        if captured is None:
+            # Fixed sources (or unavailable files) are not necessarily part of
+            # the collection inventory; retain exact verification for those.
+            remaining.append((path, expected))
+        elif captured != {expected}:
+            raise SourceChangedError(f"A reviewed source changed: {path}")
+    for index, (path, identity) in enumerate(remaining):
+        event = BatchPreflightProgress(
+            "reviewed",
+            current=index,
+            total=len(remaining),
+            path=path,
+            message=f"Verifying an additional source reviewed in VIPP: {path}",
+        )
+
+        def report_bytes(current, total, message, event=event):
+            if progress_callback is not None:
+                progress_callback(
+                    replace(
+                        event,
+                        byte_current=current,
+                        byte_total=total,
+                        message=message,
+                    )
+                )
+
+        if progress_callback is not None:
+            progress_callback(event)
+        verify_local_source_identity(
+            path,
+            identity,
+            cancel_callback=cancel_callback,
+            progress_callback=report_bytes,
+        )
+
+
+def _recheck_reviewed_batch_items(
+    prepared: PreparedCollectionBatchPreview,
+    *,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> BatchPreviewResult:
+    """Verify selected source revisions and destination presence only.
+
+    This deliberately returns the original reviewed plan, never a partial plan
+    or new run authorization. Pairing and scientific contracts still require
+    the ordinary full-batch preflight before execution.
+    """
+
+    reviewed = prepared.reviewed_result
+    if reviewed is None or prepared.config != reviewed.config:
+        raise ValueError("Batch settings changed. Check the full batch again.")
+    checked: set[tuple[str, str]] = set()
+    for index in prepared.recheck_indices:
+        item = reviewed.items[index]
+        for node_id, path in item.source_paths.items():
+            source_item = item.source_items.get(node_id)
+            if source_item is None:
+                raise ValueError(
+                    "This item has no recorded exact source revision. "
+                    "Check the full batch again."
+                )
+            expected = local_source_identity_from_bundle(source_item.container)
+            key = (str(Path(path).expanduser().resolve()), expected.sha256)
+            if key not in checked:
+                verify_local_source_identity(
+                    path, expected, cancel_callback=cancel_callback
+                )
+                checked.add(key)
+        for output in item.outputs:
+            if output.path.exists() != output.exists:
+                raise ValueError(
+                    f"Output presence changed for {output.path.name}. "
+                    "Check the full batch again."
+                )
+    return reviewed
 
 
 def _batch_preview_result(
@@ -145,6 +262,7 @@ class CollectionBatchController:
         compute_request: ComputeRequest | None = None,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
     ) -> BatchConfig:
         """Build a validated config from one stable workflow snapshot."""
         del save_workflow_snapshot
@@ -165,6 +283,7 @@ class CollectionBatchController:
             compute_request=compute_request,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
         )
 
     def save_config(
@@ -232,6 +351,7 @@ class CollectionBatchController:
         compute_request: ComputeRequest | None = None,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
     ) -> BatchPreviewResult:
         """Map the core preflight plan into the dialog preview contract."""
         prepared = self.prepare_preview(
@@ -248,6 +368,7 @@ class CollectionBatchController:
             compute_request=compute_request,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
         )
         return execute_prepared_collection_batch_preview(prepared)
 
@@ -266,6 +387,7 @@ class CollectionBatchController:
         compute_request: ComputeRequest | None = None,
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
+        item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
     ) -> PreparedCollectionBatchPreview:
         """Freeze GUI-owned providers before a preview runs now or in a worker."""
 
@@ -284,6 +406,7 @@ class CollectionBatchController:
             compute_request=compute_request,
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
+            item_file_policies=item_file_policies,
         )
         return PreparedCollectionBatchPreview(
             workflow=workflow,
@@ -335,6 +458,7 @@ class CollectionBatchController:
             compute_request=config.compute_request,
             parameter_overrides=config.parameter_overrides,
             node_execution_overrides=config.node_execution_overrides,
+            item_file_policies=config.item_file_policies,
         )
         frozen_inventory = any(source.source_items for source in config.sources)
         return PreparedCollectionBatchPreview(
@@ -349,6 +473,28 @@ class CollectionBatchController:
             verification_workflow_path=(
                 config.resolve_path(config.workflow_file) if frozen_inventory else None
             ),
+        )
+
+    def prepare_item_recheck(
+        self,
+        reviewed: BatchPreviewResult,
+        indices: tuple[int, ...],
+        **values,
+    ) -> PreparedCollectionBatchPreview:
+        """Freeze a narrow check without replacing the reviewed runnable plan."""
+
+        selected = tuple(dict.fromkeys(int(index) for index in indices))
+        if not selected or any(
+            not 0 <= index < len(reviewed.items) for index in selected
+        ):
+            raise ValueError("Select current batch items to recheck.")
+        prepared = self.prepare_preview(**values)
+        if prepared.config != reviewed.config:
+            raise ValueError("Batch settings changed. Check the full batch again.")
+        return replace(
+            prepared,
+            reviewed_result=reviewed,
+            recheck_indices=selected,
         )
 
     def source_rows(self) -> list[dict[str, str]]:

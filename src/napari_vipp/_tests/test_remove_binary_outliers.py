@@ -11,7 +11,11 @@ import napari_vipp.core.remove_outliers as remove_outliers_module
 from napari_vipp.core.compute import OutputPortKey
 from napari_vipp.core.compute_specs import ValueKind, compute_specs_for
 from napari_vipp.core.metadata import AmbiguousAxisError, image_state_from_array
-from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
+from napari_vipp.core.pipeline import (
+    NODE_LIBRARY_BY_ID,
+    SLICE_WISE_STACK_NOTICE,
+    PrototypePipeline,
+)
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.remove_outliers import (
     imagej_remove_outliers_footprint,
@@ -710,8 +714,7 @@ def test_operation_spec_exposes_the_binary_imagej_contract() -> None:
     assert spec.input_type == "mask"
     assert spec.output_type == "mask"
     assert spec.function is remove_binary_outliers
-    assert "each YX slice independently" in spec.stack_processing_note
-    assert "does not use 3D neighborhoods" in spec.stack_processing_note
+    assert spec.stack_processing_note == SLICE_WISE_STACK_NOTICE
 
     assert tuple(parameter.name for parameter in spec.parameters) == (
         "radius",

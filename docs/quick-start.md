@@ -8,28 +8,28 @@ The normal VIPP experience is one Windows installer: download the explicitly
 named unsigned `.exe`, verify it, review the proposed location and compute
 option, and launch VIPP from the shortcuts it creates.
 
-The official `0.14.0a3` prerelease and its checksum sidecars are public. Use
-only that release surface; never download a guessed release asset.
+Use the official `0.15.0a1` prerelease and its checksum sidecars below.
+Download only attached release assets; never use a guessed or third-party file.
 
-**[Download the VIPP 0.14.0a3 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a3/VIPP-Setup-0.14.0a3-Windows-x86_64-UNSIGNED.exe)**
+**[Download the VIPP 0.15.0a1 Windows installer (unsigned alpha)](https://github.com/rensutheart/napari-vipp/releases/download/v0.15.0a1/VIPP-Setup-0.15.0a1-Windows-x86_64-UNSIGNED.exe)**
 
 Use only the file attached to the official
-[`v0.14.0a3` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.14.0a3).
+[`v0.15.0a1` GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a1).
 This alpha is intentionally not Authenticode-signed. **Unknown publisher** and
 a **Windows protected your PC** warning are therefore expected. The same
 release includes the SHA-256 checksum and release manifest.
 
-1. Download both `VIPP-Setup-0.14.0a3-Windows-x86_64-UNSIGNED.exe` and
-   `SHA256SUMS-Windows-0.14.0a3.txt` from the official release.
+1. Download both `VIPP-Setup-0.15.0a1-Windows-x86_64-UNSIGNED.exe` and
+   `SHA256SUMS-Windows-0.15.0a1.txt` from the official release.
 2. Open PowerShell in the download folder and run:
 
    ```powershell
    Get-FileHash -Algorithm SHA256 `
-     .\VIPP-Setup-0.14.0a3-Windows-x86_64-UNSIGNED.exe
+     .\VIPP-Setup-0.15.0a1-Windows-x86_64-UNSIGNED.exe
    ```
 
    The 64-character hash must exactly match the hash beside that filename in
-   `SHA256SUMS-Windows-0.14.0a3.txt`. Stop and delete the installer if it does
+   `SHA256SUMS-Windows-0.15.0a1.txt`. Stop and delete the installer if it does
    not match.
 3. Double-click the installer. If Windows shows **Windows protected your PC**,
    select **More info**, confirm the app name ends in `-UNSIGNED.exe` and the
@@ -60,7 +60,7 @@ After that one-time Windows warning, the ordinary setup flow is:
    for settings it has not checked. Windows obtains canonical Local App Data with
    `SHGetKnownFolderPath(FOLDERID_LocalAppData)`; one-click setup uses only
    `VIPP\environments\cpu` or `VIPP\environments\cuda13` beneath it. Custom
-   managed roots are not accepted. In `0.14.0a3`, the complete CUDA path must
+   managed roots are not accepted. In `0.15.0a1`, the complete CUDA path must
    use ASCII characters only because CuPy 14.1.1 cannot reliably compile CUDA
    kernels from a Windows environment path containing characters such as `Å`
    or `é`. Spaces are supported. If canonical Local App Data contains a
@@ -84,7 +84,7 @@ Managed CPU and CUDA installations can coexist. Remove either one later from
 uninstaller and the other installation is left intact.
 
 An installer-owned CUDA copy already stored in a non-ASCII path is a special
-case: `0.14.0a3` will not update or repair it in place. Graphical setup may
+case: `0.15.0a1` will not update or repair it in place. Graphical setup may
 first complete and record recovery from an earlier interrupted transaction;
 after that separate recovery, the newly blocked selection performs no new
 mutation of the old copy, shortcuts, or ownership record. Do not move or rename
@@ -148,13 +148,13 @@ implementation. No separately built GPU provider is required.
 Choose the package that matches **Apple menu > About This Mac**:
 
 - **Apple Silicon** (`Chip: Apple ...`):
-  [download the arm64 PKG](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a3/VIPP-0.14.0a3-macOS-arm64-UNSIGNED.pkg)
+  [download the arm64 PKG](https://github.com/rensutheart/napari-vipp/releases/download/v0.15.0a1/VIPP-0.15.0a1-macOS-arm64-UNSIGNED.pkg)
   and its
-  [SHA-256 file](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a3/SHA256SUMS-macOS-arm64-0.14.0a3.txt).
+  [SHA-256 file](https://github.com/rensutheart/napari-vipp/releases/download/v0.15.0a1/SHA256SUMS-macOS-arm64-0.15.0a1.txt).
 - **Intel** (`Processor: Intel ...`):
-  [download the x86_64 PKG](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a3/VIPP-0.14.0a3-macOS-x86_64-UNSIGNED.pkg)
+  [download the x86_64 PKG](https://github.com/rensutheart/napari-vipp/releases/download/v0.15.0a1/VIPP-0.15.0a1-macOS-x86_64-UNSIGNED.pkg)
   and its
-  [SHA-256 file](https://github.com/rensutheart/napari-vipp/releases/download/v0.14.0a3/SHA256SUMS-macOS-x86_64-0.14.0a3.txt).
+  [SHA-256 file](https://github.com/rensutheart/napari-vipp/releases/download/v0.15.0a1/SHA256SUMS-macOS-x86_64-0.15.0a1.txt).
 
 Each package is offline, CPU-only, and current-user-only. It provides its own
 managed Python environment at `~/Library/vipp`, creates
@@ -166,7 +166,7 @@ that its SHA-256 matches the line in the downloaded checksum file. The optional
 Terminal check for Apple Silicon is:
 
 ```bash
-shasum -a 256 VIPP-0.14.0a3-macOS-arm64-UNSIGNED.pkg
+shasum -a 256 VIPP-0.15.0a1-macOS-arm64-UNSIGNED.pkg
 ```
 
 Use the `x86_64` filename on Intel. Stop if the value differs or the package did
@@ -197,17 +197,24 @@ existing napari environment.
 
 ### CPU On Windows, Linux, Or macOS
 
-VIPP `0.14.0a3` supports CPython 3.12 and 3.13. Create and activate a dedicated
+VIPP `0.15.0a1` supports CPython 3.12 and 3.13. Create and activate a dedicated
 virtual environment first; do not install the application into a global/base
-Python. Then run:
+Python. On Windows or Linux, run:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.14.0a3"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.15.0a1"
+vipp
+```
+
+On macOS, use the PySide6 binding:
+
+```bash
+python -m pip install "napari[pyside6]>=0.6" "napari-vipp==0.15.0a1"
 vipp
 ```
 
 macOS is CPU-only in this alpha. CPU is also the authoritative fallback on
-Windows and Linux.
+Windows and Linux. Use only one Qt binding in the dedicated environment.
 
 ### NVIDIA CUDA 13 On Windows
 
@@ -218,7 +225,7 @@ Run these commands from an ASCII-only working directory:
 ```powershell
 py -3.12 -m venv ".venv-vipp-gpu-cu13"
 & ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install --upgrade pip
-& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.14.0a3"
+& ".\.venv-vipp-gpu-cu13\Scripts\python.exe" -m pip install "napari[pyqt6]>=0.6" "napari-vipp[gpu-cuda13]==0.15.0a1"
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp-compute-doctor.exe" --track cuda13
 & ".\.venv-vipp-gpu-cu13\Scripts\vipp.exe"
 ```
@@ -245,7 +252,7 @@ Python explicitly. A conservative CPU update is:
 
 ```powershell
 $napariPython = "C:\Path\To\napari-env\Scripts\python.exe"
-& $napariPython -m pip install "napari-vipp==0.14.0a3"
+& $napariPython -m pip install "napari-vipp==0.15.0a1"
 & $napariPython -m pip check
 ```
 

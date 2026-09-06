@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import (
     QApplication,
     QDialog,
@@ -19,9 +20,11 @@ from napari_vipp.core.batch import (
     BatchConfig,
     BatchItemPlan,
     BatchOutputConfig,
+    BatchOutputPlan,
     BatchScientificPreflightError,
     BatchSourceConfig,
     BatchStatus,
+    ExistingFilePolicy,
 )
 from napari_vipp.core.batch_parameters import (
     BatchParameterOverride,
@@ -36,6 +39,19 @@ from napari_vipp.ui.batch import (
     CollectionBatchActions,
     CollectionBatchDialog,
 )
+from napari_vipp.ui.palette_roles import (
+    custom_paint_colors,
+    palette_is_dark,
+    theme_colors,
+)
+
+
+def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.AlternateBase, QColor(alternate))
+    palette.setColor(QPalette.Text, QColor(text))
+    return palette
 
 
 def _preview_result(tmp_path, *, count: int = 3) -> BatchPreviewResult:
@@ -69,7 +85,13 @@ def _preview_result(tmp_path, *, count: int = 3) -> BatchPreviewResult:
             batch_id=f"{index:04d}_field-{index}",
             primary_source=tmp_path / "inputs" / f"field-{index}.npy",
             source_paths={"input": tmp_path / "inputs" / f"field-{index}.npy"},
-            outputs=(),
+            outputs=(
+                BatchOutputPlan(
+                    "output", "Batch Output", "result", "image", "npy",
+                    tmp_path / "outputs" / f"field-{index}.npy",
+                    ExistingFilePolicy.ERROR,
+                ),
+            ),
         )
         for index in range(1, count + 1)
     )
@@ -139,7 +161,7 @@ def test_saved_workspace_discovery_has_distinct_indeterminate_progress(
     assert dialog.source_detection_progress.isHidden()
     assert dialog.source_detection_progress.minimum() == 0
     assert dialog.source_detection_progress.maximum() == 1
-    assert dialog.preview_button.isEnabled()
+    assert dialog.next_button.isEnabled()
     assert dialog.batch_activity_status.text() == "Ready · 3 batch items."
     assert "restored and detected 3" in dialog.preview_status.text().lower()
 
@@ -160,7 +182,7 @@ def test_saved_workspace_discovery_progress_ends_on_failure_and_invalidation(
 
     assert dialog.source_detection_progress.isHidden()
     assert "needs attention" in dialog.batch_activity_status.text().lower()
-    assert dialog.preview_button.isEnabled()
+    assert dialog.next_button.isEnabled()
     assert not dialog.run_button.isEnabled()
     assert dialog.parameter_override_group.isHidden()
     assert "source folder is missing" in dialog.preview_status.text().lower()
@@ -170,7 +192,7 @@ def test_saved_workspace_discovery_progress_ends_on_failure_and_invalidation(
     dialog._invalidate_preview_plan()
 
     assert dialog.source_detection_progress.isHidden()
-    assert dialog.preview_button.isEnabled()
+    assert dialog.next_button.isEnabled()
     assert "not checked" in dialog.batch_activity_status.text().lower()
     assert "settings changed" in dialog.preview_status.text().lower()
 
@@ -242,8 +264,8 @@ def test_saved_workspace_discovery_cancel_and_override_aliases(qtbot, tmp_path):
     dialog.cancel_saved_workspace_discovery("The Batch settings changed.")
 
     assert dialog.source_detection_progress.isHidden()
-    assert dialog.preview_button.isEnabled()
-    assert dialog.run_button.isEnabled()
+    assert dialog.next_button.isEnabled()
+    assert not dialog.run_button.isEnabled()
     assert dialog.preview_status.text() == "The Batch settings changed."
 
     dialog.begin_saved_override_verification(1)
@@ -322,7 +344,8 @@ def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
 
     assert dialog.output_edit.text() == str(primary / "output")
     assert dialog.output_edit.property("suggestedDefault") is True
-    assert "#f59e0b" in dialog.output_edit.styleSheet()
+    warning = "#f59e0b" if palette_is_dark(dialog.palette()) else "#b45309"
+    assert warning in dialog.output_edit.styleSheet()
     assert "Suggested from the first bound batch source" in dialog.output_edit.toolTip()
 
     dialog._source_rows[1]["folder"].setText(str(tmp_path / "new-reference"))
@@ -331,6 +354,43 @@ def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
     updated_primary = tmp_path / "updated-primary"
     dialog._source_rows[0]["folder"].setText(str(updated_primary))
     assert dialog.output_edit.text() == str(updated_primary / "output")
+
+
+def test_batch_workspace_surfaces_follow_runtime_palette_changes(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
+    light = _theme_palette(base="#ffffff", alternate="#f2f4f7", text="#111827")
+    dialog.setPalette(light)
+    dialog.show_workspace_activity("Review settings", state="warning")
+    light_muted = custom_paint_colors(light).muted_text.name()
+
+    assert (
+        theme_colors(light).warning.foreground.name()
+        in dialog.preview_status.styleSheet()
+    )
+    assert (
+        theme_colors(light).warning.surface.name() in dialog.preview_status.styleSheet()
+    )
+    assert light_muted in dialog.help_label.styleSheet()
+    assert "#1e3a8a" in dialog.demo_guide_label.styleSheet()
+    assert "#172554" not in dialog.demo_guide_label.styleSheet()
+    assert "#334155" not in dialog._source_rows[0]["widget"].styleSheet()
+    assert "#92400e" in dialog.batch_activity_status.styleSheet()
+
+    dark = _theme_palette(base="#111827", alternate="#1f2937", text="#f8fafc")
+    dialog.setPalette(dark)
+
+    assert "#dbeafe" in dialog.demo_guide_label.styleSheet()
+    assert "#172554" in dialog.demo_guide_label.styleSheet()
+    assert "#334155" in dialog._source_rows[0]["widget"].styleSheet()
+    assert "#fbbf24" in dialog.batch_activity_status.styleSheet()
+    assert (
+        theme_colors(dark).warning.foreground.name()
+        in dialog.preview_status.styleSheet()
+    )
+    assert (
+        theme_colors(dark).warning.surface.name() in dialog.preview_status.styleSheet()
+    )
 
 
 def test_batch_output_path_expands_with_dialog(qtbot, tmp_path):
@@ -345,12 +405,7 @@ def test_batch_output_path_expands_with_dialog(qtbot, tmp_path):
     assert dialog.output_edit.sizePolicy().horizontalPolicy() == (QSizePolicy.Expanding)
     output_row = dialog.output_edit.parentWidget()
     assert output_row.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
-    content_layout = dialog.content_widget.layout()
-    form = next(
-        item.layout()
-        for index in range(content_layout.count())
-        if isinstance((item := content_layout.itemAt(index)).layout(), QFormLayout)
-    )
+    form = dialog.destination_group.layout()
     assert isinstance(form, QFormLayout)
     assert form.fieldGrowthPolicy() == QFormLayout.AllNonFixedFieldsGrow
 
@@ -676,6 +731,10 @@ def test_scientific_preflight_error_disables_run_until_settings_change(
     assert not dialog.run_button.isEnabled()
     assert "QYX" in dialog.run_result_label.text()
     dialog._source_rows[0]["axis_declaration"].setText("QYX -> ZYX")
+    assert not dialog.run_button.isEnabled()
+    assert dialog.next_button.isEnabled()
+    assert dialog._check_batch()
+    dialog.tabs.setCurrentIndex(3)
     assert dialog.run_button.isEnabled()
 
 
@@ -824,6 +883,9 @@ def test_batch_dialog_run_request_does_not_accept_workspace(qtbot, tmp_path):
     requests = []
     dialog.runRequested.connect(requests.append)
 
+    assert not dialog.run_button.isEnabled()
+    assert dialog._check_batch()
+    dialog.tabs.setCurrentIndex(3)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
 
     assert len(requests) == 1
@@ -844,9 +906,9 @@ def test_batch_preview_auto_loads_first_representative_and_selection_is_explicit
     assert dialog._preview_batch()
 
     assert previewed == [0]
-    assert dialog.preview_table.columnCount() == 5
-    assert dialog.preview_table.item(0, 3).text() == "new"
-    assert dialog.preview_table.item(0, 4).text() == "Not run"
+    assert dialog.preview_table.columnCount() == 6
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
+    assert dialog.preview_table.item(0, 5).text() == "Not run"
     assert "representative calculation" in dialog.graph_preview_status.text()
     assert dialog.select_preview_item(1)
     assert previewed == [0]
@@ -873,9 +935,9 @@ def test_plan_only_result_does_not_calculate_a_graph_representative(
     assert previewed == []
     assert dialog.preview_table.rowCount() == 3
     assert dialog.preview_status.text() == (
-        "Ready: 3 batch item(s) checked. Nothing was saved."
+        "Ready: 3 batch items checked. 3 to create. Nothing was saved or calculated."
     )
-    assert "No representative was loaded" in dialog.graph_preview_status.text()
+    assert "No image was calculated" in dialog.graph_preview_status.text()
     assert dialog.preview_item_button.isEnabled()
 
 
@@ -883,22 +945,23 @@ def test_batch_preview_status_tracks_full_plan_item_beyond_table_limit(
     qtbot,
     tmp_path,
 ):
-    full = _preview_result(tmp_path, count=26)
+    full = _preview_result(tmp_path, count=76)
     limited = replace(full, rows=full.rows[:25])
     dialog = CollectionBatchDialog(actions=_actions(limited, []))
     qtbot.addWidget(dialog)
     assert dialog._preview_batch()
 
-    assert dialog.preview_table.rowCount() == 25
-    assert dialog.select_preview_item(25)
-    assert not dialog.preview_table.selectionModel().selectedRows()
-    assert "item 26 of 26" in dialog.graph_preview_status.text()
+    assert dialog.preview_table.rowCount() == 50
+    assert dialog.select_preview_item(75)
+    assert dialog.preview_table.rowCount() == 26
+    assert dialog.preview_table.item(25, 0).data(Qt.UserRole) == 75
+    assert dialog.preview_table.selectionModel().selectedRows()[0].row() == 25
+    assert "item 76 of 76" in dialog.graph_preview_status.text()
 
-    dialog.begin_run(26)
-    dialog.preview_table.selectRow(24)
-    dialog.update_run_progress(26, 26, limited.items[25].batch_id, "running")
-    assert not dialog.preview_table.selectionModel().selectedRows()
-    assert "Item 26 of 26" in dialog.run_progress_label.text()
+    dialog.begin_run(76)
+    dialog.update_run_progress(76, 76, limited.items[75].batch_id, "running")
+    assert dialog.preview_table.item(25, 5).text() == "Running"
+    assert "Item 76 of 76" in dialog.run_progress_label.text()
 
 
 def test_failed_preview_emits_invalidation_and_clears_demo_identity(qtbot, tmp_path):
@@ -945,7 +1008,7 @@ def test_completed_run_marks_preflight_historical_without_erasing_evidence(
     dialog.mark_plan_historical_after_run()
 
     assert dialog._preview_result is None
-    assert [dialog.preview_table.item(row, 4).text() for row in range(3)] == [
+    assert [dialog.preview_table.item(row, 5).text() for row in range(3)] == [
         "Completed",
         "Completed",
         "Completed",
@@ -975,13 +1038,13 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     assert dialog.cancel_run_button.isEnabled()
     assert dialog.operation_progress_bar.minimum() == 0
     assert dialog.operation_progress_bar.maximum() == 0
-    assert dialog.preview_table.item(0, 3).text() == "new"
-    assert dialog.preview_table.item(0, 4).text() == "Pending"
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
+    assert dialog.preview_table.item(0, 5).text() == "Pending"
 
     dialog.update_run_progress(2, 3, result.items[1].batch_id, "running")
     assert dialog.run_progress_bar.maximum() == 3
     assert dialog.run_progress_bar.value() == 1
-    assert dialog.preview_table.item(1, 4).text() == "Running"
+    assert dialog.preview_table.item(1, 5).text() == "Running"
 
     dialog.update_operation_progress(
         2,
@@ -995,12 +1058,12 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     )
     assert dialog.operation_progress_bar.maximum() == 10
     assert dialog.operation_progress_bar.value() == 4
-    assert "gaussian_blur" in dialog.operation_progress_label.text()
+    assert "Gaussian Blur" in dialog.operation_progress_label.text()
     assert "Gaussian planes" in dialog.operation_progress_label.text()
 
     dialog.update_run_progress(2, 3, result.items[1].batch_id, "completed")
     assert dialog.run_progress_bar.value() == 2
-    assert dialog.preview_table.item(1, 4).text() == "Completed"
+    assert dialog.preview_table.item(1, 5).text() == "Completed"
 
     run_result = SimpleNamespace(
         manifest=SimpleNamespace(
@@ -1017,26 +1080,28 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     dialog.finish_run(run_result, "Ground truth passed.")
 
     assert dialog.run_progress_bar.value() == 3
-    assert dialog.preview_table.item(0, 4).text() == "Completed"
-    assert dialog.preview_table.item(1, 4).text() == "Failed"
-    assert dialog.preview_table.item(2, 4).text() == "Skipped"
-    assert dialog.preview_table.item(0, 3).text() == "new"
+    assert dialog.preview_table.item(0, 5).text() == "Completed"
+    assert dialog.preview_table.item(1, 5).text() == "Failed"
+    assert dialog.preview_table.item(2, 5).text() == "Skipped"
+    assert dialog.preview_table.item(0, 4).text() == "Ready"
     assert "1 completed" in dialog.run_progress_label.text()
     assert dialog.batch_activity_status.text() == ("Completed with 1 issue · 3 items.")
     assert dialog.source_detection_progress.value() == 3
     assert "vipp_batch_manifest.json" in dialog.run_result_label.text()
     assert "Ground truth passed" in dialog.run_result_label.text()
-    assert dialog.run_button.isEnabled()
+    assert not dialog.run_button.isEnabled()
+    assert dialog.next_button.text() == "View run report"
+    assert dialog.next_button.isEnabled()
     assert dialog.preview_button.isEnabled()
     assert dialog.source_group.isEnabled()
-    assert dialog.preview_item_button.isEnabled()
+    assert not dialog.preview_item_button.isEnabled()
     assert not dialog.workflow_checkbox.isEnabled()
     assert dialog.cancel_run_button.isHidden()
 
     assert dialog._preview_batch()
     assert dialog.run_group.isHidden()
     assert dialog.run_progress_bar.format() == "Not run"
-    assert dialog.preview_table.item(0, 4).text() == "Not run"
+    assert dialog.preview_table.item(0, 5).text() == "Not run"
 
 
 def test_batch_dialog_cancel_is_single_shot_and_waits_for_safe_checkpoint(
@@ -1055,7 +1120,7 @@ def test_batch_dialog_cancel_is_single_shot_and_waits_for_safe_checkpoint(
 
     assert requested == [True]
     assert not dialog.cancel_run_button.isEnabled()
-    assert dialog.cancel_run_button.text() == "Cancelling..."
+    assert dialog.cancel_run_button.text() == "Stopping…"
     assert "safe checkpoint" in dialog.operation_progress_label.text()
     assert "cancelling safely" in dialog.batch_activity_status.text().lower()
 
@@ -1071,7 +1136,7 @@ def test_batch_dialog_error_restores_exact_control_state(qtbot, tmp_path):
     dialog.update_run_progress(1, 3, result.items[0].batch_id, "running")
     dialog.show_run_error("A source changed during execution.")
 
-    assert dialog.preview_table.item(0, 4).text() == "Failed"
+    assert dialog.preview_table.item(0, 5).text() == "Failed"
     assert dialog.run_progress_bar.format() == "Failed"
     assert dialog.batch_activity_status.text() == "Failed · item 1 of 3."
     assert "source changed" in dialog.run_result_label.text()
@@ -1109,15 +1174,18 @@ def test_batch_dialog_scrolls_compact_content_and_keeps_footer_fixed(
     assert dialog.content_scroll.widgetResizable()
     assert dialog.content_scroll.widget() is dialog.content_widget
     assert dialog.content_widget.isAncestorOf(dialog.source_group)
-    assert dialog.content_widget.isAncestorOf(dialog.preview_table)
+    assert not dialog.content_widget.isAncestorOf(dialog.preview_table)
+    assert dialog.items_page.isAncestorOf(dialog.preview_table)
     assert not dialog.content_widget.isAncestorOf(dialog.config_row)
     assert dialog.config_row.isAncestorOf(dialog.load_config_button)
-    assert dialog.config_row.isAncestorOf(dialog.batch_activity_strip)
+    assert dialog.footer.isAncestorOf(dialog.batch_activity_strip)
     assert not dialog.content_widget.isAncestorOf(dialog.batch_activity_strip)
     assert dialog.isAncestorOf(dialog.batch_activity_strip)
-    assert not dialog.content_widget.isAncestorOf(dialog.button_box)
+    assert not dialog.content_widget.isAncestorOf(dialog.footer_action_row)
+    assert dialog.footer.isAncestorOf(dialog.footer_action_row)
     assert dialog.content_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
 
+    dialog.tabs.setCurrentIndex(0)
     dialog.resize(640, dialog.minimumHeight())
     dialog.show()
     qtbot.waitUntil(dialog.isVisible)
@@ -1128,9 +1196,10 @@ def test_batch_dialog_scrolls_compact_content_and_keeps_footer_fixed(
     assert (
         toolbar_layout.indexOf(dialog.load_config_button)
         < toolbar_layout.indexOf(dialog.save_config_button)
-        < toolbar_layout.indexOf(dialog.demo_config_button)
-        < toolbar_layout.indexOf(dialog.batch_activity_strip)
+        < toolbar_layout.indexOf(dialog.more_button)
     )
+    assert dialog.demo_config_button.isHidden()
+    assert dialog.demo_action in dialog.more_menu.actions()
     assert dialog.batch_activity_status.width() > 0
     toolbar_button_center = dialog.load_config_button.mapTo(
         dialog,
@@ -1140,7 +1209,7 @@ def test_batch_dialog_scrolls_compact_content_and_keeps_footer_fixed(
         dialog,
         dialog.batch_activity_strip.rect().center(),
     )
-    assert abs(toolbar_button_center.y() - activity_center.y()) <= 2
+    assert activity_center.y() > toolbar_button_center.y()
     dialog.show_workspace_activity(
         "Detecting batch items and checking saved sources...",
         state="working",
@@ -1149,26 +1218,27 @@ def test_batch_dialog_scrolls_compact_content_and_keeps_footer_fixed(
     )
     QApplication.processEvents()
     assert dialog.batch_activity_status.width() >= 96
-    assert dialog.source_detection_progress.isVisibleTo(dialog.config_row)
+    assert dialog.source_detection_progress.isVisibleTo(dialog.footer)
     for widget in (
         dialog.batch_activity_status,
         dialog.source_detection_progress,
     ):
         widget_right = widget.mapTo(
-            dialog.config_row,
+            dialog.footer,
             widget.rect().topRight(),
         ).x()
-        assert widget_right <= dialog.config_row.rect().right()
+        assert widget_right <= dialog.footer.rect().right()
     scroll_bar = dialog.content_scroll.verticalScrollBar()
     for position in (scroll_bar.minimum(), scroll_bar.maximum()):
         scroll_bar.setValue(position)
         assert dialog.batch_activity_strip.isVisibleTo(dialog)
-        assert dialog.run_button.isVisibleTo(dialog)
+        assert dialog.next_button.isVisibleTo(dialog)
         assert dialog.close_button.isVisibleTo(dialog)
 
     assert dialog.select_preview_item(1)
-    dialog.content_scroll.ensureWidgetVisible(dialog.preview_item_button, 12, 12)
-    viewport = dialog.content_scroll.viewport()
+    dialog.tabs.setCurrentIndex(1)
+    QApplication.processEvents()
+    viewport = dialog.items_page
     button_center = dialog.preview_item_button.mapTo(
         viewport,
         dialog.preview_item_button.rect().center(),
@@ -1177,16 +1247,19 @@ def test_batch_dialog_scrolls_compact_content_and_keeps_footer_fixed(
     qtbot.mouseClick(dialog.preview_item_button, Qt.LeftButton)
     assert previewed == [0, 1]
 
-    output_item = dialog.preview_table.item(0, 2)
-    assert output_item.text() == "field-1.npy"
+    output_item = dialog.preview_table.item(0, 3)
+    assert output_item.text() == "1 to create"
     assert str(result.rows[0].outputs[0]) in output_item.toolTip()
     header = dialog.preview_table.horizontalHeader()
-    last_column_right = header.sectionViewportPosition(4) + header.sectionSize(4)
+    last_column_right = header.sectionViewportPosition(5) + header.sectionSize(5)
     assert last_column_right <= dialog.preview_table.viewport().width() + 4
 
+    dialog.tabs.setCurrentIndex(3)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     assert len(requests) == 1
     dialog.begin_run(3)
-    dialog.content_scroll.ensureWidgetVisible(dialog.run_group, 12, 12)
-    assert dialog.run_group.isVisibleTo(dialog.content_scroll.viewport())
+    assert dialog.tabs.currentIndex() == 3
+    assert dialog.results_panel.isVisibleTo(dialog)
+    assert dialog.cancel_run_button.isVisibleTo(dialog)
+    assert dialog.run_group.isHidden()
     assert dialog.close_button.isVisibleTo(dialog)

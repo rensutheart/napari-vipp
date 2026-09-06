@@ -30,6 +30,17 @@ from email.parser import Parser
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .wheel_source_equivalence import (
+        WheelSourceEquivalenceError,
+        require_source_equivalent_wheels,
+    )
+else:
+    from wheel_source_equivalence import (
+        WheelSourceEquivalenceError,
+        require_source_equivalent_wheels,
+    )
+
 PYINSTALLER_VERSION = "6.21.0"
 BUILD_PYTHON_VERSION = (3, 12, 10)
 BUILD_VERSION_PINS = {
@@ -269,15 +280,17 @@ def build_installer(
         temporary_root = Path(temporary)
         if not development:
             rebuilt_wheel = _build_release_wheel(root, temporary_root, source)
-            rebuilt_record = inspect_wheel(
+            inspect_wheel(
                 rebuilt_wheel,
                 expected_version=source.version,
             )
-            if rebuilt_record.contents_sha256 != wheel.contents_sha256:
+            try:
+                require_source_equivalent_wheels(wheel.path, rebuilt_wheel)
+            except WheelSourceEquivalenceError as error:
                 raise InstallerPackagingError(
                     "The supplied release wheel contents differ from a direct, "
-                    "pinned build of the clean tagged source."
-                )
+                    f"pinned build of the clean tagged source: {error}"
+                ) from error
         payload_manifest = temporary_root / PAYLOAD_MANIFEST_NAME
         _write_json(
             payload_manifest,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from skimage.filters import threshold_minimum
+
 from napari_vipp._sample_data import make_sample_data
 
 
@@ -32,6 +34,7 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "VIPP synthetic 3D deconvolution volume",
         "VIPP synthetic 3D measured PSF",
         "VIPP synthetic GPU segmentation cleanup",
+        "VIPP synthetic threshold gallery",
     ]
     assert shapes[0] == (12, 96, 128)
     assert shapes[1] == (3, 12, 96, 128)
@@ -47,6 +50,7 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
     assert shapes[11] == (9, 48, 56)
     assert shapes[12] == (5, 9, 9)
     assert shapes[13] == (3, 12, 96, 128)
+    assert shapes[14] == (8, 64, 80)
     assert axis_orders == [
         "ZYX",
         "CZYX",
@@ -62,11 +66,13 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "ZYX",
         "ZYX",
         "CZYX",
+        "ZYX",
     ]
     assert preferred_flags == [
         False,
         False,
         True,
+        False,
         False,
         False,
         False,
@@ -118,3 +124,15 @@ def test_mesh_morphology_sample_empty_slices_have_empty_background():
     assert data[1].max() == 0
     assert data[-1].max() == 0
     assert data.max() > 50_000
+
+
+def test_threshold_gallery_sample_has_stable_minimum_threshold():
+    data, _metadata, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic threshold gallery"
+    )
+
+    threshold = float(threshold_minimum(data, nbins=256, max_num_iter=512))
+
+    assert 60.0 < threshold < 140.0

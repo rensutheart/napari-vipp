@@ -372,7 +372,10 @@ def test_cancelled_cpu_result_has_typed_cleanup_provenance():
     assert result.failure.as_dict()["reason_code"] == "operation_cancelled"
 
 
-def test_cancellation_interrupts_initial_exact_source_hash(monkeypatch):
+@pytest.mark.parametrize(
+    "mode", (ComputeMode.CPU, ComputeMode.AUTO, ComputeMode.CUSTOM),
+)
+def test_cancellation_interrupts_initial_exact_source_hash(monkeypatch, mode):
     cancel_event = threading.Event()
     original_chunks = execution_module._iter_exact_array_chunks
 
@@ -396,12 +399,14 @@ def test_cancellation_interrupts_initial_exact_source_hash(monkeypatch):
             input_name="source",
             source_payloads={},
             cancel_event=cancel_event,
+            compute_request=ComputeRequest(mode=mode),
         )
     )
 
     assert result.cancelled
     assert result.failure is not None
     assert result.failure.error_type == "OperationCancelled"
+    assert result.failure.cleanup_succeeded is True
 
 
 def test_cancellation_interrupts_source_context_reuse_after_envelope(monkeypatch):
@@ -540,6 +545,7 @@ def test_accelerated_cancellation_before_setup_skips_registry_construction(
     assert result.failure.kind == "cancelled"
     assert result.failure.error_type == "OperationCancelled"
     assert CountingRegistry.construction_count == 0
+    assert result.failure.cleanup_succeeded is True
     observation = result.pre_device_execution_telemetry
     assert observation is not None
     assert observation.completed is False
@@ -549,8 +555,10 @@ def test_accelerated_cancellation_before_setup_skips_registry_construction(
     assert observation.spans[-1].succeeded is False
 
 
-def test_accelerated_cancellation_after_setup_reports_registry_cleanup_failure(
+@pytest.mark.parametrize("close_fails", (False, True))
+def test_accelerated_cancellation_after_setup_reports_registry_cleanup(
     monkeypatch,
+    close_fails,
 ):
     cancelled = threading.Event()
 
@@ -562,7 +570,8 @@ def test_accelerated_cancellation_after_setup_reports_registry_cleanup_failure(
 
         @staticmethod
         def close() -> None:
-            raise RuntimeError("provider would not close")
+            if close_fails:
+                raise RuntimeError("provider would not close")
 
     monkeypatch.setattr(
         "napari_vipp.core.compute_registry.ComputeRegistry",
@@ -585,9 +594,12 @@ def test_accelerated_cancellation_after_setup_reports_registry_cleanup_failure(
     assert result.cancelled
     assert result.failure is not None
     assert result.failure.kind == "cancelled"
-    assert result.failure.error_type == "AcceleratorCleanupError"
-    assert result.failure.cleanup_succeeded is False
-    assert "provider would not close" in result.failure.message
+    assert result.failure.cleanup_succeeded is (not close_fails)
+    if close_fails:
+        assert result.failure.error_type == "AcceleratorCleanupError"
+        assert "provider would not close" in result.failure.message
+    else:
+        assert result.failure.error_type == "OperationCancelled"
 
 
 def test_accelerated_planner_setup_failure_closes_owned_registry(monkeypatch):

@@ -156,9 +156,7 @@ def test_current_workflow_persists_only_portable_compute_intent(tmp_path):
 
     assert restored.mode is ComputeMode.CUSTOM
     assert restored.fallback_policy.value == "strict"
-    assert restored.preference_for("gaussian").value == (
-        "future.provider.gaussian-v9"
-    )
+    assert restored.preference_for("gaussian").value == ("future.provider.gaussian-v9")
     assert restored.runtime_id == ""
     assert restored.device_id == ""
     assert restored.accelerator_memory_cap_bytes is None
@@ -414,6 +412,76 @@ def test_workflow_roundtrip_preserves_float_histogram_bins(operation_id):
     assert restored_node.params["histogram_bins"] == 4_096
 
 
+def test_new_imagej_threshold_uses_fixed_default_method_and_roundtrips_it():
+    pipeline = PrototypePipeline()
+    spec = pipeline.operation_spec("imagej_auto_threshold")
+
+    assert spec.title == "ImageJ Default Threshold (8-bit)"
+    assert "method" not in {parameter.name for parameter in spec.parameters}
+
+    node = pipeline.add_node("imagej_auto_threshold")
+    assert node.title == "ImageJ Default Threshold (8-bit)"
+    assert node.params["method"] == "Default"
+
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    assert serialized["operation_id"] == "imagej_auto_threshold"
+    assert serialized["params"]["method"] == "Default"
+
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+    assert restored_node.operation_id == "imagej_auto_threshold"
+    assert restored_node.title == "ImageJ Default Threshold (8-bit)"
+    assert restored_node.params["method"] == "Default"
+
+
+def test_legacy_imagej_triangle_threshold_restores_without_changing_science():
+    from napari_vipp.core.batch import scientific_workflow_hash
+    from napari_vipp.core.workflow import canonical_workflow_document
+
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("imagej_auto_threshold")
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"]["method"] = "Triangle"
+    original_hash = scientific_workflow_hash(document)
+
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+    assert restored_node.operation_id == "imagej_auto_threshold"
+    assert restored_node.title == "ImageJ Triangle Threshold (8-bit, legacy)"
+    assert restored_node.params["method"] == "Triangle"
+
+    restored_pipeline = PrototypePipeline()
+    restored_pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    live_node = restored_pipeline.nodes[node.id]
+    assert live_node.operation_id == "imagej_auto_threshold"
+    assert live_node.title == "ImageJ Triangle Threshold (8-bit, legacy)"
+    assert live_node.params["method"] == "Triangle"
+    assert scientific_workflow_hash(canonical_workflow_document(document)) == (
+        original_hash
+    )
+
+
+def test_imagej_threshold_rejects_non_default_new_values_and_unknown_saved_methods():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("imagej_auto_threshold")
+
+    with pytest.raises(ValueError, match="method is fixed by the node"):
+        pipeline.set_param(node.id, "method", "Triangle")
+
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"]["method"] = "Li"
+
+    with pytest.raises(ValueError, match="must be one of: 'Default', 'Triangle'"):
+        deserialize_workflow(document)
+
+
 def test_rescale_cutoff_mode_roundtrips():
     pipeline = PrototypePipeline()
     node = pipeline.add_node("rescale_intensity")
@@ -424,6 +492,41 @@ def test_rescale_cutoff_mode_roundtrips():
     explicit = deserialize_workflow(document)
     explicit_node = next(item for item in explicit["nodes"] if item.id == node.id)
     assert explicit_node.params["cutoff_mode"] == "Percentiles"
+
+
+@pytest.mark.parametrize("legacy_method", ["min-max", "z-score"])
+def test_legacy_normalize_workflow_gains_safe_defaults(legacy_method):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("normalize_image")
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"] = {"method": legacy_method}
+
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params == {
+        "method": legacy_method,
+        "low_percentile": 1.0,
+        "high_percentile": 99.0,
+        "reference_mean": 0.0,
+        "reference_standard_deviation": 1.0,
+    }
+
+
+def test_normalize_new_parameters_roundtrip():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("normalize_image")
+    pipeline.set_param(node.id, "method", "reference-z-score")
+    pipeline.set_param(node.id, "low_percentile", 2.0)
+    pipeline.set_param(node.id, "high_percentile", 98.0)
+    pipeline.set_param(node.id, "reference_mean", 120.5)
+    pipeline.set_param(node.id, "reference_standard_deviation", 18.25)
+
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params == node.params
 
 
 def test_workflow_roundtrip_preserves_exact_wide_integer_cutoffs():
@@ -451,6 +554,7 @@ def test_clip_cutoff_mode_roundtrips():
     document = serialize_workflow(pipeline)
     explicit = deserialize_workflow(document)
     explicit_node = next(item for item in explicit["nodes"] if item.id == node.id)
+    assert explicit_node.title == "Clamp Intensity"
     assert explicit_node.params["cutoff_mode"] == "Data range"
 
 
@@ -468,10 +572,7 @@ def test_composite_intensity_mapping_roundtrips_as_a_required_choice():
     restored = deserialize_workflow(document)
     restored_node = next(item for item in restored["nodes"] if item.id == node.id)
 
-    assert (
-        restored_node.params["intensity_mapping"]
-        == COMPOSITE_RGB_PERCENTILE_1_99
-    )
+    assert restored_node.params["intensity_mapping"] == COMPOSITE_RGB_PERCENTILE_1_99
 
 
 def test_composite_explicit_axis_and_mapping_modes_roundtrip_when_present():
@@ -562,6 +663,60 @@ def test_composite_auto_modes_are_valid_optional_values():
 
     assert restored_node.params["channel_axis_mode"] == COMPOSITE_RGB_AUTO
     assert restored_node.params["mapping_mode"] == COMPOSITE_RGB_AUTO
+
+
+def test_new_select_axis_slice_has_explicit_modern_noop_defaults():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    selector = pipeline.add_node("select_axis_slice")
+    assert pipeline.connect("input", selector.id).success
+
+    assert selector.params == {
+        "axis": 0,
+        "index": 0,
+        "axes": "",
+        "indices": "",
+        "ranges": "",
+        "range_mode": True,
+        "remove_axes": "",
+        "remove_indices": "",
+    }
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    assert (
+        pipeline.run(data, input_metadata={"axes": "TCZYX"})[selector.id].shape
+        == data.shape
+    )
+
+
+def test_legacy_select_axis_slice_restore_preserves_axis_removal():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    selector = pipeline.add_node("select_axis_slice")
+    assert pipeline.connect("input", selector.id).success
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == selector.id)
+    serialized["params"] = {"axis": 0, "index": 2}
+
+    restored = deserialize_workflow(document)
+    restored_selector = next(
+        item for item in restored["nodes"] if item.id == selector.id
+    )
+    assert restored_selector.params == {
+        "axis": 0,
+        "index": 2,
+        "range_mode": False,
+    }
+
+    restored_pipeline = PrototypePipeline()
+    restored_pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    data = np.zeros((5, 3, 4, 6, 7), dtype=np.uint16)
+    assert restored_pipeline.run(data, input_metadata={"axes": "TCZYX"})[
+        selector.id
+    ].shape == (3, 4, 6, 7)
 
 
 def test_composite_workflow_requires_and_validates_intensity_mapping():
@@ -745,9 +900,7 @@ def test_workflow_roundtrip_preserves_sibling_measurement_merge_topology():
         workflow["output_tunnels"],
     )
 
-    assert restored.nodes[intensity.id].operation_id == (
-        "measure_objects_intensity"
-    )
+    assert restored.nodes[intensity.id].operation_id == ("measure_objects_intensity")
     assert restored.nodes[mesh.id].operation_id == "measure_3d_mesh_morphology"
     assert restored.nodes[merged.id].operation_id == "merge_tables"
     assert GraphConnection(labels.id, intensity.id, target_port=0) in (
@@ -756,15 +909,11 @@ def test_workflow_roundtrip_preserves_sibling_measurement_merge_topology():
     assert GraphConnection("input", intensity.id, target_port=1) in (
         restored.connections
     )
-    assert GraphConnection(labels.id, mesh.id, target_port=0) in (
-        restored.connections
-    )
+    assert GraphConnection(labels.id, mesh.id, target_port=0) in (restored.connections)
     assert GraphConnection(intensity.id, merged.id, target_port=0) in (
         restored.connections
     )
-    assert GraphConnection(mesh.id, merged.id, target_port=1) in (
-        restored.connections
-    )
+    assert GraphConnection(mesh.id, merged.id, target_port=1) in (restored.connections)
 
 
 def test_workflow_preserves_supported_optional_ui_parameters():
@@ -1180,6 +1329,44 @@ def test_workflow_preserves_vipp_metadata(tmp_path):
     assert workflow["metadata"] == metadata
 
 
+def test_workflow_preserves_distinct_channel_axis_inspect_profiles():
+    pipeline = _build_pipeline()
+    profiles = [
+        {
+            "node_id": "gaussian",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": False,
+            "display_rgb_as_channels": False,
+            "display_ndim": 3,
+            "settings": {"opacity": 0.9},
+        },
+        *[
+            {
+                "node_id": "gaussian",
+                "output_port": 0,
+                "data_kind": "image",
+                "display_kind": "image",
+                "display_rgb": False,
+                "display_rgb_as_channels": False,
+                "display_channel_axis_as_layers": True,
+                "display_channel_index": channel_index,
+                "display_ndim": 3,
+                "settings": {"opacity": opacity},
+            }
+            for channel_index, opacity in enumerate((0.4, 0.7))
+        ],
+    ]
+    metadata = {"vipp": {"inspector": {"display_profiles": profiles}}}
+
+    document = serialize_workflow(pipeline, metadata=metadata)
+    restored = deserialize_workflow(document)
+
+    assert document["metadata"] == metadata
+    assert restored["metadata"] == metadata
+
+
 def test_workflow_preserves_attached_batch_config_document(tmp_path):
     document = serialize_workflow(_build_pipeline())
     batch_config = {
@@ -1371,11 +1558,48 @@ def test_workflow_rejects_impossible_inspect_rgb_profile(identity):
         "settings": {},
         **identity,
     }
-    document["metadata"] = {
-        "vipp": {"inspector": {"display_profiles": [profile]}}
-    }
+    document["metadata"] = {"vipp": {"inspector": {"display_profiles": [profile]}}}
 
     with pytest.raises(ValueError, match="RGB|channel_index"):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {
+            "display_rgb": True,
+            "display_rgb_as_channels": False,
+            "display_channel_axis_as_layers": True,
+            "display_channel_index": 0,
+        },
+        {
+            "display_rgb": False,
+            "display_rgb_as_channels": False,
+            "display_channel_axis_as_layers": True,
+        },
+        {
+            "display_rgb": False,
+            "display_rgb_as_channels": False,
+            "display_channel_axis_as_layers": False,
+            "display_channel_index": 0,
+        },
+    ],
+)
+def test_workflow_rejects_impossible_inspect_channel_axis_profile(identity):
+    document = serialize_workflow(_build_pipeline())
+    profile = {
+        "node_id": "gaussian",
+        "output_port": 0,
+        "data_kind": "image",
+        "display_kind": "image",
+        "display_ndim": 3,
+        "settings": {},
+        **identity,
+    }
+    document["metadata"] = {"vipp": {"inspector": {"display_profiles": [profile]}}}
+
+    with pytest.raises(ValueError, match="channel-axis|display_channel_index"):
         deserialize_workflow(document)
 
 
@@ -1700,9 +1924,7 @@ def test_crop_roi_line_thickness_roundtrips_but_remains_optional_and_validated(
     serialized_crop["params"].pop(parameter.name)
     legacy_document = deserialize_workflow(legacy)
     legacy_crop = next(
-        node
-        for node in legacy_document["nodes"]
-        if node.operation_id == "crop_stack"
+        node for node in legacy_document["nodes"] if node.operation_id == "crop_stack"
     )
     assert parameter.name not in legacy_crop.params
 

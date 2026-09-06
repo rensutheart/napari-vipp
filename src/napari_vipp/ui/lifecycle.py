@@ -101,6 +101,9 @@ class WidgetLifecycle:
         widget._pending_thumbnail_contrast_limit_keys.clear()
         widget._thumbnail_contrast_busy_visible = False
         widget._clear_input_histogram_cache()
+        clear_label_volumes = getattr(widget, "_clear_label_volume_cache", None)
+        if callable(clear_label_volumes):
+            clear_label_volumes()
         widget._clear_output_histogram_cache()
         widget._clear_colocalization_scatter_cache()
 
@@ -114,6 +117,12 @@ class WidgetLifecycle:
             widget._pipeline_thread_pool.clear()
         except Exception:
             pass
+        label_volume_pool = getattr(widget, "_label_volume_thread_pool", None)
+        if label_volume_pool is not None:
+            try:
+                label_volume_pool.clear()
+            except Exception:
+                pass
         for dialog_name in (
             "_node_benchmark_dialog",
             "_pipeline_optimizer_dialog",

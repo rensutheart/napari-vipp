@@ -752,6 +752,92 @@ def test_pre_cancelled_batch_is_first_class_and_never_discovers_accelerator(
     assert result.saved_paths == ()
 
 
+@pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.CUSTOM))
+@pytest.mark.parametrize(
+    "phase", ("source_facts", "workload_facts", "output_provenance"),
+)
+@pytest.mark.parametrize("close_fails", (False, True))
+def test_mid_batch_fact_scan_cancellation_preserves_cleanup_evidence(
+    tmp_path,
+    monkeypatch,
+    mode,
+    phase,
+    close_fails,
+):
+    import napari_vipp.core.compute_registry as registry_module
+    import napari_vipp.core.execution as execution_module
+
+    workflow, config, _output_id = _image_batch(tmp_path, item_count=3)
+    config = replace(config, compute_request=ComputeRequest(mode=mode))
+    cancelled = threading.Event()
+    executions = 0
+    closes = []
+
+    class IsolatedRegistry(registry_module.ComputeRegistry):
+        """Exercise the real mixed-mode path without loading a GPU provider."""
+
+        def __init__(self):
+            super().__init__(
+                runtime_descriptors=(),
+                library_descriptors=(),
+                implementation_specs=(),
+            )
+
+        def close(self):
+            super().close()
+            closes.append(True)
+            if close_fails:
+                raise RuntimeError("provider would not close")
+
+    monkeypatch.setattr(registry_module, "ComputeRegistry", IsolatedRegistry)
+    original_execute = batch_module.execute_pipeline_request
+
+    def track_item(request, **kwargs):
+        nonlocal executions
+        executions += 1
+        return original_execute(request, **kwargs)
+
+    monkeypatch.setattr(batch_module, "execute_pipeline_request", track_item)
+    boundary = {
+        "source_facts": "_capture_source_scientific_contexts",
+        "workload_facts": "_build_workloads",
+        "output_provenance": "_publish_actual_compute_provenance",
+    }[phase]
+    original_boundary = getattr(execution_module, boundary)
+
+    def cancel_second_item(*args, **kwargs):
+        if executions == 2:
+            cancelled.set()
+        return original_boundary(*args, **kwargs)
+
+    monkeypatch.setattr(execution_module, boundary, cancel_second_item)
+
+    result = run_batch(workflow, config, cancel_event=cancelled)
+
+    assert executions == 2
+    assert closes == [True]
+    assert result.cancelled
+    assert [item.status for item in result.manifest.items] == [
+        BatchStatus.COMPLETED,
+        BatchStatus.CANCELLED,
+        BatchStatus.SKIPPED,
+    ]
+    stopped = result.manifest.items[1]
+    assert stopped.execution["failure"]["error_type"] == "OperationCancelled"
+    assert "Operation cancelled" in stopped.execution["failure"]["message"]
+    assert stopped.execution["cleanup_succeeded"] is True
+    assert result.manifest.compute["runtime_cleanup_succeeded"] is (not close_fails)
+    assert len(result.saved_paths) == 1
+    np.testing.assert_array_equal(
+        np.load(result.saved_paths[0]),
+        np.arange(20, dtype=np.uint16).reshape(4, 5),
+    )
+    assert sorted(config.output_dir.glob("*.npy")) == list(result.saved_paths)
+    durable = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert durable["items"][1]["status"] == "cancelled"
+    assert durable["compute"]["runtime_cleanup_succeeded"] is (not close_fails)
+
+
 def test_stale_compute_preference_fails_before_batch_artifacts(tmp_path):
     workflow, config, _output_id = _image_batch(tmp_path)
     invalid = replace(

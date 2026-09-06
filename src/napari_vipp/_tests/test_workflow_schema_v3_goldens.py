@@ -16,6 +16,9 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
+    "exhaustive-inspector-showcase.json": (
+        "9d02b0d0c7d16437330a23f2f35ace2d910718b257927ae636894e5022822b49"
+    ),
     "general-node-bypass-acceptance.json": (
         "79b42499676ba18da66d3340d53f0328828bf129eb91bf0041bf53b2589c7f69"
     ),

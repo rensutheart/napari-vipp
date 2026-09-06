@@ -4,7 +4,7 @@ Last reviewed: 2026-08-29
 
 VIPP is primarily an eager, interactive workflow builder. Most nodes calculate
 NumPy-like in-memory outputs so that graph thumbnails, node inspection, pinned
-overlays, and downstream edits feel immediate. VIPP `0.14.0a3`
+overlays, and downstream edits feel immediate. VIPP `0.15.0a1`
 has one deliberately narrow exception: an eligible direct local OME-Zarr
 `Image Source -> Crop Stack` path can read only the exact retained level-0
 window. Other operations remain eager. This is useful while designing a
@@ -176,15 +176,15 @@ force a node to calculate if the node has no output yet.
 Exact interior percentiles require one native-dtype working buffer so that the
 requested order statistics can be selected without histogram approximation.
 The common integer `0..100` percentile pair uses exact extrema and avoids that
-buffer. Integer Rescale then maps in bounded chunks; integer Clip is a native
-pointwise clamp and does not allocate a whole-stack float copy.
+buffer. Integer Rescale then maps in bounded chunks; integer Clamp Intensity is
+a native pointwise clamp and does not allocate a whole-stack float copy.
 | Save Image and Batch Output nodes | Explicit terminal/output intent. | Batch execution retains these outputs only long enough to write them. |
 
 ## Large-Data Direction
 
 The current policy is pragmatic rather than fully lazy. VIPP can slice a
 declared lower local OME-Zarr 0.4/0.5 level for presentation while keeping
-analysis at level 0. VIPP `0.14.0a3` can also materialize an
+analysis at level 0. VIPP `0.15.0a1` can also materialize an
 exact level-0 window for the one strictly eligible direct Crop Stack path. This
 does not make later nodes lazy or permit a branch to consume the omitted
 pixels. Before VIPP can be comfortable on very large scientific graphs, the

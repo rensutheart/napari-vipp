@@ -3,9 +3,9 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-08-29
+Last reviewed: 2026-09-06
 
-It reflects the live codebase through VIPP `0.14.0a3`. The durable SourceItems,
+It reflects the live codebase through VIPP `0.15.0a1`. The durable SourceItems,
 optional microscope-reader routing, local OME-Zarr presentation preview,
 per-sample batch parameters, reproducible collection execution, graph restore
 hardening, unified CPU/GPU execution contract, and graph-fragment authoring
@@ -14,8 +14,15 @@ cross-Qt desktop integration and native, offline, CPU-only macOS packages for
 both Apple Silicon (`arm64`) and Intel (`x86_64`). `0.14.0a3` adds exact direct
 Crop source-window pushdown, safe node bypass, responsive volume cropping, and
 feature-detected napari 0.9 viewer compatibility while retaining the
-declared `napari>=0.6` boundary; it does not change workflow or scientific
-contracts.
+declared `napari>=0.6` boundary. The viewer-compatibility seams themselves do
+not change scientific calculations.
+
+`0.15.0a1` adds the task-based batch window and inline run report, exact per-item
+existing-file policies in batch configuration version 6, responsive inspector
+and table/plot presentation, the Intensity Histogram node, and GPU-assisted
+mesh/skeleton measurement providers. Workflow schema 6 and batch manifest
+schema 5 remain unchanged. The shared execution and measurement changes require
+their own affected-domain qualification; they are not presentation-only.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in
@@ -330,7 +337,8 @@ Special execution cases:
   `slider_minimum`/`slider_maximum` inside its wider accepted entry range.
   Sigma Filter uses a practical `0..10` slider for Sigma width while its entry
   retains the full `0..1,000,000` contract.
-- Clip bounds, Rescale Intensity output bounds, and Mask Image's outside value
+- Clamp Intensity bounds, Rescale Intensity output bounds, and Mask Image's
+  outside value
   derive their editor kind from the connected array or authoritative input
   state. Non-boolean integer inputs use whole-number controls; floating-point
   and boolean inputs retain fractional entry. Persisted invalid values are shown
@@ -414,7 +422,7 @@ The current high-level groups are:
   - `Math & Logic`: Calculate New Image, Add, Subtract, Ratio, Mask Image,
     Logical AND, Logical OR, Logical XOR, Invert
 - `Intensity & Contrast`: Linear Scale + Offset, Gamma Correction, Rescale
-  Intensity, Normalize, Clip
+  Intensity, Normalize, Clamp Intensity
 - `Filtering`
   - `Smoothing & Denoising`: Average Blur, Gaussian Blur, Gaussian Blur 3D,
     Median Filter, Sigma Filter, Bilateral Filtering, Non-Local Means
@@ -425,13 +433,13 @@ The current high-level groups are:
     axes, including automatic Z projection, explicit axis choices, and an
     all-non-YX-spatial option for stack-style reductions.
 - `Segmentation`
-  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, ImageJ Auto
-    Threshold (8-bit), Binary, Hysteresis thresholding
+  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, ImageJ
+    Default Threshold (8-bit), Binary, Hysteresis thresholding
   - `Local Thresholds`: Adaptive Mean, Adaptive Gaussian, Sauvola, Niblack
     thresholding
 
 Automatic global threshold nodes default to
-`Threshold uses = Stack histogram`, meaning one cutoff is computed from the
+`Histogram scope = Stack histogram`, meaning one cutoff is computed from the
 whole grayscale input and applied to the full image. On stack inputs the
 inspector exposes `Slice histogram` for per-plane cutoff calculation; that still
 produces a full-stack mask, it only changes which histogram is used to compute
@@ -440,16 +448,21 @@ not meaningful. Fixed `Binary Threshold` and local threshold nodes do not expose
 this control. Global automatic threshold nodes also show the selected input
 histogram with a marker at the computed cutoff.
 
-ImageJ Auto Threshold (8-bit) is an explicit exception to the generic histogram
-contract below. It is an experimental source-aligned ImageJ 1.54p target for
-scalar uint8, uint16, and float32 inputs, fixed to per-YX-plane 8-bit conversion
-and a source-derived `Default` or `Triangle` AutoThresholder. Independent
-ImageJ-generated golden parity validation is pending. Bool handling, other
-floating dtypes, and RGB/RGBA luma reduction are VIPP extensions and are not
-ImageJ-exact. Its generic raw-stack histogram inspector is hidden because it
-would not represent the plane-local converted histogram or cutoff actually
-used. Infinite float inputs are rejected as a deliberate safety divergence
-instead of preserving ImageJ's collapsed plane.
+ImageJ Default Threshold (8-bit) is an explicit exception to the generic
+histogram contract below. It is an experimental source-aligned ImageJ 1.54p
+target for scalar uint8, uint16, and float32 inputs, fixed to independent
+per-YX-plane 8-bit conversion followed by ImageJ's modified IsoData (`Default`)
+AutoThresholder. The public node exposes no method control. Persisted nodes
+from the former ImageJ Auto Threshold dropdown that selected `Triangle` retain
+the source-derived ImageJ Triangle algorithm as fixed legacy compatibility; it
+must not be migrated to VIPP's generic Triangle operation because their
+conversion and histogram contracts differ. Independent ImageJ-generated golden
+parity validation is pending. Bool handling, other floating dtypes, and
+RGB/RGBA luma reduction are VIPP extensions and are not ImageJ-exact. Its
+generic raw-stack histogram inspector is hidden because it would not represent
+the plane-local converted histogram or cutoff actually used. Infinite float
+inputs are rejected as a deliberate safety divergence instead of preserving
+ImageJ's collapsed plane.
 
 Otsu, Triangle, Yen, Isodata, and Minimum count every finite input value, with
 no data-size-dependent sampling or silent rebinning. Their bin contract is
@@ -476,9 +489,12 @@ fabricated zero threshold. Local thresholds operate plane-wise and may
 inherently allocate a local-threshold plane; large runs still use the automatic
 background policy.
 
-Minimum exposes a saved `max_iterations` limit (1..10,000, default 10,000) for
-histogram smoothing. It reports an explicit failure when the method cannot
-resolve two maxima; no mean or alternate-threshold fallback is applied.
+Minimum exposes a saved `max_iterations` convergence safety limit (1..10,000,
+default 10,000) for repeated three-bin smoothing of the histogram, not the
+image. Smoothing stops when fewer than three maxima remain; calculation succeeds
+only when exactly two remain, selects the lowest valley between them, and
+reports an explicit failure otherwise. No mean or alternate-threshold fallback
+is applied.
 
 `Hysteresis Threshold` uses raw low/high intensity thresholds and displays those
 markers on its input histogram. Its spatial processing mode controls whether
@@ -601,11 +617,11 @@ the [canonical Sigma Filter evidence](benchmarks/sigma-filter-cupy-windows-rtx50
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
   Filter Labels By Property, Clear Border Objects, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches
-- `Measurements`: Measure Objects, Measure Objects + Intensity, Measure 3D
-  Mesh Morphology, Analyze Skeleton, Measure Skeleton Branches, Summarize
-  Skeleton Branches, Skeleton Graph Tables, Measure Overall Skeleton Network,
-  Merge Tables, Select Table Columns, Add Metadata Columns, Summarize
-  Measurements
+- `Measurements`: Intensity Histogram, Measure Objects, Measure Objects +
+  Intensity, Measure 3D Mesh Morphology, Analyze Skeleton, Measure Skeleton
+  Branches, Summarize Skeleton Branches, Skeleton Graph Tables, Measure Overall
+  Skeleton Network, Merge Tables, Select Table Columns, Add Metadata Columns,
+  Summarize Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -1193,7 +1209,8 @@ Every numeric operation in the **Intensity & Contrast** palette category, plus
 the threshold/cutoff operations listed in `INPUT_HISTOGRAM_OPERATIONS`, shows an
 `Input Histogram` above the general output histogram. It has its own
 `Histogram uses` slice/stack selector, hidden when the connected input has no
-meaningful stack axis. Rescale, Clip, and threshold nodes add parameter-driven
+meaningful stack axis. Rescale, Clamp Intensity, and threshold nodes add
+parameter-driven
 guides; Linear Scale + Offset, Gamma Correction, and Normalize use the same
 exact distribution as read-only context.
 
@@ -1201,7 +1218,7 @@ Input histogram caching separates two dependency domains. The bounded display
 distribution is keyed only by array identity, shape/dtype, semantic axis
 signature, normalized slice/stack scope, and the effective slice position. A
 second key contains the operation plus only parameters that affect its guide
-markers. Manual Binary/Hysteresis and explicit Rescale/Clip markers are rebuilt
+markers. Manual Binary/Hysteresis and explicit Rescale/Clamp markers are rebuilt
 synchronously over cached counts; exact percentile and automatic-threshold
 markers can run independently in the background. Small and large inputs use
 the same cache contract. Pipeline completion invalidates the selected-output
@@ -1219,7 +1236,7 @@ a drag from either percentile marker atomically seeds the explicit-value pair
 from the displayed exact cutoffs and changes `cutoff_mode` to `Values`; later
 drag events reuse the cached distribution and update the active value parameter.
 
-`Clip Intensity` similarly stores `cutoff_mode = Data range | Values`. New nodes
+`Clamp Intensity` similarly stores `cutoff_mode = Data range | Values`. New nodes
 default to `Data range`. Its data-range markers likewise describe the complete
 input; the histogram scope affects only the inspector distribution.
 
@@ -1228,8 +1245,9 @@ statistics over a native-dtype working buffer. The cutoff is retained as an
 integer or rational value, then each bounded processing chunk is translated
 from the cutoff's integer origin before float64 ratio arithmetic. Exact native
 endpoint masks prevent distant saturated values from entering that conversion.
-Input and output intervals wider than 2^53 fail explicitly. Integer Clip takes
-the simpler fully native path: bounds must be integral, inactive out-of-dtype
+Input and output intervals wider than 2^53 fail explicitly. Integer Clamp
+Intensity takes the simpler fully native path: bounds must be integral,
+inactive out-of-dtype
 sides are clamped to the dtype limit, and `np.clip` never promotes the image to
 float. These rules prevent large int64/uint64 offsets from collapsing adjacent
 levels.
@@ -1247,9 +1265,13 @@ Threshold-only requests reuse the compatible density and run a counts-only
 full-ROI scan; a 192 MiB byte budget bounds the density cache. READY Costes
 results supply their already-resolved thresholds, while inspector work never
 writes derived thresholds into the live workflow during an active pipeline run.
-Interactive preparation and the Qt render conversion are capped at 1024 bins per
-axis, while the graph operation retains its independent 4096-bin limit. There is
-no sampled source population. These exact computational helpers still reside in
+Interactive preparation and the detached Qt view support up to 4096 bins per
+axis, matching the graph operation's limit. High-resolution densities pass a
+host-memory preflight and are prepared away from the GUI thread. A shared,
+mass-preserving density of at most 1024 bins per axis feeds the compact inspector
+and constant-time live drag estimate; the pop-out retains and renders the full
+density using a bounded float32/LUT conversion. There is no sampled source
+population. These exact computational helpers still reside in
 `ui/plots.py`, rather than the Qt-free diagnostics module, and remain a known
 boundary seam.
 
@@ -1269,16 +1291,22 @@ parity is pending. Pixel and object tables use
 certification, and carry the evidence state separately as
 `coloc_validation_status=experimental_source_aligned_golden_parity_pending`.
 
-The separate `colocalization_scatter_plot` graph operation produces a durable
-RGB render. It derives independent native populated ranges for X and Y,
-supports symmetric percentile clipping, and separates histogram resolution
-from output raster resolution. Its output metadata uses fresh unit-scale
-Y/X pixel axes plus RGB; source micrometer calibration is not attached to plot
-pixels. `ui/colocalization_scatter_dialog.py` owns the
-resizable interactive presentation and PNG/TIFF export. It emits threshold
-changes back to the workflow host and does not own source arrays or scientific
-state, so the established stale-safe worker remains authoritative for exact
-counts.
+The legacy `colocalization_scatter_plot` graph operation is hidden from the
+palette but remains registered for existing workflows and headless callers that
+need a durable RGB render. It derives independent native populated ranges for X
+and Y, supports symmetric percentile clipping, and separates histogram
+resolution from output raster resolution. Its output metadata uses fresh
+unit-scale Y/X pixel axes plus RGB; source micrometer calibration is not attached
+to plot pixels. `ui/colocalization_scatter_dialog.py` owns the
+resizable interactive presentation and fixed-resolution PNG/TIFF export. It
+keeps visualization-only density bins, populated percentile, log transfer, and
+export size outside measurement-node schemas. Full native ROI extrema are
+retained separately from percentile-clipped density bounds so zoom can switch
+between the two without relabelling the density. It emits threshold previews
+locally and commits a threshold change to the workflow host only when the
+pointer is released. It does not own source arrays or scientific state, so the
+established stale-safe worker remains authoritative for exact counts and for
+background re-binning.
 
 When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered
@@ -1289,8 +1317,11 @@ per-object volume population is cached independently of the live minimum and
 maximum guides, avoiding another full label-image scan while either guide is
 dragged.
 
-When a table node is selected, the general histogram is hidden and the inspector
-shows a `Table Preview` group with the first rows and unit-annotated headers.
+When an ordinary table node is selected, the general image histogram is hidden
+and the inspector shows a `Results` group with the first rows and unit-annotated
+headers. `Intensity Histogram` is the deliberate exception: its bin table is the
+authoritative plot data, so an edge-aware Histogram section appears before
+Results and drives a resizable detailed pop-out without rereading the source.
 Table nodes do not create napari image/labels layers when inspected or pinned.
 
 ## Graph UI

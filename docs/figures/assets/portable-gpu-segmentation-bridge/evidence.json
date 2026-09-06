@@ -1,0 +1,38 @@
+{
+  "sample": "VIPP synthetic GPU segmentation cleanup",
+  "workflow": "Portable GPU Segmentation Bridge",
+  "source_shape_czyx": [
+    3,
+    12,
+    96,
+    128
+  ],
+  "source_dtype": "uint16",
+  "selected_channel_index": 2,
+  "gaussian_sigma": 1.2,
+  "threshold": 18180.26953125,
+  "minimum_object_size_voxels": 22,
+  "cavity_center_zyx": [
+    3,
+    22,
+    24
+  ],
+  "cavity_spans_z_planes": [
+    2,
+    3,
+    4
+  ],
+  "projection_note": "Maximum-intensity projections are display-only; cleanup and labeling use the complete ZYX volume.",
+  "threshold_foreground_voxels": 2428,
+  "after_remove_small_objects_voxels": 2409,
+  "after_fill_holes_voxels": 2440,
+  "removed_speck_voxels": 19,
+  "filled_cavity_voxels": 31,
+  "label_count": 4,
+  "component_volumes_voxels": [
+    685,
+    599,
+    595,
+    561
+  ]
+}

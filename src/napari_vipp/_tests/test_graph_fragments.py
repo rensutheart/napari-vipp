@@ -275,6 +275,30 @@ def test_paste_values_keeps_absent_target_auto_recalculate_default() -> None:
 
 
 @pytest.mark.parametrize(
+    ("source_method", "target_method"),
+    (("Triangle", "Default"), ("Default", "Triangle")),
+)
+def test_paste_values_preserves_fixed_imagej_threshold_variant(
+    source_method: str,
+    target_method: str,
+) -> None:
+    source = GraphFragmentNode(
+        "n0",
+        "imagej_auto_threshold",
+        {"method": source_method, "channel_axis": -1},
+    )
+    target = {"method": target_method, "channel_axis": -1}
+
+    replacement = prepare_paste_values(
+        source,
+        "imagej_auto_threshold",
+        target,
+    )
+
+    assert replacement["method"] == target_method
+
+
+@pytest.mark.parametrize(
     ("mutator", "message"),
     [
         (lambda payload: payload.update({"version": 99}), "version"),

@@ -5,14 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from qtpy.QtCore import QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QEvent, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QAction
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -21,6 +20,8 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.ui.axis_controls import _control_signal_blockers
+from napari_vipp.ui.palette_roles import custom_paint_colors
+from napari_vipp.ui.sliders import VippSlider
 
 
 @dataclass(frozen=True)
@@ -49,8 +50,7 @@ class ViewDimAxisControl(QWidget):
 
         self.label = QLabel("")
         self.label.setMinimumWidth(18)
-        self.label.setStyleSheet("font-weight: 650; color: #cbd5e1;")
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = VippSlider(Qt.Horizontal)
         self.slider.setMinimumWidth(120)
         self.slider.setSingleStep(1)
         self.slider.setPageStep(1)
@@ -58,7 +58,6 @@ class ViewDimAxisControl(QWidget):
         self.spin.setMinimumWidth(54)
         self.spin.setButtonSymbols(QSpinBox.NoButtons)
         self.range_label = QLabel("/0")
-        self.range_label.setStyleSheet("color: #94a3b8;")
 
         layout.addWidget(self.label)
         layout.addWidget(self.slider, 1)
@@ -67,6 +66,19 @@ class ViewDimAxisControl(QWidget):
 
         self.slider.valueChanged.connect(self._on_slider_value_changed)
         self.spin.valueChanged.connect(self._on_spin_value_changed)
+        self._apply_palette_styles()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_palette_styles()
+
+    def _apply_palette_styles(self) -> None:
+        colors = custom_paint_colors(self.palette())
+        self.label.setStyleSheet(
+            f"font-weight: 650; color: {colors.text.name()};"
+        )
+        self.range_label.setStyleSheet(f"color: {colors.muted_text.name()};")
 
     def set_axis(self, axis: ViewDimAxis) -> None:
         self._axis = axis
@@ -111,24 +123,16 @@ class ViewDimsBar(QWidget):
         self._axes: tuple[ViewDimAxis, ...] = ()
         self._controls: list[ViewDimAxisControl] = []
         self._responsive_mode: str | None = None
+        self._applying_palette_styles = False
 
         self.setObjectName("ViewDimsBar")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setStyleSheet(
-            "#ViewDimsBar {"
-            " background: #20262f;"
-            " border: 1px solid #374151;"
-            " border-radius: 5px;"
-            " padding: 2px;"
-            "}"
-        )
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(6, 3, 6, 3)
         self._layout.setSpacing(6)
 
         self.title_label = QLabel("View dims")
-        self.title_label.setStyleSheet("font-weight: 650; color: #e5e7eb;")
         self._layout.addWidget(self.title_label)
 
         self.menu_button = QToolButton()
@@ -141,7 +145,34 @@ class ViewDimsBar(QWidget):
         self.menu_button.setMenu(self.menu)
         self._layout.addStretch(1)
         self._layout.addWidget(self.menu_button)
+        self._apply_palette_styles()
         self.setHidden(True)
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_palette_styles()
+
+    def _apply_palette_styles(self) -> None:
+        if self._applying_palette_styles:
+            return
+        self._applying_palette_styles = True
+        colors = custom_paint_colors(self.palette())
+        try:
+            self.setStyleSheet(
+                "#ViewDimsBar {"
+                f" background: {colors.alternate_surface.name()};"
+                f" border: 1px solid {colors.border.name()};"
+                " border-radius: 5px;"
+                " padding: 2px;"
+                "}"
+            )
+            if hasattr(self, "title_label"):
+                self.title_label.setStyleSheet(
+                    f"font-weight: 650; color: {colors.text.name()};"
+                )
+        finally:
+            self._applying_palette_styles = False
 
     def set_axes(self, axes: list[ViewDimAxis] | tuple[ViewDimAxis, ...]) -> None:
         self._axes = tuple(axes)
@@ -162,8 +193,47 @@ class ViewDimsBar(QWidget):
         if not self._axes:
             return
         width = max(int(self.width()), 1)
-        full_width = 190 + 220 * len(self._axes)
-        compact_width = 160 + 86 * len(self._axes)
+        parent = self.parentWidget()
+        if parent is not None:
+            width = min(width, max(int(parent.contentsRect().width()) - 12, 1))
+
+        def minimum_widget_width(widget: QWidget) -> int:
+            return max(
+                int(widget.minimumWidth()),
+                int(widget.minimumSizeHint().width()),
+                0,
+            )
+
+        def control_width(control: ViewDimAxisControl, *, full: bool) -> int:
+            widgets = [control.label, control.spin, control.range_label]
+            if full:
+                widgets.insert(1, control.slider)
+            return sum(minimum_widget_width(widget) for widget in widgets) + (
+                max(len(widgets) - 1, 0) * control.layout().spacing()
+            )
+
+        margins = self._layout.contentsMargins()
+        outer_padding = margins.left() + margins.right() + 12
+        active_controls = self._controls[: len(self._axes)]
+        full_widgets = 1 + len(active_controls)
+        full_width = (
+            outer_padding
+            + minimum_widget_width(self.title_label)
+            + sum(control_width(control, full=True) for control in active_controls)
+            + max(full_widgets - 1, 0) * self._layout.spacing()
+        )
+        compact_widgets = 2 + len(active_controls)
+        compact_width = (
+            outer_padding
+            + minimum_widget_width(self.title_label)
+            + minimum_widget_width(self.menu_button)
+            + sum(control_width(control, full=False) for control in active_controls)
+            + max(compact_widgets - 1, 0) * self._layout.spacing()
+        )
+        # Native style metrics can add padding after the child hints are queried.
+        # Keep a conservative per-axis floor so compact controls switch to their
+        # complete menu before labels or exact-value spin boxes overlap.
+        compact_width = max(compact_width, 190 + 130 * len(active_controls))
         if width >= full_width:
             mode = "full"
         elif width >= compact_width:
@@ -174,12 +244,11 @@ class ViewDimsBar(QWidget):
             return
         self._responsive_mode = mode
         self.title_label.setVisible(mode != "menu")
-        active_controls = self._controls[: len(self._axes)]
         for control in self._controls:
             control.set_display_mode("compact" if mode == "compact" else "full")
             control.setVisible(mode != "menu" and control in active_controls)
         self.menu_button.setVisible(mode != "full")
-        self.menu_button.setText("Sliders..." if mode == "compact" else "View dims...")
+        self.menu_button.setText("Dims…" if mode == "compact" else "View dims…")
 
     def _ensure_control_count(self, count: int) -> None:
         while len(self._controls) < count:

@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   windows:
@@ -59,6 +60,24 @@ jobs:
             throw "Release tag is not contained in origin/main."
           }
 
+      - name: Download the wheel qualified by exact-main CI
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseSha = (git rev-parse HEAD).Trim()
+          $ciRun = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$releaseSha&status=success&per_page=20" --jq '[.workflow_runs[] | select(.event == "push")][0].id'
+          if (-not $ciRun -or $ciRun -eq "null") {
+            throw "No successful exact-main CI run qualifies this release source."
+          }
+          gh run download $ciRun --name "python-distributions-$releaseSha" --dir dist/python
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          if (-not (Test-Path -LiteralPath "dist/python/napari_vipp-$version-py3-none-any.whl")) {
+            throw "Qualified CI artifact does not contain the exact release wheel."
+          }
+
       - name: Install exact installer tools
         shell: pwsh
         run: |
@@ -74,7 +93,6 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pytest -q src/napari_vipp/_tests/test_windows_installer_packaging.py
-          python -m build --wheel --no-isolation --outdir dist/python
           $wheel = (Get-ChildItem -LiteralPath dist/python -Filter '*.whl' -File).FullName
           if (@($wheel).Count -ne 1) { throw "Expected exactly one wheel." }
           python scripts/package_windows_installer.py build --wheel $wheel --output-directory dist/windows-staging
@@ -174,6 +192,20 @@ jobs:
           git merge-base --is-ancestor "$RELEASE_TAG^{}" origin/main
           test "$(uname -m)" = "${{ matrix.architecture }}"
 
+      - name: Download the wheel qualified by exact-main CI
+        shell: bash -el {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_sha="$(git rev-parse HEAD)"
+          ci_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$release_sha&status=success&per_page=20" --jq '[.workflow_runs[] | select(.event == "push")][0].id')"
+          test -n "$ci_run"
+          test "$ci_run" != null
+          gh run download "$ci_run" --name "python-distributions-$release_sha" --dir dist/python
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          test -f "dist/python/napari_vipp-$version-py3-none-any.whl"
+
       - name: Validate and build the exact unsigned installer
         shell: bash -el {0}
         run: |
@@ -181,7 +213,6 @@ jobs:
           python -m pip install --no-deps -e .
           python -m pytest -q --noconftest \
             src/napari_vipp/_tests/test_macos_installer_packaging.py
-          python -m build --wheel --no-isolation --outdir dist/python
           wheel="$(find dist/python -maxdepth 1 -name '*.whl' -type f)"
           test -n "$wheel"
           test "$(printf '%s\n' "$wheel" | wc -l | tr -d ' ')" -eq 1

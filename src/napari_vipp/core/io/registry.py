@@ -153,6 +153,7 @@ def read_image(
     path: str | Path,
     *,
     series_index: int = 0,
+    item_key: str | None = None,
 ) -> ImageDataset:
     """Read one selected image item from a supported source."""
     source_path = _source_path(path)
@@ -160,7 +161,11 @@ def read_image(
     if suffix == ".zarr":
         dataset = read_ome_zarr(source_path, series_index)
     elif suffix in MICROSCOPE_SUFFIXES:
-        dataset = read_microscope(source_path, series_index)
+        dataset = read_microscope(
+            source_path,
+            series_index,
+            item_key=item_key,
+        )
     elif suffix in {".npy", ".npz"}:
         dataset = read_numpy(source_path, series_index)
     elif suffix in {".tif", ".tiff"}:
@@ -169,6 +174,13 @@ def read_image(
         dataset = read_raster(source_path, series_index)
     else:
         raise ValueError(f"Unsupported image source: {source_path}")
+    requested_key = str(item_key or "").strip()
+    if requested_key and dataset.selected_series.key != requested_key:
+        raise ValueError(
+            "Reader contract mismatch: requested item key "
+            f"{requested_key!r}, but the reader returned "
+            f"{dataset.selected_series.key!r}."
+        )
     inspection = _annotated_inspection(dataset.inspection, suffix=suffix)
     selected = next(
         (

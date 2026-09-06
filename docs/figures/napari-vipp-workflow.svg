@@ -1,0 +1,173 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="980" viewBox="0 0 1440 980" role="img" aria-labelledby="svg-title svg-desc">
+<title id="svg-title">Interactive authoring and reusable execution</title>
+<desc id="svg-desc">A researcher selects a scientific source, authors a typed VIPP graph, calculates and inspects intermediate results, and iteratively refines the workflow. The reviewed graph can be reopened in VIPP, used from generated Python or a command line, or combined with a reviewed batch configuration. All routes converge on the shared scientific execution service.</desc>
+<style>text {
+  font-family: Arial, "Liberation Sans", sans-serif;
+  fill: #14213d;
+  text-rendering: geometricPrecision;
+}
+.title { font-size: 44px; font-weight: 700; letter-spacing: -0.7px; }
+.subtitle { font-size: 22px; font-weight: 400; fill: #4f617d; }
+.section { font-size: 18px; font-weight: 700; letter-spacing: 2.2px; fill: #566984; }
+.card-title { font-size: 23px; font-weight: 700; }
+.card-title-sm { font-size: 20px; font-weight: 700; }
+.card-title-xs { font-size: 18px; font-weight: 700; }
+.body { font-size: 19px; font-weight: 400; fill: #334a68; }
+.body-sm { font-size: 17px; font-weight: 400; fill: #3f5370; }
+.small { font-size: 15px; font-weight: 400; fill: #5b6d87; }
+.small-strong { font-size: 15px; font-weight: 700; fill: #4a5e79; }
+.chip-text { font-size: 13px; font-weight: 700; letter-spacing: 1.3px; }
+.step-number { font-size: 20px; font-weight: 700; fill: #ffffff; }
+.arrow-label {
+  font-size: 15px;
+  font-weight: 700;
+  fill: #4d607d;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 7px;
+  stroke-linejoin: round;
+}
+.card, .band, .outer-frame, .mini-card {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 2.4;
+}
+.outer-frame { fill: #ffffff; stroke: #a1acbc; }
+.neutral { fill: #f6f8fb; stroke: #7a879c; }
+.navy { fill: #18243a; stroke: #18243a; }
+.blue { fill: #eaf6fb; stroke: #117ea6; }
+.violet { fill: #f1ecfa; stroke: #7251b5; }
+.green { fill: #e9f6f2; stroke: #23816f; }
+.amber { fill: #fff5e2; stroke: #a9680b; }
+.rose { fill: #fceef4; stroke: #b63e72; }
+.red { fill: #fff1ef; stroke: #b42318; }
+.band-neutral { fill: #f6f8fb; stroke: #a1acbc; }
+.band-blue { fill: #edf8fc; stroke: #8fc5d8; }
+.band-violet { fill: #f4effc; stroke: #b49bdc; }
+.band-green { fill: #edf8f5; stroke: #91c8bb; }
+.band-amber { fill: #fff8ea; stroke: #d9b26a; }
+.connector, .connector-blue, .connector-violet, .connector-green,
+.connector-amber, .connector-red, .connector-light {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.7;
+  vector-effect: non-scaling-stroke;
+}
+.connector { stroke: #3e4b63; }
+.connector-blue { stroke: #117ea6; }
+.connector-violet { stroke: #7251b5; }
+.connector-green { stroke: #23816f; }
+.connector-amber { stroke: #a9680b; }
+.connector-red { stroke: #b42318; }
+.connector-light { stroke: #9aa6b7; stroke-width: 2.1; }
+.optional { stroke-dasharray: 9 7; }
+.soft-dash { stroke-dasharray: 7 7; }
+.divider { stroke: #cad1dc; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.port { stroke-width: 2; vector-effect: non-scaling-stroke; }
+.image-frame { fill: #0c1629; stroke: #65738a; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.table-grid { stroke: #c5ccd7; stroke-width: 1.2; vector-effect: non-scaling-stroke; }</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#3e4b63"/></marker>
+  <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#117ea6"/></marker>
+  <marker id="arrow-violet" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#7251b5"/></marker>
+  <marker id="arrow-green" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#23816f"/></marker>
+  <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#a9680b"/></marker>
+  <marker id="arrow-red" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="10" markerHeight="10" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#b42318"/></marker>
+</defs>
+<rect x="0" y="0" width="1440" height="980" fill="#ffffff"/>
+<g id="title-band" aria-label="Figure title">
+<text x="60" y="62" class="title" text-anchor="start"><tspan x="60" dy="0">Interactive authoring and reusable execution</tspan></text>
+<text x="60" y="104" class="subtitle" text-anchor="start"><tspan x="60" dy="0">A reviewed VIPP workflow can be reopened, exported, or applied to local image collections through the same execution service.</tspan></text>
+</g>
+<text x="60" y="158" class="section" text-anchor="start"><tspan x="60" dy="0">AUTHOR &amp; REVIEW IN NAPARI</tspan></text>
+<line x1="60" y1="173" x2="1380" y2="173" class="divider"/>
+<g id="workflow-connectors" aria-label="Workflow sequence and iteration">
+<path d="M360 318 H397" class="connector" marker-end="url(#arrow)"/>
+<path d="M705 318 H742" class="connector" marker-end="url(#arrow)"/>
+<path d="M1050 318 H1087" class="connector" marker-end="url(#arrow)"/>
+<path d="M1245 453 V612" class="connector-amber" marker-end="url(#arrow-amber)"/>
+<path d="M905 453 V505 Q905 520 890 520 H570 Q555 520 555 505 V453" class="connector-violet soft-dash" marker-end="url(#arrow-violet)"/>
+<text x="730" y="506" class="arrow-label" text-anchor="middle"><tspan x="730" dy="0">revise nodes, connections, or parameters</tspan></text>
+<path d="M1087 738 H1058" class="connector" marker-end="url(#arrow)"/>
+<path d="M742 738 H713" class="connector" marker-end="url(#arrow)"/>
+<path d="M397 738 H368" class="connector" marker-end="url(#arrow)"/>
+</g>
+<g id="interactive-authoring-steps" aria-label="Four interactive authoring steps">
+<rect x="60" y="190" width="300" height="255" rx="20" class="card blue" />
+<circle cx="95" cy="225" r="25" fill="#117ea6"/>
+<text x="95" y="232" class="step-number" text-anchor="middle"><tspan x="95" dy="0">1</tspan></text>
+<text x="135" y="234" class="card-title" text-anchor="start"><tspan x="135" dy="0">Select a source</tspan></text>
+<rect x="115" y="278" width="50" height="40" rx="6" class="mini-card" fill="#ffffff" stroke="#117ea6"/>
+<rect x="125" y="287" width="50" height="40" rx="6" class="mini-card" fill="#ffffff" stroke="#117ea6"/>
+<rect x="135" y="296" width="50" height="40" rx="6" class="mini-card" fill="#ffffff" stroke="#117ea6"/>
+<text x="205" y="295" class="body" text-anchor="start"><tspan x="205" dy="0">napari layer</tspan><tspan x="205" dy="30">local file or store</tspan><tspan x="205" dy="30">bundled sample</tspan></text>
+<text x="210" y="406" class="small" text-anchor="middle"><tspan x="210" dy="0">axes · calibration · source identity tracked</tspan></text>
+<rect x="405" y="190" width="300" height="255" rx="20" class="card violet" />
+<circle cx="440" cy="225" r="25" fill="#7251b5"/>
+<text x="440" y="232" class="step-number" text-anchor="middle"><tspan x="440" dy="0">2</tspan></text>
+<text x="480" y="234" class="card-title-xs" text-anchor="start"><tspan x="480" dy="0">Author a typed graph</tspan></text>
+<path d="M525 303H555V283H580" class="connector"/>
+<path d="M525 303H555V333H580" class="connector"/>
+<rect x="475" y="283" width="50" height="50" rx="9" class="mini-card" fill="#ffffff" stroke="#117ea6"/>
+<rect x="580" y="273" width="55" height="42" rx="9" class="mini-card" fill="#ffffff" stroke="#7251b5"/>
+<rect x="580" y="321" width="55" height="42" rx="9" class="mini-card" fill="#ffffff" stroke="#23816f"/>
+<text x="555" y="390" class="body-sm" text-anchor="middle"><tspan x="555" dy="0">add scientific operations</tspan><tspan x="555" dy="27">connect compatible typed ports</tspan></text>
+<rect x="750" y="190" width="300" height="255" rx="20" class="card violet" />
+<circle cx="785" cy="225" r="25" fill="#7251b5"/>
+<text x="785" y="232" class="step-number" text-anchor="middle"><tspan x="785" dy="0">3</tspan></text>
+<text x="825" y="226" class="card-title-sm" text-anchor="start"><tspan x="825" dy="0">Calculate, inspect</tspan><tspan x="825" dy="27">and refine</tspan></text>
+<rect x="805" y="290" width="105" height="82" rx="12" class="image-frame" />
+<circle cx="841" cy="332" r="24" fill="#2f8ab5"/>
+<circle cx="874" cy="329" r="25" fill="#9b4f86"/>
+<rect x="936" y="296" width="62" height="12" rx="6" fill="#c4b3e8"/><rect x="936" y="322" width="82" height="12" rx="6" fill="#c4b3e8"/><rect x="936" y="348" width="70" height="12" rx="6" fill="#c4b3e8"/>
+<text x="900" y="406" class="small" text-anchor="middle"><tspan x="900" dy="0">previews · metadata · histograms · tables</tspan></text>
+<rect x="1095" y="190" width="300" height="255" rx="20" class="card amber" />
+<circle cx="1130" cy="225" r="25" fill="#b87409"/>
+<text x="1130" y="232" class="step-number" text-anchor="middle"><tspan x="1130" dy="0">4</tspan></text>
+<text x="1170" y="226" class="card-title-sm" text-anchor="start"><tspan x="1170" dy="0">Review and save</tspan><tspan x="1170" dy="27">the authored state</tspan></text>
+<path d="M1170 286h39.9l16.15 16.15v55.1h-56.05z" fill="#ffffff" stroke="#a9680b" stroke-width="3" vector-effect="non-scaling-stroke"/><path d="M1209.9 286v16.15h16.15" fill="none" stroke="#a9680b" stroke-width="3" vector-effect="non-scaling-stroke"/>
+<circle cx="1285" cy="335" r="37" fill="#ffffff" stroke="#a9680b" class="port"/>
+<path d="M1268 335 l12 12 23 -29" fill="none" stroke="#a9680b" stroke-width="4"/>
+<text x="1245" y="395" class="small" text-anchor="middle"><tspan x="1245" dy="0">method-specific review · workflow JSON</tspan><tspan x="1245" dy="22">selected outputs</tspan></text>
+</g>
+<text x="60" y="590" class="section" text-anchor="start"><tspan x="60" dy="0">REUSE THE REVIEWED WORKFLOW</tspan></text>
+<line x1="60" y1="605" x2="1380" y2="605" class="divider"/>
+<g id="reuse-routes" aria-label="Four reusable execution steps">
+<rect x="1095" y="620" width="300" height="240" rx="20" class="card amber" />
+<circle cx="1130" cy="655" r="25" fill="#b87409"/>
+<text x="1130" y="662" class="step-number" text-anchor="middle"><tspan x="1130" dy="0">5</tspan></text>
+<text x="1170" y="648" class="card-title-sm" text-anchor="start"><tspan x="1170" dy="0">Reviewed workflow</tspan><tspan x="1170" dy="27">+ source bindings</tspan></text>
+<text x="1245" y="725" class="body" text-anchor="middle"><tspan x="1245" dy="0">graph · parameters</tspan><tspan x="1245" dy="30">portable compute intent</tspan></text>
+<text x="1245" y="809" class="small" text-anchor="middle"><tspan x="1245" dy="0">source pixels and cached results</tspan><tspan x="1245" dy="22">remain external</tspan></text>
+<rect x="750" y="620" width="300" height="240" rx="20" class="card neutral" />
+<circle cx="785" cy="655" r="25" fill="#68758c"/>
+<text x="785" y="662" class="step-number" text-anchor="middle"><tspan x="785" dy="0">6</tspan></text>
+<text x="825" y="663" class="card-title-sm" text-anchor="start"><tspan x="825" dy="0">Choose a reuse route</tspan></text>
+<rect x="785" y="705" width="230" height="34" rx="10" class="mini-card" fill="#ffffff" stroke="#7a879c"/>
+<text x="900" y="728" class="body-sm" text-anchor="middle"><tspan x="900" dy="0">Reopen in VIPP</tspan></text>
+<rect x="785" y="750" width="230" height="34" rx="10" class="mini-card" fill="#ffffff" stroke="#7a879c"/>
+<text x="900" y="773" class="body-sm" text-anchor="middle"><tspan x="900" dy="0">Generated Python / CLI</tspan></text>
+<rect x="785" y="795" width="230" height="34" rx="10" class="mini-card" fill="#ffffff" stroke="#7a879c"/>
+<text x="900" y="818" class="body-sm" text-anchor="middle"><tspan x="900" dy="0">Local collection batch</tspan></text>
+<rect x="405" y="620" width="300" height="240" rx="20" class="card green" />
+<circle cx="440" cy="655" r="25" fill="#23816f"/>
+<text x="440" y="662" class="step-number" text-anchor="middle"><tspan x="440" dy="0">7</tspan></text>
+<text x="480" y="648" class="card-title-sm" text-anchor="start"><tspan x="480" dy="0">Run the shared</tspan><tspan x="480" dy="27">scientific executor</tspan></text>
+<rect x="440" y="718" width="105" height="80" rx="13" class="mini-card" fill="#ffffff" stroke="#23816f"/>
+<text x="492" y="748" class="card-title-sm" text-anchor="middle"><tspan x="492" dy="0">CPU</tspan></text>
+<text x="492" y="776" class="small" text-anchor="middle"><tspan x="492" dy="0">reference</tspan></text>
+<rect x="565" y="718" width="105" height="80" rx="13" class="mini-card optional" fill="#ffffff" stroke="#23816f"/>
+<text x="617" y="748" class="card-title-sm" text-anchor="middle"><tspan x="617" dy="0">GPU</tspan></text>
+<text x="617" y="776" class="small" text-anchor="middle"><tspan x="617" dy="0">eligible</tspan></text>
+<text x="555" y="827" class="small" text-anchor="middle"><tspan x="555" dy="0">unsupported segments visibly use CPU</tspan></text>
+<rect x="60" y="620" width="300" height="240" rx="20" class="card amber" />
+<circle cx="95" cy="655" r="25" fill="#b87409"/>
+<text x="95" y="662" class="step-number" text-anchor="middle"><tspan x="95" dy="0">8</tspan></text>
+<text x="135" y="653" class="card-title-sm" text-anchor="start"><tspan x="135" dy="0">Review accepted</tspan><tspan x="135" dy="27">results</tspan></text>
+<text x="210" y="733" class="body-sm" text-anchor="middle"><tspan x="210" dy="0">images · masks · label images</tspan><tspan x="210" dy="31">measurement tables</tspan><tspan x="210" dy="31">execution report and provenance</tspan></text>
+</g>
+<g id="workflow-definition-note" aria-label="Workflow persistence boundary">
+<rect x="105" y="900" width="1230" height="55" rx="18" class="band band-neutral" />
+<text x="720" y="934" class="body-sm" text-anchor="middle"><tspan x="720" dy="0">Workflow JSON stores the authored graph, parameters, layout, and compute intent—not image arrays or runtime caches.</tspan></text>
+</g>
+</svg>

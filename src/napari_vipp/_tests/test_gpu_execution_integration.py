@@ -2081,6 +2081,81 @@ def test_cancelled_device_request_does_not_publish_a_partial_pipeline():
     registry.close()
 
 
+@pytest.mark.parametrize("device_cleanup", (True, False, None))
+def test_post_device_cancellation_keeps_proven_cleanup_only(
+    monkeypatch,
+    device_cleanup,
+):
+    import napari_vipp.core.device_execution as device_module
+    from napari_vipp.core.progress import OperationCancelled
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect("input", median.id).success
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(runtime, (("median_filter", _device_copy),))
+    compute_request = ComputeRequest(
+        mode=ComputeMode.CUSTOM,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+    )
+    planner = _StaticPlanner(
+        compute_request,
+        (_decision(median.id, specs["median_filter"]),),
+    )
+    cancelled = threading.Event()
+    original_execute = device_module.execute_device_plan
+
+    def interrupted_device_plan(*args, **kwargs):
+        if device_cleanup is None:
+            # An untyped device failure is NOT evidence of a clean transaction.
+            raise OperationCancelled("Device interruption with unknown cleanup.")
+        result = original_execute(*args, **kwargs)
+        assert result.cleanup_succeeded is True
+        assert not runtime.live
+        assert not runtime.scope_active
+        return replace(result, cleanup_succeeded=device_cleanup)
+
+    monkeypatch.setattr(device_module, "execute_device_plan", interrupted_device_plan)
+    original_publish = execution_module._publish_actual_compute_provenance
+
+    def cancel_during_host_finalization(*args, **kwargs):
+        cancelled.set()
+        return original_publish(*args, **kwargs)
+
+    monkeypatch.setattr(
+        execution_module,
+        "_publish_actual_compute_provenance",
+        cancel_during_host_finalization,
+    )
+    try:
+        result = execute_pipeline_request(
+            _accelerated_request(
+                pipeline,
+                np.arange(16, dtype=np.uint8).reshape(4, 4),
+                compute_request,
+                cancel_event=cancelled,
+            ),
+            compute_registry=registry,
+            compute_planner=planner,
+        )
+        assert result.cancelled
+        assert result.pipeline is None
+        assert result.failure.error_type == "OperationCancelled"
+        assert result.failure.cleanup_succeeded is device_cleanup
+        assert not runtime.live
+        assert not runtime.scope_active
+        if device_cleanup is not None:
+            assert runtime.host_to_device_count > 0
+            assert runtime.device_to_host_count > 0
+            assert runtime.release_count > 0
+        # A borrowed batch registry stays open until the batch owner closes it.
+        assert not runtime.closed
+    finally:
+        registry.close()
+
+
 def test_cpu_request_does_not_construct_or_call_accelerator_services():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()

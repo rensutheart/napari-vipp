@@ -19,6 +19,24 @@ class ExampleWorkflowSpec:
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
     ExampleWorkflowSpec(
+        "exhaustive-inspector",
+        "Comprehensive Review",
+        "Exhaustive Inspector Showcase",
+        "exhaustive-inspector-showcase.json",
+        (
+            "VIPP synthetic time-lapse multichannel",
+            "VIPP synthetic volume",
+            "VIPP synthetic colocalization",
+            "VIPP synthetic threshold gallery",
+            "VIPP synthetic skeleton network",
+            "VIPP synthetic 3D deconvolution volume",
+            "VIPP synthetic 3D measured PSF",
+        ),
+        "Inspect every palette operation in one seven-lane workflow with "
+        "representative synthetic inputs, curated tunnels, canvas notes, "
+        "and saved inspector display settings.",
+    ),
+    ExampleWorkflowSpec(
         "graph-authoring",
         "Graph Authoring & Editing",
         "Graph Editing Acceptance Check",

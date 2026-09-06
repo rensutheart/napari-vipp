@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
+from unittest.mock import patch
 
 import napari
 from qtpy.QtCore import Qt
@@ -31,6 +34,28 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp._widget import VippWidget
+from napari_vipp.core.batch import (
+    BatchConfig,
+    BatchItemPlan,
+    BatchItemRecord,
+    BatchManifest,
+    BatchOutputConfig,
+    BatchOutputPlan,
+    BatchOutputRecord,
+    BatchRunResult,
+    BatchSourceConfig,
+    BatchStatus,
+    ExistingFilePolicy,
+)
+from napari_vipp.core.batch_execution import (
+    BatchNodeExecutionMode,
+    BatchNodeExecutionSpec,
+)
+from napari_vipp.core.batch_parameters import (
+    BatchParameterOverride,
+    BatchSourceParameterOverrides,
+    batch_source_item_override_key,
+)
 from napari_vipp.core.pipeline import ParameterSpec
 from napari_vipp.core.source_items import (
     ResolvedSourceItemIdentity,
@@ -42,7 +67,12 @@ from napari_vipp.core.source_items import (
     SourceReaderDescriptor,
     SourceRevisionProof,
 )
-from napari_vipp.ui.batch import CollectionBatchActions, CollectionBatchDialog
+from napari_vipp.ui.batch import (
+    BatchPreviewResult,
+    BatchPreviewRow,
+    CollectionBatchActions,
+    CollectionBatchDialog,
+)
 from napari_vipp.ui.batch_overrides import (
     BatchOverrideParameterSpec,
     BatchOverrideSourceItem,
@@ -87,6 +117,12 @@ class UiCaptureSpec:
     capture_kind: Literal[
         "image-source-resolution",
         "batch-workspace-overrides",
+        "batch-setup",
+        "batch-items-outputs",
+        "batch-run-report",
+        "colocalization-scatter-window",
+        "result-table-window",
+        "intensity-histogram-window",
         "example-workflow-chooser",
     ]
     asset_group: Literal["source-batch", "app-user-guide"] = "source-batch"
@@ -205,6 +241,18 @@ UI_CAPTURES = (
         "workflows",
         "batch-workspace-overrides",
     ),
+    UiCaptureSpec("batch-setup.png", "workflows", "batch-setup"),
+    UiCaptureSpec("batch-items-outputs.png", "workflows", "batch-items-outputs"),
+    UiCaptureSpec("batch-run-report.png", "workflows", "batch-run-report"),
+    UiCaptureSpec(
+        "colocalization-scatter-window.png",
+        "workflows",
+        "colocalization-scatter-window",
+    ),
+    UiCaptureSpec("result-table-window.png", "workflows", "result-table-window"),
+    UiCaptureSpec(
+        "intensity-histogram-window.png", "workflows", "intensity-histogram-window"
+    ),
     UiCaptureSpec(
         "vipp-example-chooser.png",
         ".",
@@ -224,10 +272,32 @@ def _settle(milliseconds: int = 900) -> None:
     app.processEvents()
 
 
+def _frame_capture_graph(widget: VippWidget, spec: CaptureSpec) -> None:
+    """Keep every documented node and annotation inside the captured viewport."""
+
+    _settle(150)
+    if spec.show_entire_graph:
+        bounds = widget.graph_view.scene.itemsBoundingRect()
+        viewport = widget.graph_view.viewport()
+        fitting_percent = int(
+            100
+            * min(
+                (viewport.width() - 36) / max(bounds.width(), 1),
+                (viewport.height() - 36) / max(bounds.height(), 1),
+            )
+        )
+        widget.graph_view.set_zoom_percent(max(10, min(spec.zoom, fitting_percent)))
+        widget.graph_view.centerOn(bounds.center())
+    else:
+        proxy = widget.graph_view._proxies.get(spec.selected_node)
+        if proxy is not None:
+            widget.graph_view.centerOn(proxy)
+
+
 def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
     viewer = napari.Viewer(title="VIPP documentation capture")
     viewer.theme = "dark"
-    viewer.window.resize(1800, 1040)
+    viewer.window.resize(1800, 1180)
     widget = VippWidget(viewer)
     dock = viewer.window.add_dock_widget(
         widget,
@@ -235,8 +305,13 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
         name="VIPP Workflow",
     )
     qt_window = viewer_qt_window(viewer, anchor=dock)
-    qt_window.resizeDocks([dock], [570], Qt.Vertical)
+    qt_window.resizeDocks([dock], [710], Qt.Vertical)
     widget.load_example_workflow(spec.example_id)
+    if spec.capture_mode == "context":
+        # Napari's selected Labels layer controls have a tall minimum height.
+        # Hide that optional dock in overview captures so the workflow and
+        # inspector have enough vertical space to explain the new interface.
+        viewer.window._qt_viewer.dockLayerControls.hide()
     widget._set_left_panel_visible(spec.show_library)
     widget._set_right_panel_visible(True)
     widget.splitter.setSizes([250 if spec.show_library else 0, 1080, 390])
@@ -284,12 +359,17 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
             widget.inspector_panel.ensureWidgetVisible(notice, 0, 16)
     _settle()
 
-    target = output_dir / spec.filename
+    target = (
+        output_dir
+        / ("workflows" if spec.asset_group == "public" else ".")
+        / spec.filename
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
     if spec.capture_mode == "workflow":
         dock.setFloating(True)
         dock.resize(spec.capture_width, spec.capture_height)
         dock.show()
-        widget.splitter.setSizes([260 if spec.show_library else 0, 1020, 420])
+        widget.splitter.setSizes([260 if spec.show_library else 0, 1000, 520])
         if spec.show_entire_graph:
             widget.graph_view.centerOn(
                 widget.graph_view.scene.itemsBoundingRect().center()
@@ -300,6 +380,7 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
             notice = widget._parameter_widgets.get("operation_notice")
             if notice is not None:
                 widget.inspector_panel.ensureWidgetVisible(notice, 0, 16)
+        _frame_capture_graph(widget, spec)
         _settle()
         dock.grab().save(str(target))
     elif spec.capture_mode == "graph":
@@ -313,9 +394,15 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
             )
         elif proxy is not None:
             widget.graph_view.centerOn(proxy)
+        _frame_capture_graph(widget, spec)
         _settle()
         widget.graph_view.viewport().grab().save(str(target))
     else:
+        if spec.capture_mode == "context":
+            qt_window.resizeDocks([dock], [710], Qt.Vertical)
+            viewer.reset_view()
+            _frame_capture_graph(widget, spec)
+            _settle()
         if spec.capture_mode == "viewer":
             dock.hide()
             viewer.dims.ndisplay = spec.ndisplay
@@ -540,17 +627,189 @@ def _batch_parameter(
     )
 
 
-def _capture_batch_workspace(target: Path) -> None:
-    """Capture completed metadata discovery and one typed sample override."""
+def _batch_capture_preview(
+    sources: list[BatchOverrideSourceItem],
+) -> BatchPreviewResult:
+    """Create explicit illustrative metadata; no user data or execution claims."""
 
+    folder = Path("C:/VIPP Examples/source-aware")
+    override = BatchSourceParameterOverrides(
+        batch_source_item_override_key("input", sources[1].source_item),
+        (BatchParameterOverride("binary_threshold_1", "threshold", 13000),),
+    )
+    config = BatchConfig(
+        workflow_file=folder / "sample-analysis.json",
+        workflow_sha256=_capture_sha("documentation-workflow"),
+        output_dir=folder / "results",
+        sources=(BatchSourceConfig("input", "Image Source", folder, "*.ome.zarr"),),
+        outputs=(
+            BatchOutputConfig(
+                "gaussian_blur_1",
+                "Gaussian Blur",
+                "smoothed",
+                "image",
+                "ome-tiff",
+                "",
+                "{source_stem}__{tag}",
+            ),
+            BatchOutputConfig(
+                "labels",
+                "Label Connected Components",
+                "labels",
+                "image",
+                "ome-tiff",
+                "",
+                "{source_stem}__{tag}",
+            ),
+            BatchOutputConfig(
+                "measurements",
+                "Measure Objects",
+                "measurements",
+                "table",
+                "csv",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        parameter_overrides=(override,),
+    )
+    items = tuple(
+        BatchItemPlan(
+            index=index,
+            batch_id=source.label,
+            primary_source=Path(source.source_item.container.uri),
+            source_paths={"input": Path(source.source_item.container.uri)},
+            source_items={"input": source.source_item},
+            parameter_override_source_item_key=batch_source_item_override_key(
+                "input", source.source_item
+            ),
+            parameter_overrides=override.values if index == 2 else (),
+            outputs=tuple(
+                BatchOutputPlan(
+                    output.node_id,
+                    output.node_title,
+                    output.tag,
+                    output.kind,
+                    output.format,
+                    config.output_dir
+                    / (
+                        f"{source.label}__{output.tag}."
+                        f"{'csv' if output.kind == 'table' else 'ome.tif'}"
+                    ),
+                    ExistingFilePolicy.ERROR,
+                )
+                for output in config.outputs
+            ),
+        )
+        for index, source in enumerate(sources, 1)
+    )
+    rows = tuple(
+        BatchPreviewRow(
+            item.index,
+            item.batch_id,
+            item.source_paths,
+            [output.path for output in item.outputs],
+            tuple("new" for _output in item.outputs),
+        )
+        for item in items
+    )
+    return BatchPreviewResult(rows, len(items), 0, True, items, config)
+
+
+def _batch_capture_result(preview: BatchPreviewResult) -> BatchRunResult:
+    """Illustrate saved/kept/failed report states, clearly labelled as a demo."""
+
+    records = []
+    for item, status in zip(
+        preview.items,
+        (
+            BatchStatus.COMPLETED,
+            BatchStatus.SKIPPED,
+            BatchStatus.FAILED,
+        ),
+        strict=True,
+    ):
+        error = (
+            "Output could not be written: destination is read-only."
+            if status == BatchStatus.FAILED
+            else ""
+        )
+        records.append(
+            BatchItemRecord(
+                index=item.index,
+                batch_id=item.batch_id,
+                sources=(),
+                status=status,
+                started_at="2026-09-06T10:00:00Z",
+                finished_at="2026-09-06T10:00:12Z",
+                error_message=error,
+                outputs=tuple(
+                    BatchOutputRecord(
+                        node_id=output.node_id,
+                        node_title=output.node_title,
+                        tag=output.tag,
+                        kind=output.kind,
+                        format=output.format,
+                        path=str(output.path),
+                        existing_file_policy=ExistingFilePolicy.SKIP
+                        if status == BatchStatus.SKIPPED
+                        else ExistingFilePolicy.ERROR,
+                        existed_at_preflight=status == BatchStatus.SKIPPED,
+                        status=status,
+                        error_message=error,
+                    )
+                    for output in item.outputs
+                ),
+            )
+        )
+    manifest = BatchManifest(
+        run_id="synthetic-documentation-example",
+        started_at="2026-09-06T10:00:00Z",
+        finished_at="2026-09-06T10:00:36Z",
+        workflow_sha256=preview.config.workflow_sha256,
+        config_sha256=_capture_sha("documentation-config"),
+        effective_config_sha256=_capture_sha("documentation-config"),
+        workflow_file=str(preview.config.workflow_file),
+        config_file="sample-batch.json",
+        output_dir=str(preview.config.output_dir),
+        runtime={},
+        workflow_document={},
+        config_document={},
+        compute={},
+        items=tuple(records),
+    )
+    return BatchRunResult(
+        manifest,
+        preview.config.output_dir / "vipp_batch_manifest.json",
+        tuple(
+            output.path
+            for record in records
+            for output in record.outputs
+            if output.status == BatchStatus.COMPLETED
+        ),
+    )
+
+
+def _capture_batch_workspace(
+    target: Path, page: str = "batch-workspace-overrides"
+) -> None:
+    """Capture the actual current four-tab UI with labelled synthetic facts."""
+
+    fixture_scope = ExitStack()
     viewer = _dark_capture_viewer()
+    sources = [
+        BatchOverrideSourceItem("input", name, _batch_source_item(name, "image"))
+        for name in ("field_01", "field_02", "field_03")
+    ]
+    preview = _batch_capture_preview(sources)
     actions = CollectionBatchActions(
-        preview_batch=lambda _values, _limit: None,
+        preview_batch=lambda _values, _limit: preview,
         choose_demo=lambda _parent: None,
         source_rows=lambda: [],
         load_config=lambda _path: None,
         save_config=lambda _path, _values: (),
         preview_item=lambda _index: True,
+        workflow_summary=lambda: ("Sample analysis", "Synthetic documentation example"),
     )
     dialog = CollectionBatchDialog(
         source_nodes=[
@@ -562,26 +821,33 @@ def _capture_batch_workspace(target: Path) -> None:
             }
         ],
         actions=actions,
+        execution_nodes=tuple(
+            BatchNodeExecutionSpec(node, title, operation, BatchNodeExecutionMode.RUN)
+            for node, title, operation in (
+                ("gaussian_blur_1", "Gaussian Blur", "gaussian_blur"),
+                ("binary_threshold_1", "Binary Threshold", "binary_threshold"),
+                (
+                    "remove_small_objects_1",
+                    "Remove Small Objects",
+                    "remove_small_objects",
+                ),
+            )
+        ),
     )
+    dialog.setWindowTitle("Batch workflow — synthetic documentation example")
     dialog.setStyleSheet(viewer_qt_window(viewer).styleSheet())
-    dialog.resize(1740, 980)
+    dialog.resize(1280, 650 if page == "batch-setup" else 900)
     dialog.move(60, 30)
 
     source_row = dialog._source_rows[0]
     source_row["folder"].setText(r"C:\VIPP Examples\source-aware")
-    source_row["pattern"].setText("*")
+    source_row["pattern"].setText("*.ome.zarr")
     source_row["axis_declaration"].setText("")
     dialog._set_output_path(
-        r"C:\VIPP Examples\source-aware\output",
+        r"C:\VIPP Examples\source-aware\results",
         suggested=False,
     )
 
-    dim = _batch_source_item("0001_dim", "image")
-    bright = _batch_source_item("0002_bright", "image")
-    sources = [
-        BatchOverrideSourceItem("input", "0001_dim · image", dim),
-        BatchOverrideSourceItem("input", "0002_bright · image", bright),
-    ]
     parameters = [
         _batch_parameter(
             "gaussian_blur_1",
@@ -634,45 +900,68 @@ def _capture_batch_workspace(target: Path) -> None:
             1,
         ),
     ]
-    if not dialog.configure_parameter_overrides(sources, parameters, overrides=()):
+    if not dialog.configure_parameter_overrides(
+        sources, parameters, overrides=preview.config.parameter_overrides
+    ):
         raise RuntimeError(dialog.parameter_override_editor.error_message)
-    dialog.parameter_override_editor.editor_for(
-        "input",
-        bright,
-        "binary_threshold_1",
-        "threshold",
-    ).setText("13000")
+    dialog.apply_preview_result(preview, preview_representative=False)
     table = dialog.parameter_override_editor.table
-    table.setColumnWidth(0, 320)
-    table.setColumnWidth(1, 230)
-    table.setColumnWidth(2, 230)
-    table.setColumnWidth(3, 360)
-    table.setColumnWidth(4, 360)
-    table.setMinimumHeight(170)
-    table.setMaximumHeight(220)
+    table.setCurrentCell(1, 2)
+    table.item(0, 0).setCheckState(Qt.Unchecked)
+    table.item(1, 0).setCheckState(Qt.Checked)
+    dialog.preview_table.setCurrentCell(1, 1)
+    for column, width in enumerate((185, 215, 215, 270, 270)):
+        table.setColumnWidth(column, width)
+    dialog.items_splitter.setSizes([780, 440])
+    page_index = {
+        "batch-setup": 0,
+        "batch-items-outputs": 1,
+        "batch-workspace-overrides": 2,
+        "batch-run-report": 3,
+    }[page]
+    dialog.tabs.setCurrentIndex(page_index)
+    if page == "batch-run-report":
+        # Disposable file-presence fixtures back these illustrative statuses.
+        # Mapping is local to this standalone asset generator, so no temporary
+        # directory names or personal research paths enter the public manual.
+        temporary = Path(
+            fixture_scope.enter_context(TemporaryDirectory(prefix="vipp-docs-"))
+        )
+        public_root = Path("C:/VIPP Examples/source-aware")
 
-    # This 2/2 state is completed metadata-only discovery, not a simulated
-    # scientific run. Detailed run bars remain lower in the real workspace.
-    dialog.show_workspace_activity(
-        "Ready · 2 source items resolved",
-        state="ready",
-        current=2,
-        total=2,
-        progress_text="2 / 2",
-        tooltip=(
-            "Metadata-only discovery resolved two stable source items. No "
-            "representative image has been calculated."
-        ),
-    )
-    dialog.preview_status.setText(
-        "Ready. Preview is optional; Run batch checks the plan again before saving."
-    )
-    dialog.content_scroll.verticalScrollBar().setValue(0)
+        def actual_path(path):
+            try:
+                return temporary / path.relative_to(public_root)
+            except ValueError:
+                return path
+
+        result = _batch_capture_result(preview)
+        for item in result.manifest.items:
+            for output in item.outputs:
+                if output.status in {BatchStatus.COMPLETED, BatchStatus.SKIPPED}:
+                    actual = actual_path(Path(output.path))
+                    actual.parent.mkdir(parents=True, exist_ok=True)
+                    actual.touch()
+        actual_path(result.manifest_path).touch()
+        real_is_file, real_is_dir = Path.is_file, Path.is_dir
+        fixture_scope.enter_context(
+            patch.object(Path, "is_file", lambda path: real_is_file(actual_path(path)))
+        )
+        fixture_scope.enter_context(
+            patch.object(Path, "is_dir", lambda path: real_is_dir(actual_path(path)))
+        )
+        dialog.begin_run(len(preview.items))
+        dialog.finish_run(result)
+        dialog.results_panel.select_item(2)
+        dialog._last_elapsed = 36.0
+        dialog._update_elapsed()
+        dialog.run_scroll.verticalScrollBar().setValue(0)
     dialog.show()
     _settle(800)
     _save_widget(dialog, target)
     dialog.close()
     viewer.close()
+    fixture_scope.close()
     _settle(150)
 
 
@@ -683,6 +972,7 @@ def _capture_example_workflow_chooser(target: Path) -> None:
     dialog = ExampleWorkflowDialog()
     dialog.setStyleSheet(viewer_qt_window(viewer).styleSheet())
     dialog.resize(1180, 640)
+    dialog.tree.setColumnWidth(0, 570)
     dialog.select_example("deconvolution-3d")
     dialog.show()
     _settle(600)
@@ -692,12 +982,70 @@ def _capture_example_workflow_chooser(target: Path) -> None:
     _settle(150)
 
 
+def _capture_inspection_window(target: Path, kind: str) -> None:
+    """Open real detached inspection windows from bundled synthetic results."""
+
+    viewer = _dark_capture_viewer()
+    widget = VippWidget(viewer)
+    widget.setStyleSheet(viewer_qt_window(viewer).styleSheet())
+    if kind == "colocalization-scatter-window":
+        widget.load_example_workflow("racc-colocalization")
+        selected_node = "colocalization_metrics_1"
+    elif kind == "result-table-window":
+        widget.load_example_workflow("object-intensity")
+        selected_node = next(
+            node.id
+            for node in widget.pipeline.nodes.values()
+            if node.operation_id == "measure_objects_intensity"
+        )
+    else:
+        widget.load_example_workflow("label-cleanup")
+        histogram = widget.add_node_from_palette("intensity_histogram")
+        widget._connect_nodes("gaussian", histogram.id)
+        selected_node = histogram.id
+    widget.run_pipeline(
+        force_sync=True,
+        manual_node_ids=set(widget.pipeline.manual_node_ids()),
+    )
+    widget.graph_view.select_node(selected_node)
+    _settle(1500)
+    if kind == "colocalization-scatter-window":
+        widget._open_colocalization_scatter_dialog()
+        dialog = widget._colocalization_scatter_dialog
+    elif kind == "result-table-window":
+        widget._open_result_table_dialog()
+        dialog = widget._result_table_dialog
+    else:
+        widget._open_histogram_dialog()
+        dialog = widget._histogram_dialog
+    if dialog is None:
+        raise RuntimeError(f"Could not open {kind}: {widget.status_label.text()}")
+    dialog.resize(1160, 450 if kind == "result-table-window" else 780)
+    if kind == "result-table-window":
+        dialog.table_view.resizeColumnsToContents()
+        dialog._sort_by_header(1)
+    elif kind == "intensity-histogram-window":
+        dialog.log_y_checkbox.setChecked(True)
+    _settle(1000)
+    _save_widget(dialog, target)
+    dialog.close()
+    widget.close()
+    viewer.close()
+    _settle(150)
+
+
 def _capture_ui(spec: UiCaptureSpec, output_dir: Path) -> Path:
     target = output_dir / spec.subdirectory / spec.filename
     if spec.capture_kind == "image-source-resolution":
         _capture_image_source_resolution(target)
-    elif spec.capture_kind == "batch-workspace-overrides":
-        _capture_batch_workspace(target)
+    elif spec.capture_kind.startswith("batch-"):
+        _capture_batch_workspace(target, spec.capture_kind)
+    elif spec.capture_kind in {
+        "colocalization-scatter-window",
+        "result-table-window",
+        "intensity-histogram-window",
+    }:
+        _capture_inspection_window(target, spec.capture_kind)
     elif spec.capture_kind == "example-workflow-chooser":
         _capture_example_workflow_chooser(target)
     else:  # pragma: no cover - frozen Literal/dataclass route guard

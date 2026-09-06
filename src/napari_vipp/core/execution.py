@@ -86,6 +86,7 @@ from napari_vipp.core.host_memory import (
 )
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.pipeline import (
+    EXECUTION_NOT_CALCULATED,
     EXECUTION_RUNNING,
     MANUAL_RUN_CALCULATE,
     MANUAL_RUN_SKIP,
@@ -256,7 +257,25 @@ _EXACT_HOST_LABEL_FACT_OPERATIONS = frozenset(
     for operation_id, policy_id in _EXACT_HOST_SHAPE_DTYPE_POLICIES.items()
     if policy_id == "fixed:int32"
 )
+_EXACT_HOST_VALIDATED_LABEL_FACT_OPERATIONS = frozenset(
+    {
+        "expand_labels",
+        "filter_labels_by_volume",
+        "relabel_sequential",
+    }
+)
+_EXACT_HOST_VALIDATED_LABEL_OR_MASK_FACT_OPERATIONS = frozenset(
+    {"clear_border_objects"}
+)
 _EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS = frozenset({"euclidean_distance_transform"})
+_FACT_PROPAGATION_OPERATIONS = frozenset(
+    _PHASE_ONE_FACT_OPERATIONS
+    | _EXACT_HOST_BOOLEAN_FACT_OPERATIONS
+    | _EXACT_HOST_LABEL_FACT_OPERATIONS
+    | _EXACT_HOST_VALIDATED_LABEL_FACT_OPERATIONS
+    | _EXACT_HOST_VALIDATED_LABEL_OR_MASK_FACT_OPERATIONS
+    | _EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,6 +1090,9 @@ def execute_pipeline_request(
     observer_seconds = 0.0
     pipeline: PrototypePipeline | None = None
     execution_report: ExecutionReport | None = None
+    # Host preparation does not own a device transaction. Once entered, only
+    # explicit execution/cleanup evidence can establish whether reuse is safe.
+    known_cleanup: bool | None = True
     timing_store: JsonPipelineTimingStore | None = None
     timing_workload_fingerprint = ""
     timing_host_environment_fingerprint = ""
@@ -1285,6 +1307,7 @@ def execute_pipeline_request(
                     shadow_results = _detached_presentation_shadow_results(
                         request,
                         node_id,
+                        authoritative_pipeline=pipeline,
                         progress_callback=observed_progress_callback,
                         cancel_callback=cancel_callback,
                     )
@@ -1298,6 +1321,7 @@ def execute_pipeline_request(
                         shadow_results = _detached_presentation_shadow_results(
                             request,
                             node_id,
+                            authoritative_pipeline=pipeline,
                             progress_callback=observed_progress_callback,
                             cancel_callback=cancel_callback,
                         )
@@ -1459,6 +1483,7 @@ def execute_pipeline_request(
                 actual_decisions=actual_decisions,
             )
         else:
+            known_cleanup = None
             (
                 execution_report,
                 device_execution_telemetry,
@@ -1489,6 +1514,7 @@ def execute_pipeline_request(
                 resident_thumbnail_statistics=resident_thumbnail_statistics,
                 resident_observer_seconds=resident_thumbnail_observer_seconds,
             )
+            known_cleanup = execution_report.cleanup_succeeded
             observer_seconds += resident_thumbnail_observer_seconds[0]
         for shadow_node_id in pipeline.topological_order():
             if shadow_node_id in request.presentation_shadow_node_ids:
@@ -1498,6 +1524,7 @@ def execute_pipeline_request(
             exc,
             cancelled=True,
             cpu_only=request.compute_request.mode is ComputeMode.CPU,
+            known_cleanup=known_cleanup,
         )
         if raise_errors:
             _attach_pipeline_execution_failure(exc, failure)
@@ -1517,7 +1544,10 @@ def execute_pipeline_request(
             ),
         )
     except Exception as exc:
-        failure = _pipeline_execution_failure(exc)
+        failure = _pipeline_execution_failure(
+            exc,
+            known_cleanup=known_cleanup,
+        )
         if raise_errors:
             _attach_pipeline_execution_failure(exc, failure)
             raise
@@ -1637,6 +1667,7 @@ def _detached_presentation_shadow_results(
     request: PipelineRunRequest,
     node_id: str,
     *,
+    authoritative_pipeline: PrototypePipeline,
     progress_callback: ProgressCallback | None,
     cancel_callback: Callable[[], bool] | None,
 ) -> list[tuple[object, object | None]]:
@@ -1646,7 +1677,10 @@ def _detached_presentation_shadow_results(
     of a bypassed node.  A presentation shadow still needs the operation's full
     ordinary input ancestry, so materialize that ancestry in a separate graph
     whose outputs, caches, provenance, and timing never enter the scientific
-    transaction returned to the caller.
+    transaction returned to the caller.  Reuse only upstream results already
+    admitted by the authoritative worker pipeline; the incremental planner will
+    reconstruct an ancestor only when cache pruning made that genuinely
+    necessary.
     """
 
     workflow = deserialize_workflow(deepcopy(request.workflow))
@@ -1710,12 +1744,65 @@ def _detached_presentation_shadow_results(
         )
     else:
         shadow_pipeline.restore_node_execution_mode(node_id, NODE_EXECUTION_RUN)
+
+    reusable_node_ids = {
+        candidate_id
+        for candidate_id in shadow_pipeline.nodes
+        if candidate_id != node_id
+        and candidate_id in authoritative_pipeline.completed_node_ids
+        and authoritative_pipeline._has_cached_output(candidate_id)
+    }
+    for candidate_id in reusable_node_ids:
+        shadow_pipeline.outputs[candidate_id] = authoritative_pipeline.outputs.get(
+            candidate_id
+        )
+        shadow_pipeline.output_states[candidate_id] = (
+            authoritative_pipeline.output_states.get(candidate_id)
+        )
+        shadow_pipeline.node_outputs[candidate_id] = list(
+            authoritative_pipeline.node_outputs.get(candidate_id, ())
+        )
+        shadow_pipeline.node_output_states[candidate_id] = list(
+            authoritative_pipeline.node_output_states.get(candidate_id, ())
+        )
+        shadow_pipeline.node_execution_states[candidate_id] = (
+            authoritative_pipeline.node_execution_states.get(
+                candidate_id,
+                EXECUTION_NOT_CALCULATED,
+            )
+        )
+        shadow_pipeline.node_execution_messages[candidate_id] = (
+            authoritative_pipeline.node_execution_messages.get(candidate_id, "")
+        )
+    shadow_pipeline.completed_node_ids = reusable_node_ids
+
+    def report_shadow_progress(
+        progress_node_id: str,
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        if progress_callback is None:
+            return
+        progress_node = shadow_pipeline.nodes.get(str(progress_node_id))
+        progress_title = (
+            progress_node.title if progress_node is not None else str(progress_node_id)
+        )
+        detail = "Bypass preview"
+        if str(progress_node_id) != node_id:
+            detail += f"; rebuilding missing cache for {progress_title}"
+        operation_detail = str(message).strip()
+        if operation_detail:
+            detail += f" — {operation_detail}"
+        progress_callback(node_id, int(current), int(total), detail)
+
     shadow_pipeline.run(
         request.input_data,
         input_metadata=request.input_metadata,
         input_name=request.input_name,
         source_payloads=dict(request.source_payloads),
-        progress_callback=progress_callback,
+        dirty_node_ids={node_id},
+        progress_callback=report_shadow_progress,
         cancel_callback=cancel_callback,
         manual_mode=MANUAL_RUN_CALCULATE,
         target_node_ids={node_id},
@@ -1737,6 +1824,7 @@ def _pipeline_execution_failure(
     *,
     cancelled: bool = False,
     cpu_only: bool = False,
+    known_cleanup: bool | None = None,
 ) -> PipelineExecutionFailure:
     """Detach stable terminal facts without importing an optional provider."""
 
@@ -1745,6 +1833,12 @@ def _pipeline_execution_failure(
     cleanup = getattr(exc, "cleanup_succeeded", None)
     if cleanup is not None:
         cleanup = bool(cleanup)
+    # Host preparation has not entered an accelerator transaction. Likewise,
+    # post-execution host work may reuse the returned transaction's cleanup
+    # proof. Never infer success solely from a missing report or cancel flag,
+    # and never replace explicit failed cleanup with successful evidence.
+    if known_cleanup is False or cleanup is None:
+        cleanup = known_cleanup
     fallback_records = tuple(
         getattr(exc, "fallback_records", ())
         or getattr(exc, "vipp_fallback_records", ())
@@ -1916,6 +2010,7 @@ def _execute_accelerated_pipeline(
     registry = compute_registry
     closed_cleanly = True
     active_error: BaseException | None = None
+    known_cleanup: bool | None = True
     history_warnings: list[str] = []
     try:
         with _observed_pipeline_preparation_phase(
@@ -2393,6 +2488,7 @@ def _execute_accelerated_pipeline(
             completed=True,
         )
         try:
+            known_cleanup = None
             device_result = execute_device_plan(
                 device_plan,
                 pipeline,
@@ -2407,6 +2503,7 @@ def _execute_accelerated_pipeline(
                 ),
                 telemetry=request.device_execution_telemetry,
             )
+            known_cleanup = device_result.cleanup_succeeded
         except BaseException:
             if resident_cleanup_failure_message is not None:
                 raise ResidentThumbnailStatisticsCleanupError(
@@ -2525,6 +2622,16 @@ def _execute_accelerated_pipeline(
         )
     except BaseException as exc:
         active_error = exc
+        if known_cleanup is False or (
+            known_cleanup is True and getattr(exc, "cleanup_succeeded", None) is None
+        ):
+            # Propagate proof for cancellation during host-side fact scanning
+            # or finalization. The finally block below still wraps any owned
+            # registry close failure as AcceleratorCleanupError (False).
+            try:
+                exc.cleanup_succeeded = known_cleanup
+            except (AttributeError, TypeError):
+                pass
         _finish_pipeline_preparation_telemetry(
             preparation_telemetry,
             completed=False,
@@ -3178,7 +3285,7 @@ def _build_workloads(
             ArrayFactsCache,
         ):
             raise TypeError("array_facts_cache must be an ArrayFactsCache or None.")
-        initial_workloads, _initial_facts, fact_lineage = _assemble_workloads(
+        initial_workloads, initial_facts, fact_lineage = _assemble_workloads(
             pipeline,
             runnable_node_ids,
             host_values,
@@ -3220,13 +3327,14 @@ def _build_workloads(
             request.compute_request,
             preflight_environment,
             initial_workloads,
+            initial_facts,
             fact_lineage,
             request.performance_evidence,
         )
         if not required_ports:
             return (
                 initial_workloads,
-                MappingProxyType({}),
+                initial_facts,
                 preflight_environment,
             )
 
@@ -3357,17 +3465,24 @@ def _assemble_workloads(
             # workload, benchmark candidate, or optimizer timing of its own.
             continue
 
-        if (
+        needs_propagation_placeholders = (
+            node.operation_id in _FACT_PROPAGATION_OPERATIONS
+            and any(facts is None for facts in input_facts)
+        )
+        needs_measurement_port_alignment = (
             node.operation_id == "measure_objects_intensity"
             and any(facts is not None for facts in input_facts)
             and any(facts is None for facts in input_facts)
-        ):
-            # Multi-input support policy consumes an ordered facts tuple.  Do
-            # not force an image-sized scan for an intrinsically finite integer
-            # intensity input merely because the labels need a non-negativity
-            # proof.  A metadata-only UNKNOWN record preserves port alignment;
-            # float32 intensity is still explicitly requested and scanned by
-            # _implementation_required_fact_indexes below.
+        )
+        if needs_propagation_placeholders or needs_measurement_port_alignment:
+            # Fact-propagating operations can establish output theorems even
+            # when no upstream value scan is available (for example, connected
+            # components always produces finite non-negative int32 labels).
+            # An UNKNOWN metadata record lets those theorems flow across opaque
+            # upstream operations without pretending that their input values
+            # were inspected.  The measurement special case also preserves
+            # ordered multi-input port alignment while scanning only the facts
+            # that its candidate actually requires.
             for index, facts in enumerate(input_facts):
                 if facts is not None:
                     continue
@@ -3458,7 +3573,7 @@ def _assemble_workloads(
                 values[port] = projected_value
                 states[port] = projected_state
                 if (
-                    node.operation_id in _PHASE_ONE_FACT_OPERATIONS
+                    node.operation_id in _FACT_PROPAGATION_OPERATIONS
                     and len(connections) == 1
                 ):
                     connection = connections[0]
@@ -3517,7 +3632,7 @@ def _assemble_workloads(
                     np.dtype(descriptor.dtype),
                 )
                 if (
-                    node.operation_id in _PHASE_ONE_FACT_OPERATIONS
+                    node.operation_id in _FACT_PROPAGATION_OPERATIONS
                     and len(connections) == 1
                 ):
                     connection = connections[0]
@@ -3536,9 +3651,23 @@ def _assemble_workloads(
                     )
                     if propagated is not None:
                         facts_by_port[port] = propagated
+    # Synthetic UNKNOWN placeholders preserve port alignment and theorem
+    # propagation internally, but do not claim that an array was inspected.
+    # Retain UNKNOWN facts derived from a real scanned revision: they are the
+    # planner's explicit fail-closed evidence that an operation could not prove
+    # a downstream candidate's value requirements.
+    planner_facts_by_node = {
+        node_id: facts
+        for node_id, facts in facts_by_node.items()
+        if any(
+            item.completeness is not FactCompleteness.UNKNOWN
+            or not item.revision_fingerprint.startswith("unscanned-input:")
+            for item in facts
+        )
+    }
     return (
         tuple(workloads),
-        MappingProxyType(facts_by_node),
+        MappingProxyType(planner_facts_by_node),
         MappingProxyType(fact_lineage),
     )
 
@@ -4104,6 +4233,7 @@ def _required_concrete_fact_ports(
     request: ComputeRequest,
     environment: ComputeEnvironment,
     workloads: tuple[WorkloadDescriptor, ...],
+    available_facts: Mapping[str, tuple[ArrayFacts, ...]],
     fact_lineage: Mapping[OutputPortKey, OutputPortKey],
     performance_evidence: Mapping[
         tuple[str, str],
@@ -4123,8 +4253,17 @@ def _required_concrete_fact_ports(
         if not indexes:
             continue
         connections = pipeline._input_connections(workload.node_id)
+        workload_facts = available_facts.get(workload.node_id, ())
         for index in indexes:
             if index >= len(connections):
+                continue
+            if (
+                index < len(workload_facts)
+                and workload_facts[index].completeness is FactCompleteness.COMPLETE
+            ):
+                # A complete propagated theorem is already authoritative. A
+                # source scan cannot add exact facts about values changed by an
+                # intervening operation, and would only add avoidable latency.
                 continue
             connection = connections[index]
             input_port = OutputPortKey(
@@ -4830,12 +4969,7 @@ def _propagate_shape_preserving_facts(
     output_shape: tuple[int, ...] | None = None,
     output_dtype: str | None = None,
 ) -> ArrayFacts | None:
-    if operation_id not in (
-        _PHASE_ONE_FACT_OPERATIONS
-        | _EXACT_HOST_BOOLEAN_FACT_OPERATIONS
-        | _EXACT_HOST_LABEL_FACT_OPERATIONS
-        | _EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS
-    ):
+    if operation_id not in _FACT_PROPAGATION_OPERATIONS:
         return None
 
     guarantees = set(facts.guarantees)
@@ -5121,6 +5255,35 @@ def _propagate_shape_preserving_facts(
         finite_count = output_elements
         completeness = FactCompleteness.COMPLETE
         guarantees.update(("integer-labels", "nonnegative", "no-negative-zero"))
+    elif operation_id in _EXACT_HOST_VALIDATED_LABEL_FACT_OPERATIONS:
+        # These operations preserve the concrete integer dtype and reject
+        # negative label IDs before producing an output.  A successful result
+        # is therefore a complete, finite, non-negative label image even when
+        # exact extrema and label counts remain data-dependent.
+        if (
+            resolved_dtype is None
+            or resolved_dtype == np.dtype(bool)
+            or not np.issubdtype(resolved_dtype, np.integer)
+        ):
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(("integer-labels", "nonnegative", "no-negative-zero"))
+    elif operation_id in _EXACT_HOST_VALIDATED_LABEL_OR_MASK_FACT_OPERATIONS:
+        # Clear Border accepts either a mask or a validated label image and
+        # preserves that exact dtype while replacing selected values with zero.
+        if resolved_dtype is None or not (
+            resolved_dtype == np.dtype(bool)
+            or np.issubdtype(resolved_dtype, np.integer)
+        ):
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(("nonnegative", "no-negative-zero"))
+        if resolved_dtype == np.dtype(bool):
+            guarantees.discard("integer-labels")
+        else:
+            guarantees.add("integer-labels")
     elif operation_id in _EXACT_HOST_FINITE_FLOAT_FACT_OPERATIONS:
         finite_count = output_elements
         completeness = FactCompleteness.COMPLETE

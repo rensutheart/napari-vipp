@@ -709,13 +709,19 @@ def test_targeted_axis_preflight_projects_only_declared_gaussian_branch(
     assert pipeline.output_states[unrelated.id] is None
 
 
-def test_axis_preflight_propagates_qyx_through_axis_slice():
+@pytest.mark.parametrize("legacy_selection", (True, False))
+def test_axis_preflight_propagates_qyx_through_axis_slice(legacy_selection):
     data = np.zeros((3, 8, 9), dtype=np.uint16)
     raw_state = image_state_from_array(data, layer_metadata={"axes": "QYX"})
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     select = pipeline.add_node("select_axis_slice")
     pipeline.set_param(select.id, "axis", 1)
+    if legacy_selection:
+        pipeline.set_param(select.id, "range_mode", False)
+    else:
+        pipeline.set_param(select.id, "remove_axes", "1")
+        pipeline.set_param(select.id, "remove_indices", "0")
     assert pipeline.connect("input", select.id).success
     subtract = pipeline.add_node("subtract_background")
     pipeline.set_param(subtract.id, "spatial_mode", "2D YX")
@@ -727,13 +733,21 @@ def test_axis_preflight_propagates_qyx_through_axis_slice():
         )
 
 
-def test_axis_preflight_propagates_rank_reduction_before_3d_operation():
+@pytest.mark.parametrize("legacy_selection", (True, False))
+def test_axis_preflight_propagates_rank_reduction_before_3d_operation(
+    legacy_selection,
+):
     data = np.zeros((3, 8, 9), dtype=np.uint16)
     state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
     select = pipeline.add_node("select_axis_slice")
     pipeline.set_param(select.id, "axis", 0)
+    if legacy_selection:
+        pipeline.set_param(select.id, "range_mode", False)
+    else:
+        pipeline.set_param(select.id, "remove_axes", "0")
+        pipeline.set_param(select.id, "remove_indices", "0")
     assert pipeline.connect("input", select.id).success
     subtract = pipeline.add_node("subtract_background")
     pipeline.set_param(subtract.id, "spatial_mode", "3D ZYX")
@@ -1028,7 +1042,10 @@ def test_skeleton_overlay_axis_preflight_preserves_existing_channel_axis():
     )
 
 
-def test_axis_removal_updates_channel_metadata_for_projection_and_slice():
+@pytest.mark.parametrize("legacy_selection", (True, False))
+def test_axis_removal_updates_channel_metadata_for_projection_and_slice(
+    legacy_selection,
+):
     data = np.zeros((3, 5, 7), dtype=np.uint8)
     channels = tuple(ChannelMetadata(name=name) for name in ("red", "green", "blue"))
     state = image_state_from_array(
@@ -1053,6 +1070,11 @@ def test_axis_removal_updates_channel_metadata_for_projection_and_slice():
     selection, selection_node = _pipeline_with("select_axis_slice")
     selection.set_param(selection_node, "axis", 0)
     selection.set_param(selection_node, "index", 1)
+    if legacy_selection:
+        selection.set_param(selection_node, "range_mode", False)
+    else:
+        selection.set_param(selection_node, "remove_axes", "0")
+        selection.set_param(selection_node, "remove_indices", "1")
     selection.run(
         None,
         source_payloads={"input": SourcePayload(data, image_state=state)},

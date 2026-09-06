@@ -1,0 +1,2145 @@
+<div id="vipp-batch-comparison" data-compare="new" data-state="ready" data-density="comfortable" data-theme="auto" data-width="auto">
+  <div class="vbc-design-controls" aria-label="Batch workflow comparison controls">
+    <label class="vbc-design-label" for="vbc-state">Example state
+      <select id="vbc-state" class="vbc-design-select">
+        <option value="setup">Initial setup</option>
+        <option value="ready" selected>Ready to run</option>
+        <option value="stale">Settings changed</option>
+        <option value="blocked">One item needs attention</option>
+        <option value="running">Running</option>
+        <option value="stopped">Stopped</option>
+        <option value="complete">Finished with one issue</option>
+        <option value="success">All outputs saved</option>
+      </select>
+    </label>
+    <label class="vbc-design-label" for="vbc-compare">Comparison view
+      <select id="vbc-compare" class="vbc-design-select">
+        <option value="both">Side by side</option>
+        <option value="current">Current only</option>
+        <option value="new" selected>New implementation only</option>
+      </select>
+    </label>
+    <label class="vbc-design-label" for="vbc-layout">Selected-item layout
+      <select id="vbc-layout" class="vbc-design-select">
+        <option value="split" selected>Contextual split</option>
+        <option value="guided">Single column</option>
+      </select>
+    </label>
+    <label class="vbc-design-label" for="vbc-theme">Appearance
+      <select id="vbc-theme" class="vbc-design-select">
+        <option value="auto" selected>Auto</option>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </label>
+    <label class="vbc-design-label" for="vbc-width">Preview width
+      <select id="vbc-width" class="vbc-design-select">
+        <option value="auto" selected>Auto</option>
+        <option value="900">900 px</option>
+        <option value="736">736 px</option>
+        <option value="360">360 px</option>
+      </select>
+    </label>
+    <label class="vbc-design-label" for="vbc-sample-count">Example collection
+      <select id="vbc-sample-count" class="vbc-design-select"><option value="3">3 samples</option><option value="1200">1,200 samples</option></select>
+    </label>
+    <label class="vbc-design-label" for="vbc-node-count">Example workflow
+      <select id="vbc-node-count" class="vbc-design-select"><option value="3">3 nodes</option><option value="30">30 nodes</option></select>
+    </label>
+  </div>
+
+  <div class="vbc-same-state" aria-label="Comparison basis">
+    <i data-lucide="equal" aria-hidden="true"></i>
+    <span>Interactive mockup · example data only · no files are processed</span>
+  </div>
+
+  <div class="vbc-grid">
+    <section class="vbc-version vbc-current-version" aria-labelledby="vbc-current-heading">
+      <div class="vbc-version-heading">
+        <div>
+          <span class="vbc-version-kicker">Current</span>
+          <h2 id="vbc-current-heading">One long configuration window</h2>
+        </div>
+        <span class="vbc-version-note">840 × 720 target</span>
+      </div>
+
+      <div class="vbc-window vbc-current-window">
+        <div class="vbc-titlebar">
+          <div><i data-lucide="table-properties" aria-hidden="true"></i><span>Batch workspace</span></div>
+          <div class="vbc-window-buttons" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
+        </div>
+
+        <div class="vbc-current-toolbar">
+          <div class="vbc-command-group">
+            <button type="button">Load...</button>
+            <button type="button">Save...</button>
+            <button type="button">Demo...</button>
+          </div>
+          <span id="vbc-current-top-status" class="vbc-inline-status vbc-tone-ready">Ready · 3 batch items</span>
+          <div id="vbc-current-top-progress" class="vbc-mini-progress" role="progressbar" aria-label="Current batch activity" aria-valuemin="0" aria-valuemax="3" aria-valuenow="3" hidden>
+            <span></span><b>3 / 3</b>
+          </div>
+        </div>
+
+        <div class="vbc-current-body">
+          <fieldset class="vbc-groupbox">
+            <legend>Batch sources</legend>
+            <div class="vbc-current-source-card">
+              <strong>Red channel · collection</strong>
+              <label>Folder
+                <span class="vbc-inline-field"><input value="C:\VIPP Examples\source-aware\red" aria-label="Current red channel folder"><button type="button">Folder...</button></span>
+              </label>
+              <label>Pattern <input value="*.npy" aria-label="Current red channel pattern"></label>
+              <label>Image stack
+                <select aria-label="Current red channel image stack"><option>Use the file's labels unchanged</option></select>
+              </label>
+            </div>
+            <div class="vbc-current-source-card">
+              <strong>Green channel · collection</strong>
+              <label>Folder
+                <span class="vbc-inline-field"><input value="C:\VIPP Examples\source-aware\green" aria-label="Current green channel folder"><button type="button">Folder...</button></span>
+              </label>
+              <label>Pattern <input value="*.npy" aria-label="Current green channel pattern"></label>
+              <label>Image stack
+                <select aria-label="Current green channel image stack"><option>Use the file's labels unchanged</option></select>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="vbc-groupbox">
+            <legend>Node behavior for all samples (optional)</legend>
+            <label class="vbc-current-form-row"><span>Gaussian Blur (gaussian_blur)</span><select><option>Use workflow (currently Run)</option></select></label>
+          </fieldset>
+
+          <fieldset class="vbc-groupbox vbc-current-override-group">
+            <legend>Per-sample parameters (optional)</legend>
+            <div class="vbc-table-wrap">
+              <table class="vbc-table vbc-current-override-table">
+                <thead><tr><th>Batch item</th><th>Gaussian σ</th><th>Threshold</th></tr></thead>
+                <tbody>
+                  <tr><td>field_01</td><td class="vbc-inherit">1</td><td class="vbc-inherit">12,000</td></tr>
+                  <tr><td>field_02</td><td class="vbc-inherit">1</td><td><input value="13,000" aria-label="Current threshold override field 02"></td></tr>
+                  <tr><td>field_03</td><td class="vbc-inherit">1</td><td class="vbc-inherit">12,000</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </fieldset>
+
+          <div class="vbc-current-output-form">
+            <label>Output folder
+              <span class="vbc-inline-field"><input value="C:\VIPP Examples\source-aware\results" aria-label="Current output folder"><button type="button">Folder...</button></span>
+            </label>
+            <label>Default image format <select><option>ome-tiff</option></select></label>
+            <label>Existing files <select><option>Ask before overwrite (recommended)</option></select></label>
+            <label class="vbc-check"><input type="checkbox" checked disabled><span>Save workflow JSON</span></label>
+            <label class="vbc-check"><input type="checkbox" checked><span>Save batch runner Python script</span></label>
+            <label class="vbc-check"><input type="checkbox" checked><span>Continue after item failures</span></label>
+          </div>
+
+          <p class="vbc-current-help">Choose the source and output folders. Preview checks a sample before anything is saved.</p>
+
+          <div class="vbc-current-inline-action">
+            <button type="button" data-action="review">Preview batch</button>
+            <span id="vbc-current-preview-status">Ready. Preview checks one sample; Run batch checks again before saving.</span>
+          </div>
+
+          <div class="vbc-table-wrap vbc-current-plan-wrap">
+            <table class="vbc-table vbc-current-plan-table">
+              <thead><tr><th>#</th><th>Batch item</th><th>Outputs</th><th>Preflight</th><th>Run status</th></tr></thead>
+              <tbody id="vbc-current-plan-body">
+                <tr><td>1</td><td>field_01</td><td>3 planned</td><td class="vbc-status-ok">Ready</td><td>Not run</td></tr>
+                <tr><td>2</td><td>field_02</td><td>3 planned</td><td class="vbc-status-ok">Ready</td><td>Not run</td></tr>
+                <tr><td>3</td><td>field_03</td><td>3 planned</td><td class="vbc-status-ok">Ready</td><td>Not run</td></tr>
+              </tbody>
+            </table>
+            <div id="vbc-current-empty-plan" class="vbc-empty-plan" hidden>Preview batch to inspect planned items and destinations.</div>
+          </div>
+
+          <div class="vbc-current-inline-action">
+            <button type="button">Preview selected in graph</button>
+            <span>Select a planned item to inspect one representative calculation in the graph.</span>
+          </div>
+
+          <fieldset id="vbc-current-run-group" class="vbc-groupbox vbc-current-run-group" hidden>
+            <legend>Batch run</legend>
+            <div class="vbc-progress-label"><span id="vbc-current-overall-label">Running item 2 of 3 · field_02</span><b id="vbc-current-overall-value">67%</b></div>
+            <div class="vbc-progress"><span id="vbc-current-overall-bar" style="width:67%"></span></div>
+            <div class="vbc-progress-label"><span id="vbc-current-operation-label">Gaussian Blur · processing plane 4 of 10</span><b id="vbc-current-operation-value">40%</b></div>
+            <div class="vbc-progress"><span id="vbc-current-operation-bar" style="width:40%"></span></div>
+            <p id="vbc-current-run-result"></p>
+          </fieldset>
+        </div>
+
+        <div class="vbc-current-footer">
+          <span></span>
+          <div>
+            <button id="vbc-current-run-button" type="button" class="vbc-primary-action" data-action="run">Run batch</button>
+            <button id="vbc-current-cancel-button" type="button" data-action="stop" hidden>Cancel run</button>
+            <button type="button">Close</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="vbc-version vbc-new-version" aria-labelledby="vbc-new-heading">
+      <div class="vbc-version-heading">
+        <div>
+          <span class="vbc-version-kicker vbc-new-kicker">New implementation</span>
+          <h2 id="vbc-new-heading">Task-based batch workflow</h2>
+        </div>
+        <span class="vbc-version-note">Interactive mockup</span>
+      </div>
+
+      <div id="vbc-new-window" class="vbc-window vbn-window" data-layout="split" data-technical="shown">
+        <div class="vbc-titlebar">
+          <div><i data-lucide="table-properties" aria-hidden="true"></i><span>Batch workflow</span><span class="vbn-unsaved" aria-label="Unsaved changes">•</span></div>
+          <div class="vbc-window-buttons" aria-hidden="true"><span>—</span><span>□</span><span>×</span></div>
+        </div>
+
+        <div class="vbn-commandbar">
+          <div class="vbc-command-group">
+            <button type="button"><i data-lucide="folder-open" aria-hidden="true"></i><span>Open config</span></button>
+            <button type="button"><i data-lucide="save" aria-hidden="true"></i><span>Save config</span></button>
+          </div>
+          <span class="vbn-config-name">synthetic-batch-provenance.json</span>
+          <span class="vbn-compute" data-tooltip="Uses the main toolbar's compute setting. Compatible operations prefer the GPU; other operations use the CPU."><i data-lucide="cpu" aria-hidden="true"></i>Prefer GPU · inherited</span>
+          <details class="vbn-more-menu">
+            <summary aria-label="More batch options"><i data-lucide="ellipsis" aria-hidden="true"></i></summary>
+            <div class="vbn-more-menu-popover" aria-label="More batch options">
+              <button type="button"><i data-lucide="flask-conical" aria-hidden="true"></i><span>Load demo configuration…</span></button>
+            </div>
+          </details>
+        </div>
+
+        <nav class="vbn-sections" role="tablist" aria-label="Batch workflow sections">
+          <button id="vbn-tab-setup" type="button" role="tab" aria-label="Setup" aria-controls="vbn-page-setup" data-new-section="setup" class="is-active" aria-selected="true"><i data-lucide="sliders-horizontal" aria-hidden="true"></i><span>Setup</span><b id="vbn-setup-badge">•</b></button>
+          <button id="vbn-tab-items" type="button" role="tab" aria-label="Items and outputs" aria-controls="vbn-page-items" data-new-section="items" aria-selected="false" aria-disabled="true" disabled><i data-lucide="list-checks" aria-hidden="true"></i><span>Items &amp; outputs</span><b id="vbn-items-badge">—</b></button>
+          <button id="vbn-tab-overrides" type="button" role="tab" aria-label="Overrides" aria-controls="vbn-page-overrides" data-new-section="overrides" aria-selected="false" aria-disabled="true" disabled><i data-lucide="table-2" aria-hidden="true"></i><span>Overrides</span><b id="vbn-overrides-badge">—</b></button>
+          <button id="vbn-tab-run" type="button" role="tab" aria-label="Run and results" aria-controls="vbn-page-run" data-new-section="run" aria-selected="false" aria-disabled="true" disabled><i data-lucide="activity" aria-hidden="true"></i><span>Run &amp; results</span><b id="vbn-run-badge">Not run</b></button>
+        </nav>
+
+        <div class="vbn-content">
+          <section id="vbn-page-setup" class="vbn-page" role="tabpanel" data-page="setup" aria-labelledby="vbn-tab-setup">
+            <div class="vbn-page-heading">
+              <div><h3 id="vbn-setup-title">Sources and destination</h3></div>
+              <span id="vbn-setup-state" class="vbn-state-chip vbn-state-neutral"><i data-lucide="circle-dashed" aria-hidden="true"></i>Not checked</span>
+            </div>
+
+            <div class="vbn-workflow-summary">
+              <div><i data-lucide="workflow" aria-hidden="true"></i><span><small>Workflow</small><strong>synthetic-batch-provenance</strong></span></div>
+              <div><small>Sources per item</small><strong>2 images</strong></div>
+              <div><small>Outputs per item</small><strong>3 files</strong></div>
+            </div>
+
+            <div class="vbn-setup-grid">
+              <div class="vbn-section-block">
+                <div class="vbn-block-heading"><div><i data-lucide="images" aria-hidden="true"></i><strong>Sources &amp; pairing</strong></div><span>3 pairs</span></div>
+                <div class="vbn-source-row">
+                  <div class="vbn-source-name"><span class="vbn-source-dot vbn-red-dot"></span><strong>Red channel</strong><span class="vbn-detected"><i data-lucide="check" aria-hidden="true"></i>3 detected</span></div>
+                  <label>Folder <span class="vbc-inline-field"><input id="vbn-red-folder" value="C:\VIPP Examples\source-aware\red"><button type="button" aria-label="Choose red source folder"><i data-lucide="folder-open" aria-hidden="true"></i></button></span></label>
+                  <div class="vbn-two-fields"><label>Pattern <input id="vbn-red-pattern" value="*.npy"></label><label>Image axes <select aria-label="Red source image axes"><option>Use file labels</option><option>YX · single image</option><option>ZYX · volume</option><option>TYX · time series</option></select></label></div>
+                </div>
+                <div class="vbn-source-row">
+                  <div class="vbn-source-name"><span class="vbn-source-dot vbn-green-dot"></span><strong>Green channel</strong><span class="vbn-detected"><i data-lucide="check" aria-hidden="true"></i>3 detected</span></div>
+                  <label>Folder <span class="vbc-inline-field"><input id="vbn-green-folder" value="C:\VIPP Examples\source-aware\green"><button type="button" aria-label="Choose green source folder"><i data-lucide="folder-open" aria-hidden="true"></i></button></span></label>
+                  <div class="vbn-two-fields"><label>Pattern <input id="vbn-green-pattern" value="*.npy"></label><label>Image axes <select aria-label="Green source image axes"><option>Use file labels</option><option>YX · single image</option><option>ZYX · volume</option><option>TYX · time series</option></select></label></div>
+                </div>
+                <div class="vbn-pairing-summary"><i data-lucide="git-compare-arrows" aria-hidden="true"></i><span>3 Red + 3 Green → 3 items, paired by sorted position</span></div>
+              </div>
+
+              <div class="vbn-section-block">
+                <div class="vbn-block-heading"><div><i data-lucide="folder-output" aria-hidden="true"></i><strong>Destination &amp; run policy</strong></div></div>
+                <div class="vbn-form-grid">
+                  <label>Output folder <span class="vbc-inline-field"><input id="vbn-output-folder" value="C:\VIPP Examples\source-aware\results"><button type="button" aria-label="Choose output folder"><i data-lucide="folder-open" aria-hidden="true"></i></button></span></label>
+                  <label>Default image format <select id="vbn-format"><option>OME-TIFF</option><option>TIFF</option><option>NumPy (.npy)</option></select></label>
+                  <label>Existing files <select id="vbn-existing-files"><option>Ask before overwrite</option><option>Skip existing files</option><option>Overwrite existing files</option></select></label>
+                  <label class="vbc-check"><input id="vbn-continue-failures" type="checkbox" checked><span>Continue after item failures</span></label>
+                </div>
+                <details class="vbn-disclosure">
+                  <summary><span><i data-lucide="package-check" aria-hidden="true"></i>Files saved with the results</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+                  <label class="vbc-check"><input type="checkbox" checked disabled><span>Workflow JSON · required</span></label>
+                  <label class="vbc-check"><input type="checkbox" checked><span>Batch runner Python script</span></label>
+                </details>
+              </div>
+            </div>
+          </section>
+
+          <section id="vbn-page-items" class="vbn-page" role="tabpanel" data-page="items" aria-labelledby="vbn-tab-items" hidden>
+            <div class="vbn-page-heading">
+              <div><h3 id="vbn-items-title">Review batch items</h3></div>
+              <div id="vbn-items-metrics" class="vbn-metrics" aria-label="Batch plan summary">
+                <span><strong>3</strong> items</span><span><strong>9</strong> outputs</span><span class="vbn-no-conflicts"><strong>0</strong> conflicts</span>
+              </div>
+            </div>
+
+            <div id="vbn-plan-banner" class="vbn-message vbn-message-success"><i data-lucide="circle-check" aria-hidden="true"></i><span><strong>Checks passed.</strong> Source pairs and output destinations are ready.</span></div>
+
+            <div class="vbn-plan-toolbar">
+              <div class="vbc-command-group">
+                <button type="button" data-item-command="recheck"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>Recheck selected</span></button>
+                <button type="button" data-item-command="preview"><i data-lucide="scan-eye" aria-hidden="true"></i><span>Preview selected</span></button>
+                <button id="vbn-selected-overrides-button" type="button" data-action="open-overrides"><i data-lucide="table-properties" aria-hidden="true"></i><span id="vbn-selected-overrides-label">Load overrides</span></button>
+              </div>
+              <button class="vbn-recheck-all" type="button" data-action="check"><i data-lucide="list-restart" aria-hidden="true"></i><span>Recheck all</span></button>
+              <label class="vbn-filter-label"><span class="sr-only">Filter batch items</span><select aria-label="Filter batch items"><option>All items</option><option>Needs attention</option><option>Ready</option></select></label>
+              <label class="vbn-search"><i data-lucide="search" aria-hidden="true"></i><input placeholder="Find item" aria-label="Find batch item"></label>
+            </div>
+
+            <div class="vbn-items-grid">
+              <div class="vbc-table-wrap">
+                <table class="vbc-table vbn-plan-table">
+                  <thead><tr><th></th><th>#</th><th>Batch item</th><th>Sources</th><th>Outputs</th><th>Checks</th><th>Run result</th></tr></thead>
+                  <tbody id="vbn-plan-body">
+                    <tr data-item="field_01"><td><i data-lucide="circle-check" aria-hidden="true"></i></td><td>1</td><td><strong>field_01</strong><small>0001_field_01</small></td><td>2 paired</td><td>3 planned</td><td class="vbc-status-ok">Ready</td><td>Not run</td></tr>
+                    <tr class="is-selected" data-item="field_02"><td><i data-lucide="circle-check" aria-hidden="true"></i></td><td>2</td><td><strong>field_02</strong><small>0002_field_02</small></td><td>2 paired</td><td>3 planned</td><td class="vbc-status-ok">Ready</td><td>Not run</td></tr>
+                    <tr data-item="field_03"><td><i data-lucide="circle-check" aria-hidden="true"></i></td><td>3</td><td><strong>field_03</strong><small>0003_field_03</small></td><td>2 paired</td><td>3 planned</td><td class="vbc-status-ok">Ready</td><td>Not run</td></tr>
+                  </tbody>
+                </table>
+                <div id="vbn-empty-plan" class="vbc-empty-plan" hidden>
+                  <i data-lucide="clipboard-list" aria-hidden="true"></i>
+                  <strong>No items checked yet</strong>
+                  <span>Check batch to list source pairs and planned outputs. No results are saved.</span>
+                </div>
+              </div>
+
+              <aside id="vbn-item-details" class="vbn-item-details" aria-label="Selected batch item details">
+                <div class="vbn-detail-heading"><div><span>Selected item</span><strong id="vbn-detail-item-name">field_02</strong><small id="vbn-detail-item-meta">Item 2 of 3 · 2 paired sources</small></div><span class="vbn-state-chip vbn-state-ready">Ready</span></div>
+                <dl>
+                  <div><dt>Red source</dt><dd id="vbn-detail-red-source">C:\VIPP Examples\source-aware\red\field_02.npy</dd></div>
+                  <div><dt>Green source</dt><dd id="vbn-detail-green-source">C:\VIPP Examples\source-aware\green\field_02.npy</dd></div>
+                  <div><dt>Axis interpretation</dt><dd>Use file labels · YX</dd></div>
+                  <div><dt>Parameter override</dt><dd id="vbn-detail-override">Binary Threshold · 13,000</dd></div>
+                </dl>
+                <details class="vbn-disclosure" open>
+                  <summary><span><i data-lucide="files" aria-hidden="true"></i>3 planned outputs</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+                  <ul id="vbn-detail-outputs">
+                    <li>field_02__combined.npy</li>
+                    <li>field_02__overlap.tif</li>
+                    <li>field_02__measurements.tsv</li>
+                  </ul>
+                </details>
+              </aside>
+            </div>
+            <div id="vbn-item-context-menu" class="vbn-item-context-menu" aria-label="Selected batch item actions" hidden>
+              <strong id="vbn-context-item-name">field_02</strong>
+              <button type="button" data-item-command="recheck"><i data-lucide="refresh-cw" aria-hidden="true"></i><span>Recheck this item</span></button>
+              <button type="button" data-item-command="preview"><i data-lucide="scan-eye" aria-hidden="true"></i><span>Preview in graph</span></button>
+              <button id="vbn-context-override-button" type="button" data-item-command="override"><i data-lucide="table-properties" aria-hidden="true"></i><span id="vbn-context-override-label">Load overrides</span></button>
+              <button type="button" data-item-command="reveal"><i data-lucide="folder-search" aria-hidden="true"></i><span data-reveal-label>Find in File Explorer</span></button>
+            </div>
+          </section>
+
+          <section id="vbn-page-overrides" class="vbn-page" role="tabpanel" data-page="overrides" aria-labelledby="vbn-tab-overrides" hidden>
+            <div class="vbn-page-heading">
+              <div><h3 id="vbn-overrides-title">Adjust batch parameters</h3></div>
+              <button type="button" class="vbn-reset-button"><i data-lucide="rotate-ccw" aria-hidden="true"></i>Reset selected overrides…</button>
+            </div>
+            <div class="vbn-overrides-grid">
+              <div class="vbn-section-block">
+                <div class="vbn-block-heading"><div><i data-lucide="table-2" aria-hidden="true"></i><strong>Per-sample parameter overrides</strong></div><span>1 override</span></div>
+                <div class="vbn-override-workspace">
+                  <div class="vbn-sample-browser">
+                    <div class="vbn-sample-filters">
+                      <label>Find samples<input id="vbn-override-search" placeholder="Sample name or source path" type="search"></label>
+                      <label>Show<select id="vbn-override-filter"><option value="all">All samples</option><option value="changed">Show changed only</option><option value="workflow">Using workflow values</option><option value="missing">No override for parameter</option></select></label>
+                      <label id="vbn-missing-field" hidden>Parameter<select id="vbn-missing-parameter"><option value="threshold">Threshold</option><option value="sigma">Gaussian σ</option><option value="size">Minimum size</option></select></label>
+                    </div>
+                    <div class="vbn-column-tools">
+                      <label>Find node or parameter<input id="vbn-parameter-search" type="search" placeholder="Jump to a column…" aria-controls="vbn-parameter-results" autocomplete="off"></label>
+                      <button id="vbn-columns-button" type="button"><i data-lucide="columns-3" aria-hidden="true"></i>Show columns…</button><span id="vbn-column-summary"></span>
+                      <div id="vbn-parameter-results" class="vbn-parameter-results" hidden></div>
+                    </div>
+                    <div class="vbn-table-selection"><div><strong id="vbn-bulk-title">1 sample selected</strong><span id="vbn-hidden-selection"></span></div><div class="vbn-selection-tools"><button type="button" id="vbn-select-matching">Select all matching</button><button type="button" id="vbn-clear-selection">Clear selection</button><button type="button" id="vbn-edit-selected"><i data-lucide="pencil" aria-hidden="true"></i>Edit selected…</button></div></div>
+                    <div class="vbc-table-wrap vbn-sample-scroll" id="vbn-parameter-scroll">
+                      <table class="vbc-table vbn-override-table" id="vbn-parameter-table"><thead></thead><tbody id="vbn-sample-body"></tbody></table>
+                      <div id="vbn-override-empty" class="vbc-empty-plan" hidden>No samples match these filters.</div>
+                    </div>
+                    <div class="vbn-list-pagination"><span id="vbn-sample-range"></span><button id="vbn-sample-prev" type="button" aria-label="Previous samples">Previous</button><button id="vbn-sample-next" type="button" aria-label="Next samples">Next</button></div>
+                    <p id="vbn-cell-help" class="vbn-block-help">Edit any cell · blank numeric cells inherit the workflow value shown in gray.</p>
+                    <span id="vbn-cell-feedback" class="vbn-block-help" aria-live="polite"></span>
+                  </div>
+                </div>
+              </div>
+              <div class="vbn-section-block">
+                <div class="vbn-block-heading"><div><i data-lucide="route" aria-hidden="true"></i><strong>Run or bypass nodes</strong></div><span>0 node changes</span></div>
+                <p class="vbn-block-help">Applies to every item in this batch. Bypass passes a node's input onward without applying that operation. Your original workflow stays unchanged.</p>
+                <div class="vbc-table-wrap">
+                  <table class="vbc-table">
+                    <thead><tr><th>Node</th><th>Workflow state</th><th>Batch override</th></tr></thead>
+                    <tbody>
+                      <tr><td><strong>Gaussian Blur</strong><small>gaussian_blur</small></td><td>Run</td><td><select><option>Use workflow state (Run)</option><option>Run for every item</option><option>Bypass for every item</option></select></td></tr>
+                      <tr><td><strong>Crop Stack</strong><small>crop_stack</small></td><td>Run</td><td><select><option>Use workflow state (Run)</option><option>Run for every item</option><option>Bypass for every item</option></select></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="vbn-page-run" class="vbn-page" role="tabpanel" data-page="run" aria-labelledby="vbn-tab-run" hidden>
+            <div class="vbn-page-heading">
+              <div><h3 id="vbn-run-title">Review and run</h3></div>
+              <span id="vbn-run-state" class="vbn-state-chip vbn-state-neutral">Not run</span>
+            </div>
+
+            <div id="vbn-run-before" class="vbn-run-state-panel">
+              <div class="vbn-message vbn-message-info"><i data-lucide="shield-check" aria-hidden="true"></i><span><strong>Ready for a final check.</strong> VIPP checks the source files and output destinations again before processing.</span></div>
+              <div class="vbn-recap-grid">
+                <div><small>Collection</small><strong>3 paired items</strong></div>
+                <div><small>Outputs</small><strong>9 explicit outputs</strong></div>
+                <div><small>Existing files</small><strong>Ask before overwrite</strong></div>
+                <div><small>Compute</small><strong>Prefer GPU · CPU fallback</strong></div>
+                <div><small>Failure policy</small><strong>Continue after failures</strong></div>
+                <div><small>Overrides</small><strong>1 parameter change</strong></div>
+              </div>
+            </div>
+
+            <div id="vbn-run-running" class="vbn-run-state-panel" hidden>
+              <div class="vbn-active-operation">
+                <div><span class="vbn-pulse"></span><span><small>Active item</small><strong>field_02 · 0002_field_02</strong></span></div>
+                <span>Elapsed 00:18</span>
+              </div>
+              <div class="vbn-progress-stack">
+                <div>
+                  <div class="vbc-progress-label"><span>Overall · item 2 of 3</span><b>67%</b></div>
+                  <div class="vbc-progress"><span style="width:67%"></span></div>
+                </div>
+                <div>
+                  <div class="vbc-progress-label"><span>Gaussian Blur · plane 4 of 10</span><b>40%</b></div>
+                  <div class="vbc-progress vbc-operation-progress"><span style="width:40%"></span></div>
+                </div>
+              </div>
+              <div class="vbn-truth-note"><i data-lucide="info" aria-hidden="true"></i>Some operations finish before their progress updates.</div>
+              <div class="vbc-table-wrap">
+                <table class="vbc-table">
+                  <thead><tr><th>#</th><th>Item</th><th>Result</th><th>Time</th></tr></thead>
+                  <tbody><tr><td>1</td><td>field_01</td><td class="vbc-status-ok">Completed</td><td>00:12</td></tr><tr class="is-selected"><td>2</td><td>field_02</td><td class="vbc-status-working">Running · Gaussian Blur</td><td>00:06</td></tr><tr><td>3</td><td>field_03</td><td>Waiting</td><td>—</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="vbn-run-complete" class="vbn-run-state-panel" hidden>
+              <div class="vbn-complete-banner"><i data-lucide="triangle-alert" aria-hidden="true"></i><div><strong>Completed with 1 issue</strong><span>2 completed · 1 partial · 8 of 9 outputs saved · total pipeline time 00:42</span></div></div>
+              <div class="vbn-outcome-grid" aria-label="Batch outcomes">
+                <div><small>Completed</small><strong>2</strong></div><div><small>Partial</small><strong>1</strong></div><div><small>Skipped</small><strong>0</strong></div><div><small>Failed</small><strong>0</strong></div>
+              </div>
+              <div class="vbn-message vbn-message-warning"><i data-lucide="circle-alert" aria-hidden="true"></i><span><strong>field_03:</strong> measurements.tsv could not be written because the file is open. Close it, then rerun this item.</span><button type="button">View item</button></div>
+              <div class="vbn-result-actions"><button type="button"><i data-lucide="folder-open" aria-hidden="true"></i>Open output folder</button><button type="button"><i data-lucide="file-json" aria-hidden="true"></i>View manifest</button><button type="button"><i data-lucide="copy" aria-hidden="true"></i>Copy summary</button></div>
+              <details class="vbn-disclosure vbn-technical-details"><summary><span><i data-lucide="scroll-text" aria-hidden="true"></i>Run record &amp; technical details</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary><dl><div><dt>Manifest</dt><dd>C:\VIPP Examples\source-aware\results\vipp_batch_manifest.json</dd></div><div><dt>Effective compute</dt><dd>CuPy · NVIDIA RTX 5090 · CPU for unsupported operations</dd></div><div><dt>Workflow hash</dt><dd>5bb89d2…e320</dd></div></dl></details>
+            </div>
+          </section>
+        </div>
+
+        <div class="vbn-footer">
+          <div class="vbn-footer-statusline">
+            <div class="vbn-footer-status" role="status" aria-live="polite" aria-atomic="true">
+              <span id="vbn-footer-dot" class="vbn-footer-dot vbn-dot-neutral"></span>
+              <span id="vbn-footer-text">Paths entered · check batch to build the item plan</span>
+            </div>
+            <div id="vbn-footer-progress" class="vbn-footer-progress" role="progressbar" aria-label="Batch run progress" aria-valuemin="0" aria-valuemax="3" aria-valuenow="2" hidden><span style="width:67%"></span></div>
+            <span id="vbn-footer-elapsed" class="vbn-footer-elapsed" hidden>Elapsed 00:18</span>
+          </div>
+          <div class="vbn-footer-actions">
+            <button id="vbn-overrides-button" type="button" data-action="review-overrides" hidden><i data-lucide="table-properties" aria-hidden="true"></i><span>Load overrides</span></button>
+            <button id="vbn-next-button" type="button" class="vbc-primary-action" data-action="check"><i data-lucide="clipboard-check" aria-hidden="true"></i><span>Check batch</span></button>
+            <button id="vbn-stop-button" type="button" class="vbn-stop-action" data-action="stop" hidden><i data-lucide="square" aria-hidden="true"></i><span>Stop safely</span></button>
+            <button id="vbn-open-output-button" type="button" hidden><i data-lucide="folder-open" aria-hidden="true"></i><span>Open output folder</span></button>
+            <button id="vbn-close-button" type="button">Close</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<style>
+  #vipp-batch-comparison {
+    color-scheme: light dark;
+    --vbc-page: light-dark(#eef2f6, #11151b);
+    --vbc-shell: light-dark(#eef2f6, #20232b);
+    --vbc-raised: light-dark(#ffffff, #292e38);
+    --vbc-deep: light-dark(#dfe5eb, #181b22);
+    --vbc-canvas: light-dark(#f4f6f8, #171a20);
+    --vbc-field: light-dark(#ffffff, #414955);
+    --vbc-field-hover: light-dark(#eef3f7, #4c5664);
+    --vbc-text: light-dark(#17202b, #edf2f7);
+    --vbc-muted: light-dark(#5d6977, #a7b3c2);
+    --vbc-border: light-dark(#c8d0d9, #39414d);
+    --vbc-border-strong: light-dark(#a9b5c1, #586474);
+    --vbc-blue: light-dark(#2563a8, #5aa9e6);
+    --vbc-blue-soft: light-dark(#dcecff, #173650);
+    --vbc-green: light-dark(#16794c, #3bd08f);
+    --vbc-green-soft: light-dark(#e3f5eb, #15382d);
+    --vbc-amber: light-dark(#985f09, #f3c64f);
+    --vbc-amber-soft: light-dark(#fff3d6, #453714);
+    --vbc-red: light-dark(#b42318, #ff8b85);
+    --vbc-red-soft: light-dark(#fee9e7, #462522);
+    --vbc-shadow: light-dark(0 8px 24px rgb(25 33 42 / 12%), 0 12px 30px rgb(0 0 0 / 28%));
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 100%;
+    padding: 12px 0;
+    background: transparent;
+    color: var(--vbc-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+  }
+
+  #vipp-batch-comparison * { box-sizing: border-box; }
+  #vipp-batch-comparison[data-theme="dark"] .vbc-window { color-scheme: dark; color: var(--vbc-text); }
+  #vipp-batch-comparison[data-theme="light"] .vbc-window { color-scheme: light; color: var(--vbc-text); }
+  #vipp-batch-comparison [hidden] { display: none !important; }
+  #vipp-batch-comparison > .vbc-design-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px;
+    color: var(--vbc-text);
+  }
+  #vipp-batch-comparison > .vbc-design-controls .vbc-design-label {
+    display: grid;
+    gap: 4px;
+    color: var(--vbc-muted);
+    font: inherit;
+    font-weight: 500;
+  }
+  #vipp-batch-comparison > .vbc-design-controls .vbc-design-select {
+    min-width: 108px;
+    max-width: 100%;
+    min-height: 32px;
+    padding: 4px 30px 4px 8px;
+    border: 1px solid var(--vbc-border-strong);
+    border-radius: 3px;
+    background-color: var(--vbc-field);
+    color: var(--vbc-text);
+    -webkit-text-fill-color: var(--vbc-text);
+    font: inherit;
+  }
+  #vipp-batch-comparison > .vbc-design-controls .vbc-design-select option {
+    background: var(--vbc-field);
+    color: var(--vbc-text);
+  }
+  #vipp-batch-comparison .vbc-window button,
+  #vipp-batch-comparison .vbc-window input,
+  #vipp-batch-comparison .vbc-window select { font: inherit; }
+  #vipp-batch-comparison .vbc-window button { cursor: pointer; }
+  #vipp-batch-comparison h2,
+  #vipp-batch-comparison h3,
+  #vipp-batch-comparison p { margin: 0; }
+
+  #vipp-batch-comparison .vbc-same-state {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 10px 0 12px;
+    color: var(--vbc-muted);
+  }
+  #vipp-batch-comparison .vbc-same-state svg { width: 16px; height: 16px; color: var(--vbc-blue); }
+
+  #vipp-batch-comparison .vbc-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    align-items: start;
+    margin-inline: auto;
+    width: 100%;
+  }
+  #vipp-batch-comparison[data-width="900"] .vbc-grid { max-width: 900px; }
+  #vipp-batch-comparison[data-width="736"] .vbc-grid { max-width: 736px; }
+  #vipp-batch-comparison[data-width="360"] .vbc-grid { max-width: 360px; grid-template-columns: minmax(0, 1fr); }
+  #vipp-batch-comparison[data-compare="current"] .vbc-new-version,
+  #vipp-batch-comparison[data-compare="new"] .vbc-current-version { display: none; }
+  #vipp-batch-comparison[data-compare="current"] .vbc-grid,
+  #vipp-batch-comparison[data-compare="new"] .vbc-grid { grid-template-columns: minmax(0, 900px); justify-content: center; }
+
+  #vipp-batch-comparison .vbc-version { min-width: 0; }
+  #vipp-batch-comparison .vbc-version-heading {
+    min-height: 40px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 7px;
+  }
+  #vipp-batch-comparison .vbc-version-kicker {
+    display: block;
+    color: var(--vbc-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  #vipp-batch-comparison .vbc-new-kicker { color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-version-heading h2 { margin-top: 2px; font-size: 16px; font-weight: 500; }
+  #vipp-batch-comparison .vbc-version-note { color: var(--vbc-muted); white-space: nowrap; }
+
+  #vipp-batch-comparison .vbc-window {
+    min-width: 0;
+    overflow: hidden;
+    background: var(--vbc-shell);
+    border: 1px solid var(--vbc-border-strong);
+    border-radius: 5px;
+    box-shadow: var(--vbc-shadow);
+    container-type: inline-size;
+  }
+  #vipp-batch-comparison .vbc-titlebar {
+    min-height: 36px;
+    padding: 0 8px 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: var(--vbc-deep);
+    border-bottom: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbc-titlebar > div { display: flex; align-items: center; gap: 7px; }
+  #vipp-batch-comparison .vbc-titlebar svg { width: 16px; height: 16px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-window-buttons { gap: 14px !important; color: var(--vbc-muted); }
+
+  #vipp-batch-comparison .vbc-window button {
+    min-height: 30px;
+    padding: 4px 9px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid var(--vbc-border);
+    border-radius: 3px;
+    background: var(--vbc-field);
+    color: var(--vbc-text);
+  }
+  #vipp-batch-comparison .vbc-window button:hover { background: var(--vbc-field-hover); }
+  #vipp-batch-comparison .vbc-window button svg { width: 15px; height: 15px; }
+  #vipp-batch-comparison .vbc-window .vbc-primary-action {
+    border-color: var(--vbc-blue);
+    background: var(--vbc-blue);
+    color: light-dark(#ffffff, #07131d);
+    font-weight: 500;
+  }
+  #vipp-batch-comparison .vbc-command-group { display: flex; align-items: center; gap: 5px; }
+  #vipp-batch-comparison .vbc-window input,
+  #vipp-batch-comparison .vbc-window select {
+    min-width: 0;
+    min-height: 29px;
+    padding: 3px 7px;
+    border: 1px solid var(--vbc-border-strong);
+    border-radius: 3px;
+    background: var(--vbc-field);
+    color: var(--vbc-text);
+    -webkit-text-fill-color: var(--vbc-text);
+    caret-color: var(--vbc-text);
+  }
+  #vipp-batch-comparison .vbc-window option {
+    background: var(--vbc-field);
+    color: var(--vbc-text);
+  }
+  #vipp-batch-comparison .vbc-window input::placeholder {
+    color: var(--vbc-muted);
+    -webkit-text-fill-color: var(--vbc-muted);
+    opacity: 1;
+  }
+  #vipp-batch-comparison .vbc-window :is(h2, h3, legend, summary, strong) {
+    color: inherit;
+  }
+  #vipp-batch-comparison .vbc-window input { width: 100%; }
+  #vipp-batch-comparison .vbc-window select { max-width: 100%; }
+  #vipp-batch-comparison .vbc-window label { min-width: 0; }
+  #vipp-batch-comparison .vbc-inline-field { min-width: 0; display: flex; align-items: center; gap: 5px; }
+  #vipp-batch-comparison .vbc-inline-field input { flex: 1 1 auto; }
+  #vipp-batch-comparison .vbc-inline-field button { flex: 0 0 auto; }
+  #vipp-batch-comparison .vbc-check { display: flex !important; align-items: center; gap: 7px; }
+  #vipp-batch-comparison .vbc-check input { width: 16px; min-height: 16px; margin: 0; accent-color: var(--vbc-blue); }
+
+  #vipp-batch-comparison .vbc-current-toolbar {
+    min-height: 43px;
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--vbc-raised);
+    border-bottom: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbc-inline-status {
+    min-width: 80px;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #vipp-batch-comparison .vbc-tone-ready { color: var(--vbc-green); }
+  #vipp-batch-comparison .vbc-tone-working { color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-tone-warning { color: var(--vbc-amber); }
+  #vipp-batch-comparison .vbc-mini-progress { width: 98px; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbc-mini-progress > span { height: 5px; flex: 1; background: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-mini-progress b { font-weight: 500; white-space: nowrap; }
+
+  #vipp-batch-comparison .vbc-current-body {
+    padding: 9px;
+    display: grid;
+    gap: 8px;
+    background: var(--vbc-canvas);
+  }
+  #vipp-batch-comparison .vbc-groupbox {
+    min-width: 0;
+    margin: 0;
+    padding: 10px 8px 8px;
+    display: grid;
+    gap: 7px;
+    border: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbc-groupbox legend { padding: 0 5px; font-weight: 500; }
+  #vipp-batch-comparison .vbc-current-source-card {
+    min-width: 0;
+    padding: 7px;
+    display: grid;
+    gap: 5px;
+    border: 1px solid var(--vbc-border);
+    border-radius: 3px;
+    background: var(--vbc-shell);
+  }
+  #vipp-batch-comparison .vbc-current-source-card > label,
+  #vipp-batch-comparison .vbc-current-output-form > label:not(.vbc-check) {
+    display: grid;
+    grid-template-columns: 82px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+  }
+  #vipp-batch-comparison .vbc-current-form-row { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(180px, 1fr); align-items: center; gap: 7px; }
+  #vipp-batch-comparison .vbc-current-output-form { display: grid; gap: 6px; padding: 0 3px; }
+  #vipp-batch-comparison .vbc-current-output-form .vbc-check { margin-left: 89px; }
+  #vipp-batch-comparison .vbc-current-help { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbc-current-inline-action { display: flex; align-items: center; gap: 8px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbc-current-inline-action span { min-width: 0; flex: 1; }
+
+  #vipp-batch-comparison .vbc-table-wrap { min-width: 0; overflow-x: auto; border: 1px solid var(--vbc-border); background: var(--vbc-shell); }
+  #vipp-batch-comparison .vbc-table { width: 100%; border-collapse: collapse; color: var(--vbc-text); text-align: left; }
+  #vipp-batch-comparison .vbc-table th,
+  #vipp-batch-comparison .vbc-table td { padding: 6px 7px; border-bottom: 1px solid var(--vbc-border); color: var(--vbc-text); vertical-align: middle; }
+  #vipp-batch-comparison .vbc-table th { background: var(--vbc-raised); font-weight: 500; white-space: nowrap; }
+  #vipp-batch-comparison .vbc-table tbody tr:last-child td { border-bottom: 0; }
+  #vipp-batch-comparison .vbc-table tbody tr.is-selected { background: var(--vbc-blue-soft); }
+  #vipp-batch-comparison .vbc-table td small { display: block; margin-top: 2px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbc-table td > svg { width: 15px; height: 15px; color: var(--vbc-green); }
+  #vipp-batch-comparison .vbc-table input,
+  #vipp-batch-comparison .vbc-table select { min-height: 25px; }
+  #vipp-batch-comparison .vbc-table td.vbc-inherit { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbc-table td.vbc-status-ok { color: var(--vbc-green); }
+  #vipp-batch-comparison .vbc-table td.vbc-status-working { color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-table td.vbc-status-warning { color: var(--vbc-amber); }
+  #vipp-batch-comparison .vbc-empty-plan { min-height: 92px; padding: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; color: var(--vbc-muted); text-align: center; }
+  #vipp-batch-comparison .vbc-empty-plan svg { width: 20px; height: 20px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-current-run-group { background: var(--vbc-shell); }
+  #vipp-batch-comparison .vbc-progress-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #vipp-batch-comparison .vbc-progress-label b { font-weight: 500; }
+  #vipp-batch-comparison .vbc-progress { height: 7px; overflow: hidden; background: color-mix(in srgb, var(--vbc-muted) 22%, transparent); }
+  #vipp-batch-comparison .vbc-progress > span { display: block; height: 100%; background: var(--vbc-blue); }
+  #vipp-batch-comparison .vbc-operation-progress > span { background: var(--vbc-green); }
+  #vipp-batch-comparison .vbc-current-footer {
+    min-height: 44px;
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--vbc-raised);
+    border-top: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbc-current-footer > div { display: flex; gap: 6px; }
+
+  #vipp-batch-comparison .vbn-unsaved { color: var(--vbc-amber); font-size: 18px; line-height: 1; }
+  #vipp-batch-comparison .vbn-commandbar {
+    min-height: 46px;
+    padding: 6px 8px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 9px;
+    background: var(--vbc-raised);
+    border-bottom: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbn-config-name { min-width: 120px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-compute { margin-left: auto; padding: 5px 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-compute svg { width: 14px; height: 14px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-more-menu { position: relative; flex: 0 0 auto; }
+  #vipp-batch-comparison .vbn-more-menu > summary {
+    width: 32px;
+    min-height: 30px;
+    padding: 4px 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    list-style: none;
+    border: 1px solid var(--vbc-border);
+    border-radius: 3px;
+    background: var(--vbc-field);
+    color: var(--vbc-text);
+    cursor: pointer;
+  }
+  #vipp-batch-comparison .vbn-more-menu > summary::-webkit-details-marker { display: none; }
+  #vipp-batch-comparison .vbn-more-menu > summary svg { width: 16px; height: 16px; }
+  #vipp-batch-comparison .vbn-more-menu[open] > summary,
+  #vipp-batch-comparison .vbn-more-menu > summary:hover { background: var(--vbc-field-hover); }
+  #vipp-batch-comparison .vbn-more-menu-popover {
+    width: max-content;
+    min-width: 174px;
+    padding: 4px;
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 4px);
+    right: 0;
+    display: grid;
+    gap: 2px;
+    border: 1px solid var(--vbc-border-strong);
+    border-radius: 4px;
+    background: var(--vbc-raised);
+    box-shadow: var(--vbc-shadow);
+  }
+  #vipp-batch-comparison .vbn-more-menu:not([open]) > .vbn-more-menu-popover { display: none; }
+  #vipp-batch-comparison .vbn-more-menu-popover button {
+    width: 100%;
+    justify-content: flex-start;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  #vipp-batch-comparison .vbn-sections {
+    min-height: 40px;
+    padding: 0 7px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    background: var(--vbc-shell);
+    border-bottom: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbn-sections button {
+    min-width: 0;
+    min-height: 40px;
+    padding: 4px 7px;
+    justify-content: flex-start;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--vbc-muted);
+  }
+  #vipp-batch-comparison .vbn-sections button:hover { background: var(--vbc-field-hover); }
+  #vipp-batch-comparison .vbn-sections button.is-active { border-bottom-color: var(--vbc-blue); color: var(--vbc-text); }
+  #vipp-batch-comparison .vbn-sections button:disabled { cursor: default; opacity: .52; }
+  #vipp-batch-comparison .vbn-sections button:disabled:hover { background: transparent; }
+  #vipp-batch-comparison .vbn-sections button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #vipp-batch-comparison .vbn-sections button b { margin-left: auto; padding: 1px 5px; border-radius: 9px; background: var(--vbc-field); color: var(--vbc-muted); font-size: 11px; font-weight: 500; white-space: nowrap; }
+  #vipp-batch-comparison .vbn-sections button.is-active b { background: var(--vbc-blue-soft); color: var(--vbc-blue); }
+
+  #vipp-batch-comparison .vbn-content { min-height: 500px; padding: 16px; background: var(--vbc-canvas); }
+  #vipp-batch-comparison .vbn-page { display: grid; gap: 10px; }
+  #vipp-batch-comparison .vbn-page[data-page="items"] { position: relative; }
+  #vipp-batch-comparison .vbn-page[hidden] { display: none; }
+  #vipp-batch-comparison .vbn-page-heading { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  #vipp-batch-comparison .vbn-eyebrow { display: block; margin-bottom: 2px; color: var(--vbc-blue); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; }
+  #vipp-batch-comparison .vbn-page-heading h3 { font-size: 16px; font-weight: 500; }
+  #vipp-batch-comparison .vbn-state-chip { padding: 4px 7px; display: inline-flex; align-items: center; gap: 5px; border-radius: 10px; white-space: nowrap; }
+  #vipp-batch-comparison .vbn-state-chip svg { width: 14px; height: 14px; }
+  #vipp-batch-comparison .vbn-state-ready { background: var(--vbc-green-soft); color: var(--vbc-green); }
+  #vipp-batch-comparison .vbn-state-working { background: var(--vbc-blue-soft); color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-state-warning { background: var(--vbc-amber-soft); color: var(--vbc-amber); }
+  #vipp-batch-comparison .vbn-state-neutral { background: var(--vbc-field); color: var(--vbc-muted); }
+
+  #vipp-batch-comparison .vbn-workflow-summary {
+    padding: 9px;
+    display: grid;
+    grid-template-columns: minmax(180px, 1.6fr) repeat(2, minmax(100px, .7fr));
+    gap: 8px;
+    background: transparent;
+    border-bottom: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbn-workflow-summary > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  #vipp-batch-comparison .vbn-workflow-summary > div:first-child { flex-direction: row; align-items: center; gap: 7px; }
+  #vipp-batch-comparison .vbn-workflow-summary svg { width: 18px; height: 18px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-workflow-summary small,
+  #vipp-batch-comparison .vbn-recap-grid small,
+  #vipp-batch-comparison .vbn-outcome-grid small,
+  #vipp-batch-comparison .vbn-active-operation small { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-workflow-summary strong,
+  #vipp-batch-comparison .vbn-recap-grid strong,
+  #vipp-batch-comparison .vbn-outcome-grid strong,
+  #vipp-batch-comparison .vbn-active-operation strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-setup-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .9fr); gap: 10px; align-items: start; }
+  #vipp-batch-comparison .vbn-window[data-layout="guided"] .vbn-items-grid { grid-template-columns: 1fr; }
+  #vipp-batch-comparison .vbn-section-block,
+  #vipp-batch-comparison .vbn-item-details {
+    min-width: 0;
+    padding: 9px;
+    background: var(--vbc-shell);
+    border: 1px solid var(--vbc-border);
+    border-radius: 4px;
+  }
+  #vipp-batch-comparison .vbn-block-heading { min-height: 27px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+  #vipp-batch-comparison .vbn-block-heading > div { display: flex; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-block-heading svg { width: 16px; height: 16px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-block-heading span { color: var(--vbc-muted); white-space: nowrap; }
+  #vipp-batch-comparison .vbn-source-row { padding: 7px 0; display: grid; gap: 5px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-source-name { display: flex; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-source-dot { width: 8px; height: 8px; border-radius: 50%; }
+  #vipp-batch-comparison .vbn-red-dot { background: var(--vbc-red); }
+  #vipp-batch-comparison .vbn-green-dot { background: var(--vbc-green); }
+  #vipp-batch-comparison .vbn-detected { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; color: var(--vbc-green); }
+  #vipp-batch-comparison .vbn-detected svg { width: 13px; height: 13px; }
+  #vipp-batch-comparison .vbn-source-row > label,
+  #vipp-batch-comparison .vbn-form-grid > label:not(.vbc-check) { display: grid; gap: 3px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-two-fields { display: grid; grid-template-columns: minmax(70px, .45fr) minmax(120px, 1fr); gap: 6px; }
+  #vipp-batch-comparison .vbn-two-fields label { display: grid; gap: 3px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-pairing-summary { padding: 7px; display: flex; align-items: center; gap: 6px; background: var(--vbc-blue-soft); color: var(--vbc-text); }
+  #vipp-batch-comparison .vbn-pairing-summary svg { width: 15px; height: 15px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-form-grid { display: grid; gap: 7px; }
+  #vipp-batch-comparison .vbn-disclosure { margin-top: 7px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-disclosure summary { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--vbc-text); cursor: pointer; }
+  #vipp-batch-comparison .vbn-disclosure summary > span { display: flex; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-disclosure summary svg { width: 15px; height: 15px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-disclosure .vbc-check { margin: 5px 0; }
+
+  #vipp-batch-comparison .vbn-metrics { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+  #vipp-batch-comparison .vbn-metrics span { padding: 4px 6px; background: var(--vbc-field); border-radius: 3px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-metrics strong { color: var(--vbc-text); font-weight: 500; }
+  #vipp-batch-comparison .vbn-metrics .vbn-no-conflicts { color: var(--vbc-green); }
+  #vipp-batch-comparison .vbn-message { min-width: 0; padding: 8px 9px; display: flex; align-items: center; gap: 7px; border-left: 3px solid; }
+  #vipp-batch-comparison .vbn-message > svg { width: 17px; height: 17px; flex: 0 0 auto; }
+  #vipp-batch-comparison .vbn-message span { min-width: 0; flex: 1; }
+  #vipp-batch-comparison .vbn-message strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-message-success { border-color: var(--vbc-green); background: var(--vbc-green-soft); }
+  #vipp-batch-comparison .vbn-message-success > svg { color: var(--vbc-green); }
+  #vipp-batch-comparison .vbn-message-info { border-color: var(--vbc-blue); background: var(--vbc-blue-soft); }
+  #vipp-batch-comparison .vbn-message-info > svg { color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-message-warning { border-color: var(--vbc-amber); background: var(--vbc-amber-soft); }
+  #vipp-batch-comparison .vbn-message-warning > svg { color: var(--vbc-amber); }
+  #vipp-batch-comparison .vbn-plan-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  #vipp-batch-comparison .vbn-plan-toolbar > .vbc-command-group { flex-wrap: wrap; }
+  #vipp-batch-comparison .vbn-recheck-all { margin-left: auto; }
+  #vipp-batch-comparison .vbn-filter-label { margin-left: 0; }
+  #vipp-batch-comparison .vbn-search { width: 145px; position: relative; }
+  #vipp-batch-comparison .vbn-search svg { width: 14px; height: 14px; position: absolute; left: 7px; top: 8px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-search input { padding-left: 26px; }
+  #vipp-batch-comparison .vbn-items-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(235px, .8fr); gap: 9px; align-items: start; }
+  #vipp-batch-comparison .vbn-window[data-layout="split"] .vbn-plan-table :is(th, td):nth-child(2),
+  #vipp-batch-comparison .vbn-window[data-layout="split"] .vbn-plan-table :is(th, td):nth-child(4),
+  #vipp-batch-comparison .vbn-window[data-layout="split"] .vbn-plan-table :is(th, td):nth-child(5) { display: none; }
+  #vipp-batch-comparison .vbn-plan-table th:first-child,
+  #vipp-batch-comparison .vbn-plan-table td:first-child { width: 26px; padding-right: 2px; }
+  #vipp-batch-comparison .vbn-plan-table tbody tr[data-item] { cursor: context-menu; }
+  #vipp-batch-comparison .vbn-plan-table tbody tr[data-item]:hover { background: var(--vbc-field-hover); }
+  #vipp-batch-comparison .vbn-item-details { display: grid; gap: 7px; }
+  #vipp-batch-comparison .vbn-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 7px; }
+  #vipp-batch-comparison .vbn-detail-heading > div { display: flex; flex-direction: column; gap: 2px; }
+  #vipp-batch-comparison .vbn-detail-heading > div span { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-detail-heading small { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-detail-heading strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-item-details dl,
+  #vipp-batch-comparison .vbn-technical-details dl { margin: 0; display: grid; gap: 6px; }
+  #vipp-batch-comparison .vbn-item-details dl > div,
+  #vipp-batch-comparison .vbn-technical-details dl > div { min-width: 0; display: grid; gap: 2px; }
+  #vipp-batch-comparison .vbn-item-details dt,
+  #vipp-batch-comparison .vbn-technical-details dt { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-item-details dd,
+  #vipp-batch-comparison .vbn-technical-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-item-details ul { margin: 2px 0 0; padding-left: 18px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-item-details li { margin: 3px 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-item-context-menu {
+    width: 210px;
+    padding: 4px;
+    position: absolute;
+    z-index: 30;
+    display: grid;
+    gap: 2px;
+    border: 1px solid var(--vbc-border-strong);
+    border-radius: 4px;
+    background: var(--vbc-raised);
+    box-shadow: var(--vbc-shadow);
+  }
+  #vipp-batch-comparison .vbn-item-context-menu > strong { padding: 5px 8px 7px; border-bottom: 1px solid var(--vbc-border); color: var(--vbc-muted); font-weight: 500; }
+  #vipp-batch-comparison .vbn-item-context-menu button { width: 100%; justify-content: flex-start; border-color: transparent; background: transparent; }
+
+  #vipp-batch-comparison .vbn-overrides-grid { display: grid; grid-template-columns: 1fr; gap: 10px; align-items: start; }
+  #vipp-batch-comparison .vbn-reset-button { margin-left: auto; }
+  #vipp-batch-comparison .vbn-override-toolbar { min-height: 29px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-override-help { min-width: 220px; flex: 1; display: grid; gap: 2px; }
+  #vipp-batch-comparison .vbn-override-help small,
+  #vipp-batch-comparison .vbn-block-help { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-block-help { margin: 0; }
+  #vipp-batch-comparison .vbn-override-table td:not(:first-child) { min-width: 105px; }
+  #vipp-batch-comparison .vbn-override-table th small { display: block; margin-top: 3px; color: var(--vbc-muted); font-weight: 400; }
+  #vipp-batch-comparison .vbn-override-table.show-changed-only .vbn-unchanged-row,
+  #vipp-batch-comparison .vbn-override-table.show-changed-only .vbn-no-overrides { display: none; }
+
+  #vipp-batch-comparison .vbn-run-state-panel { display: grid; gap: 11px; }
+  #vipp-batch-comparison .vbn-run-state-panel[hidden] { display: none; }
+  #vipp-batch-comparison #vbn-run-running {
+    grid-template-columns: minmax(240px, .85fr) minmax(0, 1.15fr);
+    align-items: start;
+  }
+  #vipp-batch-comparison #vbn-run-running > .vbc-table-wrap {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+  #vipp-batch-comparison .vbn-recap-grid,
+  #vipp-batch-comparison .vbn-outcome-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  #vipp-batch-comparison .vbn-recap-grid > div,
+  #vipp-batch-comparison .vbn-outcome-grid > div { padding: 9px; display: flex; flex-direction: column; gap: 3px; background: var(--vbc-shell); border: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-outcome-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #vipp-batch-comparison .vbn-outcome-grid strong { font-size: 18px; }
+  #vipp-batch-comparison .vbn-active-operation { padding: 9px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--vbc-blue-soft); }
+  #vipp-batch-comparison .vbn-active-operation > div { display: flex; align-items: center; gap: 8px; }
+  #vipp-batch-comparison .vbn-active-operation > div > span:last-child { display: flex; flex-direction: column; }
+  #vipp-batch-comparison .vbn-pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--vbc-blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--vbc-blue) 18%, transparent); }
+  #vipp-batch-comparison .vbn-progress-stack { padding: 10px; display: grid; gap: 12px; background: var(--vbc-shell); border: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-progress-stack > div { display: grid; gap: 5px; }
+  #vipp-batch-comparison .vbn-truth-note { display: flex; align-items: center; gap: 6px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-truth-note svg { width: 14px; height: 14px; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-complete-banner { padding: 11px; display: flex; align-items: center; gap: 9px; background: var(--vbc-amber-soft); border-left: 3px solid var(--vbc-amber); }
+  #vipp-batch-comparison .vbn-complete-banner > svg { width: 20px; height: 20px; color: var(--vbc-amber); }
+  #vipp-batch-comparison .vbn-complete-banner > div { display: flex; flex-direction: column; gap: 3px; }
+  #vipp-batch-comparison .vbn-complete-banner strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-complete-banner span { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-result-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  #vipp-batch-comparison .vbn-technical-details[hidden] { display: none; }
+
+  #vipp-batch-comparison .vbn-footer {
+    min-height: 90px;
+    padding: 6px 12px 10px;
+    display: grid;
+    grid-template-rows: 38px minmax(32px, auto);
+    gap: 4px;
+    background: var(--vbc-raised);
+    border-top: 1px solid var(--vbc-border);
+  }
+  #vipp-batch-comparison .vbn-footer-statusline { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 92px 86px; align-items: center; gap: 8px; }
+  #vipp-batch-comparison .vbn-footer-status { min-width: 0; display: flex; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-footer-status > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-footer-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; }
+  #vipp-batch-comparison .vbn-dot-ready { background: var(--vbc-green); }
+  #vipp-batch-comparison .vbn-dot-working { background: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-dot-warning { background: var(--vbc-amber); }
+  #vipp-batch-comparison .vbn-dot-neutral { background: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-footer-progress { width: 92px; height: 6px; flex: 0 0 auto; overflow: hidden; background: color-mix(in srgb, var(--vbc-muted) 22%, transparent); }
+  #vipp-batch-comparison .vbn-footer-progress span { display: block; height: 100%; background: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-footer-elapsed { color: var(--vbc-muted); white-space: nowrap; }
+  #vipp-batch-comparison .vbn-footer-actions { min-height: 32px; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+  #vipp-batch-comparison #vbn-footer-progress[hidden],
+  #vipp-batch-comparison #vbn-footer-elapsed[hidden] { display: block !important; visibility: hidden; }
+  #vipp-batch-comparison .vbn-stop-action { border-color: var(--vbc-red) !important; color: var(--vbc-red) !important; }
+
+  #vipp-batch-comparison .vbc-window .vbn-item-select { min-height: 24px; padding: 0; justify-content: flex-start; border: 0; background: transparent; color: var(--vbc-text); font-weight: 500; text-align: left; }
+  #vipp-batch-comparison .vbc-window .vbn-item-select:hover { color: var(--vbc-blue); text-decoration: underline; background: transparent; }
+  #vipp-batch-comparison .vbn-selection-caption { color: var(--vbc-muted); font-size: 12px; }
+  #vipp-batch-comparison .vbn-scope-field { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+  #vipp-batch-comparison .vbn-scope-field select { min-width: 140px; }
+  #vipp-batch-comparison .vbn-run-destination { min-width: 0; display: grid; gap: 4px; padding: 10px 12px; background: var(--vbc-shell); border: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-run-destination :is(small, label) { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-run-destination :is(strong, span, p) { overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-run-time { display: inline-flex; align-items: center; gap: 6px; color: var(--vbc-muted); font-variant-numeric: tabular-nums; }
+  #vipp-batch-comparison .vbn-recovery-line,
+  #vipp-batch-comparison .vbn-detail-recovery { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; background: var(--vbc-amber-soft); border-left: 3px solid var(--vbc-amber); }
+  #vipp-batch-comparison .vbn-recovery-line > :is(span, p),
+  #vipp-batch-comparison .vbn-detail-recovery > :is(span, p) { min-width: 150px; flex: 1; }
+  #vipp-batch-comparison #vbn-detail-outputs { padding: 0; list-style: none; }
+  #vipp-batch-comparison #vbn-detail-outputs li { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; padding: 5px 0; }
+  #vipp-batch-comparison #vbn-detail-outputs li span { min-width: 0; flex: 1 1 120px; color: var(--vbc-text); overflow-wrap: anywhere; }
+  #vipp-batch-comparison #vbn-detail-outputs li strong { font-size: 12px; font-weight: 500; }
+  #vipp-batch-comparison .vbn-file-preview { min-width: 0; overflow-wrap: anywhere; padding: 9px; background: var(--vbc-shell); border: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-file-list { margin: 0; padding-left: 20px; }
+  #vipp-batch-comparison .vbn-file-list li { margin: 5px 0; overflow-wrap: anywhere; }
+
+  #vipp-batch-comparison .vbn-dialog { width: 560px; max-width: calc(100% - 32px); max-height: calc(100% - 32px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--vbc-border-strong); border-radius: 6px; background: var(--vbc-raised); color: var(--vbc-text); box-shadow: var(--vbc-shadow); font: inherit; }
+  #vipp-batch-comparison .vbn-dialog::backdrop { background: rgb(0 0 0 / 48%); }
+  #vipp-batch-comparison .vbn-dialog-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 13px 16px; border-bottom: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-dialog-header :is(h2, h3, strong) { font-size: 16px; font-weight: 500; }
+  #vipp-batch-comparison .vbn-dialog-body { min-width: 0; display: grid; gap: 12px; padding: 16px; background: var(--vbc-canvas); }
+  #vipp-batch-comparison .vbn-dialog-body p { line-height: 1.5; }
+  #vipp-batch-comparison .vbn-dialog-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding: 12px 16px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-dialog :is(button, input, select) { font: inherit; }
+  #vipp-batch-comparison .vbn-dialog button { min-height: 32px; padding: 5px 10px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--vbc-border); border-radius: 3px; background: var(--vbc-field); color: var(--vbc-text); cursor: pointer; }
+  #vipp-batch-comparison .vbn-dialog button:hover { background: var(--vbc-field-hover); }
+  #vipp-batch-comparison .vbn-dialog button.vbc-primary-action { border-color: var(--vbc-blue); background: var(--vbc-blue); color: light-dark(#fff, #07131d); }
+  #vipp-batch-comparison .vbn-dialog :is(input, select) { min-width: 0; width: 100%; min-height: 32px; padding: 5px 8px; border: 1px solid var(--vbc-border-strong); border-radius: 3px; background: var(--vbc-field); color: var(--vbc-text); }
+  #vipp-batch-comparison .vbn-dialog dl { margin: 0; display: grid; gap: 9px; }
+  #vipp-batch-comparison .vbn-dialog dl > div { min-width: 0; display: grid; gap: 3px; }
+  #vipp-batch-comparison .vbn-dialog dt { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-dialog dd { margin: 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-preview-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  #vipp-batch-comparison .vbn-preview-pair > div { min-width: 0; display: grid; gap: 6px; }
+  #vipp-batch-comparison .vbn-preview-image { --vbn-channel: var(--vbc-red); min-height: 145px; border: 1px solid var(--vbc-border); border-radius: 4px; background-color: var(--vbc-deep); background-image: radial-gradient(circle at 27% 32%, color-mix(in srgb, var(--vbn-channel) 95%, transparent) 0 9px, transparent 12px), radial-gradient(circle at 62% 45%, color-mix(in srgb, var(--vbn-channel) 90%, transparent) 0 14px, transparent 18px), radial-gradient(circle at 45% 71%, color-mix(in srgb, var(--vbn-channel) 70%, transparent) 0 10px, transparent 15px), radial-gradient(circle at 79% 76%, color-mix(in srgb, var(--vbn-channel) 85%, transparent) 0 6px, transparent 10px); }
+  #vipp-batch-comparison .vbn-preview-pair > :last-child .vbn-preview-image,
+  #vipp-batch-comparison .vbn-preview-image.green,
+  #vipp-batch-comparison .vbn-preview-image[data-channel="green"] { --vbn-channel: var(--vbc-green); }
+
+  #vipp-batch-comparison[data-density="compact"] .vbn-content { min-height: 500px; padding: 8px; }
+  #vipp-batch-comparison[data-density="compact"] .vbn-page { gap: 7px; }
+  #vipp-batch-comparison[data-density="compact"] .vbn-section-block,
+  #vipp-batch-comparison[data-density="compact"] .vbn-item-details { padding: 7px; }
+
+  @container (max-width: 760px) {
+    #vipp-batch-comparison .vbn-setup-grid { grid-template-columns: 1fr; }
+  }
+
+  @container (max-width: 690px) {
+    #vipp-batch-comparison .vbn-commandbar { flex-wrap: wrap; }
+    #vipp-batch-comparison .vbn-config-name { order: 3; flex-basis: 100%; }
+    #vipp-batch-comparison .vbn-compute { margin-left: auto; }
+    #vipp-batch-comparison .vbn-sections button { gap: 5px; }
+    #vipp-batch-comparison .vbn-sections button svg { display: none; }
+    #vipp-batch-comparison .vbn-workflow-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #vipp-batch-comparison .vbn-plan-toolbar { flex-wrap: wrap; }
+    #vipp-batch-comparison .vbn-filter-label { margin-left: 0; }
+    #vipp-batch-comparison .vbn-search { flex: 1; }
+    #vipp-batch-comparison .vbn-content { min-height: 500px; }
+    #vipp-batch-comparison .vbc-current-source-card > label,
+    #vipp-batch-comparison .vbc-current-output-form > label:not(.vbc-check),
+    #vipp-batch-comparison .vbc-current-form-row { grid-template-columns: 1fr; }
+    #vipp-batch-comparison .vbc-current-output-form .vbc-check { margin-left: 0; }
+  }
+
+  @container (max-width: 600px) {
+    #vipp-batch-comparison .vbn-items-grid,
+    #vipp-batch-comparison #vbn-run-running { grid-template-columns: 1fr; }
+    #vipp-batch-comparison #vbn-run-running > .vbc-table-wrap {
+      grid-column: auto;
+      grid-row: auto;
+    }
+    #vipp-batch-comparison .vbn-window[data-layout="split"] .vbn-plan-table :is(th, td):nth-child(2),
+    #vipp-batch-comparison .vbn-window[data-layout="split"] .vbn-plan-table :is(th, td):nth-child(4),
+    #vipp-batch-comparison .vbn-window[data-layout="split"] .vbn-plan-table :is(th, td):nth-child(5) { display: table-cell; }
+    #vipp-batch-comparison .vbn-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 6px; }
+    #vipp-batch-comparison .vbn-sections button { justify-content: flex-start; }
+    #vipp-batch-comparison .vbn-sections button svg { display: inline; }
+    #vipp-batch-comparison .vbn-sections button > span { display: inline; }
+    #vipp-batch-comparison .vbn-footer { grid-template-rows: 58px minmax(32px, auto); }
+    #vipp-batch-comparison .vbn-footer-statusline { grid-template-columns: minmax(0, 1fr) 86px; grid-template-rows: minmax(30px, auto) 18px; gap: 3px 8px; }
+    #vipp-batch-comparison .vbn-footer-status { grid-column: 1 / -1; }
+    #vipp-batch-comparison .vbn-footer-progress { width: 100%; }
+    #vipp-batch-comparison .vbn-content { padding: 12px; }
+  }
+
+  @container (max-width: 420px) {
+    #vipp-batch-comparison .vbn-compute { order: 4; margin-left: 0; }
+    #vipp-batch-comparison .vbn-more-menu { margin-left: auto; }
+    #vipp-batch-comparison .vbn-config-name { flex-basis: 100%; }
+    #vipp-batch-comparison .vbn-workflow-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 4px 0 12px; }
+    #vipp-batch-comparison .vbn-workflow-summary > div:first-child { grid-column: 1 / -1; }
+    #vipp-batch-comparison .vbn-page-heading { align-items: flex-start; flex-wrap: wrap; }
+    #vipp-batch-comparison .vbn-plan-toolbar > .vbc-command-group { display: grid; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #vipp-batch-comparison .vbn-plan-toolbar > .vbc-command-group button { min-width: 0; padding: 5px; gap: 5px; }
+    #vipp-batch-comparison .vbn-recheck-all { margin-left: 0; }
+    #vipp-batch-comparison .vbn-search { width: 100%; }
+    #vipp-batch-comparison .vbn-footer-actions { min-height: 70px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, 32px); }
+    #vipp-batch-comparison .vbn-footer-actions button { min-width: 0; padding: 5px; gap: 5px; }
+    #vipp-batch-comparison .vbn-footer-actions:has(#vbn-overrides-button:not([hidden])) #vbn-close-button { grid-column: 1 / -1; }
+    #vipp-batch-comparison .vbn-outcome-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
+  @media (max-width: 1180px) {
+    #vipp-batch-comparison .vbc-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 560px) {
+    #vipp-batch-comparison .vbc-version-heading { align-items: flex-start; }
+    #vipp-batch-comparison .vbc-version-note { display: none; }
+    #vipp-batch-comparison .vbc-current-toolbar { flex-wrap: wrap; }
+    #vipp-batch-comparison .vbc-current-toolbar .vbc-inline-status { order: 3; flex-basis: 100%; }
+    #vipp-batch-comparison .vbn-recap-grid { grid-template-columns: 1fr; }
+    #vipp-batch-comparison .vbn-outcome-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #vipp-batch-comparison .vbn-page-heading { align-items: flex-start; flex-direction: column; }
+    #vipp-batch-comparison .vbn-two-fields { grid-template-columns: 1fr; }
+    #vipp-batch-comparison .vbn-plan-toolbar .vbc-command-group { width: 100%; }
+    #vipp-batch-comparison .vbn-plan-toolbar .vbc-command-group { flex-wrap: wrap; }
+    #vipp-batch-comparison .vbn-plan-toolbar .vbc-command-group button { flex: 1 1 120px; }
+    #vipp-batch-comparison .vbn-filter-label { flex: 1; }
+    #vipp-batch-comparison .vbn-filter-label select { width: 100%; }
+    #vipp-batch-comparison .vbc-current-inline-action { align-items: stretch; flex-direction: column; }
+  }
+  /* Scalable sample selection and explicit bulk parameter editing. */
+  #vipp-batch-comparison .vbn-override-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
+  #vipp-batch-comparison .vbn-sample-browser,
+  #vipp-batch-comparison .vbn-bulk-editor { min-width: 0; display: grid; gap: 10px; }
+  #vipp-batch-comparison .vbn-sample-filters { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  #vipp-batch-comparison .vbn-sample-filters label { min-width: 0; display: grid; gap: 4px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-sample-filters :is(input, select) { width: 100%; max-width: 100%; color: var(--vbc-text); }
+  #vipp-batch-comparison .vbn-selection-tools { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-selection-tools button { min-width: 0; white-space: normal; }
+  #vipp-batch-comparison .vbn-sample-scroll { max-height: 402px; overflow: auto; scrollbar-gutter: stable; }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table { table-layout: fixed; }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table :is(th, td) { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table :is(th, td):first-child { width: 30px; padding-inline: 7px 3px; }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table :is(th, td):nth-child(2) { width: 102px; }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(--vbc-border); }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table td:last-child { color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table tr.is-selected td:last-child { color: var(--vbc-text); }
+  #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table input[type="checkbox"],
+  #vipp-batch-comparison .vbn-plan-table input[type="checkbox"] { width: 16px; height: 16px; min-width: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--vbc-blue); vertical-align: middle; }
+  #vipp-batch-comparison #vbn-sort-samples { min-height: 26px; padding: 2px 3px; justify-content: flex-start; border-color: transparent; background: transparent; }
+  #vipp-batch-comparison .vbn-list-pagination { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  #vipp-batch-comparison .vbn-list-pagination > span { min-width: 0; flex: 1 1 110px; color: var(--vbc-muted); font-variant-numeric: tabular-nums; }
+  #vipp-batch-comparison .vbn-list-pagination button { min-width: 0; padding-inline: 8px; }
+  #vipp-batch-comparison .vbn-bulk-editor { padding-left: 14px; border-left: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-bulk-heading { min-width: 0; display: grid; gap: 4px; }
+  #vipp-batch-comparison .vbn-bulk-heading strong { color: var(--vbc-text); font-weight: 500; }
+  #vipp-batch-comparison .vbn-bulk-heading span { color: var(--vbc-muted); overflow-wrap: anywhere; }
+  #vipp-batch-comparison #vbn-bulk-fields { display: grid; gap: 12px; }
+  #vipp-batch-comparison .vbn-bulk-field { min-width: 0; display: grid; gap: 4px; }
+  #vipp-batch-comparison .vbn-bulk-field strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-bulk-field small { color: var(--vbc-muted); overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-bulk-field > div { min-width: 0; display: flex; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-bulk-field select { min-width: 0; width: 100%; flex: 1 1 150px; }
+  #vipp-batch-comparison .vbn-bulk-field input { min-width: 0; width: 90px; flex: 0 1 90px; text-align: center; font-variant-numeric: tabular-nums; }
+  #vipp-batch-comparison .vbn-bulk-field input[aria-invalid="true"] { border-color: var(--vbc-red); }
+  #vipp-batch-comparison .vbn-bulk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  #vipp-batch-comparison .vbn-bulk-actions button { min-width: 0; max-width: 100%; white-space: normal; }
+  #vipp-batch-comparison #vbn-apply-overrides { width: 100%; }
+  #vipp-batch-comparison #vbn-bulk-feedback { min-width: 0; overflow-wrap: anywhere; }
+
+  #vipp-batch-comparison .vbn-items-grid { grid-template-areas: "list detail" "pager pager"; }
+  #vipp-batch-comparison .vbn-items-grid > .vbc-table-wrap { grid-area: list; max-height: 440px; overflow: auto; }
+  #vipp-batch-comparison .vbn-items-grid > .vbn-list-pagination { grid-area: pager; }
+  #vipp-batch-comparison .vbn-items-grid > .vbn-item-details { grid-area: detail; }
+  #vipp-batch-comparison .vbn-items-grid .vbn-plan-table th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(--vbc-border); }
+  #vipp-batch-comparison .vbn-window[data-layout="guided"] .vbn-items-grid { grid-template-areas: "list" "pager" "detail"; }
+
+  #vipp-batch-comparison .vbn-window .vbn-file-reveal,
+  #vipp-batch-comparison .vbn-dialog .vbn-file-reveal { min-width: 0; max-width: 100%; min-height: 28px; padding: 3px 5px; justify-content: flex-start; gap: 6px; background: transparent; border-color: transparent; color: var(--vbc-blue); white-space: normal; text-align: left; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-window .vbn-file-reveal:hover,
+  #vipp-batch-comparison .vbn-dialog .vbn-file-reveal:hover { background: var(--vbc-field-hover); }
+  #vipp-batch-comparison .vbn-file-reveal > :is(span, strong) { min-width: 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-file-reveal > svg { width: 15px; height: 15px; flex: 0 0 15px; }
+  #vipp-batch-comparison .vbn-item-details dd > .vbn-file-reveal { margin: 3px 0 0 -5px; }
+  #vipp-batch-comparison .vbn-output-files { min-width: 0; }
+  #vipp-batch-comparison .vbn-output-files summary { cursor: pointer; color: var(--vbc-blue); white-space: nowrap; }
+  #vipp-batch-comparison .vbn-output-files ul { min-width: 0; margin: 7px 0 0; padding: 0; list-style: none; }
+  #vipp-batch-comparison .vbn-output-files li { min-width: 0; display: grid; gap: 3px; padding: 3px 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-output-files li + li { border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-results-scroll { max-height: 430px; overflow: auto; }
+  #vipp-batch-comparison .vbn-results-scroll th { position: sticky; top: 0; z-index: 1; box-shadow: 0 1px 0 var(--vbc-border); }
+  #vipp-batch-comparison .vbn-results-scroll td { overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-explorer-path { min-width: 0; display: flex; align-items: flex-start; gap: 7px; padding: 8px 10px; border: 1px solid var(--vbc-border); border-radius: 3px; background: var(--vbc-field); color: var(--vbc-text); overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-explorer-path > svg { width: 16px; height: 16px; flex: 0 0 16px; margin-top: 1px; }
+  #vipp-batch-comparison .vbn-explorer-path > span { min-width: 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-explorer-list { min-width: 0; margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+  #vipp-batch-comparison .vbn-explorer-list > li { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 9px 10px; border: 1px solid transparent; color: var(--vbc-muted); overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-explorer-list > li > :is(span, strong) { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-explorer-list > li > strong { flex: 0 0 auto; font-weight: 500; color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-explorer-list > li > svg { width: 16px; height: 16px; flex: 0 0 16px; }
+  #vipp-batch-comparison .vbn-explorer-list > .is-selected { border-color: var(--vbc-blue); border-radius: 3px; background: var(--vbc-blue-soft); color: var(--vbc-text); }
+
+  @container (max-width: 720px) {
+    #vipp-batch-comparison .vbn-override-workspace { grid-template-columns: minmax(0, 1fr); }
+    #vipp-batch-comparison .vbn-bulk-editor { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--vbc-border); }
+    #vipp-batch-comparison .vbn-sample-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #vipp-batch-comparison .vbn-sample-filters > label:first-child { grid-column: 1 / -1; }
+    #vipp-batch-comparison #vbn-bulk-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #vipp-batch-comparison .vbn-bulk-field > div { flex-wrap: wrap; }
+    #vipp-batch-comparison .vbn-bulk-field input { flex: 1 1 90px; width: 100%; }
+    #vipp-batch-comparison #vbn-apply-overrides { width: auto; }
+    #vipp-batch-comparison .vbn-section-block > .vbn-block-heading { flex-wrap: wrap; }
+  }
+  @container (max-width: 600px) {
+    #vipp-batch-comparison .vbn-items-grid { grid-template-areas: "list" "pager" "detail"; }
+    #vipp-batch-comparison .vbn-sample-filters { grid-template-columns: minmax(0, 1fr); }
+    #vipp-batch-comparison #vbn-bulk-fields { grid-template-columns: minmax(0, 1fr); }
+    #vipp-batch-comparison .vbn-bulk-field > div { flex-wrap: nowrap; }
+    #vipp-batch-comparison .vbn-bulk-field input { width: 95px; flex: 0 1 95px; }
+    #vipp-batch-comparison .vbn-items-grid > .vbc-table-wrap { max-height: 360px; }
+    #vipp-batch-comparison .vbn-sample-scroll { max-height: 320px; }
+  }
+  @container (max-width: 420px) {
+    #vipp-batch-comparison .vbn-sample-scroll .vbn-override-table :is(th, td):nth-child(2) { width: 88px; }
+    #vipp-batch-comparison .vbn-list-pagination > span { flex-basis: 100%; }
+    #vipp-batch-comparison .vbn-list-pagination button:first-of-type { margin-left: auto; }
+    #vipp-batch-comparison .vbn-bulk-actions { align-items: stretch; flex-direction: column; }
+    #vipp-batch-comparison #vbn-apply-overrides { width: 100%; }
+    #vipp-batch-comparison .vbn-output-files summary { white-space: normal; }
+    #vipp-batch-comparison .vbn-item-context-menu { max-width: calc(100% - 12px); }
+  }
+  #vipp-batch-comparison .vbn-window :is(button, input, select):disabled,
+  #vipp-batch-comparison .vbn-window :is(button, input, select):disabled:hover,
+  #vipp-batch-comparison .vbn-dialog :is(button, input, select):disabled,
+  #vipp-batch-comparison .vbn-dialog :is(button, input, select):disabled:hover { border-color: var(--vbc-border); background: var(--vbc-shell); color: var(--vbc-muted); -webkit-text-fill-color: var(--vbc-muted); box-shadow: none; text-shadow: none; opacity: 1; cursor: default; }
+  #vipp-batch-comparison .vbn-source-choices { min-width: 0; display: grid; gap: 16px; }
+  #vipp-batch-comparison .vbn-source-choices > div { min-width: 0; display: grid; gap: 8px; }
+  #vipp-batch-comparison .vbn-source-choices > div + div { padding-top: 16px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-source-choices strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-source-choices button { justify-self: start; max-width: 100%; white-space: normal; }
+  #vipp-batch-comparison .vbn-source-choices > div > span { color: var(--vbc-muted); }
+  #vipp-batch-comparison #vbn-run-running > .vbn-block-help { grid-column: 2; grid-row: 1; }
+  #vipp-batch-comparison #vbn-run-running:has(> .vbn-block-help) > .vbn-results-scroll { grid-column: 2; grid-row: 2 / span 3; }
+  @container (max-width: 600px) {
+    #vipp-batch-comparison #vbn-run-running > .vbn-block-help,
+    #vipp-batch-comparison #vbn-run-running:has(> .vbn-block-help) > .vbn-results-scroll { grid-column: auto; grid-row: auto; }
+  }
+  /* Table-first overrides: persistent sample context with grouped parameter columns. */
+  #vipp-batch-comparison .vbn-override-workspace { display: block; min-width: 0; }
+  #vipp-batch-comparison .vbn-sample-browser { gap: 9px; }
+  #vipp-batch-comparison .vbn-sample-filters { grid-template-columns: minmax(190px, 1.3fr) minmax(150px, 1fr) minmax(150px, 1fr); align-items: end; }
+  #vipp-batch-comparison .vbn-sample-filters > label:first-child { grid-column: auto; }
+  #vipp-batch-comparison .vbn-column-tools { min-width: 0; display: flex; align-items: flex-end; flex-wrap: wrap; gap: 7px 10px; }
+  #vipp-batch-comparison .vbn-column-tools > label { min-width: 150px; flex: 1 1 210px; display: grid; gap: 4px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-column-tools input { width: 100%; }
+  #vipp-batch-comparison .vbn-column-tools > button { flex: 0 0 auto; }
+  #vipp-batch-comparison #vbn-column-summary { flex: 1 1 130px; min-width: 0; align-self: center; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-table-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; padding: 7px 0 1px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-table-selection > strong { font-weight: 500; }
+  #vipp-batch-comparison #vbn-hidden-selection { min-width: 0; flex: 1 1 180px; color: var(--vbc-muted); }
+  #vipp-batch-comparison #vbn-edit-selected { margin-left: auto; flex: 0 0 auto; }
+  #vipp-batch-comparison #vbn-parameter-scroll { width: 100%; max-width: 100%; max-height: 420px; overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
+  #vipp-batch-comparison #vbn-parameter-table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; }
+  #vipp-batch-comparison #vbn-parameter-table :is(th, td) { min-width: 0; padding: 6px 8px; white-space: nowrap; overflow-wrap: normal; }
+  #vipp-batch-comparison #vbn-parameter-table thead th { position: sticky; z-index: 3; background: var(--vbc-raised); color: var(--vbc-text); box-shadow: none; border-bottom: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-node-row th { top: 0; height: 40px; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-parameter-row th { top: 40px; height: 42px; width: 164px; min-width: 164px; max-width: none; color: var(--vbc-muted); font-weight: 400; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-parameter-row th :is(small, span) { display: block; color: var(--vbc-muted); }
+  #vipp-batch-comparison #vbn-parameter-table tbody td { height: 42px; background: var(--vbc-shell); color: var(--vbc-text); }
+  #vipp-batch-comparison #vbn-parameter-table tbody tr.is-selected td { background: var(--vbc-blue-soft); }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-node-row > th:first-child,
+  #vipp-batch-comparison #vbn-parameter-table tbody > tr > td:first-child { position: sticky; left: 0; width: 32px; min-width: 32px; max-width: 32px; padding: 6px 5px 6px 8px; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-node-row > th:nth-child(2),
+  #vipp-batch-comparison #vbn-parameter-table tbody > tr > td:nth-child(2) { position: sticky; left: 32px; width: 146px; min-width: 146px; max-width: 146px; border-right: 1px solid var(--vbc-border-strong); }
+  #vipp-batch-comparison #vbn-parameter-table tbody > tr > td:nth-child(-n+2) { z-index: 2; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-node-row > th:nth-child(-n+2) { z-index: 4; }
+  #vipp-batch-comparison #vbn-parameter-table .node-start { border-left: 1px solid var(--vbc-border-strong); }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-parameter-cell { width: 164px; min-width: 164px; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-cell-editor { min-width: 0; display: flex; align-items: center; gap: 4px; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-cell-editor > :is(input, select) { min-width: 0; width: 146px; min-height: 28px; flex: 1 1 120px; font-variant-numeric: tabular-nums; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-cell-editor input { text-align: right; }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-cell-editor button { min-width: 25px; min-height: 26px; width: 25px; padding: 3px; flex: 0 0 25px; }
+  #vipp-batch-comparison #vbn-parameter-table .is-inherited :is(input, select) { background: var(--vbc-shell); color: var(--vbc-muted); -webkit-text-fill-color: var(--vbc-muted); }
+  #vipp-batch-comparison #vbn-parameter-table .is-inherited :is(input, select):focus { background: var(--vbc-field); color: var(--vbc-text); -webkit-text-fill-color: var(--vbc-text); }
+  #vipp-batch-comparison #vbn-parameter-table .has-override :is(input, select) { border-color: var(--vbc-blue); background: var(--vbc-field); color: var(--vbc-text); -webkit-text-fill-color: var(--vbc-text); }
+  #vipp-batch-comparison #vbn-parameter-table [aria-invalid="true"] { border-color: var(--vbc-red); }
+  #vipp-batch-comparison #vbn-parameter-table td:nth-child(2) > :is(button, span, small) { max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #vipp-batch-comparison #vbn-cell-help { min-height: 20px; margin: 0; color: var(--vbc-muted); line-height: 1.45; }
+  #vipp-batch-comparison .vbn-bulk-search { min-width: 0; display: grid; gap: 5px; color: var(--vbc-muted); }
+  #vipp-batch-comparison .vbn-bulk-options { max-height: 190px; overflow: auto; display: grid; align-content: start; gap: 2px; padding: 4px 0; border-block: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-bulk-pick { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; padding: 4px 6px; color: var(--vbc-text); cursor: pointer; }
+  #vipp-batch-comparison .vbn-bulk-pick:hover { background: var(--vbc-shell); }
+  #vipp-batch-comparison .vbn-bulk-pick input[type="checkbox"],
+  #vipp-batch-comparison .vbn-column-node input[type="checkbox"] { width: 16px; min-width: 16px; height: 16px; min-height: 16px; flex: 0 0 16px; margin: 0; padding: 0; accent-color: var(--vbc-blue); }
+  #vipp-batch-comparison .vbn-bulk-pick > :is(span, div) { min-width: 0; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-bulk-picked { min-width: 0; display: grid; gap: 14px; }
+  #vipp-batch-comparison .vbn-bulk-picked .vbn-bulk-field + .vbn-bulk-field { padding-top: 12px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-bulk-picked .vbn-bulk-field > div { flex-wrap: wrap; align-items: center; }
+  #vipp-batch-comparison .vbn-bulk-picked .vbn-bulk-field :is(input, select) { min-width: 95px; width: auto; flex: 1 1 130px; }
+  #vipp-batch-comparison .vbn-bulk-picked .vbn-bulk-field button { flex: 0 1 auto; }
+  #vipp-batch-comparison .vbn-column-picker { max-height: 380px; overflow: auto; display: grid; gap: 12px; padding-right: 4px; }
+  #vipp-batch-comparison .vbn-column-node { display: grid; gap: 4px; }
+  #vipp-batch-comparison .vbn-column-node + .vbn-column-node { padding-top: 10px; border-top: 1px solid var(--vbc-border); }
+  #vipp-batch-comparison .vbn-column-node > strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-column-node label { display: flex; align-items: center; gap: 8px; min-height: 30px; color: var(--vbc-text); }
+  @container (max-width: 720px) {
+    #vipp-batch-comparison .vbn-sample-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #vipp-batch-comparison .vbn-sample-filters > label:first-child { grid-column: 1 / -1; }
+    #vipp-batch-comparison .vbn-column-tools > label { flex-basis: 170px; }
+    #vipp-batch-comparison #vbn-column-summary { flex-basis: 100%; }
+  }
+  @container (max-width: 480px) {
+    #vipp-batch-comparison .vbn-sample-filters { grid-template-columns: minmax(0, 1fr); }
+    #vipp-batch-comparison .vbn-column-tools > label { flex-basis: 100%; }
+    #vipp-batch-comparison #vbn-column-summary { flex-basis: 120px; }
+    #vipp-batch-comparison #vbn-hidden-selection { flex-basis: 100%; order: 3; }
+    #vipp-batch-comparison #vbn-parameter-scroll { max-height: 340px; }
+    #vipp-batch-comparison #vbn-parameter-table .vbn-node-row > th:nth-child(2),
+    #vipp-batch-comparison #vbn-parameter-table tbody > tr > td:nth-child(2) { width: 120px; min-width: 120px; max-width: 120px; }
+    #vipp-batch-comparison #vbn-parameter-table td:nth-child(2) > :is(button, span, small) { max-width: 102px; }
+  }
+  @media (pointer: coarse) {
+    #vipp-batch-comparison #vbn-parameter-table .vbn-cell-editor > :is(input, select) { min-height: 40px; font-size: 16px; }
+    #vipp-batch-comparison .vbn-bulk-pick,
+    #vipp-batch-comparison .vbn-column-node label { min-height: 44px; }
+  }
+  #vipp-batch-comparison #vbn-page-overrides { position: relative; }
+  #vipp-batch-comparison .vbn-column-tools { position: relative; }
+  #vipp-batch-comparison .vbn-parameter-results { position: absolute; top: calc(100% + 4px); left: 0; width: min(520px, 100%); min-width: 0; max-height: 280px; overflow: auto; display: grid; gap: 2px; padding: 5px; z-index: 25; border: 1px solid var(--vbc-border-strong); border-radius: 4px; background: var(--vbc-raised); color: var(--vbc-text); box-shadow: var(--vbc-shadow); }
+  #vipp-batch-comparison .vbn-parameter-results > button { min-width: 0; width: 100%; min-height: 32px; padding: 6px 8px; justify-content: flex-start; border-color: transparent; background: transparent; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  #vipp-batch-comparison .vbn-parameter-results > :is(span, small) { padding: 5px 8px; color: var(--vbc-muted); }
+  #vipp-batch-comparison #vbn-parameter-table .is-found { color: var(--vbc-blue); background: var(--vbc-blue-soft); box-shadow: inset 0 -2px 0 var(--vbc-blue); }
+  #vipp-batch-comparison #vbn-parameter-table .is-found :is(small, span) { color: var(--vbc-blue); }
+  #vipp-batch-comparison #vbn-parameter-table .vbn-cell-editor input { text-align: center; }
+  #vipp-batch-comparison #vbn-parameter-table :is(input, select)[aria-invalid="true"],
+  #vipp-batch-comparison .vbn-bulk-dialog :is(input, select)[aria-invalid="true"] { border-color: var(--vbc-red); }
+  #vipp-batch-comparison .vbn-table-selection > div:first-child { display: grid; min-width: 0; flex: 1 1 180px; gap: 3px; }
+  #vipp-batch-comparison .vbn-table-selection > div:first-child strong { font-weight: 500; }
+  #vipp-batch-comparison .vbn-table-selection .vbn-selection-tools { margin-left: auto; }
+  #vipp-batch-comparison .vbn-table-selection #vbn-hidden-selection { flex: none; }
+  #vipp-batch-comparison #vbn-cell-menu { width: max-content; max-width: 100%; }
+  #vipp-batch-comparison #vbn-cell-menu > :is(strong, button) { white-space: normal; overflow-wrap: anywhere; }
+  #vipp-batch-comparison .vbn-bulk-dialog { width: 660px; max-width: calc(100% - 32px); }
+  #vipp-batch-comparison .vbn-bulk-dialog .vbn-dialog-body { max-height: min(640px, 65vh); overflow: auto; overscroll-behavior: contain; }
+  #vipp-batch-comparison .vbn-bulk-dialog #vbn-bulk-fields { grid-template-columns: minmax(0, 1fr); }
+  #vipp-batch-comparison .vbn-bulk-dialog .vbn-dialog-actions { position: sticky; bottom: 0; z-index: 1; background: var(--vbc-raised); }
+  @container (max-width: 480px) {
+    #vipp-batch-comparison .vbn-table-selection > div:first-child { flex-basis: 100%; }
+    #vipp-batch-comparison .vbn-table-selection .vbn-selection-tools { width: 100%; margin-left: 0; }
+    #vipp-batch-comparison .vbn-table-selection #vbn-edit-selected { margin-left: 0; }
+    #vipp-batch-comparison .vbn-bulk-dialog .vbn-dialog-body { padding: 12px; }
+  }
+</style>
+
+<script>
+(() => {
+  const root = document.getElementById('vipp-batch-comparison');
+  if (!root) return;
+  const $ = s => root.querySelector(s);
+  const $$ = s => [...root.querySelectorAll(s)];
+  const win = $('#vbc-new-window');
+  const icon = name => '<i data-lucide="' + name + '" aria-hidden="true"></i>';
+  const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const icons = () => { if (globalThis.lucide) globalThis.lucide.createIcons({attrs:{width:16,height:16}}); };
+  let samples = ['field_01','field_02','field_03'];
+  const platform = globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform || 'Win32';
+  const fileManager = /mac/i.test(platform) ? 'Finder' : /win/i.test(platform) ? 'File Explorer' : 'File Manager';
+  const revealLabel = 'Find in ' + fileManager;
+  const baseParameters = [
+    {key:'sigma',node:'01',nodeName:'Gaussian Blur',label:'Gaussian σ',base:1,min:0,step:0.1},
+    {key:'truncate',node:'01',nodeName:'Gaussian Blur',label:'Truncate',base:4,min:1,step:0.1},
+    {key:'boundary',node:'01',nodeName:'Gaussian Blur',label:'Boundary mode',type:'choice',base:'Reflect',options:['Reflect','Nearest','Constant']},
+    {key:'threshold',node:'02',nodeName:'Binary Threshold',label:'Threshold',base:12000,min:0,step:1},
+    {key:'above',node:'02',nodeName:'Binary Threshold',label:'Keep above',type:'boolean',base:true},
+    {key:'size',node:'03',nodeName:'Filter Labels',label:'Minimum size',base:80,min:0,step:1},
+    {key:'connectivity',node:'03',nodeName:'Filter Labels',label:'Connectivity',type:'choice',base:'Face',options:['Face','Full']}
+  ];
+  const nodeTemplates = [
+    ['Background subtraction',[['radius','Radius',50,1,1],['light','Light background',false,'boolean']]],
+    ['Median filter',[['radius','Radius',2,1,1]]],
+    ['Gaussian Blur',[['sigma','Gaussian σ',1.5,0,0.1],['truncate','Truncate',4,1,0.1]]],
+    ['Binary Threshold',[['threshold','Threshold',12000,0,1],['above','Keep above',true,'boolean']]],
+    ['Morphology',[['radius','Radius',2,1,1],['operation','Operation','Opening','choice',['Opening','Closing']]]],
+    ['Watershed',[['distance','Minimum distance',5,1,1],['compact','Compactness',0,0,0.1]]],
+    ['Filter Labels',[['size','Minimum size',80,0,1],['border','Remove border objects',true,'boolean']]],
+    ['Measure regions',[['intensity','Include intensity',true,'boolean'],['shape','Include shape',true,'boolean']]],
+    ['Intensity scaling',[['low','Lower percentile',1,0,0.1],['high','Upper percentile',99,0,0.1]]]
+  ];
+  function buildParameters(count) {
+    const result=[...baseParameters];
+    for(let n=4;n<=count;n++){
+      const [name,fields]=nodeTemplates[(n-4)%nodeTemplates.length],node=String(n).padStart(2,'0');
+      fields.forEach(([key,label,base,min,step])=>result.push({key:'n'+node+'_'+key,node,nodeName:(n<13?'Red':n<22?'Green':'Combined')+' · '+name,label,base,type:typeof min==='string'?min:'number',min:typeof min==='number'?min:undefined,step:typeof step==='number'?step:undefined,options:Array.isArray(step)?step:undefined}));
+    }
+    return result;
+  }
+  let parameters=buildParameters(3);
+  const initialOverrides = () => Object.fromEntries(samples.map((id,i)=>[id,i===1?{threshold:13000}:i>2&&i%7===0?{threshold:14000}:i>2&&i%11===0?{sigma:1.5}:{}]));
+  const model = {
+    state:'ready', section:'items', selected:'field_02', checked:true, setupDirty:false,
+    dirty:new Set(), invalid:new Set(), overrides:initialOverrides(), nodeModes:{},
+    blocked:false, checking:false, stopping:false, unsaved:false,
+    selection:new Set(['field_02']), anchor:'field_02', draft:{}, draftTargets:[], bulkFeedback:'',
+    overrideQuery:'', overrideFilter:'all', missingParameter:'threshold', descending:false, overridePage:0, itemPage:0,
+    columns:new Set(parameters.map(p=>p.key)),parameterQuery:'',columnQuery:'',bulkQuery:'',cellInvalid:new Set(),invalidCellValues:{},cellFeedback:'',
+    notice:'', query:'', filter:'All items', timer:null
+  };
+  const proposal = {layout:'split',density:'comfortable',technicalDetails:false};
+  const finished = () => ['complete','success','stopped'].includes(model.state);
+  const busy = () => model.state === 'running' || model.stopping || model.checking;
+  const changes = () => model.setupDirty || model.dirty.size > 0;
+  const overrideCount = () => samples.reduce((n,id) => n + Object.keys(model.overrides[id]).length, 0);
+  const nodeCount = () => Object.values(model.nodeModes).filter(v => v !== 'Use workflow state (Run)').length;
+  const clean = () => model.checked && !changes() && !model.blocked && !model.invalid.size && !model.cellInvalid.size && !Object.keys(model.draft).length;
+  const format = n => Number(n).toLocaleString('en-US');
+  const displayValue = value => typeof value==='boolean'?(value?'Yes':'No'):typeof value==='number'?format(value):String(value);
+  const parseValue = (value,p) => p.type==='boolean'?value==='true':p.type==='choice'?value:Number(value);
+  const validValue = (value,p) => p.type==='boolean'?['true','false'].includes(String(value)):p.type==='choice'?p.options.includes(value):value!==''&&Number.isFinite(Number(value))&&Number(value)>=p.min&&(p.step!==1||Number.isInteger(Number(value)));
+  const elapsedTime = () => {const seconds=model.state==='stopped'?18:samples.length*14;return (seconds>=3600?String(Math.floor(seconds/3600)).padStart(2,'0')+':':'')+String(Math.floor(seconds/60)%60).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');};
+  const runSummary = () => model.state==='success'?format(samples.length)+' completed · '+format(samples.length*3)+' outputs saved':model.state==='stopped'?'1 completed · 1 stopped · '+format(samples.length-2)+' not started · 3 outputs saved':format(samples.length-1)+' completed · 1 partial · '+format(samples.length*3-1)+' outputs saved';
+  const sourceFolder = color => $('#vbn-'+color+'-folder')?.value || 'C:\\VIPP Examples\\source-aware\\'+color;
+  const destination = () => $('#vbn-output-folder')?.value || 'C:\\VIPP Examples\\source-aware\\results';
+  const joined = (folder, file) => folder.replace(/[\\/]$/, '') + (folder.includes('\\')?'\\':'/') + file;
+  const resultFor = id => {
+    const i = samples.indexOf(id);
+    if (model.state === 'success') return 'Completed';
+    if (model.state === 'complete') return i === 2 ? 'Partial' : 'Completed';
+    if (model.state === 'running') return i===0?'Completed':i===1?(model.stopping?'Stopping':'Running'):'Waiting';
+    if (model.state === 'stopped') return i===0?'Completed':i===1?'Stopped':'Not started';
+    return 'Not run';
+  };
+  const checkFor = id => {
+    if (!model.checked) return 'Not checked';
+    if (model.blocked && id === 'field_03') return 'Missing source';
+    if (model.setupDirty || model.dirty.has(id)) return 'Needs recheck';
+    return 'Passed';
+  };
+  const outputsFor = id => {
+    const result = resultFor(id);
+    return [
+      {name:id+'__combined.npy',status:result==='Completed'||result==='Partial'?'Saved':'Planned'},
+      {name:id+'__overlap.tif',status:result==='Completed'||result==='Partial'?'Saved':'Planned'},
+      {name:id+'__measurements.tsv',status:result==='Completed'?'Saved':result==='Partial'?'Not saved':'Planned'}
+    ];
+  };
+  function setText(selector,text) { const el=$(selector); if(el) el.textContent=text; }
+  function chip(el,label,tone='neutral') {
+    el.className='vbn-state-chip vbn-state-'+tone;
+    el.textContent=label;
+  }
+  function action(button,command,label,glyph) {
+    button.dataset.action=command;
+    button.innerHTML=icon(glyph)+'<span>'+label+'</span>';
+    button.disabled=false;
+  }
+  function setNotice(text) { model.notice=text; renderFooter(); icons(); }
+  function markDirty(id=null) {
+    model.unsaved=true;
+    if (id) model.dirty.add(id);
+    else model.setupDirty=true;
+    if (!finished()) model.state='stale';
+    model.notice='';
+    syncSummary();
+    renderItems();
+    renderFooter();
+    renderRecap();
+    icons();
+  }
+
+  const overrideEmpty=$('#vbn-override-empty');
+  const pageSize=50;
+  const itemEmpty=document.createElement('div');
+  itemEmpty.className='vbc-empty-plan';
+  itemEmpty.id='vbn-filter-empty';
+  itemEmpty.hidden=true;
+  $('#vbn-plan-body').closest('.vbc-table-wrap').append(itemEmpty);
+  const selectionCaption=document.createElement('span');
+  selectionCaption.className='vbn-selection-caption';
+  selectionCaption.id='vbn-selection-caption';
+  $('.vbn-plan-toolbar').after(selectionCaption);
+  const itemPager=document.createElement('div');
+  itemPager.className='vbn-list-pagination';
+  $('#vbn-plan-body').closest('.vbc-table-wrap').after(itemPager);
+  itemPager.innerHTML='<span id="vbn-item-range"></span><button id="vbn-item-prev" type="button">Previous</button><button id="vbn-item-next" type="button">Next</button>';
+
+  const dialog=document.createElement('dialog');
+  dialog.className='vbn-dialog';
+  dialog.setAttribute('aria-labelledby','vbn-dialog-title');
+  win.append(dialog);
+  let dialogReturn=null;
+  function showDialog(title,body,buttons='') {
+    dialogReturn=document.activeElement;
+    dialog.innerHTML='<div class="vbn-dialog-header"><h3 id="vbn-dialog-title">'+title+'</h3><button type="button" data-dialog-close aria-label="Close dialog">'+icon('x')+'</button></div><div class="vbn-dialog-body">'+body+'</div><div class="vbn-dialog-actions">'+buttons+'<button type="button" data-dialog-close>Close</button></div>';
+    dialog.showModal();
+    icons();
+  }
+  function closeDialog() { dialog.close(); if(dialogReturn?.isConnected) dialogReturn.focus(); }
+  const bulkDialog=document.createElement('dialog');
+  bulkDialog.id='vbn-bulk-dialog';bulkDialog.className='vbn-dialog vbn-bulk-dialog';bulkDialog.setAttribute('aria-labelledby','vbn-bulk-dialog-title');
+  bulkDialog.innerHTML='<div class="vbn-dialog-header"><h3 id="vbn-bulk-dialog-title">Edit selected samples</h3><button type="button" id="vbn-bulk-close" aria-label="Close bulk editor">'+icon('x')+'</button></div><div class="vbn-dialog-body"><p id="vbn-bulk-targets"></p><label class="vbn-bulk-search">Choose parameters to change<input id="vbn-bulk-search" type="search" placeholder="Find a node or parameter…"></label><div id="vbn-bulk-options" class="vbn-bulk-options"></div><div id="vbn-bulk-fields" class="vbn-bulk-picked"></div><p class="vbn-block-help">Only checked parameters change. All other overrides are kept.</p><span id="vbn-bulk-feedback" role="status" aria-live="polite"></span></div><div class="vbn-dialog-actions"><button id="vbn-discard-draft" type="button">Discard edits</button><button id="vbn-apply-overrides" class="vbc-primary-action" type="button" disabled>Apply to selected samples</button></div>';
+  win.append(bulkDialog);
+  const cellMenu=document.createElement('div');cellMenu.className='vbn-item-context-menu';cellMenu.id='vbn-cell-menu';cellMenu.hidden=true;cellMenu.innerHTML='<strong id="vbn-cell-menu-title"></strong><button type="button" id="vbn-inherit-cell">'+icon('rotate-ccw')+'Use workflow value</button>';$('#vbn-page-overrides').append(cellMenu);
+  let activeCell=null;
+  function outputFileControl(id,output) {
+    return output.status==='Saved'?'<button type="button" class="vbn-file-reveal" data-reveal-output="'+escape(output.name)+'" data-file-item="'+id+'" aria-label="'+revealLabel+': '+escape(output.name)+'">'+icon('folder-search')+'<span>'+escape(output.name)+'</span></button>':'<span>'+escape(output.name)+'<small>'+(output.status==='Not saved'?'Not saved · no file to reveal':'Not created yet')+'</small></span>';
+  }
+  function revealFile(folder,name,siblings) {
+    showDialog(fileManager+' · file selected',
+      '<p class="vbn-block-help">Mockup preview · the app will open '+fileManager+' with this exact file selected.</p><div class="vbn-explorer-path">'+icon('folder-open')+'<span>'+escape(folder)+'</span></div><ul class="vbn-explorer-list">'+siblings.map(file=>'<li class="'+(file===name?'is-selected':'')+'">'+icon(file===name?'file-check':'file')+'<span>'+escape(file)+'</span>'+(file===name?'<strong>Selected</strong>':'')+'</li>').join('')+'</ul><div class="vbn-file-preview">'+escape(joined(folder,name))+'</div>');
+  }
+  function chooseSource(id) {
+    showDialog('Find source file · '+id,'<p>This sample contains two source files. Which one should '+fileManager+' reveal?</p><div class="vbn-source-choices">'+['red','green'].map(color=>{
+      const missing=model.blocked&&id==='field_03'&&color==='green';
+      return '<div><strong>'+color[0].toUpperCase()+color.slice(1)+' source</strong><div class="vbn-file-preview">'+escape(joined(sourceFolder(color),id+'.npy'))+'</div>'+(missing?'<span>Missing file · cannot reveal</span>':'<button type="button" data-reveal-source="'+color+'" data-file-item="'+id+'">'+icon('folder-search')+revealLabel+'</button>')+'</div>';
+    }).join('')+'</div>');
+  }
+  dialog.addEventListener('click',event=>{
+    if(event.target.closest('[data-dialog-close]')) closeDialog();
+    const button=event.target.closest('[data-dialog-action]');
+    if(!button) return;
+    const command=button.dataset.dialogAction;
+    if(command==='locate') {
+      model.blocked=false; model.dirty.add('field_03'); model.unsaved=true;
+      closeDialog(); checkItems('selected');
+    } else if(command==='retry') {
+      closeDialog(); model.state='success'; model.notice='field_03 rerun in this example · all '+format(samples.length*3)+' outputs are now saved'; model.section='run'; render();
+    } else if(command==='resume') {
+      closeDialog(); setScenario('running'); setNotice('Continuing '+format(samples.length-1)+' remaining items · item 1 remains completed');
+    } else if(command==='new-run') {
+      closeDialog(); setScenario('ready'); model.section='run'; setNotice('New run prepared · existing files will be checked again'); render();
+    } else if(command==='reset') {
+      const ids=[...model.selection];
+      ids.forEach(id=>{if(Object.keys(model.overrides[id]).length){model.overrides[id]={};model.dirty.add(id);}for(const key of model.cellInvalid){if(key.startsWith(id+'|')){model.cellInvalid.delete(key);delete model.invalidCellValues[key];}}});
+      closeDialog(); model.unsaved=true;if(!finished())model.state='stale';clearDraft();render();setNotice('Selected parameter overrides reset · node behavior kept as shown below');
+    } else if(command==='open-config') {
+      closeDialog(); model.overrides=initialOverrides(); model.nodeModes={}; model.unsaved=false; setScenario('setup');
+    } else if(command==='choose-folder') {
+      const field=$('#'+button.dataset.field);
+      const value=dialog.querySelector('input').value.trim();
+      if(value) {field.value=value; markDirty();closeDialog();}
+    }
+  });
+
+  function openOverrides(selected=false) {
+    if(selected) {
+      model.overrideQuery='';model.overrideFilter='all';model.overridePage=Math.floor(samples.indexOf(model.selected)/pageSize);
+      $('#vbn-override-search').value='';$('#vbn-override-filter').value='all';
+    }
+    setSection('overrides');
+    renderOverrides();
+  }
+  function matchingSamples() {
+    const query=model.overrideQuery.trim().toLowerCase();
+    const ids=samples.filter(id=>{
+      const matches=[id,joined(sourceFolder('red'),id+'.npy'),joined(sourceFolder('green'),id+'.npy')].some(s=>s.toLowerCase().includes(query));
+      const changed=Object.keys(model.overrides[id]).length;
+      return matches&&(model.overrideFilter==='all'||model.overrideFilter==='changed'&&changed>0||model.overrideFilter==='workflow'&&!changed||model.overrideFilter==='missing'&&!(model.missingParameter in model.overrides[id]));
+    });
+    return model.descending?ids.reverse():ids;
+  }
+  function clearDraft() {model.draft={};model.draftTargets=[];model.invalid.clear();}
+  function setSelection(ids,focus=null) {
+    const next=new Set(ids);
+    const changed=next.size!==model.selection.size||[...next].some(id=>!model.selection.has(id));
+    if(changed&&Object.keys(model.draft).length) {setNotice('Apply or discard the staged edits before changing the selected samples.');$('#vbn-bulk-feedback').textContent='Selection unchanged. Apply or discard your staged edits first.';renderOverrides();return false;}
+    model.selection=next;if(focus)model.selected=focus;
+    model.bulkFeedback='';renderItems();renderOverrides();syncSummary();return true;
+  }
+  function toggleSample(id,checked,shift,ids) {
+    const next=new Set(model.selection);
+    if(shift&&ids.includes(model.anchor)) {
+      const a=ids.indexOf(model.anchor),b=ids.indexOf(id);
+      ids.slice(Math.min(a,b),Math.max(a,b)+1).forEach(value=>checked?next.add(value):next.delete(value));
+    } else checked?next.add(id):next.delete(id);
+    if(setSelection(next,id)) model.anchor=id;
+  }
+  function renderOverrides() {
+    const ids=model.checked?matchingSamples():[];
+    model.overridePage=Math.min(model.overridePage,Math.max(0,Math.ceil(ids.length/pageSize)-1));
+    const start=model.overridePage*pageSize,visible=ids.slice(start,start+pageSize);
+    $('#vbn-missing-field').hidden=model.overrideFilter!=='missing';
+    const columns=parameters.filter(p=>model.columns.has(p.key));
+    const groups=[];columns.forEach(p=>{const last=groups[groups.length-1];if(last?.node===p.node)last.count++;else groups.push({node:p.node,name:p.nodeName,count:1});});
+    $('#vbn-parameter-table thead').innerHTML='<tr class="vbn-node-row"><th rowspan="2"><input type="checkbox" id="vbn-select-page" aria-label="Select this page of samples"></th><th rowspan="2"><button type="button" id="vbn-sort-samples">Sample '+(model.descending?'↓':'↑')+'</button></th>'+groups.map(g=>'<th scope="colgroup" colspan="'+g.count+'">'+escape(g.node+' · '+g.name)+'</th>').join('')+'</tr><tr class="vbn-parameter-row">'+columns.map((p,i)=>'<th scope="col" id="vbn-column-'+p.key+'" class="'+(!i||columns[i-1].node!==p.node?'node-start':'')+'">'+escape(p.label)+'<small>Workflow: '+escape(displayValue(p.base))+'</small></th>').join('')+'</tr>';
+    $('#vbn-sample-body').innerHTML=visible.map(id=>'<tr class="'+(model.selection.has(id)?'is-selected':'')+'"><td><input type="checkbox" data-sample-check="'+id+'" aria-label="Select '+id+'" '+(model.selection.has(id)?'checked':'')+'></td><td><button type="button" class="vbn-item-select" data-select-sample="'+id+'">'+id+'</button></td>'+columns.map((p,i)=>'<td class="vbn-parameter-cell '+(p.key in model.overrides[id]?'has-override':'is-inherited')+' '+(!i||columns[i-1].node!==p.node?'node-start':'')+'" data-cell-item="'+id+'" data-cell-key="'+p.key+'">'+cellEditor(id,p)+'</td>').join('')+'</tr>').join('');
+    const pageCheck=$('#vbn-select-page');
+    pageCheck.checked=visible.length>0&&visible.every(id=>model.selection.has(id));
+    pageCheck.indeterminate=!pageCheck.checked&&visible.some(id=>model.selection.has(id));pageCheck.disabled=!visible.length;
+    overrideEmpty.hidden=ids.length>0;overrideEmpty.textContent=model.checked?'No samples match these filters.':'Check batch in Setup to discover samples.';
+    $('#vbn-sample-range').textContent=ids.length?format(start+1)+'–'+format(start+visible.length)+' of '+format(ids.length):'0 samples';
+    $('#vbn-sample-prev').hidden=ids.length<=pageSize;
+    $('#vbn-sample-next').hidden=ids.length<=pageSize;
+    $('#vbn-sample-prev').disabled=model.overridePage===0;$('#vbn-sample-next').disabled=start+pageSize>=ids.length;
+    $('#vbn-select-matching').textContent='Select all '+format(ids.length)+' matching';$('#vbn-select-matching').disabled=!ids.length;
+    $('#vbn-clear-selection').disabled=!model.selection.size;
+    setText('#vbn-column-summary',columns.length+' of '+parameters.length+' parameters · '+groups.length+' nodes shown');
+    const matched=new Set(ids),hidden=[...model.selection].filter(id=>!matched.has(id)).length;
+    setText('#vbn-bulk-title',format(model.selection.size)+' selected');
+    setText('#vbn-hidden-selection',hidden?format(hidden)+' hidden by filters · still included':'');
+    $('#vbn-edit-selected').disabled=!model.checked||!model.selection.size||busy()||model.cellInvalid.size>0;
+    setText('#vbn-cell-feedback',model.cellFeedback||(!columns.length?'No parameters shown. Use Show columns to choose columns.':''));
+    if(bulkDialog.open)renderBulkEditor();
+    syncSummary();
+  }
+  function editorOptions(p,inheritLabel,value,extra='') {
+    const options=p.type==='boolean'?[{value:'true',label:'Yes'},{value:'false',label:'No'}]:p.options.map(v=>({value:v,label:v}));
+    return '<option value="" '+(value===undefined?'selected':'')+'>'+escape(inheritLabel)+'</option>'+options.map(o=>'<option value="'+escape(o.value)+'" '+(String(value)===o.value?'selected':'')+'>'+escape(o.label)+'</option>').join('');
+  }
+  function cellEditor(id,p) {
+    const key=id+'|'+p.key,invalid=model.cellInvalid.has(key),value=invalid?model.invalidCellValues[key]:model.overrides[id][p.key];
+    const attrs=' data-cell-input="'+p.key+'" data-cell-owner="'+id+'" aria-label="'+escape(id+' · '+p.node+' '+p.nodeName+' · '+p.label)+'" data-tooltip="'+escape((value===undefined?'Inherits workflow: '+displayValue(p.base):'Sample override')+' · Right-click to use workflow value')+'" aria-invalid="'+invalid+'" '+(busy()?'disabled':'');
+    return '<div class="vbn-cell-editor">'+(p.type==='choice'||p.type==='boolean'?'<select'+attrs+'>'+editorOptions(p,'Workflow: '+displayValue(p.base),value)+'</select>':'<input type="number"'+attrs+' min="'+p.min+'" step="'+p.step+'" value="'+escape(value??'')+'" placeholder="'+escape(displayValue(p.base))+'">')+'</div>';
+  }
+  function commitCell(input,inherit=false) {
+    if(busy())return;
+    const id=input.dataset.cellOwner,p=parameters.find(p=>p.key===input.dataset.cellInput),key=id+'|'+p.key;
+    const blank=inherit||input.value==='';
+    if(!inherit&&(input.validity?.badInput||!blank&&!validValue(input.value,p))){model.cellInvalid.add(key);model.invalidCellValues[key]=input.value;input.setAttribute('aria-invalid','true');model.cellFeedback='Invalid value in '+id+' · '+p.label+'. Correct this cell before continuing.';setText('#vbn-cell-feedback',model.cellFeedback);renderFooter();return;}
+    model.cellInvalid.delete(key);delete model.invalidCellValues[key];input.setAttribute('aria-invalid','false');
+    const before=model.overrides[id][p.key];
+    if(blank)delete model.overrides[id][p.key];else model.overrides[id][p.key]=parseValue(input.value,p);
+    const overridden=p.key in model.overrides[id],cell=input.closest('.vbn-parameter-cell');cell.classList.toggle('has-override',overridden);cell.classList.toggle('is-inherited',!overridden);
+    if(inherit)input.value='';
+    input.setAttribute('data-tooltip',overridden?'Sample override · Right-click to use workflow value':'Inherits workflow: '+displayValue(p.base));
+    model.cellFeedback=id+' · '+p.nodeName+' / '+p.label+': '+(blank?'uses workflow ('+displayValue(p.base)+')':'override '+displayValue(model.overrides[id][p.key]));
+    setText('#vbn-cell-feedback',model.cellFeedback);
+    if(before!==model.overrides[id][p.key])markDirty(id);else renderFooter();
+    $('#vbn-edit-selected').disabled=!model.checked||!model.selection.size||busy()||model.cellInvalid.size>0;
+  }
+  function selectionValue(parameter) {
+    const ids=[...model.selection],values=new Set(ids.map(id=>model.overrides[id][parameter.key]??parameter.base));
+    if(!ids.length)return 'No samples selected';
+    const overrides=ids.filter(id=>parameter.key in model.overrides[id]).length;
+    if(overrides===0)return 'Workflow: '+displayValue(parameter.base);
+    return (values.size>1?'Mixed values':displayValue([...values][0]))+' · '+(overrides===ids.length?'overridden':format(overrides)+' overridden / '+format(ids.length-overrides)+' workflow')+' · workflow default '+displayValue(parameter.base);
+  }
+  function renderBulkEditor() {
+    const matched=new Set(matchingSamples()),hidden=model.draftTargets.filter(id=>!matched.has(id)).length;
+    setText('#vbn-bulk-dialog-title','Edit '+format(model.draftTargets.length)+' selected samples');
+    setText('#vbn-bulk-targets',hidden?format(hidden)+' targets are hidden by the sample filters. They are included.':'Choose only the parameters you want to change.');
+    const matches=parameters.filter(p=>(p.node+' '+p.nodeName+' '+p.label).toLowerCase().includes(model.bulkQuery.toLowerCase()));
+    $('#vbn-bulk-options').innerHTML=matches.map(p=>'<label class="vbn-bulk-pick"><input type="checkbox" data-bulk-pick="'+p.key+'" '+(model.draft[p.key]?'checked':'')+'><span>'+escape(p.node+' · '+p.nodeName+' / '+p.label)+'</span></label>').join('')||'<span>No parameters match.</span>';
+    $('#vbn-bulk-fields').innerHTML=parameters.filter(p=>model.draft[p.key]).map(p=>{
+      const draft=model.draft[p.key];
+      const control=p.type==='choice'||p.type==='boolean'?'<select data-bulk-value="'+p.key+'" aria-label="'+escape(p.nodeName+' '+p.label)+'">'+editorOptions(p,'Choose a value…',draft.mode==='set'?draft.value:undefined)+'</select>':'<input type="number" data-bulk-value="'+p.key+'" aria-label="'+escape(p.nodeName+' '+p.label)+'" min="'+p.min+'" step="'+p.step+'" value="'+escape(draft.mode==='set'?draft.value:'')+'" placeholder="'+escape(draft.mode==='inherit'?displayValue(p.base):'Enter value…')+'">';
+      return '<div class="vbn-bulk-field"><strong>'+escape(p.node+' · '+p.nodeName+' / '+p.label)+'</strong><small>'+escape(selectionValue(p))+'</small><div>'+control+'<button type="button" data-bulk-inherit="'+p.key+'">Use workflow value</button></div><small id="vbn-bulk-operation-'+p.key+'">'+(draft.mode==='inherit'?'Will remove overrides and inherit '+displayValue(p.base):draft.mode==='set'?'Will override selected samples':'Enter a value or choose Use workflow value')+'</small></div>';
+    }).join('');
+    updateBulkState();
+  }
+  function updateBulkState() {
+    model.invalid.clear();
+    for(const p of parameters) {
+      const draft=model.draft[p.key];
+      const valid=!draft||draft.mode==='inherit'||draft.mode==='set'&&validValue(draft.value,p);
+      if(!valid)model.invalid.add(p.key);
+      $('[data-bulk-value="'+p.key+'"]')?.setAttribute('aria-invalid',String(!valid&&draft?.mode==='set'));
+    }
+    const pending=Object.keys(model.draft).length;
+    $('#vbn-apply-overrides').textContent='Apply to '+format(model.draftTargets.length)+' samples';
+    $('#vbn-apply-overrides').disabled=!pending||!model.selection.size||model.invalid.size>0||busy();
+    $('#vbn-discard-draft').textContent=pending?'Discard edits':'Cancel';
+    $('#vbn-bulk-feedback').textContent=model.invalid.size?'For each checked parameter, enter a value or choose Use workflow value.':pending?pending+' parameter'+(pending===1?'':'s')+' ready to apply · all other values will be kept':'No parameters chosen.';
+    renderFooter();
+  }
+  $('#vbn-bulk-options').addEventListener('change',event=>{const check=event.target.closest('[data-bulk-pick]');if(!check)return;const key=check.dataset.bulkPick;if(check.checked)model.draft[key]={mode:'pending',value:''};else delete model.draft[key];renderBulkEditor();$('[data-bulk-pick="'+key+'"]')?.focus();});
+  $('#vbn-bulk-fields').addEventListener('input',event=>{
+    const input=event.target.closest('[data-bulk-value]');if(!input)return;
+    const draft=model.draft[input.dataset.bulkValue];draft.value=input.value;draft.mode=input.value===''?'inherit':'set';
+    const p=parameters.find(p=>p.key===input.dataset.bulkValue);setText('#vbn-bulk-operation-'+p.key,draft.mode==='inherit'?'Will remove overrides and inherit '+displayValue(p.base):'Will override selected samples');updateBulkState();
+  });
+  $('#vbn-bulk-fields').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();event.target.blur();updateBulkState();$('#vbn-apply-overrides').focus();}});
+  function closeBulk(){clearDraft();bulkDialog.close();renderFooter();$('#vbn-edit-selected').focus();}
+  $('#vbn-discard-draft').addEventListener('click',closeBulk);
+  $('#vbn-bulk-close').addEventListener('click',()=>{if(Object.keys(model.draft).length){setText('#vbn-bulk-feedback','Apply your edits or choose Discard edits to close.');return;}closeBulk();});
+  bulkDialog.addEventListener('cancel',event=>{if(Object.keys(model.draft).length){event.preventDefault();setText('#vbn-bulk-feedback','Apply your edits or choose Discard edits to close.');}else clearDraft();});
+  $('#vbn-bulk-search').addEventListener('input',event=>{model.bulkQuery=event.target.value;renderBulkEditor();});
+  $('#vbn-edit-selected').addEventListener('click',()=>{if(busy()||!model.selection.size||model.cellInvalid.size)return;clearDraft();model.draftTargets=[...model.selection];model.bulkQuery='';$('#vbn-bulk-search').value='';renderBulkEditor();bulkDialog.showModal();});
+  $('#vbn-bulk-fields').addEventListener('click',event=>{const button=event.target.closest('[data-bulk-inherit]');if(!button)return;model.draft[button.dataset.bulkInherit]={mode:'inherit',value:''};renderBulkEditor();});
+  $('#vbn-apply-overrides').addEventListener('click',()=>{
+    if(busy()||model.invalid.size||!Object.keys(model.draft).length)return;
+    const targets=[...model.draftTargets];let changed=0;
+    targets.forEach(id=>{
+      let didChange=false;
+      Object.entries(model.draft).forEach(([key,draft])=>{
+        const before=model.overrides[id][key];
+        if(draft.mode==='inherit')delete model.overrides[id][key];else model.overrides[id][key]=parseValue(draft.value,parameters.find(p=>p.key===key));
+        if(before!==model.overrides[id][key])didChange=true;
+      });
+      if(didChange){model.dirty.add(id);changed++;}
+    });
+    clearDraft();bulkDialog.close();model.cellFeedback=changed?format(changed)+' samples updated. Other parameters kept. Recheck before running.':'No values changed.';
+    if(changed){model.unsaved=true;if(!finished())model.state='stale';}
+    render();
+  });
+  $('#vbn-override-search').addEventListener('input',event=>{model.overrideQuery=event.target.value;model.overridePage=0;renderOverrides();});
+  $('#vbn-override-filter').addEventListener('change',event=>{model.overrideFilter=event.target.value;model.overridePage=0;renderOverrides();});
+  $('#vbn-missing-parameter').addEventListener('change',event=>{model.missingParameter=event.target.value;model.overridePage=0;renderOverrides();});
+  $('#vbn-select-matching').addEventListener('click',()=>setSelection(new Set([...model.selection,...matchingSamples()])));
+  $('#vbn-clear-selection').addEventListener('click',()=>setSelection([]));
+  $('#vbn-parameter-table').addEventListener('change',event=>{
+    if(event.target.id==='vbn-select-page'){const next=new Set(model.selection);matchingSamples().slice(model.overridePage*pageSize,(model.overridePage+1)*pageSize).forEach(id=>event.target.checked?next.add(id):next.delete(id));setSelection(next);}
+    else if(event.target.matches('select[data-cell-input]'))commitCell(event.target);
+  });
+  $('#vbn-parameter-table').addEventListener('input',event=>{if(event.target.matches('input[data-cell-input]'))commitCell(event.target);});
+  $('#vbn-parameter-table').addEventListener('keydown',event=>{if(event.key==='Enter'&&event.target.matches('[data-cell-input]')){event.preventDefault();commitCell(event.target);event.target.blur();}});
+  $('#vbn-parameter-table').addEventListener('click',event=>{if(event.target.closest('#vbn-sort-samples')){model.descending=!model.descending;model.overridePage=0;renderOverrides();}});
+  $('#vbn-sample-prev').addEventListener('click',()=>{model.overridePage--;renderOverrides();});
+  $('#vbn-sample-next').addEventListener('click',()=>{model.overridePage++;renderOverrides();});
+  function parameterMatches(query) {return parameters.filter(p=>(p.node+' '+p.nodeName+' '+p.label).toLowerCase().includes(query.trim().toLowerCase()));}
+  function renderParameterSearch() {
+    const popup=$('#vbn-parameter-results'),query=$('#vbn-parameter-search').value.trim();
+    popup.hidden=!query;
+    if(query){const matches=parameterMatches(query);popup.innerHTML=matches.slice(0,10).map(p=>'<button type="button" data-jump-param="'+p.key+'">'+escape(p.node+' · '+p.nodeName+' / '+p.label)+'</button>').join('')||'<span>No matching parameter.</span>';if(matches.length>10)popup.innerHTML+='<small>'+matches.length+' matches · refine your search</small>';}
+  }
+  function jumpToParameter(key) {
+    model.columns.add(key);renderOverrides();
+    $('#vbn-parameter-results').hidden=true;
+    const head=$('#vbn-column-'+key),scroller=$('#vbn-parameter-scroll');
+    const fixedWidth=$('#vbn-parameter-table thead th:nth-child(1)').offsetWidth+$('#vbn-parameter-table thead th:nth-child(2)').offsetWidth;
+    scroller.scrollLeft=Math.max(0,head.offsetLeft-fixedWidth);
+    $$('#vbn-parameter-table .is-found').forEach(el=>el.classList.remove('is-found'));head.classList.add('is-found');
+    const p=parameters.find(p=>p.key===key);model.cellFeedback='Showing '+p.node+' · '+p.nodeName+' / '+p.label;setText('#vbn-cell-feedback',model.cellFeedback);
+  }
+  $('#vbn-parameter-search').addEventListener('input',renderParameterSearch);
+  $('#vbn-parameter-search').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();const match=parameterMatches(event.target.value)[0];if(match)jumpToParameter(match.key);}if(event.key==='Escape')$('#vbn-parameter-results').hidden=true;});
+  $('#vbn-parameter-results').addEventListener('click',event=>{const button=event.target.closest('[data-jump-param]');if(button)jumpToParameter(button.dataset.jumpParam);});
+  function renderColumnPicker() {
+    const target=$('#vbn-column-picker');if(!target)return;
+    const matched=parameterMatches(model.columnQuery),nodes=[...new Set(matched.map(p=>p.node))];
+    target.innerHTML=nodes.map(node=>{const list=matched.filter(p=>p.node===node),all=parameters.filter(p=>p.node===node);return '<div class="vbn-column-node"><label><input type="checkbox" data-column-node="'+node+'" '+(all.every(p=>model.columns.has(p.key))?'checked':'')+'><strong>'+escape(node+' · '+list[0].nodeName)+'</strong></label>'+list.map(p=>'<label><input type="checkbox" data-column-key="'+p.key+'" '+(model.columns.has(p.key)?'checked':'')+'><span>'+escape(p.label)+'</span></label>').join('')+'</div>';}).join('')||'<span>No matching parameters.</span>';
+    $$('[data-column-node]').forEach(input=>{const list=parameters.filter(p=>p.node===input.dataset.columnNode);input.indeterminate=!input.checked&&list.some(p=>model.columns.has(p.key));});
+    setText('#vbn-column-picker-count',model.columns.size+' of '+parameters.length+' parameters shown');
+  }
+  $('#vbn-columns-button').addEventListener('click',()=>{
+    model.columnQuery='';showDialog('Show parameter columns','<label>Find a node or parameter<input id="vbn-column-query" type="search" placeholder="Search columns…"></label><div class="vbn-selection-tools"><button type="button" id="vbn-show-all-columns">Show all</button><button type="button" id="vbn-hide-all-columns">Hide all</button><span id="vbn-column-picker-count"></span></div><div class="vbn-column-picker" id="vbn-column-picker"></div>');renderColumnPicker();
+  });
+  dialog.addEventListener('input',event=>{if(event.target.id==='vbn-column-query'){model.columnQuery=event.target.value;renderColumnPicker();}});
+  dialog.addEventListener('change',event=>{const input=event.target;let focus;if(input.dataset.columnKey){input.checked?model.columns.add(input.dataset.columnKey):model.columns.delete(input.dataset.columnKey);focus='[data-column-key="'+input.dataset.columnKey+'"]';}else if(input.dataset.columnNode){parameters.filter(p=>p.node===input.dataset.columnNode).forEach(p=>input.checked?model.columns.add(p.key):model.columns.delete(p.key));focus='[data-column-node="'+input.dataset.columnNode+'"]';}else return;renderOverrides();renderColumnPicker();$(focus)?.focus();});
+  dialog.addEventListener('click',event=>{if(event.target.closest('#vbn-show-all-columns'))model.columns=new Set(parameters.map(p=>p.key));else if(event.target.closest('#vbn-hide-all-columns'))model.columns.clear();else return;renderOverrides();renderColumnPicker();});
+  $('#vbn-parameter-table').addEventListener('contextmenu',event=>{
+    const input=event.target.closest('[data-cell-input]');if(!input||busy())return;event.preventDefault();activeCell={id:input.dataset.cellOwner,key:input.dataset.cellInput};
+    const p=parameters.find(p=>p.key===activeCell.key);setText('#vbn-cell-menu-title',activeCell.id+' · '+p.label);setText('#vbn-inherit-cell','Use workflow value ('+displayValue(p.base)+')');
+    const page=$('#vbn-page-overrides'),rect=page.getBoundingClientRect();cellMenu.hidden=false;cellMenu.style.left=Math.max(0,Math.min(event.clientX-rect.left,page.clientWidth-cellMenu.offsetWidth))+'px';cellMenu.style.top=Math.max(0,event.clientY-rect.top)+'px';
+  });
+  $('#vbn-inherit-cell').addEventListener('click',()=>{if(!activeCell)return;const input=$('[data-cell-input="'+activeCell.key+'"][data-cell-owner="'+activeCell.id+'"]');if(input)commitCell(input,true);cellMenu.hidden=true;});
+  document.addEventListener('pointerdown',event=>{if(!event.target.closest('#vbn-cell-menu'))cellMenu.hidden=true;if(!event.target.closest('.vbn-column-tools'))$('#vbn-parameter-results').hidden=true;});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'){cellMenu.hidden=true;$('#vbn-parameter-results').hidden=true;}});
+  function updateParameterCatalog() {
+    $('#vbn-missing-parameter').innerHTML=parameters.map(p=>'<option value="'+p.key+'">'+escape(p.node+' · '+p.nodeName+' / '+p.label)+'</option>').join('');$('#vbn-missing-parameter').value=model.missingParameter;
+  }
+  updateParameterCatalog();
+  $$('#vbn-page-overrides .vbn-section-block:last-child select').forEach((select,i)=>{
+    select.setAttribute('aria-label',['Gaussian Blur batch behavior','Crop Stack batch behavior'][i]);
+    select.addEventListener('change',()=>{model.nodeModes[i]=select.value;markDirty();});
+  });
+
+  function syncSummary() {
+    root.dataset.state=model.state;
+    $('#vbc-state').value=model.state;
+    const count=overrideCount();
+    setText('#vbn-setup-badge',model.checked?'✓':'—');
+    setText('#vbn-items-badge',model.checked?format(samples.length):'—');
+    setText('#vbn-overrides-badge',count||'Optional');
+    setText('#vbn-run-badge',model.state==='running'?'Running':model.state==='complete'?'1 issue':model.state==='stopped'?'Stopped':model.state==='success'?'Done':'Not run');
+    $$('#vbn-page-overrides .vbn-block-heading > span').forEach((el,i)=>el.textContent=i===0?count+' parameter '+(count===1?'override':'overrides'):nodeCount()+' node '+(nodeCount()===1?'change':'changes'));
+    const unsaved=$('.vbn-unsaved'); unsaved.hidden=!model.unsaved; unsaved.setAttribute('aria-label','Unsaved configuration changes');
+    chip($('#vbn-setup-state'),model.checking?'Checking…':changes()?'Needs recheck':model.blocked?'Needs attention':model.checked?'Checked':'Not checked',model.blocked||changes()?'warning':model.checked?'ready':'neutral');
+    $$('.vbn-detected').forEach((el,i)=>{el.innerHTML=icon(model.blocked&&i===1?'triangle-alert':model.checked&&!model.setupDirty?'check':'circle-dashed')+(model.blocked&&i===1?format(samples.length-1)+' files · 1 missing':model.checked&&!model.setupDirty?format(samples.length)+' files':'Not checked');});
+    const pairing=$('.vbn-pairing-summary span');
+    if(pairing) pairing.textContent=model.blocked?format(samples.length)+' Red + '+format(samples.length-1)+' Green · field_03 needs its Green source':model.checked&&!model.setupDirty?format(samples.length)+' Red + '+format(samples.length)+' Green → '+format(samples.length)+' items · paired by sorted filename order':'Files are paired by sorted filename order. Check the pairs before running.';
+    const disabled=busy();
+    $$('#vbn-page-setup input, #vbn-page-setup select, #vbn-page-setup button, #vbn-page-overrides [data-cell-input], #vbn-page-overrides .vbn-section-block:last-child > .vbc-table-wrap select, .vbn-reset-button, .vbn-commandbar button, .vbn-more-menu-popover button').forEach(el=>el.disabled=disabled||el.matches('input[type="checkbox"][data-required]'));
+    $$('[data-item-command]').forEach(button=>button.disabled=!model.checked||(button.dataset.itemCommand!=='reveal'&&(disabled||!model.selection.size))||(button.dataset.itemCommand==='preview'&&(model.selection.size!==1||checkFor(model.selected)!=='Passed')));
+    $('.vbn-reset-button').disabled=disabled||!model.selection.size||Object.keys(model.draft).length>0;
+    $$('[data-reveal-label]').forEach(el=>el.textContent=revealLabel);
+    $$('#vbn-page-items [data-action="check"], #vbn-selected-overrides-button').forEach(el=>el.disabled=disabled);
+    $$('.vbn-sections [data-new-section]').forEach(tab=>{
+      // Sections stay discoverable; an unchecked plan gets a useful empty state.
+      tab.disabled=false;tab.setAttribute('aria-disabled','false');
+    });
+  }
+
+  function renderItems() {
+    const planned=model.checked;
+    $('#vbn-plan-body').hidden=!planned;
+    $('#vbn-empty-plan').hidden=planned;
+    $('#vbn-items-metrics').hidden=!planned;
+    $('#vbn-items-metrics').innerHTML='<span><strong>'+format(samples.length)+'</strong> items</span><span><strong>'+format(samples.length*3)+'</strong> outputs</span>';
+    const banner=$('#vbn-plan-banner');
+    const needs=model.blocked||changes();
+    banner.className='vbn-message '+(needs?'vbn-message-warning':model.checked?'vbn-message-success':'vbn-message-info');
+    const bannerCopy=!planned?'Check the source folders and destination to build the item list. No outputs are saved.':
+      model.blocked?'field_03 has no matching Green source. Locate the file before running.':
+      changes()?'Settings changed. Recheck the affected items before running.':
+      finished()?'This list retains the last run’s results. Select an item to inspect its files.':
+      model.state==='running'?'Run in progress. You can inspect items; settings are locked until the run stops.':
+      'Inputs and destinations checked. Preview a pair to confirm alignment and parameter choices.';
+    banner.innerHTML=icon(needs?'triangle-alert':planned?'circle-check':'info')+'<span>'+bannerCopy+'</span>';
+    const filtered=matchingItems();
+    model.itemPage=Math.min(model.itemPage,Math.max(0,Math.ceil(filtered.length/pageSize)-1));
+    const start=model.itemPage*pageSize,visible=filtered.slice(start,start+pageSize);
+    itemEmpty.hidden=!planned||filtered.length>0;
+    itemEmpty.textContent='No items match these filters.';
+    $('#vbn-plan-body').innerHTML=visible.map((id,i)=>{
+      const status=checkFor(id),result=resultFor(id),attention=status!=='Passed'||result==='Partial';
+      const changed=Object.keys(model.overrides[id]).length;
+      return '<tr data-item="'+id+'" class="'+(model.selection.has(id)?'is-selected':'')+'"><td><input type="checkbox" data-item-check="'+id+'" aria-label="Select '+id+'" '+(model.selection.has(id)?'checked':'')+'></td><td>'+(samples.indexOf(id)+1)+'</td><td><button type="button" class="vbn-item-select" data-select-item="'+id+'">'+id+'</button><small>'+(changed?changed+' parameter override':'Workflow parameters')+'</small></td><td>'+(model.blocked&&id==='field_03'?'1 missing':'2 paired')+'</td><td>'+(result==='Completed'?'3 saved':result==='Partial'?'2 of 3 saved':'3 planned')+'</td><td class="'+(status==='Passed'?'vbc-status-ok':'vbc-status-warning')+'">'+status+'</td><td class="'+(result==='Partial'||result==='Stopped'?'vbc-status-warning':result==='Running'?'vbc-status-working':result==='Completed'?'vbc-status-ok':'')+'">'+result+'</td></tr>';
+    }).join('');
+    $('#vbn-item-details').hidden=!planned;
+    const hidden=[...model.selection].filter(id=>!filtered.includes(id)).length;
+    selectionCaption.textContent=planned?format(model.selection.size)+' selected'+(hidden?' · '+format(hidden)+' hidden by filters':'')+' · Details: '+model.selected:'';
+    itemPager.hidden=!planned||filtered.length<=pageSize;
+    setText('#vbn-item-range',format(start+1)+'–'+format(start+visible.length)+' of '+format(filtered.length));
+    $('#vbn-item-prev').disabled=model.itemPage===0;$('#vbn-item-next').disabled=start+pageSize>=filtered.length;
+    renderDetails();
+    icons();
+  }
+  function matchingItems() {
+    return samples.filter(id=>{
+      const attention=checkFor(id)!=='Passed'||['Partial','Stopped'].includes(resultFor(id));
+      return [id,joined(sourceFolder('red'),id+'.npy'),joined(sourceFolder('green'),id+'.npy')].some(s=>s.toLowerCase().includes(model.query.trim().toLowerCase()))&&(model.filter==='All items'||(model.filter==='Needs attention'?attention:!attention));
+    });
+  }
+  function renderDetails() {
+    const id=model.selected, result=resultFor(id);
+    setText('#vbn-detail-item-name',id);
+    setText('#vbn-detail-item-meta','Item '+format(samples.indexOf(id)+1)+' of '+format(samples.length)+' · '+(result==='Not run'?'Source pair':'checks: '+checkFor(id).toLowerCase()));
+    chip($('.vbn-detail-heading .vbn-state-chip'),result==='Not run'?checkFor(id):result,result==='Partial'||result==='Stopped'||checkFor(id)!=='Passed'?'warning':result==='Running'?'working':result==='Completed'||checkFor(id)==='Passed'?'ready':'neutral');
+    setText('#vbn-detail-red-source',joined(sourceFolder('red'),id+'.npy'));
+    setText('#vbn-detail-green-source',model.blocked&&id==='field_03'?'Missing file · no matching Green source':joined(sourceFolder('green'),id+'.npy'));
+    ['red','green'].forEach(color=>{const target=$('#vbn-detail-'+color+'-source');if(!(model.blocked&&id==='field_03'&&color==='green'))target.innerHTML='<span>'+escape(joined(sourceFolder(color),id+'.npy'))+'</span><button type="button" class="vbn-file-reveal" data-reveal-source="'+color+'" data-file-item="'+id+'">'+icon('folder-search')+revealLabel+'</button>';});
+    const entries=parameters.filter(p=>p.key in model.overrides[id]).map(p=>p.nodeName+' / '+p.label+': '+displayValue(p.base)+' → '+displayValue(model.overrides[id][p.key]));
+    setText('#vbn-detail-override',entries.join(' · ')||'Uses workflow values');
+    const outputs=outputsFor(id);
+    setText('#vbn-item-details .vbn-disclosure summary > span',(finished()?'Output files':'3 planned outputs'));
+    $('#vbn-detail-outputs').innerHTML=outputs.map(o=>'<li><div>'+outputFileControl(id,o)+'</div><strong class="'+(o.status==='Saved'?'vbc-status-ok':o.status==='Not saved'?'vbc-status-warning':'')+'">'+o.status+'</strong></li>').join('');
+    let recovery=$('#vbn-detail-recovery');
+    if(!recovery) {recovery=document.createElement('div');recovery.id='vbn-detail-recovery';recovery.className='vbn-detail-recovery';$('#vbn-item-details').append(recovery);}
+    recovery.innerHTML=result==='Partial'?'<p>The measurements file is open in another application. Close it, then recheck and retry this item.</p><button type="button" data-action="retry">'+icon('rotate-cw')+'Retry this item…</button>':
+      model.blocked&&id==='field_03'?'<p>Both channels are required for this item.</p><button type="button" data-action="locate-source">'+icon('folder-search')+'Locate missing source…</button>':'';
+    setText('#vbn-selected-overrides-label','Load overrides');
+    $('#vbn-selected-overrides-button').setAttribute('data-tooltip','Open the Overrides tab for '+format(model.selection.size)+' selected samples');
+    setText('#vbn-context-override-label','Load overrides for this item');
+    setText('#vbn-context-item-name',id);
+  }
+  function selectItem(id) {
+    return setSelection([id],id);
+  }
+  function renderRecap() {
+    const count=overrideCount();
+    const existing=$('#vbn-existing-files')?.value||'Ask before overwrite';
+    const continueFailures=$('#vbn-continue-failures')?.checked!==false;
+    $('#vbn-run-before').innerHTML=
+      '<div class="vbn-message '+(clean()?'vbn-message-info':'vbn-message-warning')+'">'+icon(clean()?'shield-check':'triangle-alert')+'<span>'+(clean()?'Ready to start. VIPP checks the inputs and existing output files again before processing.':'Check the latest settings and resolve any missing inputs before starting.')+'</span></div>'+
+      '<div class="vbn-run-destination"><span>Save results to</span><strong>'+escape(destination())+'</strong><small>Each item produces a combined image, an overlap mask and a measurements table.</small></div>'+
+      '<div class="vbn-recap-grid"><div><small>Batch</small><strong>'+format(samples.length)+' paired items · '+format(samples.length*3)+' outputs</strong></div><div><small>Existing files</small><strong>'+escape(existing)+'</strong></div><div><small>On an item error</small><strong>'+(continueFailures?'Continue with the next item':'Stop the batch')+'</strong></div><div><small>Parameter overrides</small><strong>'+format(count)+' across '+format(samples.filter(id=>Object.keys(model.overrides[id]).length).length)+' items</strong></div><div><small>Node behavior</small><strong>'+(nodeCount()?nodeCount()+' batch changes':'Use workflow')+'</strong></div><div><small>Compute</small><strong>Prefer GPU</strong><small>Inherited from the main toolbar. Unsupported operations run on CPU.</small></div></div>';
+  }
+  function resultTable() {
+    return (samples.length>pageSize?'<p class="vbn-block-help">First '+pageSize+' results shown here. Browse all items in Items & outputs.</p>':'')+'<div class="vbc-table-wrap vbn-results-scroll"><table class="vbc-table"><thead><tr><th>Batch item</th><th>Result</th><th>Output files</th><th>Time</th></tr></thead><tbody>'+samples.slice(0,pageSize).map((id,i)=>{
+      const result=resultFor(id),saved=outputsFor(id).filter(o=>o.status==='Saved').length;
+      const time=result==='Completed'?'00:'+([12,14,16][i%3]):result==='Partial'?'00:16':result==='Running'||result==='Stopping'||result==='Stopped'?'00:06':'—';
+      return '<tr><td><button type="button" class="vbn-item-select" data-review-item="'+id+'">'+id+'</button></td><td class="'+(result==='Completed'?'vbc-status-ok':result==='Partial'||result==='Stopped'?'vbc-status-warning':'')+'">'+result+'</td><td><details class="vbn-output-files"><summary>'+saved+' / 3 saved · files</summary><ul>'+outputsFor(id).map(o=>'<li>'+outputFileControl(id,o)+'</li>').join('')+'</ul></details></td><td>'+time+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  }
+  function renderRun() {
+    const run=model.state==='running',done=finished();
+    $('#vbn-run-before').hidden=run||done;
+    $('#vbn-run-running').hidden=!run;
+    $('#vbn-run-complete').hidden=!done;
+    renderRecap();
+    chip($('#vbn-run-state'),model.stopping?'Stopping…':run?'Running':model.state==='complete'?'1 issue':model.state==='stopped'?'Stopped':model.state==='success'?'Finished':'Not started',run?'working':model.state==='complete'||model.state==='stopped'?'warning':model.state==='success'?'ready':'neutral');
+    $('#vbn-run-running').innerHTML='<div class="vbn-active-operation"><div><span class="vbn-pulse"></span><span><small>Processing item 2 of '+format(samples.length)+'</small><strong>field_02</strong></span></div></div>'+
+      '<div class="vbn-progress-stack"><div><div class="vbc-progress-label"><span>Gaussian Blur · plane 4 of 10</span><b>40%</b></div><div class="vbc-progress vbc-operation-progress" role="progressbar" aria-label="Current operation" aria-valuemin="0" aria-valuemax="10" aria-valuenow="4"><span style="width:40%"></span></div></div></div>'+
+      '<div class="vbn-truth-note">'+icon('info')+'Completed-item progress is shown below. Stop keeps outputs already saved.</div>'+resultTable();
+    if(done) {
+      const partial=model.state==='complete',stopped=model.state==='stopped';
+      const title=partial?'Finished with one incomplete item':stopped?'Stopped · completed outputs retained':'All items completed';
+      const summary=partial?format(samples.length-1)+' completed · 1 partial · '+format(samples.length*3-1)+' of '+format(samples.length*3)+' outputs saved':stopped?'1 completed · 1 stopped · '+format(samples.length-2)+' not started · 3 outputs saved':format(samples.length)+' completed · '+format(samples.length*3)+' of '+format(samples.length*3)+' outputs saved';
+      $('#vbn-run-complete').innerHTML='<div class="vbn-message '+(partial||stopped?'vbn-message-warning':'vbn-message-success')+'">'+icon(partial?'triangle-alert':stopped?'square':'circle-check')+'<span><strong>'+title+'</strong><br>'+summary+'</span></div>'+
+        '<div class="vbn-run-time"><span>Total elapsed <strong>'+elapsedTime()+'</strong></span><span>Includes processing and writing outputs</span></div>'+
+        (partial?'<div class="vbn-recovery-line"><span><strong>field_03 · measurements not saved</strong><br>Close the file in the other application, then retry this item.</span><button type="button" data-review-item="field_03">Review item</button><button type="button" data-action="retry">Retry item…</button></div>':
+         stopped?'<p class="vbn-block-help">The current item stopped at a safe checkpoint. Check the remaining items before continuing.</p>':'')+
+        resultTable()+
+        '<div class="vbn-result-actions"><button type="button" data-action="output-folder">'+icon('folder-open')+'Output folder</button><button type="button" data-action="manifest">'+icon('file-json')+'Run report</button></div>'+
+        '<details class="vbn-disclosure vbn-technical-details" '+(proposal.technicalDetails?'open':'')+'><summary><span>'+icon('scroll-text')+'Reproducibility details</span>'+icon('chevron-down')+'</summary><dl><div><dt>Saved with the run</dt><dd>Workflow, batch configuration, runner script and per-item results</dd></div><div><dt>Actual compute in this example</dt><dd>GPU: CuPy · CPU: NumPy / SciPy</dd></div><div><dt>Manifest</dt><dd>'+escape(joined(destination(),'vipp_batch_manifest.json'))+'</dd></div></dl></details>';
+    }
+  }
+  function renderFooter() {
+    const state=model.state,run=state==='running',done=finished();
+    const next=$('#vbn-next-button'),overrides=$('#vbn-overrides-button');
+    overrides.hidden=run||model.section!=='items'||!model.checked;
+    action(overrides,'review-overrides','Load overrides','table-properties');
+    overrides.disabled=busy();
+    next.hidden=run;
+    $('#vbn-stop-button').hidden=!run;
+    $('#vbn-stop-button').disabled=model.stopping;
+    $('#vbn-stop-button').innerHTML=icon('square')+'<span>'+(model.stopping?'Stopping…':'Stop safely')+'</span>';
+    $('#vbn-open-output-button').hidden=true;
+    $('#vbn-close-button').textContent=run?'Hide window':'Close';
+    const progress=$('#vbn-footer-progress'),elapsed=$('#vbn-footer-elapsed');
+    progress.hidden=!run;elapsed.hidden=!run;
+    progress.setAttribute('aria-valuenow','1');progress.setAttribute('aria-valuemax',String(samples.length));progress.querySelector('span').style.width=(100/samples.length)+'%';
+    elapsed.textContent='Elapsed 00:18';
+    let message='';let tone='neutral';
+    if(run) {message=model.stopping?'Stopping after this checkpoint · saved outputs are kept':'1 of '+format(samples.length)+' items completed · field_02 running';tone='working';}
+    else if(model.checking) {message='Checking inputs, source pairing and output destinations…';tone='working';}
+    else if(model.cellInvalid.size) {message='Correct the invalid parameter cell before continuing';tone='warning';}
+    else if(Object.keys(model.draft).length) {message='Parameter edits staged · apply or discard them in Overrides';tone='warning';}
+    else if(model.blocked) {message='1 item needs attention · locate its missing Green source';tone='warning';}
+    else if(changes()) {message=model.setupDirty?'Configuration changed · recheck all items':model.dirty.size+' item'+(model.dirty.size===1?' needs':'s need')+' rechecking';tone='warning';}
+    else if(!model.checked) {message='Next: check the source folders and destination';}
+    else if(done) {message=state==='stopped'?'Stopped · saved outputs retained':state==='complete'?'Run finished · review the incomplete item':'Finished · all output files saved';tone=state==='success'?'ready':'warning';}
+    else {message=model.section==='items'?'Checked · preview an item or continue to run':model.section==='overrides'?'Batch-only settings · the workflow is unchanged':model.section==='run'?'Ready · starting will write the outputs listed above':'Configuration checked';tone='ready';}
+    if(model.notice&&!model.checking) message=model.notice;
+    setText('#vbn-footer-text',message);
+    $('#vbn-footer-dot').className='vbn-footer-dot vbn-dot-'+tone;
+    if(run) return;
+    if(!model.checked||changes()||model.blocked) action(next,'check',model.checked?'Recheck all':'Check batch','clipboard-check');
+    else if(done&&model.section==='run') action(next,state==='stopped'?'resume':'prepare-run',state==='stopped'?'Review remaining items…':'Prepare another run…',state==='stopped'?'play':'rotate-cw');
+    else if(model.section==='run') action(next,'run','Run '+format(samples.length)+' items','play');
+    else if(model.section==='items') action(next,'continue','Continue to run','arrow-right');
+    else if(model.section==='overrides') action(next,'continue','Continue to run','arrow-right');
+    else action(next,'items','Review items','arrow-right');
+    next.disabled=model.checking||model.invalid.size>0||model.cellInvalid.size>0||Object.keys(model.draft).length>0;
+    if(model.checking) next.innerHTML=icon('loader-circle')+'<span>Checking…</span>';
+  }
+  function renderBaseline() {
+    const state=model.state,run=state==='running',done=finished(),planned=model.checked;
+    $('#vbc-current-plan-body').hidden=!planned;
+    $('#vbc-current-empty-plan').hidden=planned;
+    $('#vbc-current-top-progress').hidden=!run;
+    $('#vbc-current-run-group').hidden=!run&&!done;
+    $('#vbc-current-cancel-button').hidden=!run;
+    $('#vbc-current-run-button').hidden=run;
+    setText('#vbc-current-top-status',run?'Running item 2 of '+format(samples.length)+' · field_02':done?'Batch finished · retained results':planned?'Ready · '+format(samples.length)+' batch items':'Not checked · Preview or run to inspect batch items.');
+    setText('#vbc-current-preview-status',planned?format(samples.length)+' items · '+format(samples.length*3)+' planned outputs · selected item shown in graph':'Ready. Preview checks one sample; Run batch checks again before saving.');
+    $('#vbc-current-plan-body').innerHTML=samples.slice(0,pageSize).map((id,i)=>'<tr><td>'+(i+1)+'</td><td>'+id+'</td><td>3 planned</td><td>'+checkFor(id)+'</td><td>'+resultFor(id)+'</td></tr>').join('');
+    if(run||done) {
+      setText('#vbc-current-overall-label',run?'Running item 2 of '+format(samples.length)+' · field_02':state==='stopped'?'Batch stopped':'Finished '+format(samples.length)+' of '+format(samples.length)+' items');
+      const baselinePercent=run?Math.round(200/samples.length)+'%':state==='stopped'?Math.round(100/samples.length)+'%':'100%';
+      setText('#vbc-current-overall-value',baselinePercent);
+      $('#vbc-current-overall-bar').style.width=baselinePercent;
+      setText('#vbc-current-operation-label',run?'Gaussian Blur · processing plane 4 of 10':'Batch run finished');
+      setText('#vbc-current-operation-value',run?'40%':'');
+      $('#vbc-current-operation-bar').style.width=run?'40%':'100%';
+      setText('#vbc-current-run-result',done?'Completed results and manifest retained.':'');
+    }
+  }
+  function setSection(section) {
+    model.section=section;model.notice='';
+    $('#vbn-item-context-menu').hidden=true;
+    $$('[data-new-section]').forEach(tab=>{const active=tab.dataset.newSection===section;tab.classList.toggle('is-active',active);tab.setAttribute('aria-selected',String(active));});
+    $$('[data-page]').forEach(page=>page.hidden=page.dataset.page!==section);
+    if(section==='overrides')renderOverrides();
+    renderFooter();renderRun();icons();
+  }
+  function render() {
+    syncSummary();renderItems();renderOverrides();renderRun();renderBaseline();setSection(model.section);syncSummary();renderFooter();icons();
+  }
+  function setScenario(state) {
+    clearTimeout(model.timer);
+    model.state=state;model.checked=state!=='setup';model.checking=false;model.stopping=false;
+    model.setupDirty=false;model.dirty.clear();model.invalid.clear();model.notice='';
+    model.blocked=state==='blocked';
+    if(state==='stale') model.dirty.add('field_02');
+    model.selected=state==='blocked'||state==='complete'?'field_03':'field_02';
+    model.selection=new Set([model.selected]);model.anchor=model.selected;clearDraft();model.cellInvalid.clear();model.invalidCellValues={};model.itemPage=0;model.cellFeedback='';if(bulkDialog.open)bulkDialog.close();
+    model.section=state==='setup'?'setup':['running','stopped','complete','success'].includes(state)?'run':'items';
+    render();
+  }
+  function checkItems(scope='all') {
+    if(busy()||model.invalid.size||model.cellInvalid.size||Object.keys(model.draft).length) return;
+    const paths=$$('#vbn-page-setup input[id$="-folder"]');
+    const blank=paths.find(field=>!field.value.trim());
+    if(blank) {setSection('setup');blank.focus();setNotice('Enter all source folders and the output destination.');return;}
+    if(scope==='selected'&&model.setupDirty) {setNotice('Source or destination settings changed · use Recheck all');return;}
+    const target=model.selected,targets=scope==='selected'?[...model.selection]:samples;
+    model.checking=true;model.notice='';syncSummary();renderFooter();icons();
+    model.timer=setTimeout(()=>{
+      model.checking=false;model.checked=true;
+      if(scope==='all') {model.setupDirty=false;model.dirty.clear();}
+      else targets.forEach(id=>model.dirty.delete(id));
+      if(!finished()) model.state=model.blocked?'blocked':changes()?'stale':'ready';
+      model.section='items';
+      render();
+      setNotice(model.blocked&&targets.includes('field_03')?'field_03 still needs its Green source':scope==='selected'?format(targets.length)+' selected item'+(targets.length===1?'':'s')+' rechecked · '+(changes()?'other items still need rechecking':'checks passed'):'All items checked · '+(model.blocked?'1 missing source':'no input or destination issues'));
+    },500);
+  }
+
+  function itemCommand(command) {
+    if(command==='reveal') {$('#vbn-item-context-menu').hidden=true;chooseSource(model.selected);return;}
+    if(busy()) return;
+    $('#vbn-item-context-menu').hidden=true;
+    if(command==='recheck') checkItems('selected');
+    else if(command==='override') openOverrides(true);
+    else if(command==='preview') {
+      if(checkFor(model.selected)!=='Passed') {setNotice('Recheck this item before previewing.');return;}
+      const id=model.selected, threshold=model.overrides[id].threshold??12000;
+      showDialog('Preview · '+id,
+        '<div class="vbn-preview-label">Illustrative graph preview · no outputs saved</div><div class="vbn-preview-pair"><div><div class="vbn-preview-image vbn-preview-red"><span></span><span></span></div><strong>Red source</strong><small>'+escape(id+'.npy')+'</small></div><div><div class="vbn-preview-image vbn-preview-green"><span></span><span></span></div><strong>Green source</strong><small>'+escape(id+'.npy')+'</small></div></div><p>Check that the channels correspond to the same field and that the chosen parameters fit this item.</p><dl><dt>Threshold used</dt><dd>'+format(threshold)+(model.overrides[id].threshold?' · item override':' · workflow value')+'</dd><dt>Axis interpretation</dt><dd>YX · from file labels</dd></dl>');
+    }
+  }
+  root.addEventListener('click',event=>{
+    const source=event.target.closest('[data-reveal-source]');
+    if(source){const color=source.dataset.revealSource,id=source.dataset.fileItem;if(model.blocked&&id==='field_03'&&color==='green')return;revealFile(sourceFolder(color),id+'.npy',[id+'.npy']);return;}
+    const output=event.target.closest('[data-reveal-output]');
+    if(output){const id=output.dataset.fileItem,name=output.dataset.revealOutput;if(outputsFor(id).some(o=>o.name===name&&o.status==='Saved'))revealFile(destination(),name,outputsFor(id).filter(o=>o.status==='Saved').map(o=>o.name));return;}
+    const sample=event.target.closest('[data-select-sample]');
+    if(sample){selectItem(sample.dataset.selectSample);return;}
+    const check=event.target.closest('[data-sample-check], [data-item-check]');
+    if(check){const id=check.dataset.sampleCheck||check.dataset.itemCheck;toggleSample(id,check.checked,event.shiftKey,check.dataset.sampleCheck?matchingSamples():matchingItems());return;}
+    const selected=event.target.closest('[data-select-item]');
+    if(selected) {selectItem(selected.dataset.selectItem);return;}
+    const reviewed=event.target.closest('[data-review-item]');
+    if(reviewed) {if(!selectItem(reviewed.dataset.reviewItem))return;model.filter='All items';model.query='';model.itemPage=Math.floor(samples.indexOf(model.selected)/pageSize);$('.vbn-filter-label select').value='All items';$('.vbn-search input').value='';setSection('items');renderItems();syncSummary();icons();return;}
+    const item=event.target.closest('[data-item-command]');
+    if(item&&!item.disabled) {itemCommand(item.dataset.itemCommand);return;}
+    const trigger=event.target.closest('[data-action]');
+    if(!trigger||trigger.disabled) return;
+    const command=trigger.dataset.action;
+    if(command==='check'||command==='review') checkItems();
+    else if(command==='continue') {setSection('run');}
+    else if(command==='items') setSection('items');
+    else if(command==='review-overrides') openOverrides(false);
+    else if(command==='open-overrides') openOverrides(true);
+    else if(command==='run') {if(clean())setScenario('running');else checkItems();}
+    else if(command==='stop'&&!model.stopping) {
+      model.stopping=true;model.notice='';render();
+      model.timer=setTimeout(()=>setScenario('stopped'),700);
+    } else if(command==='locate-source') {
+      showDialog('Locate Green source · field_03','<p>The expected matching file was missing. This example lets you try the corrected source.</p><div class="vbn-file-preview">'+escape(joined(sourceFolder('green'),'field_03.npy'))+'</div>',
+        '<button type="button" class="vbc-primary-action" data-dialog-action="locate">Use corrected example file</button>');
+    } else if(command==='retry') {
+      showDialog('Retry field_03','<p>Close the open measurements file first. Rechecking and rerunning this item will calculate all three outputs again.</p><p><strong>2 output files already exist.</strong> Confirm replacement before retrying; all other items are retained.</p>',
+        '<button type="button" class="vbc-primary-action" data-dialog-action="retry">Replace 2 files and retry item</button>');
+    } else if(command==='resume') {
+      showDialog('Continue remaining items','<p>Keep field_01 and its 3 saved outputs. Recheck the remaining '+format(samples.length-1)+' items, then rerun those items from the start.</p>',
+        '<button type="button" class="vbc-primary-action" data-dialog-action="resume">Check and run '+format(samples.length-1)+' items</button>');
+    } else if(command==='prepare-run') {
+      showDialog('Prepare another run','<p>The previous results stay available. The new run will check existing files and ask before replacing any outputs.</p>',
+        '<button type="button" class="vbc-primary-action" data-dialog-action="new-run">Review new run</button>');
+    } else if(command==='output-folder') {
+      const files=samples.flatMap(id=>outputsFor(id).filter(o=>o.status==='Saved').map(o=>({id,o})));
+      showDialog('Output files','<div class="vbn-file-preview">'+escape(destination())+'</div><p>Choose a saved file to '+revealLabel.toLowerCase()+'.</p><ul class="vbn-file-list">'+files.slice(0,60).map(({id,o})=>'<li>'+outputFileControl(id,o)+'</li>').join('')+'</ul><small>Example files'+(files.length>60?' · first 60 of '+format(files.length)+' shown. All files are available by item.':'')+'</small>');
+    } else if(command==='manifest') {
+      showDialog('Run report','<dl><dt>Results</dt><dd>'+runSummary()+'</dd><dt>Total elapsed</dt><dd>'+elapsedTime()+'</dd><dt>Configuration</dt><dd>synthetic-batch-provenance.json</dd><dt>Compute</dt><dd>Prefer GPU · CPU fallback recorded per operation</dd></dl><div class="vbn-file-preview">'+escape(joined(destination(),'vipp_batch_manifest.json'))+'</div>');
+    }
+  });
+  $('#vbn-plan-body').addEventListener('contextmenu',event=>{
+    const row=event.target.closest('[data-item]');
+    if(!row) return;
+    event.preventDefault();if(!selectItem(row.dataset.item))return;
+    const menu=$('#vbn-item-context-menu'),page=$('#vbn-page-items');
+    menu.hidden=false;
+    const rect=page.getBoundingClientRect();
+    menu.style.left=Math.max(0,Math.min(event.clientX-rect.left,page.clientWidth-menu.offsetWidth))+'px';
+    menu.style.top=Math.max(0,Math.min(event.clientY-rect.top,page.clientHeight-menu.offsetHeight))+'px';
+  });
+  root.addEventListener('pointerdown',event=>{if(!event.target.closest('#vbn-item-context-menu'))$('#vbn-item-context-menu').hidden=true;});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape')$('#vbn-item-context-menu').hidden=true;});
+  $$('.vbn-sections [data-new-section]').forEach(tab=>tab.addEventListener('click',()=>setSection(tab.dataset.newSection)));
+  $('.vbn-sections').addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    const tabs=$$('.vbn-sections [data-new-section]'),index=tabs.indexOf(document.activeElement);
+    const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowLeft'?-1:1)+tabs.length)%tabs.length;
+    event.preventDefault();tabs[next].focus();setSection(tabs[next].dataset.newSection);
+  });
+  $('.vbn-search input').addEventListener('input',event=>{model.query=event.target.value;model.itemPage=0;renderItems();syncSummary();icons();});
+  $('.vbn-filter-label select').addEventListener('change',event=>{model.filter=event.target.value;model.itemPage=0;renderItems();syncSummary();icons();});
+  $('#vbn-item-prev').addEventListener('click',()=>{model.itemPage--;renderItems();});
+  $('#vbn-item-next').addEventListener('click',()=>{model.itemPage++;renderItems();});
+  $$('#vbn-page-setup input, #vbn-page-setup select').forEach(field=>{
+    if(field.disabled){field.dataset.required='true';return;}
+    field.addEventListener('input',()=>markDirty());
+    field.addEventListener('change',()=>markDirty());
+  });
+  $$('#vbn-page-setup .vbc-inline-field button').forEach(button=>{
+    button.addEventListener('click',()=>{
+      const field=button.parentElement.querySelector('input');
+      showDialog('Choose folder','<p>Try a different destination in this mockup.</p><label>Folder path<input aria-label="Folder path" value="'+escape(field.value)+'"></label>',
+        '<button type="button" class="vbc-primary-action" data-dialog-action="choose-folder" data-field="'+field.id+'">Use folder</button>');
+    });
+  });
+  $('.vbn-reset-button').addEventListener('click',()=>showDialog('Reset selected parameter overrides','<p>Restore workflow parameter values for '+format(model.selection.size)+' selected samples, including any hidden by filters. Run / bypass choices remain as shown.</p>','<button type="button" data-dialog-action="reset">Reset '+format(model.selection.size)+' selected samples</button>'));
+  const configButtons=$$('.vbn-commandbar .vbc-command-group button');
+  configButtons[0].addEventListener('click',()=>showDialog('Open batch configuration','<p>Example configuration</p><div class="vbn-file-preview">synthetic-batch-provenance.json</div><p>Loads the source folders, destination and saved overrides into this mockup.</p>','<button type="button" class="vbc-primary-action" data-dialog-action="open-config">Open example config</button>'));
+  configButtons[1].addEventListener('click',()=>{model.unsaved=false;syncSummary();setNotice('Configuration marked saved in this mockup');});
+  $('.vbn-more-menu-popover button').addEventListener('click',()=>{
+    $('.vbn-more-menu').open=false;model.overrides=initialOverrides();model.unsaved=true;setScenario('setup');
+  });
+  $('#vbn-close-button').addEventListener('click',()=>setNotice(model.state==='running'?'Window hidden in the app; the batch continues. This mockup stays open for review.':'Close would return to the workflow. This mockup stays open for review.'));
+  $('#vbc-state').addEventListener('change',event=>setScenario(event.target.value));
+  $('#vbc-compare').addEventListener('change',event=>root.dataset.compare=event.target.value);
+  $('#vbc-theme')?.addEventListener('change',event=>{root.dataset.theme=event.target.value;});
+  $('#vbc-width')?.addEventListener('change',event=>{root.dataset.width=event.target.value;});
+  $('#vbc-sample-count').addEventListener('change',event=>{
+    const section=model.section;
+    samples=Array.from({length:Number(event.target.value)},(_,i)=>'field_'+String(i+1).padStart(2,'0')).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    model.overrides=initialOverrides();model.query='';model.overrideQuery='';model.overrideFilter='all';model.filter='All items';model.overridePage=0;
+    $('#vbn-override-search').value='';$('#vbn-override-filter').value='all';$('.vbn-search input').value='';$('.vbn-filter-label select').value='All items';
+    setScenario('ready');setSection(section);render();
+  });
+  $('#vbc-node-count').addEventListener('change',event=>{
+    const section=model.section;parameters=buildParameters(Number(event.target.value));model.columns=new Set(parameters.map(p=>p.key));model.overrides=initialOverrides();model.missingParameter='threshold';$('#vbn-parameter-search').value='';$('#vbn-parameter-results').hidden=true;updateParameterCatalog();setScenario('ready');setSection(section);render();
+  });
+  function renderProposal() {
+    win.dataset.layout=proposal.layout;root.dataset.density=proposal.density;
+    if($('#vbc-layout'))$('#vbc-layout').value=proposal.layout;
+    const details=$('.vbn-technical-details');if(details)details.open=proposal.technicalDetails;
+  }
+  $('#vbc-layout')?.addEventListener('change',event=>{proposal.layout=event.target.value;renderProposal();});
+  if(globalThis.Tweak){
+    const tweak=new Tweak({container:win,onChange:renderProposal});
+    tweak.addSelect(proposal,'layout',{label:'Item details',options:[{label:'Beside the list',value:'split'},{label:'Below the list',value:'guided'}]});
+    tweak.addSelect(proposal,'density',{label:'Spacing',options:['comfortable','compact']});
+    tweak.addToggle(proposal,'technicalDetails',{label:'Expand reproducibility details'});
+  }
+  renderProposal();
+  root.dataset.compare=$('#vbc-compare').value;
+  setScenario('ready');
+})();
+</script>

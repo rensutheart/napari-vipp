@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QEvent, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -22,23 +22,34 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
-from napari_vipp._theme import category_color
+from napari_vipp._theme import category_foreground, palette_is_dark
 from napari_vipp.ui.examples import (
     EXAMPLE_WORKFLOWS,
     ExampleWorkflowSpec,
 )
+from napari_vipp.ui.palette_roles import blend_colors, custom_paint_colors
 from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text
 
-_INSERT_TREE_BASE = "#1f242c"
-_INSERT_TREE_ALTERNATE = "#252b35"
 
-
-def _apply_subtle_alternating_rows(tree: QTreeWidget) -> None:
+def _apply_subtle_alternating_rows(
+    tree: QTreeWidget,
+    source_palette: QPalette | None = None,
+) -> None:
     """Keep long insertion lists scannable without high-contrast striping."""
-    palette = tree.palette()
-    palette.setColor(QPalette.Base, QColor(_INSERT_TREE_BASE))
-    palette.setColor(QPalette.AlternateBase, QColor(_INSERT_TREE_ALTERNATE))
+    palette = QPalette(source_palette or tree.palette())
+    colors = custom_paint_colors(palette)
+    palette.setColor(QPalette.Base, colors.surface)
+    palette.setColor(QPalette.AlternateBase, colors.alternate_surface)
     tree.setPalette(palette)
+
+
+def _subtle_panel_style(palette: QPalette) -> str:
+    colors = custom_paint_colors(palette)
+    return (
+        f"color: {colors.text.name()}; padding: 6px; "
+        f"background: {colors.alternate_surface.name()}; "
+        f"border: 1px solid {colors.border.name()}; border-radius: 4px;"
+    )
 
 
 @dataclass(frozen=True)
@@ -87,7 +98,7 @@ class ConnectionInsertDialog(QDialog):
         self.tree.setHeaderLabels(["Node", "Insertion", "Category"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
-        _apply_subtle_alternating_rows(self.tree)
+        _apply_subtle_alternating_rows(self.tree, self.palette())
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -110,6 +121,14 @@ class ConnectionInsertDialog(QDialog):
 
         self.search.textChanged.connect(self._populate)
         self._populate("")
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange) and hasattr(
+            self, "tree"
+        ):
+            _apply_subtle_alternating_rows(self.tree, self.palette())
+            self._refresh_item_foregrounds()
 
     def selected_operation_id(self) -> str | None:
         item = self.tree.currentItem()
@@ -135,8 +154,7 @@ class ConnectionInsertDialog(QDialog):
             item.setData(0, Qt.UserRole, candidate.operation_id)
             item.setToolTip(0, candidate.detail)
             item.setToolTip(1, candidate.detail)
-            item.setForeground(0, QBrush(QColor(category_color(candidate.category))))
-            item.setForeground(1, QBrush(QColor(self._mode_color(candidate.mode))))
+            self._apply_item_foregrounds(item, candidate)
             self.tree.addTopLevelItem(item)
             if first_item is None:
                 first_item = item
@@ -152,6 +170,29 @@ class ConnectionInsertDialog(QDialog):
     def _accept_item(self, item, _column) -> None:
         if item.data(0, Qt.UserRole):
             self.accept()
+
+    def _apply_item_foregrounds(
+        self,
+        item: QTreeWidgetItem,
+        candidate: ConnectionInsertCandidate,
+    ) -> None:
+        palette = self.palette()
+        item.setForeground(
+            0,
+            QBrush(QColor(category_foreground(candidate.category, palette))),
+        )
+        item.setForeground(
+            1,
+            QBrush(QColor(self._mode_foreground(candidate.mode, palette))),
+        )
+
+    def _refresh_item_foregrounds(self) -> None:
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            operation_id = item.data(0, Qt.UserRole)
+            candidate = self._candidate_by_id.get(str(operation_id))
+            if candidate is not None:
+                self._apply_item_foregrounds(item, candidate)
 
     @staticmethod
     def _mode_label(mode: str) -> str:
@@ -170,6 +211,17 @@ class ConnectionInsertDialog(QDialog):
             "partial": "#38bdf8",
             "place": "#f59e0b",
         }.get(mode, "#cbd5e1")
+
+    @classmethod
+    def _mode_foreground(cls, mode: str, palette: QPalette) -> str:
+        accent = QColor(cls._mode_color(mode))
+        if palette_is_dark(palette):
+            return accent.name()
+        return blend_colors(
+            QColor(palette.color(QPalette.Text)),
+            accent,
+            0.56,
+        ).name()
 
     @staticmethod
     def _category_label(candidate: ConnectionInsertCandidate) -> str:
@@ -206,7 +258,7 @@ class ConnectionInsertMappingDialog(QDialog):
         self.tree.setHeaderLabels(["Upstream input", "Downstream output", "Mapping"])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
-        _apply_subtle_alternating_rows(self.tree)
+        _apply_subtle_alternating_rows(self.tree, self.palette())
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tree.itemDoubleClicked.connect(self._accept_item)
@@ -243,6 +295,13 @@ class ConnectionInsertMappingDialog(QDialog):
         if self.axis_combo is not None:
             self._on_axis_changed(self.axis_combo.currentIndex())
         self._populate()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange) and hasattr(
+            self, "tree"
+        ):
+            _apply_subtle_alternating_rows(self.tree, self.palette())
 
     def selected_mapping(self) -> ConnectionInsertPortMapping | None:
         item = self.tree.currentItem()
@@ -324,10 +383,7 @@ class ExampleWorkflowDialog(QDialog):
 
         self.details_label = QLabel("Select an example workflow.")
         self.details_label.setWordWrap(True)
-        self.details_label.setStyleSheet(
-            "color: #cbd5e1; padding: 6px; background: #1f2937; "
-            "border: 1px solid #374151; border-radius: 4px;"
-        )
+        self.details_label.setStyleSheet(_subtle_panel_style(self.palette()))
         layout.addWidget(self.details_label)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
@@ -341,6 +397,13 @@ class ExampleWorkflowDialog(QDialog):
         self.open_button.clicked.connect(self._accept_if_selected)
         self.buttons.rejected.connect(self.reject)
         self._populate_tree()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange) and hasattr(
+            self, "details_label"
+        ):
+            self.details_label.setStyleSheet(_subtle_panel_style(self.palette()))
 
     def selected_example(self) -> ExampleWorkflowSpec | None:
         return self._example_by_id(self._selected_example_id)

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QAbstractItemView, QApplication
 
 from napari_vipp.core.compute import (
@@ -28,9 +29,20 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     PipelineOptimizerWorkerOutcome,
     _candidate_timing_display,
     _candidate_timing_text,
+    _format_elapsed_clock,
     _scientific_check,
     _subtle_group_brush,
 )
+from napari_vipp.ui.palette_roles import theme_colors
+
+
+def _theme_palette(*, base: str, text: str) -> QPalette:
+    palette = QPalette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Window, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    palette.setColor(QPalette.WindowText, QColor(text))
+    return palette
 
 
 def _reviewable_result():
@@ -210,7 +222,10 @@ def test_reviewable_difference_requires_explicit_acceptance_before_apply(qtbot):
     assert "normalized maximum error 0.08%" in rendered
     assert "review limit 0.1%" in rendered
     assert "Nothing changes until" in rendered
-    assert "#fcd34d" in dialog.result_label.styleSheet()
+    assert (
+        theme_colors(dialog.palette()).warning.foreground.name()
+        in dialog.result_label.styleSheet()
+    )
     assert not dialog.apply_button.isEnabled()
 
     dialog._apply_result()
@@ -415,6 +430,130 @@ def test_dialog_updates_overall_and_current_operation_progress_independently(qtb
     assert dialog.operation_progress_bar.value() == 10
 
 
+def _start_timed_dialog(qtbot, monkeypatch):
+    from napari_vipp.ui import compute_pipeline_optimizer_dialog as dialog_module
+
+    clock = [100.0]
+    monkeypatch.setattr(
+        dialog_module, "time", SimpleNamespace(monotonic=lambda: clock[0])
+    )
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    worker = PipelineOptimizerWorker(lambda _cancelled, _progress: object())
+    pool = SimpleNamespace(start=lambda _worker: None)
+    dialog.start(worker, pool)
+    return dialog, worker, pool, clock
+
+
+def test_elapsed_clock_updates_without_worker_progress(qtbot, monkeypatch):
+    dialog, _worker, _pool, clock = _start_timed_dialog(qtbot, monkeypatch)
+    dialog.show()
+    assert dialog.elapsed_label.text() == "Elapsed 00:00:00"
+    assert dialog.stage_elapsed_label.text() == "Current stage 00:00:00"
+    assert dialog._elapsed_timer.isActive()
+    assert dialog.elapsed_label.isVisible()
+    assert "not a completion estimate" in dialog.elapsed_label.toolTip()
+    assert "only when they finish" in dialog.elapsed_note_label.text()
+    assert "safe stopping points" in dialog.time_limit_combo.toolTip()
+    initial_label_height = dialog.elapsed_label.height()
+    initial_bar_y = dialog.operation_progress_bar.y()
+
+    clock[0] += 3_661
+    qtbot.waitUntil(lambda: dialog.elapsed_label.text() == "Elapsed 01:01:01")
+
+    assert dialog.stage_elapsed_label.text() == "Current stage 01:01:01"
+    assert dialog.operation_progress_bar.value() == 0
+    assert dialog.elapsed_label.height() == initial_label_height
+    assert dialog.operation_progress_bar.y() == initial_bar_y
+    dialog.shutdown()
+
+
+def test_stage_clock_changes_only_for_new_node_backend_or_measurement(
+    qtbot, monkeypatch
+):
+    dialog, _worker, _pool, clock = _start_timed_dialog(qtbot, monkeypatch)
+
+    def progress(*, current=0, node="background", backend="cpu", phase="parity_cold"):
+        return PipelineOptimizerProgress(
+            completed=2,
+            total=10,
+            message="Benchmarking Subtract Background.",
+            phase="benchmarking",
+            operation_completed=current,
+            operation_total=171,
+            operation_message=f"Rolling-ball YX plane ({current} of 171).",
+            node_id=node,
+            implementation_id=backend,
+            measurement_phase=phase,
+        )
+
+    clock[0] = 110.0
+    dialog._on_progress(progress())
+    clock[0] = 172.0
+    dialog._on_progress(progress(current=37))
+    assert dialog.elapsed_label.text() == "Elapsed 00:01:12"
+    assert dialog.stage_elapsed_label.text() == "Current stage 00:01:02"
+
+    for changed in (
+        progress(phase="warm"),
+        progress(phase="warm", backend="gpu"),
+        progress(phase="warm", backend="gpu", node="gaussian"),
+    ):
+        clock[0] += 30.0
+        dialog._on_progress(changed)
+        assert dialog.stage_elapsed_label.text() == "Current stage 00:00:00"
+    assert dialog.elapsed_label.text() == "Elapsed 00:02:42"
+    dialog.shutdown()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        PipelineOptimizerWorkerOutcome(cancelled=True, reason_code="cancelled"),
+        PipelineOptimizerWorkerOutcome(error="Failed", reason_code="optimizer_failed"),
+        PipelineOptimizerWorkerOutcome(
+            error="Timed out", reason_code="deadline_exceeded"
+        ),
+        PipelineOptimizerWorkerOutcome(result=_exact_result_from(_reviewable_result())),
+    ],
+)
+def test_elapsed_clock_stops_on_terminal_outcome_and_resets_for_retry(
+    qtbot, monkeypatch, outcome
+):
+    dialog, worker, pool, clock = _start_timed_dialog(qtbot, monkeypatch)
+    clock[0] += 12
+    dialog.cancel()
+    assert worker.cancel_event.is_set()
+    assert dialog._elapsed_timer.isActive()
+    clock[0] += 8
+    dialog._on_finished(outcome)
+
+    assert not dialog._elapsed_timer.isActive()
+    assert dialog.elapsed_label.text() == "Elapsed 00:00:20"
+    assert not dialog.elapsed_label.isHidden()
+    assert dialog.stage_elapsed_label.isHidden()
+    assert dialog.elapsed_note_label.isHidden()
+    clock[0] += 900
+    dialog._refresh_elapsed_time()
+    assert dialog.elapsed_label.text() == "Elapsed 00:00:20"
+
+    next_worker = PipelineOptimizerWorker(lambda _cancelled, _progress: object())
+    dialog.start(next_worker, pool)
+    assert dialog.elapsed_label.text() == "Elapsed 00:00:00"
+    assert dialog.stage_elapsed_label.text() == "Current stage 00:00:00"
+    assert not dialog.elapsed_note_label.isHidden()
+    assert dialog._elapsed_timer.isActive()
+    dialog.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(-1, "00:00:00"), (59.9, "00:00:59"), (60, "00:01:00"), (360_000, "100:00:00")],
+)
+def test_elapsed_clock_formats_monotonic_wall_time(seconds, expected):
+    assert _format_elapsed_clock(seconds) == expected
+
+
 def test_worker_preserves_structured_timeout_report(qtbot):
     report = PipelineOptimizationTimeoutReport(
         stage="node-benchmark",
@@ -521,6 +660,8 @@ def test_dialog_rolls_back_running_state_when_worker_dispatch_fails(qtbot):
         dialog.start(worker, FailingPool())
 
     assert not dialog.running
+    assert not dialog._elapsed_timer.isActive()
+    assert dialog.elapsed_label.isHidden()
     assert dialog._worker is None
     assert dialog.analyze_button.isEnabled()
     assert dialog.close_button.isEnabled()
@@ -950,6 +1091,7 @@ def test_shutdown_terminates_queued_worker_and_ignores_late_finish(qtbot):
 
     assert worker.cancel_event.is_set()
     assert not dialog.running
+    assert not dialog._elapsed_timer.isActive()
     assert not dialog.isVisible()
     assert dialog.windowModality() is Qt.NonModal
 
@@ -959,3 +1101,27 @@ def test_shutdown_terminates_queued_worker_and_ignores_late_finish(qtbot):
 
     assert dialog.outcome is None
     assert not dialog.apply_button.isEnabled()
+
+
+def test_optimizer_error_restyles_live_with_the_dialog_palette(qtbot):
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    dark = _theme_palette(base="#111827", text="#f8fafc")
+    dialog.setPalette(dark)
+    dialog._on_finished(
+        PipelineOptimizerWorkerOutcome(
+            error="benchmark failed",
+            reason_code="optimizer_failed",
+        )
+    )
+    dark_style = dialog.result_label.styleSheet()
+
+    assert theme_colors(dark).error.foreground.name() in dark_style
+
+    light = _theme_palette(base="#ffffff", text="#111827")
+    dialog.setPalette(light)
+    qtbot.waitUntil(lambda: dialog.result_label.styleSheet() != dark_style)
+
+    assert (
+        theme_colors(light).error.foreground.name() in dialog.result_label.styleSheet()
+    )

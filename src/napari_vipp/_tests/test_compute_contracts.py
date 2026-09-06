@@ -395,6 +395,8 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "label_connected_components",
         "measure_objects",
         "measure_objects_intensity",
+        "measure_3d_mesh_morphology",
+        "analyze_skeleton",
     }
     custom_ids = {
         spec.implementation_id

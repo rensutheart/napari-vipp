@@ -5,11 +5,12 @@ from __future__ import annotations
 import html
 import statistics
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
-from qtpy.QtGui import QBrush, QColor, QKeySequence
+from qtpy.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
+from qtpy.QtGui import QBrush, QColor, QKeySequence, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -36,6 +37,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
 )
+from napari_vipp.ui.palette_roles import theme_colors
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +287,15 @@ class PipelineOptimizerDialog(QDialog):
         self._outcome: PipelineOptimizerWorkerOutcome | None = None
         self._running = False
         self._shutdown = False
+        self._analysis_started_at: float | None = None
+        self._stage_started_at: float | None = None
+        self._stage_key: tuple[str, ...] | None = None
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.setInterval(250)
+        self._elapsed_timer.timeout.connect(self._refresh_elapsed_time)
+        self._result_tone: str | None = None
+        self._result_bold = False
+        self._applying_result_style = False
         self._node_titles = {
             str(node_id): str(title).strip() or str(node_id)
             for node_id, title in dict(node_titles or {}).items()
@@ -323,7 +334,9 @@ class PipelineOptimizerDialog(QDialog):
         ):
             self.time_limit_combo.addItem(label, seconds)
         self.time_limit_combo.setToolTip(
-            "Maximum wall-clock analysis time. This is not a RAM or VRAM "
+            "Analysis wall-clock budget, checked at safe stopping points. "
+            "An in-progress CPU or GPU call may need to finish before the "
+            "limit or cancellation takes effect. This is not a RAM or VRAM "
             "limit. Completed exact node evidence is reused on a later retry."
         )
         time_limit_label = QLabel("Time limit")
@@ -336,6 +349,29 @@ class PipelineOptimizerDialog(QDialog):
         time_limit_row.addWidget(time_limit_label)
         time_limit_row.addWidget(self.time_limit_combo)
         time_limit_row.addWidget(time_limit_note, 1)
+
+        self.elapsed_label = QLabel("Elapsed 00:00:00")
+        self.elapsed_label.setAccessibleName("Pipeline analysis elapsed time")
+        self.stage_elapsed_label = QLabel("Current stage 00:00:00")
+        self.stage_elapsed_label.setAccessibleName(
+            "Current benchmark stage elapsed time"
+        )
+        elapsed_row = QHBoxLayout()
+        for label in (self.elapsed_label, self.stage_elapsed_label):
+            label.setMinimumWidth(label.fontMetrics().horizontalAdvance(label.text()))
+            label.setToolTip(
+                "Wall time updates independently of benchmark progress. "
+                "It is not a completion estimate or proof that the current "
+                "CPU or GPU call is making progress."
+            )
+            label.setVisible(False)
+            elapsed_row.addWidget(label)
+        elapsed_row.addStretch(1)
+        self.elapsed_note_label = QLabel(
+            "Some CPU calls report progress only when they finish."
+        )
+        self.elapsed_note_label.setWordWrap(True)
+        self.elapsed_note_label.setVisible(False)
 
         self.overall_progress_label = QLabel(
             f"Ready. {locked_node_count} explicitly locked {locked_node_label} "
@@ -431,6 +467,7 @@ class PipelineOptimizerDialog(QDialog):
         self.cancel_button = QPushButton("Cancel analysis")
         self.cancel_button.setVisible(False)
         self.close_button = QPushButton("Close")
+        self._progress_spacer = QWidget()
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -441,6 +478,8 @@ class PipelineOptimizerDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
         layout.addLayout(time_limit_row)
+        layout.addLayout(elapsed_row)
+        layout.addWidget(self.elapsed_note_label)
         layout.addWidget(self.overall_progress_label)
         layout.addWidget(self.overall_progress_bar)
         layout.addWidget(self.operation_progress_label)
@@ -449,6 +488,10 @@ class PipelineOptimizerDialog(QDialog):
         layout.addWidget(self.details_button, 0, Qt.AlignLeft)
         layout.addWidget(self.result_table, 1)
         layout.addWidget(self.parity_review_checkbox)
+        # Keep the status lines and bars together while the results table is
+        # hidden. Otherwise Qt distributes a tall dialog's spare height
+        # between every label, separating the clock from its explanation.
+        layout.addWidget(self._progress_spacer, 1)
         layout.addLayout(buttons)
 
         self.analyze_button.clicked.connect(self._request_analysis)
@@ -501,6 +544,7 @@ class PipelineOptimizerDialog(QDialog):
         self.result_table.setVisible(False)
         self.result_label.setText("")
         self.result_label.setToolTip("")
+        self._set_result_tone(None)
         self.overall_progress_bar.setRange(0, 0)
         self.overall_progress_label.setText(
             "Overall pipeline: capturing exact evidence. You can cancel at any time."
@@ -511,6 +555,14 @@ class PipelineOptimizerDialog(QDialog):
         self.operation_progress_label.setText(
             "Current operation: waiting for the first benchmark stage."
         )
+        self._analysis_started_at = time.monotonic()
+        self._stage_started_at = self._analysis_started_at
+        self._stage_key = None
+        self.elapsed_label.setVisible(True)
+        self.stage_elapsed_label.setVisible(True)
+        self.elapsed_note_label.setVisible(True)
+        self._refresh_elapsed_time()
+        self._elapsed_timer.start()
         worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(self._on_finished)
         try:
@@ -525,7 +577,10 @@ class PipelineOptimizerDialog(QDialog):
                 except (RuntimeError, TypeError):
                     pass
             self._worker = None
+            self._stop_elapsed_timer()
             self._running = False
+            self._analysis_started_at = None
+            self.elapsed_label.setVisible(False)
             self.analyze_button.setEnabled(True)
             self.close_button.setEnabled(True)
             self.time_limit_combo.setEnabled(True)
@@ -573,6 +628,7 @@ class PipelineOptimizerDialog(QDialog):
                 except (RuntimeError, TypeError):
                     pass
         self._worker = None
+        self._stop_elapsed_timer()
         self._running = False
         self.analyze_button.setEnabled(False)
         self.apply_button.setEnabled(False)
@@ -596,6 +652,34 @@ class PipelineOptimizerDialog(QDialog):
             return
         super().closeEvent(event)
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """Refresh semantic result text after a live host-theme change."""
+
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._apply_result_style()
+
+    def _set_result_tone(self, tone: str | None, *, bold: bool = False) -> None:
+        self._result_tone = tone
+        self._result_bold = bool(bold)
+        self._apply_result_style()
+
+    def _apply_result_style(self) -> None:
+        if getattr(self, "_applying_result_style", False) or not hasattr(
+            self, "result_label"
+        ):
+            return
+        self._applying_result_style = True
+        try:
+            style = "font-weight: 650;" if self._result_bold else ""
+            if self._result_tone is not None:
+                colors = theme_colors(_effective_palette(self))
+                foreground = getattr(colors, self._result_tone).foreground.name()
+                style = f"color: {foreground};" + style
+            self.result_label.setStyleSheet(style)
+        finally:
+            self._applying_result_style = False
+
     def _request_analysis(self) -> None:
         if self._running or self._shutdown:
             return
@@ -610,6 +694,7 @@ class PipelineOptimizerDialog(QDialog):
             self.overall_progress_bar,
             self.operation_progress_label,
             self.operation_progress_bar,
+            self._progress_spacer,
         ):
             widget.setVisible(not reviewing)
 
@@ -645,9 +730,44 @@ class PipelineOptimizerDialog(QDialog):
         if self.result_table.isVisible():
             self.result_table.resizeRowsToContents()
 
+    def _refresh_elapsed_time(self) -> None:
+        """Show wall time even while a worker makes one long, silent call."""
+
+        if not self._running or self._analysis_started_at is None:
+            return
+        now = time.monotonic()
+        self.elapsed_label.setText(
+            f"Elapsed {_format_elapsed_clock(now - self._analysis_started_at)}"
+        )
+        if self._stage_started_at is not None:
+            self.stage_elapsed_label.setText(
+                f"Current stage {_format_elapsed_clock(now - self._stage_started_at)}"
+            )
+
+    def _stop_elapsed_timer(self) -> None:
+        self._refresh_elapsed_time()
+        self._elapsed_timer.stop()
+        self.stage_elapsed_label.setVisible(False)
+        self.elapsed_note_label.setVisible(False)
+
     def _on_progress(self, progress: PipelineOptimizerProgress) -> None:
         if self._shutdown:
             return
+        if self._running:
+            # Counter/message updates within the same measurement do not
+            # restart its clock. A node, implementation, or phase change does.
+            stage_key = (
+                progress.phase,
+                progress.node_id,
+                progress.implementation_id,
+                progress.measurement_phase,
+            )
+            if not any(stage_key):
+                stage_key = (progress.message,)
+            if stage_key != self._stage_key:
+                self._stage_key = stage_key
+                self._stage_started_at = time.monotonic()
+            self._refresh_elapsed_time()
         self.overall_progress_bar.setRange(0, progress.total)
         self.overall_progress_bar.setValue(progress.completed)
         self.overall_progress_bar.setFormat("Overall %p%")
@@ -670,6 +790,7 @@ class PipelineOptimizerDialog(QDialog):
     def _on_finished(self, outcome: PipelineOptimizerWorkerOutcome) -> None:
         if self._shutdown:
             return
+        self._stop_elapsed_timer()
         self._running = False
         self._outcome = outcome
         self._worker = None
@@ -700,7 +821,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
                 self.overall_progress_bar.setFormat("Cancelled at %p%")
                 self.operation_progress_bar.setFormat("Cancelled at %p%")
-                self.result_label.setStyleSheet("")
+                self._set_result_tone(None)
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
             elif outcome.reason_code == "deadline_exceeded":
@@ -710,7 +831,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
                 self.overall_progress_bar.setFormat("Stopped at %p%")
                 self.operation_progress_bar.setFormat("Stopped at %p%")
-                self.result_label.setStyleSheet("color: #fcd34d;")
+                self._set_result_tone("warning")
                 self.result_label.setTextFormat(Qt.RichText)
                 self.result_label.setText(
                     _timeout_result_html(
@@ -726,14 +847,14 @@ class PipelineOptimizerDialog(QDialog):
                 self.overall_progress_label.setText(
                     "Overall pipeline: no safe pipeline-wide change is recommended."
                 )
-                self.result_label.setStyleSheet("color: #fcd34d;")
+                self._set_result_tone("warning")
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
             else:
                 self.overall_progress_label.setText(
                     "Overall pipeline: analysis failed."
                 )
-                self.result_label.setStyleSheet("color: #fca5a5;")
+                self._set_result_tone("error")
                 self.result_label.setTextFormat(Qt.PlainText)
                 self.result_label.setText(outcome.error)
             self.details_button.setVisible(False)
@@ -870,7 +991,7 @@ class PipelineOptimizerDialog(QDialog):
             rounds = proposal.validation_measurement_rounds
             rounds_text = f"{rounds} paired round{'s' if rounds != 1 else ''}"
             if winner == "inconclusive":
-                self.result_label.setStyleSheet("font-weight: 650;")
+                self._set_result_tone(None, bold=True)
                 self.result_label.setText(
                     "No clear winner—current settings kept. Whole-pipeline "
                     f"totals: current {_format_seconds(current)}; tested "
@@ -885,7 +1006,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
             elif winner == "current":
                 self.result_label.setToolTip("")
-                self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+                self._set_result_tone("success", bold=True)
                 self.result_label.setText(
                     "Current settings were faster in final validation: "
                     f"{_format_seconds(current)} versus "
@@ -895,7 +1016,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
             else:
                 self.result_label.setToolTip("")
-                self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+                self._set_result_tone("success", bold=True)
                 self.result_label.setText(
                     "Faster pipeline validated: "
                     f"{_format_seconds(current)} current → "
@@ -905,7 +1026,7 @@ class PipelineOptimizerDialog(QDialog):
                 )
         else:
             self.result_label.setToolTip("")
-            self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+            self._set_result_tone("success", bold=True)
             basis_type = PipelineOptimizationSelectionBasis
             conservative_basis = basis_type.CONSERVATIVE_BOUND_RETAINED_CURRENT
             if proposal.selection_basis is conservative_basis:
@@ -934,7 +1055,7 @@ class PipelineOptimizerDialog(QDialog):
                 "The measured difference is within VIPP's review limit, but "
                 "only you can decide whether it is acceptable for this analysis."
             )
-            self.result_label.setStyleSheet("color: #fcd34d; font-weight: 650;")
+            self._set_result_tone("warning", bold=True)
             self.result_label.setText(
                 f"{review_text}\n\n{optimization_summary}"
                 if optimization_summary
@@ -949,7 +1070,7 @@ class PipelineOptimizerDialog(QDialog):
                 candidate_refusals,
                 self._node_titles,
             )
-            self.result_label.setStyleSheet("color: #fcd34d; font-weight: 650;")
+            self._set_result_tone("warning", bold=True)
             self.result_label.setText(
                 f"{existing_summary}\n\n{refusal_text}"
                 if existing_summary
@@ -973,12 +1094,23 @@ class PipelineOptimizerDialog(QDialog):
         self.apply_requested.emit(result)
 
 
+def _format_elapsed_clock(value: float) -> str:
+    hours, remainder = divmod(max(0, int(value)), 3_600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def _format_seconds(value: float) -> str:
     if value < 0.001:
         return f"{value * 1_000_000:.1f} µs"
     if value < 1.0:
         return f"{value * 1_000:.1f} ms"
     return f"{value:.3f} s"
+
+
+def _effective_palette(widget: QWidget) -> QPalette:
+    parent = widget.parentWidget()
+    return QWidget.palette(parent) if parent is not None else QWidget.palette(widget)
 
 
 def _format_duration(value: float) -> str:

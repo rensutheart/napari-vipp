@@ -1,6 +1,6 @@
 # Measurement Workflow Guide
 
-Last reviewed: 2026-07-02
+Last reviewed: 2026-09-02
 
 This guide is the practical wrap-up for the current measurement and morphology
 phase. It explains which nodes produce tables, how those tables are meant to be
@@ -42,6 +42,7 @@ error state.
 
 Current manual table nodes:
 
+- `Intensity Histogram`;
 - `Measure Objects`;
 - `Measure Objects + Intensity`;
 - `Measure 3D Mesh Morphology`;
@@ -52,6 +53,26 @@ Current manual table nodes:
 
 Manual nodes can opt into `Auto Recalculate`, but the default should remain off
 for analysis steps that may become expensive on large z-stacks.
+
+## Intensity Histograms
+
+Use `Intensity Histogram` for one reproducible distribution from the complete
+connected numeric array. The first version deliberately has one input. Comparing
+two images requires a shared range, shared bin edges, and explicit normalization
+rules, so that is reserved for a separate comparison node instead of making an
+ordinary histogram ambiguous.
+
+The node provides an exact fixed bin count, data-derived or custom limits, and
+linear or genuinely logarithmic bin spacing. NaN and infinite values never enter
+the bins. Custom-range underflow and overflow, and non-positive values excluded
+from logarithmic bins, are counted in output metadata rather than silently lost.
+
+Its table contains bin edges, centres, widths, counts, fractions, probability
+densities, and cumulative values. The inspector uses this cached table for its
+compact plot and detailed pop-out; it never rescans the source merely to redraw
+the result. Count, fraction, density, and cumulative views therefore change
+presentation without recalculating the workflow. The Results section remains
+available for sortable inspection and CSV/TSV export.
 
 ## Object Measurements
 
