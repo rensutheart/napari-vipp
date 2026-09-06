@@ -2,57 +2,68 @@
 
 ## 0.15.0a1 - 2026-09-06
 
-### Batch workflow
+### Workflow workspace and node library
 
-- Rebuilt the batch window around four task-based tabs: **Setup**, **Items & outputs**, **Overrides**, and **Run & results**, with a persistent activity strip and a context-appropriate next action.
-- Setup now presents workflow identity, source pairing, destination, and run policy together. Source file discovery appears immediately in the item list, followed by background metadata and exact-content checks with per-file activity and checked-file counts.
-- Separated checking from pixel preview. **Check batch** prepares and validates a plan without calculating the representative image or saving outputs; **Preview selected** remains an explicit, optional graph calculation.
-- Added actionable recheck warnings and clearer distinctions between a full batch check, a selected-item recheck, and the read-only **Refresh file status** action.
-- Added per-item **Keep existing outputs**, **Rerun and overwrite outputs**, and **Use batch default** choices to the item context menu. Individual choices can coexist within one batch and are saved against the exact source pairing and destination, not a row number.
-- Changing only the existing-file policy updates the checked plan without repeating source inspection. Keeping existing files preserves outputs already present while still creating missing outputs; planned, existing, overwrite, and unresolved-decision counts now reflect that intent.
-- Batch configuration version 6 records individual file decisions and continues to read versions 1–5. Workflow version 6 and manifest version 5 remain unchanged. Generated batch runners preserve the same per-item policies.
-- Reworked the parameter override matrix with persistent field labels, centered values, readable node/parameter/default headers, explicit page and matching-sample selection, and separate reset-selected and reset-all actions.
-- Redesigned **Edit selected** as a resizable, clearly guided bulk editor. Only checked parameters change; other overrides remain intact.
-- Integrated the existing whole-batch Run/Bypass controls into a matching collapsible section. Distinct colours identify forced Run and Bypass choices, and the Overrides page scrolls as a whole.
-- Simplified the main graph's batch representative controls and added a direct route back to inspect that sample in the batch window.
-- Planned-output details now lead with the producing node, output kind, and format; exact file paths are secondary. Source and output reveal actions have platform-appropriate labels and icons.
-- Refined table typography, spacing, column widths, and link hit areas. Selecting a result row reveals its outputs; clicking its underlined name explicitly navigates to item review.
-- Added preparation feedback, elapsed time, per-sample node counts, and friendly node names during execution. Progress labels reserve two bottom-aligned lines to prevent ordinary wrapping from shifting the tables.
-- Reused the freshly validated Run plan at the worker handoff, removing an unnecessary second full collection scan. Exact source-content validation before use and destination checks remain in place.
-- Added an inline, human-readable final run report with elapsed time, completed/kept/failed/cancelled outcomes, output counts, and expandable failure reasons. The manifest JSON remains a separately labelled technical provenance artifact.
-- Completed runs stay in a report-review state instead of offering an ambiguous rerun action. Reviewing Setup is separate from explicitly checking and starting another run.
-- Corrected cancellation handling so a cooperative stop is not mistaken for a CPU/GPU cleanup failure. Genuine unverified cleanup still blocks further calculation until recovery.
-
-### Inspection, plots, and measurement
-
-- Rebuilt the responsive, theme-aware inspector with clearer connected-input summaries, context-aware controls, consistent spacing, and background diagnostics. Graph dragging and presentation refreshes no longer trigger unnecessary heavy inspector work.
-- Added resizable, sortable result-table windows with units and background CSV/TSV export. Sorting changes the view only; export preserves the workflow's original row order and values.
-- Added the **Intensity Histogram** analysis node for reproducible scalar or multichannel distributions with shared bin edges, explicit limits, linear or logarithmic bin spacing, counts, fractions, densities, and cumulative values.
-- Intensity Histogram records non-finite exclusions, custom-range underflow/overflow, and non-positive logarithmic exclusions in metadata. Its inspector and pop-out reuse the calculated table rather than rescanning source pixels for display changes.
-- Improved histogram and colocalization pop-outs, including channel-aware legends, less opaque overlapping histogram bars, zero-inclusive shared scatter axes, equal-axis and populated-data zoom controls, and clearer axis titles.
-- Detached scatter plots support up to 4096 bins per axis with background, memory-gated calculation. Compact and interactive estimates use bounded mass-preserving derivatives; display-only changes do not replace scientific calculations.
-- Added GPU-assisted **Measure 3D Mesh Morphology** for eligible non-negative int32 3D labels. GPU label preparation feeds the authoritative CPU marching-cubes and convex-hull finalizer; this is a hybrid implementation, not an all-GPU mesh algorithm.
-- Added GPU **Analyze Skeleton** measurement for eligible already-skeletonized boolean 2D/3D inputs, retaining the CPU reference's voxel-graph and physical calibration rules. This does not add GPU skeleton thinning.
-- Extended compute support, memory admission, cancellation/progress, and table finalization contracts for those measurement providers.
-
-### Workflow editing and scientific correctness
-
-- Reorganized the toolbar into workflow commands, preview and compute controls, graph navigation, and a persistent status/activity footer, with narrower-layout alternatives.
+- Rebuilt the node library around a compact category-icon rail and category popups, with operation counts, clearer icons and tooltips, and accessible labels. Global search spans the library and restores the previous category expansion state when cleared.
+- Reorganized the main toolbar into grouped workflow commands, **Preview**, compute controls, graph navigation, and Settings, with responsive alternatives for narrower windows and a persistent status/activity footer.
+- Dropping a compatible library node onto a terminal output now appends and automatically connects it in one undoable edit.
+- **Image Source** accepts local image-file drops directly on its graph card and file or pixel paste with Ctrl+V/Cmd+V. File-backed sources retain their metadata; pasted colour pixels retain explicit RGB/RGBA semantics.
 - Added total and current-stage elapsed timers to **Find fastest**, independent of worker progress updates. The dialog explains that some CPU calls report only on completion and that time limits/cancellation wait for safe checkpoints; the timers do not claim measurable progress within an opaque library call.
-- Image Source accepts local image-file drops directly on its graph card and file or pixel paste with Ctrl+V/Cmd+V. File-backed sources retain their metadata; pasted colour pixels retain explicit RGB/RGBA semantics.
-- Replaced the public **ImageJ Auto Threshold (8-bit)** method selector with a fixed **ImageJ Default Threshold (8-bit)** node. Previously saved ImageJ Triangle nodes retain that separate calculation as fixed legacy compatibility, not a silent conversion to Default or generic Triangle.
-- Clarified **Minimum Threshold** as a valley-between-peaks method. Its histogram smoothing pass limit is a convergence safety bound, not an image-blurring strength, and unsuccessful convergence remains an explicit error.
-- Renamed **Clip** to **Clamp Intensity**, with explicit bound semantics and no intended change to its calculation.
-- Corrected mixed-rank T/C navigation, hidden Crop/Inspect layer lifetime, scalar images incorrectly inferred as RGB, and encoded-colour axis validation. Rendering Select/Reorder axis controls no longer silently changes saved parameters.
-- Prevented a failed replacement-source calculation from presenting unrelated cached downstream pixels as current results. Provenance-compatible completed boundaries remain available.
-- Improved cache reuse across Calculate all, bypass, and source-loading transitions while preserving scientific invalidation. Napari reslicing no longer masquerades as a source-pixel edit.
-- Corrected Combine Channels colour invalidation and saving so downstream colour composites and reopened workflows reflect authored colours consistently.
+
+### Operation-aware inspector
+
+- Rebuilt the responsive, theme-aware inspector around operation-specific profiles, with consistent spacing, persistent labels, and controls appropriate to each operation rather than one generic parameter layout.
+- Connected-input summaries now explain scientific roles as well as connections. Deconvolution distinguishes the observed image from the point-spread function, while **Calculate New Image** shows the weighted equation being constructed.
+- Added more relevant diagnostic views, including object-size and measurement distributions, alongside image histograms and operation-specific guidance.
+- Background diagnostics and lightweight presentation refreshes keep graph dragging and existing threshold-guide interactions responsive, and preserve the inspector's scroll position instead of repeatedly rebuilding heavy content.
 - Added a seven-lane synthetic inspector showcase covering the current node palette and deterministic threshold phantoms for repeatable UI review.
 
-### Upgrading and remaining limits
+### Plots, analysis, and measurement
 
-- This is an alpha release. Preserve original data and copies of workflows/configurations before resaving, and revalidate analyses affected by the changed controls or scientific contracts. New version-6 batch configurations are not readable by older VIPP releases that support only version 5.
-- The ImageJ Default/legacy Triangle implementation remains experimental and source-aligned to ImageJ 1.54p; independent ImageJ-generated golden parity is not claimed. Generic Triangle and Isodata retain their distinct contracts.
+- Extended **Normalize** with four modes: robust z-score using median/MAD, maximum-absolute scaling, reference z-score using a saved mean and standard deviation, and percentile scaling to 0–1. Existing min-max and z-score calculations retain their behaviour; fitted statistics apply across the supplied array, so split channels first when independent channel normalization is required.
+- Added the **Intensity Histogram** analysis node for reproducible scalar or multichannel distributions with shared bin edges, explicit limits, linear or logarithmic bin spacing, counts, fractions, densities, and cumulative values.
+- Intensity Histogram records non-finite exclusions, custom-range underflow/overflow, and non-positive logarithmic exclusions in metadata. Its inspector and pop-out reuse the calculated table rather than rescanning source pixels for display changes.
+- Added resizable, sortable result-table windows with units, clearer non-finite/missing-value diagnostics, and background CSV/TSV export. Sorting changes the view only; export preserves the workflow's original row order and values.
+- Improved histogram and colocalization pop-outs, including channel-aware legends, less opaque overlapping histogram bars, zero-inclusive shared scatter axes, equal-axis and populated-data zoom controls, and clearer axis titles. Scatter review is available directly from colocalization metric nodes.
+- Detached scatter plots support up to 4096 bins per axis with background, memory-gated calculation. Compact and interactive estimates use bounded mass-preserving derivatives; display-only changes do not replace scientific calculations.
+- Reduced CPU measurement work through tight per-object mesh regions, cropped skeleton component graphs, and spatial-indexed nearest-object distances. These optimizations preserve physical calibration, global coordinates, result ordering, and deterministic distance ties; sparse label IDs no longer require mesh preparation proportional to the largest ID.
+- Added GPU-assisted **Measure 3D Mesh Morphology** for eligible non-negative int32 3D labels. GPU label preparation feeds the authoritative CPU marching-cubes and convex-hull finalizer; this is a hybrid implementation, not an all-GPU mesh algorithm.
+- Added GPU **Analyze Skeleton** measurement for eligible already-skeletonized boolean 2D/3D inputs, retaining the CPU reference's voxel-graph and physical calibration rules. This does not add GPU skeleton thinning.
+- Extended compute support, memory admission, cancellation/progress, and table finalization contracts for those measurement providers. Proven label-array facts now survive validated label filtering, avoiding unnecessary rescans when deciding downstream GPU eligibility.
+
+### Batch workflow
+
+- Rebuilt the batch window around four task-based tabs: **Setup**, **Items & outputs**, **Overrides**, and **Run & results**, with a persistent activity strip and a context-appropriate next action. Setup brings workflow identity, source pairing, destination, and run policy together.
+- Source discovery appears immediately in the item list, followed by background metadata and exact-content checks with per-file activity and checked-file counts. **Check batch** validates a plan without calculating the representative image or saving outputs; **Preview selected** remains an explicit, optional graph calculation.
+- Added actionable recheck warnings and clearer distinctions between a full batch check, a selected-item recheck, and the read-only **Refresh file status** action. The main graph's simplified representative controls provide a direct route back to inspect that sample in the batch window.
+- Added per-item **Keep existing outputs**, **Rerun and overwrite outputs**, and **Use batch default** context-menu choices. Individual choices can coexist within one batch and are saved against the exact source pairing and destination, not a row number. Generated batch runners preserve the same policies.
+- Changing only the existing-file policy updates the checked plan without repeating source inspection. Keeping existing files preserves outputs already present while still creating missing outputs; planned, existing, overwrite, and unresolved-decision counts now reflect that intent.
+- Reworked the parameter override matrix with persistent field labels, centered values, readable node/parameter/default headers, explicit page and matching-sample selection, and separate reset-selected and reset-all actions. The resizable **Edit selected** editor guides bulk changes: only checked parameters change, and other overrides remain intact.
+- Integrated the existing whole-batch Run/Bypass controls into a matching collapsible section. Distinct colours identify forced Run and Bypass choices, and the Overrides page scrolls as a whole.
+- Planned-output details now lead with the producing node, output kind, and format; exact file paths are secondary. Refined table typography, spacing, column widths, and link hit areas: selecting a result row reveals its outputs, while clicking its underlined name explicitly navigates to item review. Source and output reveal actions use platform-appropriate labels and icons.
+- Added preparation feedback, elapsed time, per-sample node counts, and friendly node names during execution. Progress labels reserve two bottom-aligned lines to prevent ordinary wrapping from shifting the tables.
+- Reused the freshly validated Run plan at the worker handoff, removing an unnecessary second full collection scan. Exact source-content validation before use and destination checks remain in place.
+- Added an inline, human-readable final run report with elapsed time, completed/kept/failed/cancelled outcomes, output counts, and expandable failure reasons. The manifest JSON remains a separately labelled technical provenance artifact. Completed runs stay in report review; reviewing Setup is separate from explicitly checking and starting another run.
+
+### Important fixes
+
+- Corrected mixed CPU/GPU execution planning where a CPU operation on another branch could incorrectly reunite GPU segments and report an execution-unit cycle in an otherwise valid workflow.
+- Improved cache reuse across **Calculate all**, bypass, and source-loading transitions while preserving scientific invalidation. Calculate all can retain an in-progress upstream calculation, composite edits preserve compatible manual deconvolution results, and napari reslicing no longer masquerades as a source-pixel edit.
+- Prevented failed replacement-source calculations from presenting unrelated cached downstream pixels as current results. Provenance-compatible completed boundaries and unaffected source branches remain available. Presentation errors also no longer leave the application indefinitely reporting Processing.
+- Avoided duplicate CZI container opens by reading metadata and pixels within one container lifetime, while retaining source-mutation checks and saved item identity.
+- Corrected mixed-rank T/C navigation, hidden Crop/Inspect layer lifetime, scalar images incorrectly inferred as RGB, and encoded-colour axis validation. Axis reductions and slices retain appropriate channel metadata; rendering Select/Reorder controls no longer silently changes saved parameters.
+- Corrected **Combine Channels** colour invalidation and saving so cached thumbnails, histograms, Inspect/Pinned layers, downstream colour composites, and reopened workflows consistently reflect authored colours without unnecessary pixel restacking.
+- Fixed object-association pair counting for large unsigned label IDs, including values beyond the signed 64-bit range, without changing their identity through integer conversion.
+- Kept detached plots associated with their originating node and workflow after selection changes, including threshold edits and stale-result warnings. Late background table sorts can no longer replace newer results, exports retain the selected result snapshot, and themed histogram/table startup is corrected.
+- Corrected batch cancellation handling so a cooperative stop is not mistaken for a CPU/GPU cleanup failure. Genuine unverified cleanup still blocks further calculation until recovery.
+
+### Compatibility and remaining limits
+
+- This is an alpha release. Preserve original data and copies of workflows/configurations before resaving, and revalidate analyses affected by the changed controls or scientific contracts.
+- Batch configuration version 6 records individual file decisions and continues to read versions 1–5; older VIPP releases supporting only version 5 cannot read the new configurations. Workflow version 6 and manifest version 5 remain unchanged.
+- Replaced the public **ImageJ Auto Threshold (8-bit)** method selector with a fixed **ImageJ Default Threshold (8-bit)** node. Previously saved ImageJ Triangle nodes retain that separate calculation as fixed legacy compatibility, not a silent conversion to Default or generic Triangle. The implementation remains experimental and source-aligned to ImageJ 1.54p; independent ImageJ-generated golden parity is not claimed. Generic Triangle and Isodata retain their distinct contracts.
+- Clarified **Minimum Threshold** as a valley-between-peaks method. Its histogram smoothing pass limit is a convergence safety bound, not an image-blurring strength, and unsuccessful convergence remains an explicit error. Renamed **Clip** to **Clamp Intensity**, with explicit bound semantics and no intended change to its calculation.
+- The older standalone colocalization scatter-raster nodes are no longer offered in the node library, but remain loadable and executable in saved workflows; metric-node plot review is the current interface.
 - Check and Run validate exact source contents, so large containers or slow storage can still take time. A timer or busy indicator shows application activity, not proof that a non-cooperative CPU/GPU operation is making numerical progress.
 - Cancellation is cooperative; an active kernel, library call, or output write may need to reach a safe boundary. Existing files kept by policy are not claimed as newly calculated or scientifically verified by the current run.
 - Most workflow operations still materialize inputs. General lazy/chunked graph execution is not introduced; exact source-window pushdown retains its previously documented direct local OME-Zarr Crop Stack limits.
