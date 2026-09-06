@@ -11,7 +11,8 @@ provenance, and transfer-inclusive timing.
 Import, ``--help``, ``--check``, and ``--list`` never import CuPy and
 never initialize CUDA.  A real run launches each owner in a separate process,
 validates its evidence artifact, and writes the aggregate document only after
-every required facet passes.
+every required facet passes. Each child's stdout and stderr are retained in
+the fresh artifact directory, including when an owner fails or skips checks.
 """
 
 from __future__ import annotations
@@ -566,23 +567,40 @@ def run_profile(
             errors="replace",
         )
         duration = time.perf_counter() - started
+        stdout_path = artifact_root / f"runner-{position:02d}.stdout.log"
+        stderr_path = artifact_root / f"runner-{position:02d}.stderr.log"
+        # Keep the actual diagnostic before any failure gate. Position-based
+        # names cannot interpret a runner id as a path, and exclusive creation
+        # refuses to overwrite an unexpected file left by a child process.
+        for log_path, content in (
+            (stdout_path, completed.stdout),
+            (stderr_path, completed.stderr),
+        ):
+            with log_path.open("xb") as log:
+                log.write(content.encode("utf-8"))
+        log_locations = f"Logs: {stdout_path} and {stderr_path}."
         if completed.returncode != 0:
             detail = _last_nonempty_line(completed.stderr or completed.stdout)
             raise AdmissionHarnessError(
                 f"Runner {runner.runner_id!r} failed with exit code "
-                f"{completed.returncode}: {detail or 'no diagnostic'}"
+                f"{completed.returncode}: {detail or 'no diagnostic'}. "
+                f"{log_locations}"
             )
         if runner.kind == "pytest":
             skipped = _pytest_skipped_count(completed.stdout + "\n" + completed.stderr)
             if skipped:
                 raise AdmissionHarnessError(
                     f"Runner {runner.runner_id!r} skipped {skipped} tests; real-GPU "
-                    "admission requires every selected check to execute."
+                    "admission requires every selected check to execute. "
+                    f"{log_locations}"
                 )
         artifact_record = None
         if runner.kind == "evidence":
             assert artifact_path is not None
-            artifact_record = _validate_evidence_artifact(runner, artifact_path)
+            try:
+                artifact_record = _validate_evidence_artifact(runner, artifact_path)
+            except AdmissionHarnessError as exc:
+                raise AdmissionHarnessError(f"{exc} {log_locations}") from exc
         results.append(
             {
                 "runner_id": runner.runner_id,
@@ -598,6 +616,8 @@ def run_profile(
                 "stderr_sha256": hashlib.sha256(
                     completed.stderr.encode("utf-8")
                 ).hexdigest(),
+                "stdout_log": stdout_path.name,
+                "stderr_log": stderr_path.name,
                 "artifact": artifact_record,
             }
         )

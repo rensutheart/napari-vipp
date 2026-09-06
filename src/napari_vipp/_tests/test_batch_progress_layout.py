@@ -3,12 +3,55 @@
 import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QFont
+from qtpy.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from napari_vipp._tests.test_batch_table_theme import _palette
 from napari_vipp._tests.test_ui_batch import _actions, _preview_result
 from napari_vipp.core.batch import BatchPreflightProgress
 from napari_vipp.ui.batch import CollectionBatchDialog
+from napari_vipp.ui.batch_progress import BatchProgressLabel
 from napari_vipp.ui.batch_results import BatchResultsPanel
+
+
+def test_progress_reserve_matches_native_two_lines_after_style_polishing(qtbot):
+    host = QWidget()
+    qtbot.addWidget(host)
+    layout = QVBoxLayout(host)
+    label = BatchProgressLabel("Short status")
+    label.setMargin(2)
+    bar = QProgressBar()
+    layout.addWidget(label)
+    layout.addWidget(bar)
+    layout.addStretch()
+    reference = QLabel("First line\nSecond line", host)
+    reference.setTextFormat(Qt.PlainText)
+    reference.setWordWrap(True)
+    reference.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    reference.setAlignment(Qt.AlignLeft | Qt.AlignBottom)
+    reference.setMargin(2)
+    reference.hide()
+    host.resize(500, 300)
+    host.show()
+
+    for stylesheet in (
+        "QLabel { font-size: 13px; padding: 1px 4px; }",
+        "QLabel { font-size: 19px; padding: 5px 7px; border: 2px solid gray; }",
+        "QLabel { font-size: 15px; padding: 2px 3px; border: 1px solid gray; }",
+    ):
+        host.setStyleSheet(stylesheet)
+        reference.ensurePolished()
+        qtbot.wait(5)
+        assert label.minimumHeight() == reference.sizeHint().height()
+        positions = []
+        for text in ("Short status", "First line\nSecond line", "Short again"):
+            label.setText(text)
+            qtbot.wait(5)
+            positions.append(bar.y())
+        assert positions[0] == positions[1] == positions[2]
+        label.setText("First\nSecond\nThird")
+        qtbot.wait(5)
+        assert bar.y() > positions[0]
+        label.setText("Short status")
 
 
 @pytest.mark.parametrize("dark", [True, False])

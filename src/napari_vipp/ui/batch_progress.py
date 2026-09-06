@@ -46,20 +46,49 @@ class BatchProgressLabel(QLabel):
         self.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._height_probe = QLabel("Ag\nAg", self)
+        self._height_probe.hide()
+        self._height_probe.setWordWrap(True)
+        self._height_probe.setTextFormat(Qt.PlainText)
         self._reserve_lines()
 
     def _reserve_lines(self):
-        margins = self.contentsMargins()
-        self.setMinimumHeight(
-            # QLabel's wrapped layout can round each line above lineSpacing,
-            # especially at fractional DPI. Napari's QSS adds a further style
-            # box allowance; reserve that too, not only the raw font metrics.
-            2 * max(self.fontMetrics().height(), self.fontMetrics().lineSpacing())
-            + 8
-            + margins.top()
-            + margins.bottom()
-            + 2 * self.margin()
-        )
+        if not hasattr(self, "_height_probe") or getattr(self, "_measuring", False):
+            return
+        self._measuring = True
+        try:
+            self.ensurePolished()
+            # Selectable QLabel text uses Qt's text-document layout, whose
+            # rounded line heights need not equal two fontMetrics line spacings.
+            # Measure an actual two-line label with the same polished font and
+            # style box, without changing the live text or its selection.
+            probe = self._height_probe
+            probe.setObjectName(self.objectName())
+            probe.setStyleSheet(self.styleSheet())
+            probe.setAlignment(self.alignment())
+            probe.setTextInteractionFlags(self.textInteractionFlags())
+            probe.setMargin(self.margin())
+            probe.setIndent(self.indent())
+            probe.setFrameStyle(self.frameStyle())
+            probe.setLineWidth(self.lineWidth())
+            probe.setMidLineWidth(self.midLineWidth())
+            probe.ensurePolished()
+            probe.setFont(self.font())
+            probe.setContentsMargins(self.contentsMargins())
+            self.setMinimumHeight(probe.sizeHint().height())
+        finally:
+            self._measuring = False
+
+    def event(self, event):
+        handled = super().event(event)
+        if event.type() in (
+            QEvent.PolishRequest,
+            QEvent.ParentChange,
+            QEvent.ContentsRectChange,
+            QEvent.DevicePixelRatioChange,
+        ):
+            self._reserve_lines()
+        return handled
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)

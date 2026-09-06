@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from scipy import signal as scipy_signal
 
+from napari_vipp._tests._rl_memory_probe import trace_private_fft_allocations
 from napari_vipp.core.compute import WorkloadDescriptor
 from napari_vipp.core.compute_policy import estimate_candidate_memory
 from napari_vipp.core.compute_specs import compute_specs_for
@@ -426,8 +427,9 @@ def test_real_gpu_progress_path_matches_cpu_and_reports_every_iteration(real_cup
     _assert_float32_parity(expected, real_cupy.asnumpy(output))
 
 
-def test_real_gpu_512_fft_peak_fits_versioned_memory_estimate(real_cupy):
-    del real_cupy  # The fixture provides the portable skip contract.
+def test_real_gpu_512_fft_peak_fits_versioned_memory_estimate(
+    real_cupy, record_property
+):
     image = np.random.default_rng(811).random((512, 512), dtype=np.float32)
     y, x = np.mgrid[-6:7, -6:7].astype(np.float32)
     psf = np.exp(-(x * x + y * y) / np.float32(2.0 * 1.7**2)).astype(np.float32)
@@ -463,8 +465,8 @@ def test_real_gpu_512_fft_peak_fits_versioned_memory_estimate(real_cupy):
         observed_bytes = 0
         with runtime.execution_scope(
             device_id=probe.selected_device_id,
-            safety_reserve_bytes=0,
-        ):
+            memory_limit_bytes=admitted_bytes,
+        ), trace_private_fft_allocations(real_cupy, runtime) as trace:
             device_image = runtime.to_device(
                 image,
                 device_id=probe.selected_device_id,
@@ -483,20 +485,53 @@ def test_real_gpu_512_fft_peak_fits_versioned_memory_estimate(real_cupy):
             runtime.synchronize(device_id=probe.selected_device_id)
             assert runtime.is_device_value(output)
             snapshot = runtime.memory_snapshot(device_id=probe.selected_device_id)
-            observed_bytes = (
-                snapshot.runtime_reserved_bytes + snapshot.out_of_pool_bytes
-            )
+            observed_bytes = trace.managed_peak_bytes
             output = None
             device_image = None
             device_psf = None
 
         terminal = runtime.memory_snapshot(device_id=probe.selected_device_id)
+        record_property("managed_peak_bytes", observed_bytes)
+        record_property("device_wide_out_of_pool_bytes", snapshot.out_of_pool_bytes)
+        record_property("allocation_trace", repr(trace.allocations))
+        record_property("fft_workspace_trace", repr(trace.fft_workspaces))
+        trace.assert_fft_workspace_ownership()
         assert terminal.runtime_live_bytes == 0
         assert terminal.runtime_reserved_bytes == 0
-        assert observed_bytes <= admitted_bytes, (
-            f"Observed RL CUDA peak {observed_bytes} exceeds versioned memory "
-            f"admission {admitted_bytes}."
+        # The versioned managed model includes FFT arrays and cuFFT workspaces.
+        # Whole-device memGetInfo deltas also include unowned WDDM/JIT/driver
+        # activity; retain them above, but do not label them provider memory.
+        assert observed_bytes <= estimate.runtime_managed_peak_bytes, (
+            f"Observed RL private-pool peak {observed_bytes} exceeds versioned "
+            f"managed estimate {estimate.runtime_managed_peak_bytes}; "
+            f"device-wide out-of-pool diagnostic: {snapshot.out_of_pool_bytes}."
         )
+    finally:
+        runtime.close()
+
+
+def test_real_gpu_fft_workspaces_use_the_runtime_private_allocator(real_cupy):
+    signal = importlib.import_module("cupyx.scipy.signal")
+    runtime = CuPyRuntime()
+    try:
+        probe = runtime.probe()
+        assert probe.available and probe.selected_device_id
+        with runtime.execution_scope(
+            device_id=probe.selected_device_id,
+            memory_limit_bytes=64 * 1024**2,
+        ), trace_private_fft_allocations(real_cupy, runtime) as trace:
+            image = real_cupy.ones((512, 512), dtype=real_cupy.float32)
+            psf = real_cupy.ones((13, 13), dtype=real_cupy.float32)
+            output = signal.fftconvolve(image, psf, mode="same")
+            runtime.synchronize(device_id=probe.selected_device_id)
+            assert output.shape == image.shape
+            trace.assert_fft_workspace_ownership()
+            assert any(size for size, _ in trace.fft_workspaces)
+            assert trace.managed_peak_bytes > image.nbytes + psf.nbytes
+            assert real_cupy.fft.config.get_plan_cache().get_curr_size() == 0
+            image = psf = output = None
+        terminal = runtime.memory_snapshot(device_id=probe.selected_device_id)
+        assert terminal.runtime_live_bytes == terminal.runtime_reserved_bytes == 0
     finally:
         runtime.close()
 

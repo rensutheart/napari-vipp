@@ -2,7 +2,13 @@
 
 from qtpy.QtCore import QRect, QSize, Qt, Signal
 from qtpy.QtGui import QFontMetrics
-from qtpy.QtWidgets import QApplication, QStyle, QStyleOptionViewItem, QTableWidget
+from qtpy.QtWidgets import (
+    QApplication,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QTableWidget,
+)
 
 
 class BatchResultLinkTable(QTableWidget):
@@ -12,6 +18,12 @@ class BatchResultLinkTable(QTableWidget):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Hit testing needs the same style option as native item painting.
+        # PyQt cannot call protected initStyleOption on Qt's C++-created default
+        # delegate. A Python-owned standard delegate preserves the rendering
+        # contract and makes that protected helper available on every binding.
+        self._link_delegate = QStyledItemDelegate(self)
+        self.setItemDelegate(self._link_delegate)
         self._pressed_link = None
         self.setMouseTracking(True)
         self.setAccessibleDescription(

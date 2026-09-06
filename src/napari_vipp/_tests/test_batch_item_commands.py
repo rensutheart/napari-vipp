@@ -169,3 +169,24 @@ def test_item_footer_and_tab_icons_refresh_with_the_palette(qtbot, tmp_path):
     assert all(
         dark != light for dark, light in zip(rendered[0], rendered[1], strict=True)
     )
+
+
+def test_item_commands_refresh_minimums_after_inherited_style_changes(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
+    dialog.tabs.setCurrentIndex(1)
+    dialog.resize(1080, 800)
+    dialog.show()
+    widths = []
+    for points in (10, 14, 10):
+        dialog.setStyleSheet(f"QWidget {{ font-size: {points}pt; }}")
+        dialog._layout_item_commands()
+        qtbot.wait(10)
+        buttons = _item_commands(dialog)[:4]
+        for button in buttons:
+            assert button.minimumSize() == button.sizeHint()
+            assert button.width() >= button.sizeHint().width(), button.text()
+            assert button.height() >= button.sizeHint().height(), button.text()
+        widths.append(buttons[0].minimumWidth())
+    assert widths[1] > widths[0]
+    assert widths[2] == widths[0]

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from scipy import signal as scipy_signal
 
+from napari_vipp._tests._rl_memory_probe import trace_private_fft_allocations
 from napari_vipp.core.compute import WorkloadDescriptor
 from napari_vipp.core.compute_policy import estimate_candidate_memory
 from napari_vipp.core.compute_specs import compute_specs_for
@@ -463,8 +464,7 @@ def test_real_gpu_lambda_zero_matches_ordinary_gpu(
     assert difference <= 1e-6 * maximum
 
 
-def test_real_gpu_3d_peak_fits_versioned_tv_memory_estimate(real_cupy):
-    del real_cupy  # The fixture provides the portable skip contract.
+def test_real_gpu_3d_peak_fits_versioned_tv_memory_estimate(real_cupy, record_property):
     rng = np.random.default_rng(811)
     image = rng.random((16, 256, 256), dtype=np.float32)
     z, y, x = np.mgrid[-3:4, -5:6, -5:6].astype(np.float32)
@@ -506,8 +506,8 @@ def test_real_gpu_3d_peak_fits_versioned_tv_memory_estimate(real_cupy):
         observed_bytes = 0
         with runtime.execution_scope(
             device_id=probe.selected_device_id,
-            safety_reserve_bytes=0,
-        ):
+            memory_limit_bytes=admitted_bytes,
+        ), trace_private_fft_allocations(real_cupy, runtime) as trace:
             device_image = runtime.to_device(image, device_id=probe.selected_device_id)
             device_psf = runtime.to_device(psf, device_id=probe.selected_device_id)
             output = cupy_rl_tv.richardson_lucy_tv_deconvolution(
@@ -519,19 +519,26 @@ def test_real_gpu_3d_peak_fits_versioned_tv_memory_estimate(real_cupy):
             runtime.synchronize(device_id=probe.selected_device_id)
             assert runtime.is_device_value(output)
             snapshot = runtime.memory_snapshot(device_id=probe.selected_device_id)
-            observed_bytes = (
-                snapshot.runtime_reserved_bytes + snapshot.out_of_pool_bytes
-            )
+            observed_bytes = trace.managed_peak_bytes
             output = None
             device_image = None
             device_psf = None
 
         terminal = runtime.memory_snapshot(device_id=probe.selected_device_id)
+        record_property("managed_peak_bytes", observed_bytes)
+        record_property("device_wide_out_of_pool_bytes", snapshot.out_of_pool_bytes)
+        record_property("allocation_trace", repr(trace.allocations))
+        record_property("fft_workspace_trace", repr(trace.fft_workspaces))
+        trace.assert_fft_workspace_ownership()
         assert terminal.runtime_live_bytes == 0
         assert terminal.runtime_reserved_bytes == 0
-        assert observed_bytes <= admitted_bytes, (
-            f"Observed RL-TV CUDA peak {observed_bytes} exceeds versioned memory "
-            f"admission {admitted_bytes}."
+        # The managed model includes native cuFFT workspace, whose private
+        # allocator ownership is asserted above. The diagnostic global delta
+        # also includes unrelated clients and is not an attributable peak.
+        assert observed_bytes <= estimate.runtime_managed_peak_bytes, (
+            f"Observed RL-TV private-pool peak {observed_bytes} exceeds versioned "
+            f"managed estimate {estimate.runtime_managed_peak_bytes}; "
+            f"device-wide out-of-pool diagnostic: {snapshot.out_of_pool_bytes}."
         )
     finally:
         runtime.close()

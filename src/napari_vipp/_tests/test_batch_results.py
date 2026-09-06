@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from qtpy.QtCore import Qt
@@ -29,6 +30,29 @@ def no_file_manager(monkeypatch):
     calls = []
     monkeypatch.setattr(file_reveal, "_launch", calls.append)
     return calls
+
+
+@pytest.fixture
+def file_reveal_requests(monkeypatch, request):
+    """Keep exact requested files observable above the OS-specific fallback."""
+    platform_name = request.param
+    paths = []
+    reveal = file_reveal.reveal_file
+
+    def record_reveal(path):
+        paths.append(Path(path))
+        return reveal(path, platform_name=platform_name)
+
+    monkeypatch.setattr(batch_results, "reveal_file", record_reveal)
+    return platform_name, paths
+
+
+def _expected_reveal_arguments(path, platform_name):
+    if platform_name == "win32":
+        return ["explorer.exe", "/select,", str(path)]
+    if platform_name == "darwin":
+        return ["open", "-R", str(path)]
+    return ["xdg-open", str(path.parent)]
 
 
 def _preview(tmp_path, count=3):
@@ -207,10 +231,14 @@ def test_reported_statuses_timing_and_file_existence_are_separate(qtbot, tmp_pat
     assert panel.run_progress_bar.value() == 2
 
 
+@pytest.mark.parametrize(
+    "file_reveal_requests", ["win32", "darwin", "linux"], indirect=True
+)
 def test_exact_file_and_report_actions_do_not_open_real_windows(
     qtbot,
     tmp_path,
     no_file_manager,
+    file_reveal_requests,
 ):
     preview = _preview(tmp_path, 1)
     preview.config.output_dir.mkdir()
@@ -222,12 +250,17 @@ def test_exact_file_and_report_actions_do_not_open_real_windows(
     qtbot.addWidget(panel)
     panel.set_plan(preview)
     panel.finish_run(result)
+    platform_name, requested_paths = file_reveal_requests
     qtbot.mouseClick(panel.reveal_button, Qt.LeftButton)
-    assert str(path) in no_file_manager[-1]
+    assert requested_paths == [path]
+    assert no_file_manager[-1] == _expected_reveal_arguments(path, platform_name)
     assert not panel.run_report.isHidden()
     assert len(no_file_manager) == 1
     qtbot.mouseClick(panel.run_report.manifest_button, Qt.LeftButton)
-    assert str(result.manifest_path) in no_file_manager[-1]
+    assert requested_paths == [path, result.manifest_path]
+    assert no_file_manager[-1] == _expected_reveal_arguments(
+        result.manifest_path, platform_name
+    )
 
     path.unlink()
     panel.output_table.linkActivated.emit(0, 0)
@@ -303,10 +336,14 @@ def test_historical_result_is_retained_on_invalidation(qtbot, tmp_path):
     assert not panel.has_run_report
 
 
+@pytest.mark.parametrize(
+    "file_reveal_requests", ["win32", "darwin", "linux"], indirect=True
+)
 def test_partial_item_uses_each_output_record_and_stable_run_report(
     qtbot,
     tmp_path,
     no_file_manager,
+    file_reveal_requests,
 ):
     preview = _preview(tmp_path, 1)
     preview.config.output_dir.mkdir()
@@ -339,7 +376,11 @@ def test_partial_item_uses_each_output_record_and_stable_run_report(
     assert "Write failed." in panel.output_table.item(1, 1).toolTip()
     assert "1 of 2 outputs saved" in panel.summary_label.text()
     qtbot.mouseClick(panel.run_report.manifest_button, Qt.LeftButton)
-    assert str(archive_path) in no_file_manager[-1]
+    platform_name, requested_paths = file_reveal_requests
+    assert requested_paths == [archive_path]
+    assert no_file_manager[-1] == _expected_reveal_arguments(
+        archive_path, platform_name
+    )
 
 
 @pytest.mark.parametrize("dark", [False, True])

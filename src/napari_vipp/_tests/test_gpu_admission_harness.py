@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -489,6 +490,14 @@ def test_profile_writes_one_aggregate_only_after_evidence_passes(
     assert document["device_selection"] == {"device_id": "cuda:3", "device_index": 3}
     assert document["runners"][0]["artifact"]["schema"] == "fake-evidence"
     assert "<python>" in document["runners"][0]["command"]
+    runner_record = document["runners"][0]
+    for stream in ("stdout", "stderr"):
+        log_name = f"runner-01.{stream}.log"
+        assert runner_record[f"{stream}_log"] == log_name
+        log = tmp_path / f"{profile}-artifacts" / log_name
+        assert hashlib.sha256(log.read_bytes()).hexdigest() == (
+            runner_record[f"{stream}_sha256"]
+        )
     serialized = written.read_text(encoding="utf-8")
     assert str(PROJECT_ROOT) not in serialized
     assert str(tmp_path) not in serialized
@@ -527,7 +536,9 @@ def test_pytest_owner_cannot_pass_by_skipping_real_gpu_checks(
     )
     output = tmp_path / "aggregate.json"
 
-    with pytest.raises(harness.AdmissionHarnessError, match="skipped 1 tests"):
+    with pytest.raises(
+        harness.AdmissionHarnessError, match="skipped 1 tests"
+    ) as error:
         harness.run_profile(
             manifest,
             profile="quick",
@@ -537,6 +548,79 @@ def test_pytest_owner_cannot_pass_by_skipping_real_gpu_checks(
             project_root=PROJECT_ROOT,
         )
     assert not output.exists()
+    stdout = tmp_path / "artifacts" / "runner-01.stdout.log"
+    stderr = tmp_path / "artifacts" / "runner-01.stderr.log"
+    assert stdout.read_text(encoding="utf-8") == "1 passed, 1 skipped in 0.01s\n"
+    assert stderr.read_bytes() == b""
+    assert str(stdout) in str(error.value)
+    assert str(stderr) in str(error.value)
+
+
+def test_failed_owner_retains_complete_logs_without_writing_an_aggregate(
+    harness, monkeypatch, tmp_path
+):
+    declaration = harness.AcceleratorDeclaration("op", "gpu-op-v1", "1", "cuda", "lib")
+    runners = tuple(
+        harness.RunnerSpec(
+            runner_id=f"owner-{index}",
+            kind="pytest",
+            implementations=(declaration.key,),
+            facets=harness.REQUIRED_FACETS,
+            owner_paths=("test_fake.py",),
+            profile_commands={
+                "quick": ("{python}", "-m", "pytest", "test_fake.py"),
+                "full": ("{python}", "-m", "pytest", "test_fake.py"),
+            },
+            artifact=None,
+            artifact_schema=None,
+            artifact_schema_version=None,
+        )
+        for index in range(3)
+    )
+    manifest = harness.SuiteManifest(
+        path=tmp_path / "manifest.json",
+        sha256="a" * 64,
+        implementations=(declaration,),
+        runners=runners,
+    )
+    invocations = []
+    full_traceback = "Traceback: earlier important error\nAssertionError: GPU Δ\n"
+
+    def completed(command, **_kwargs):
+        invocations.append(command)
+        if len(invocations) == 1:
+            return subprocess.CompletedProcess(command, 0, "1 passed\n", "")
+        return subprocess.CompletedProcess(
+            command, 1, full_traceback + "1 failed, 29 passed\n", "driver detail\n"
+        )
+
+    monkeypatch.setattr(harness.subprocess, "run", completed)
+    output = tmp_path / "aggregate.json"
+    artifacts = tmp_path / "artifacts"
+    with pytest.raises(
+        harness.AdmissionHarnessError, match="owner-1.*failed with exit code 1"
+    ) as error:
+        harness.run_profile(
+            manifest,
+            profile="full",
+            output=output,
+            artifacts=artifacts,
+            device_index=0,
+            project_root=PROJECT_ROOT,
+        )
+
+    assert len(invocations) == 2
+    assert not output.exists()
+    assert (artifacts / "runner-01.stdout.log").read_bytes() == b"1 passed\n"
+    stdout = artifacts / "runner-02.stdout.log"
+    stderr = artifacts / "runner-02.stderr.log"
+    assert stdout.read_text(encoding="utf-8") == (
+        full_traceback + "1 failed, 29 passed\n"
+    )
+    assert stderr.read_text(encoding="utf-8") == "driver detail\n"
+    assert str(stdout) in str(error.value)
+    assert str(stderr) in str(error.value)
+    assert not (artifacts / "runner-03.stdout.log").exists()
 
 
 def test_profile_rejects_an_existing_aggregate_before_running(

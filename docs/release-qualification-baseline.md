@@ -47,6 +47,14 @@ carried_forward:
 - Documentation includes refreshed screenshots from synthetic examples, a
   rewritten batch walkthrough, inspector/plot/measurement instructions, and
   explicit limits around source checking and cooperative cancellation.
+- The changed CZI single-container and saved-scene path was requalified on
+  2026-09-06 against the pinned BIA S-BIAD1305 and Zenodo 7015307 fixtures:
+  four strict public-file checks passed without skips. Additional persisted
+  SourceItem checks reopened the correct scenes despite wrong legacy ordinals,
+  verified one container open, matching metadata and decoded pixels, unchanged
+  source bytes, and refusal of a missing saved scene. The unchanged-reader
+  carry-forward above excludes this freshly checked CZI path. Evidence SHA-256:
+  `65753f47ad4d4c9e0e9e7a6e57c0e6e4ff4ec46c755383d63b0dfda906ab5b9c`.
 - ImageJ Default remains experimental and source-aligned; independent
   ImageJ-generated golden parity is not claimed by this alpha.
 

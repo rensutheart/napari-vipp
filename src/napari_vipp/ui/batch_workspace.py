@@ -503,6 +503,16 @@ class BatchWorkflowWorkspace(
         # undifferentiated button row. Wrap the whole group when it won't fit.
         selection = self.item_selection_commands
         collection = self.item_collection_commands
+        # Qt can cache a group's geometry before inherited stylesheet padding
+        # and fonts have polished its buttons. These commands never elide their
+        # labels, so reserve their current native hints before deciding to wrap.
+        for group in (selection, collection):
+            group.ensurePolished()
+        for button in self._item_command_widgets[:4]:
+            button.ensurePolished()
+            button.setMinimumSize(button.sizeHint())
+        for group in (selection, collection):
+            group.layout().invalidate()
         available = max(0, self.width() - 40)
         required = (
             selection.sizeHint().width() + collection.minimumSizeHint().width() + 24

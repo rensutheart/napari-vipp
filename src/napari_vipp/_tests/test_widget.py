@@ -23371,18 +23371,18 @@ def test_toolbar_live_content_compacts_without_clipping(qtbot, width):
 
 
 @pytest.mark.parametrize(
-    ("width", "expected_text", "compute_hidden"),
+    ("width", "allowed_texts", "compute_hidden"),
     (
-        (1400, "Find fastest", False),
-        (900, "Find fastest", False),
-        (640, "", True),
+        (1400, ("Find fastest",), False),
+        (900, ("Find fastest", "Fastest", ""), False),
+        (640, ("",), True),
     ),
 )
 def test_toolbar_custom_keeps_find_fastest_directly_available_at_every_width(
     qtbot,
     monkeypatch,
     width,
-    expected_text,
+    allowed_texts,
     compute_hidden,
 ):
     widget = VippWidget(_Viewer(), defer_initial_run=True)
@@ -23402,7 +23402,9 @@ def test_toolbar_custom_keeps_find_fastest_directly_available_at_every_width(
 
     assert not widget.optimize_pipeline_button.isHidden()
     assert widget.optimize_pipeline_button.isVisibleTo(widget)
-    assert widget.optimize_pipeline_button.text() == expected_text
+    # Medium widths compact against the host font's measured size, not a fixed
+    # English-label breakpoint. All three presentations keep the same action.
+    assert widget.optimize_pipeline_button.text() in allowed_texts
     assert not widget.optimize_pipeline_button.icon().isNull()
     assert (
         widget.optimize_pipeline_button.accessibleName()
