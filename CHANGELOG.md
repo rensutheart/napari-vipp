@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.15.0a2 - 2026-09-07
+## 0.15.0a2 - 2026-09-08
 
 ### Compatibility fixes
 

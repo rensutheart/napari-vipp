@@ -49,8 +49,13 @@ def test_counts_are_original_integers_and_do_not_alias_input(qtbot, log_scale):
     np.testing.assert_array_equal(counts, [2**24 + 1, 2**53 + 1])
 
 
-def test_log_size_hover_uses_original_units_not_logarithms(qtbot):
+@pytest.mark.parametrize(
+    "endpoint", [None, 9735.0, np.nextafter(9735.0, 0), np.nextafter(9735.0, np.inf)]
+)
+def test_log_size_hover_uses_original_units_not_logarithms(qtbot, endpoint):
     edges = np.expm1(np.linspace(0, np.log1p(9735), 9))
+    if endpoint is not None:
+        edges[-1] = endpoint
     plot = _plot(
         qtbot,
         np.array([23, 0, 1, 0, 1, 0, 0, 2]),
@@ -60,7 +65,12 @@ def test_log_size_hover_uses_original_units_not_logarithms(qtbot):
     )
     assert "Objects: 23" in plot._bin_tooltip(0)
     assert "Volume (voxels): [0, " in plot._bin_tooltip(0)
-    assert "9735]" in plot._bin_tooltip(7)
+    # expm1/log1p can end one ULP away from an integer on different platforms.
+    # Both grouped integer and ungrouped decimal text represent the original
+    # voxel units; assert the value and closed endpoint, not the grouping.
+    upper = plot._bin_tooltip(7).splitlines()[1].rsplit(", ", 1)[1]
+    assert upper.endswith("]")
+    assert float(upper[:-1].replace(",", "")) == pytest.approx(9735, rel=0, abs=1e-8)
     assert "Objects: 0" in plot._bin_tooltip(1)
     assert plot._bin_at_point(_point(plot, 7)) == 7
     np.testing.assert_array_equal(plot._bin_edges, edges)
