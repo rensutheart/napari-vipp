@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 import tomllib
@@ -35,7 +36,10 @@ def test_release_version_contract_is_consistent() -> None:
     assert release_date_match is not None
     release_date = release_date_match.group(1)
     assert f'version: "{version}"' in citation
-    assert changelog.startswith(f"# Changelog\n\n## {version} - {release_date}")
+    headers = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
+    if headers and headers[0] == "Unreleased":
+        headers.pop(0)
+    assert headers[0] == f"{version} - {release_date}"
     assert release_notes.startswith(f"# VIPP {version}\n")
     assert "release candidate" not in release_notes.casefold()
     assert f"releases/tag/v{version}" in readme
@@ -86,9 +90,7 @@ def test_local_markdown_links_resolve():
         for match in MARKDOWN_LINK.finditer(text):
             raw_target = match.group(1).strip().split(maxsplit=1)[0]
             target = unquote(raw_target.strip("<>"))
-            if not target or target.startswith(
-                ("#", "http://", "https://", "mailto:")
-            ):
+            if not target or target.startswith(("#", "http://", "https://", "mailto:")):
                 continue
             relative_path = target.split("#", 1)[0]
             if relative_path and not (document.parent / relative_path).exists():
@@ -99,10 +101,13 @@ def test_local_markdown_links_resolve():
 
 def test_documentation_index_has_no_orphaned_pages():
     index = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    redirects = json.loads(
+        (REPO_ROOT / "docs" / "public-guide-redirects.json").read_text()
+    )
     missing = [
         path.name
         for path in sorted((REPO_ROOT / "docs").glob("*.md"))
-        if path.name != "README.md" and f"({path.name})" not in index
+        if path.name not in {"README.md", *redirects} and f"({path.name})" not in index
     ]
 
     assert not missing, f"Pages missing from docs/README.md: {missing}"
@@ -142,120 +147,59 @@ def test_all_example_workflows_are_documented():
         assert workflow_name in examples_readme
 
 
-def test_measurement_workflow_guide_links_reference_examples():
-    guide = (REPO_ROOT / "docs" / "measurement-workflows.md").read_text(
-        encoding="utf-8",
+def test_public_guides_are_short_relocation_notes():
+    redirects = json.loads(
+        (REPO_ROOT / "docs" / "public-guide-redirects.json").read_text(encoding="utf-8")
     )
-    for workflow_name in (
-        "red-channel-object-intensity-measurements.json",
-        "red-channel-merged-measurement-table.json",
-        "synthetic-measurement-summary.json",
-        "synthetic-derived-object-morphology.json",
-        "synthetic-3d-mesh-morphology.json",
-        "synthetic-skeleton-qc.json",
-        "synthetic-advanced-skeleton-network.json",
-        "synthetic-colocalization-racc.json",
-    ):
-        assert workflow_name in guide
+    assert len(redirects) == 9
+    for name, entry in redirects.items():
+        guide = (REPO_ROOT / "docs" / name).read_text(encoding="utf-8")
+        assert len(guide.splitlines()) <= 24, name
+        assert "not a second guide" in guide, name
+        assert "```" not in guide, name
+        assert entry["pages"], name
+        for route in entry["pages"].values():
+            assert ".." not in route and not route.startswith("/"), name
+            assert (
+                f"https://rensutheart.github.io/vipp-mkdocs/nightly/{route}/" in guide
+            )
 
 
-def test_windows_installer_quick_start_is_primary_and_truthful():
+def test_windows_readme_and_packaging_keep_repository_facts():
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = project["project"]["version"]
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
+    packaging = (REPO_ROOT / "packaging/windows/README.md").read_text(encoding="utf-8")
+    planner = (REPO_ROOT / "docs/windows-installation-planner.md").read_text(
         encoding="utf-8"
     )
-    packaging_readme = (
-        REPO_ROOT / "packaging" / "windows" / "README.md"
-    ).read_text(encoding="utf-8")
-    documentation_index = (REPO_ROOT / "docs" / "README.md").read_text(
-        encoding="utf-8"
-    )
-    planner_guide = (
-        REPO_ROOT / "docs" / "windows-installation-planner.md"
-    ).read_text(encoding="utf-8")
-
     assert readme.index("| Windows 64-bit |") < readme.index(
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
-    assert quick_start.index("## Windows: The Recommended Route") < quick_start.index(
-        "## Manual Alpha Installation (Advanced And Portable)"
-    )
-    assert (
-        "https://github.com/rensutheart/napari-vipp/releases/download/"
-        f"v{version}/VIPP-Setup-{version}-Windows-x86_64-UNSIGNED.exe"
-    ) in quick_start
-    assert f"SHA256SUMS-Windows-{version}.txt" in quick_start
-    assert "**Unknown publisher**" in quick_start
-    assert "**More info**, confirm" in quick_start
-    assert "**Run anyway**" in quick_start
-    assert "do not disable security" in quick_start
-    assert "manual installation below" in quick_start
-    assert "Windows Settings > Apps > Installed apps" in quick_start
-    assert "Managed CPU and CUDA installations can coexist" in quick_start
-    assert "expand **Advanced details**" in quick_start
-    assert "use **Computer use**" in quick_start
-    assert "For a CPU installation, open **VIPP**" in quick_start
-    assert "rerun that version's VIPP setup `.exe`" in quick_start
-    assert "A supported 64-bit Python is a separate prerequisite" in readme
-    assert "separately installed supported 64-bit Python" in packaging_readme
     assert f"VIPP-Setup-{version}-Windows-x86_64-UNSIGNED.exe" in readme
-    assert "[Quick Start](docs/quick-start.md)" in readme
-    normalized = " ".join(quick_start.split())
-    assert "15 GiB" in normalized
-    assert "disk storage, not GPU memory (VRAM)" in normalized
-    assert "standard GPU installation includes every current" in normalized
-    assert "cuCIM" not in normalized
-    assert "exact managed location" in packaging_readme
-    assert "CPU or CUDA 13" in packaging_readme
-    assert "15 GiB of free disk space" in packaging_readme
-    assert "DEVELOPMENT BUILD — local testing only" in packaging_readme
-    assert "embedded channel" in packaging_readme
-    assert "5 GiB" in quick_start
-    assert "Windows temporary files and VIPP installer records" in quick_start
-    assert "Setup identifies the exact location" in " ".join(quick_start.split())
-    assert documentation_index.index("(quick-start.md)") < documentation_index.index(
-        "(user-guide.md)"
-    )
-    assert "ready only for dependency resolution, never" in planner_guide
+    assert "A supported 64-bit Python is a separate prerequisite" in readme
+    assert "stable/getting-started/installation/" in readme
+    assert "separately installed supported 64-bit Python" in packaging
+    assert "exact managed location" in packaging
+    assert "15 GiB of free disk space" in packaging
+    assert "DEVELOPMENT BUILD — local testing only" in packaging
+    assert "embedded channel" in packaging
+    assert "ready only for dependency resolution, never" in planner
+    assert "ready_for_apply: false" in planner
     assert "1 GiB free for CPU setup or 5 GiB free for CUDA setup" in " ".join(
-        planner_guide.split()
+        planner.split()
     )
-    assert "exact checked location, requirement, and available space" in " ".join(
-        planner_guide.split()
-    )
-    assert "ready_for_apply: false" in planner_guide
 
 
-def test_macos_installer_quick_start_is_primary_and_truthful():
+def test_macos_readme_keeps_architecture_specific_packages():
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = project["project"]["version"]
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    quick_start = (REPO_ROOT / "docs" / "quick-start.md").read_text(
-        encoding="utf-8"
-    )
-
     for architecture in ("arm64", "x86_64"):
-        package = f"VIPP-{version}-macOS-{architecture}-UNSIGNED.pkg"
-        checksum = f"SHA256SUMS-macOS-{architecture}-{version}.txt"
-        assert (
-            "https://github.com/rensutheart/napari-vipp/releases/download/"
-            f"v{version}/{package}"
-        ) in quick_start
-        assert checksum in quick_start
-
-    normalized = " ".join(quick_start.split())
-    assert "System Settings > Privacy & Security" in normalized
-    assert "Open Anyway" in normalized
-    assert "unsigned and not notarized" in normalized
-    assert "~/Library/vipp" in quick_start
-    assert "~/Applications/VIPP.app" in quick_start
+        assert f"VIPP-{version}-macOS-{architecture}-UNSIGNED.pkg" in readme
     assert readme.index("| macOS Apple Silicon |") < readme.index(
         'python -m pip install "napari[pyqt6]>=0.6"'
     )
-    assert f"VIPP-{version}-macOS-arm64-UNSIGNED.pkg" in readme
-    assert f"VIPP-{version}-macOS-x86_64-UNSIGNED.pkg" in readme
 
 
 def test_product_tagline_is_consistent_across_primary_surfaces():
@@ -264,7 +208,6 @@ def test_product_tagline_is_consistent_across_primary_surfaces():
     surfaces = (
         REPO_ROOT / "README.md",
         REPO_ROOT / "docs" / "README.md",
-        REPO_ROOT / "docs" / "quick-start.md",
         REPO_ROOT / "docs" / "assets" / "branding" / "README.md",
         REPO_ROOT / "pyproject.toml",
     )
@@ -277,36 +220,30 @@ def test_product_tagline_is_consistent_across_primary_surfaces():
         REPO_ROOT / "docs" / "README.md",
         REPO_ROOT / "docs" / "assets" / "branding" / "README.md",
     ):
-        normalized = " ".join(
-            surface.read_text(encoding="utf-8").lower().split()
-        )
+        normalized = " ".join(surface.read_text(encoding="utf-8").lower().split())
         assert supporting_promise in normalized
 
 
-def test_main_readme_is_concise_and_routes_gpu_details():
+def test_main_readme_routes_users_to_the_single_public_manual():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    gpu_guide = (REPO_ROOT / "docs" / "gpu-guide.md").read_text(encoding="utf-8")
-
+    redirects = json.loads(
+        (REPO_ROOT / "docs/public-guide-redirects.json").read_text(encoding="utf-8")
+    )
     assert len(readme.splitlines()) <= 300
     assert "## GPU Acceleration (Optional)" in readme
-    assert "(docs/gpu-guide.md)" in readme
+    assert "stable/how-to/choose-compute/" in readme
+    assert "stable/reference/example-workflows/" in readme
+    assert "(docs/planning.md)" in readme
+    assert "(docs/architecture.md)" in readme
+    for filename in redirects:
+        assert f"(docs/{filename}" not in readme
     assert "### GPU Execution And Development Environment" not in readme
     assert "23.57x" not in readme
-    for required_section in (
-        "## Compute Modes",
-        "## Current Windows CUDA Qualification",
-        "## Accelerated Operation Families",
-        "## CuPy-only basic measurements",
-        "## Cross-device Reproducibility",
-    ):
-        assert required_section in gpu_guide
 
 
 def test_safe_gpu_dtype_repair_is_explained_consistently():
     documents = (
         REPO_ROOT / "docs" / "planning.md",
-        REPO_ROOT / "docs" / "user-guide.md",
-        REPO_ROOT / "docs" / "gpu-guide.md",
         REPO_ROOT / "docs" / "durable-gpu-execution.md",
     )
 
@@ -325,10 +262,7 @@ def test_safe_gpu_dtype_repair_is_explained_consistently():
 
 
 def test_portable_gpu_segmentation_bridge_is_explained_consistently():
-    documents = (
-        REPO_ROOT / "docs" / "gpu-guide.md",
-        REPO_ROOT / "docs" / "durable-gpu-execution.md",
-    )
+    documents = (REPO_ROOT / "docs" / "durable-gpu-execution.md",)
 
     for document in documents:
         text = " ".join(document.read_text(encoding="utf-8").split())
@@ -374,6 +308,6 @@ def test_analytical_phantom_validation_report_is_current():
 
     assert checks
     assert not failed
-    assert (
-        REPO_ROOT / "docs" / "analytical-phantom-validation.md"
-    ).read_text(encoding="utf-8") == module.render_markdown(checks)
+    assert (REPO_ROOT / "docs" / "analytical-phantom-validation.md").read_text(
+        encoding="utf-8"
+    ) == module.render_markdown(checks)

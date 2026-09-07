@@ -66,7 +66,7 @@ For this version, use the
 
 The desktop installers are unsigned alpha builds. Download them only from the
 official release, verify the matching SHA-256 file, and follow the
-[Quick Start](docs/quick-start.md) for the exact platform instructions.
+[Quick Start](https://rensutheart.github.io/vipp-mkdocs/stable/getting-started/installation/) for the exact platform instructions.
 
 For a manual installation, use a dedicated CPython 3.12 or 3.13 environment.
 On Windows or Linux:
@@ -100,7 +100,7 @@ No external data is needed for the first run:
 
 Next, open **Deterministic Batch & Provenance** for a self-contained example of
 collection processing and reproducibility artifacts. See the
-[example workflow index](examples/README.md) for more starting points.
+[example workflow index](https://rensutheart.github.io/vipp-mkdocs/stable/reference/example-workflows/) for more starting points.
 
 ## Analysis Coverage
 
@@ -114,12 +114,12 @@ collection processing and reproducibility artifacts. See the
 
 VIPP reads OME-TIFF, ImageJ TIFF, TIFF, local OME-Zarr 0.4/0.5,
 NPY/NPZ and common 2D image formats. Optional readers add formats including ND2
-and CZI. The [I/O guide](docs/io-user-guide.md) documents the complete matrix,
+and CZI. The [I/O guide](https://rensutheart.github.io/vipp-mkdocs/stable/reference/import-export/) documents the complete matrix,
 metadata behavior and limitations.
 
 Most graph operations currently materialize their inputs in memory. Plan cache,
 preview and output choices deliberately for large z-stacks and OME-Zarr data.
-See [Cache and memory](docs/cache-and-memory.md).
+See [Cache and memory](https://rensutheart.github.io/vipp-mkdocs/stable/reference/cache-memory/).
 
 ## GPU Acceleration (Optional)
 
@@ -130,7 +130,7 @@ request that cannot be honored falls back visibly to CPU.
 
 The current public GPU route uses native 64-bit Windows, CPython 3.12, CUDA 13
 and an NVIDIA GPU with compute capability 7.5 or newer. Performance depends on
-the operation, data and hardware. See the [GPU Guide](docs/gpu-guide.md) for
+the operation, data and hardware. See the [GPU Guide](https://rensutheart.github.io/vipp-mkdocs/stable/how-to/choose-compute/) for
 installation, supported operation families, qualification and benchmarking.
 
 ## Reproducibility And Scientific Traceability
@@ -143,22 +143,29 @@ CPU or GPU implementation used.
 This record supports reproducibility, but it does not establish biological
 validity automatically. Users remain responsible for checking assumptions,
 parameter choices and results on suitable controls and representative data.
-Read the [scientific integrity boundaries](docs/architecture.md#scientific-integrity-boundaries)
+Read the [scientific integrity boundaries](https://rensutheart.github.io/vipp-mkdocs/stable/developer/architecture/#non-negotiable-scientific-contracts)
 and [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requirements).
 
 ## Documentation
 
-- [Quick Start](docs/quick-start.md) — installers, manual setup and the first workflow
-- [User Guide](docs/user-guide.md) — graph authoring, inspection, batch processing and export
-- [Example workflows](examples/README.md) — bundled starting points by analysis task
-- [Image import and export](docs/io-user-guide.md) — formats, metadata and collection inputs
-- [GPU Guide](docs/gpu-guide.md) — acceleration, qualification and benchmarking
-- [Measurement workflows](docs/measurement-workflows.md) — quantitative analysis patterns
-- [Architecture](docs/architecture.md) — execution and scientific-integrity contracts
-- [Published manual](https://rensutheart.github.io/vipp-mkdocs/) — versioned documentation site
-- [Changelog](CHANGELOG.md) and [roadmap](docs/planning.md)
+The [VIPP manual](https://rensutheart.github.io/vipp-mkdocs/stable/) is the single
+home for user instructions. Select a version in the manual to match your installation.
+
+- [Quick Start](https://rensutheart.github.io/vipp-mkdocs/stable/getting-started/installation/) — installers, manual setup and the first workflow
+- [User Guide](https://rensutheart.github.io/vipp-mkdocs/stable/how-to/) — graph authoring, inspection, batch processing and export
+- [Example workflows](https://rensutheart.github.io/vipp-mkdocs/stable/reference/example-workflows/) — bundled starting points by analysis task
+- [Image import and export](https://rensutheart.github.io/vipp-mkdocs/stable/reference/import-export/) — formats, metadata and collection inputs
+- [GPU Guide](https://rensutheart.github.io/vipp-mkdocs/stable/how-to/choose-compute/) — acceleration, qualification and benchmarking
+- [Measurement workflows](https://rensutheart.github.io/vipp-mkdocs/stable/workflows/object-measurements-tables/) — quantitative analysis patterns
+- [Architecture](https://rensutheart.github.io/vipp-mkdocs/stable/developer/architecture/) — execution and scientific-integrity contracts
+- [Troubleshooting](https://rensutheart.github.io/vipp-mkdocs/stable/troubleshooting/) — common problems and support
 
 ## Development And Support
+
+Implementation context stays with the code: [contributing](CONTRIBUTING.md),
+[architecture](docs/architecture.md), [planning and roadmap](docs/planning.md),
+[repository documentation](docs/README.md), and [changelog](CHANGELOG.md).
+See [documentation ownership](docs/documentation.md) before editing a guide.
 
 ```powershell
 python -m venv .venv

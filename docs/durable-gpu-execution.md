@@ -1,5 +1,10 @@
 # Durable GPU Execution
 
+**Implementation contract for contributors.** User instructions are maintained
+in the manual's [compute guide](https://rensutheart.github.io/vipp-mkdocs/stable/how-to/choose-compute/)
+and [workflow/export reference](https://rensutheart.github.io/vipp-mkdocs/stable/reference/workflow-contract/).
+This page owns execution invariants, evidence links, and developer examples.
+
 This page describes the current durable compute contract for collection batch
 runs, generated Python, command-line replay, and standalone output export.
 These surfaces use the same headless execution service as interactive VIPP.

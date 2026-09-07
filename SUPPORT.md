@@ -5,10 +5,9 @@ before scientific interpretation, publication, or operational use.
 
 ## Where To Start
 
-1. Review the [documentation index](docs/README.md) and
-   [user guide](docs/user-guide.md).
-2. Check the [operator tips](docs/operator-tips.md) for execution and UI
-   problems, and the [I/O guide](docs/io-user-guide.md) for file-format issues.
+1. Start with the [VIPP manual](https://rensutheart.github.io/vipp-mkdocs/stable/).
+2. Check [troubleshooting](https://rensutheart.github.io/vipp-mkdocs/stable/troubleshooting/)
+   or the [I/O guide](https://rensutheart.github.io/vipp-mkdocs/stable/reference/import-export/).
 3. Search [existing issues](https://github.com/rensutheart/napari-vipp/issues)
    and [discussions](https://github.com/rensutheart/napari-vipp/discussions) for
    a known limitation, answer, or workaround.

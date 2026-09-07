@@ -47,7 +47,7 @@ _SUPPORT_SCHEMA = "napari-vipp-compute-support-bundle"
 _SUPPORT_SCHEMA_VERSION = 1
 _SUPPORT_PRIVACY_POLICY = "napari-vipp-compute-support-redaction-v1"
 _GPU_GUIDE_URL = (
-    "https://github.com/rensutheart/napari-vipp/blob/main/docs/gpu-guide.md"
+    "https://rensutheart.github.io/vipp-mkdocs/stable/getting-started/windows-cuda/"
 )
 
 

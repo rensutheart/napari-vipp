@@ -9,11 +9,14 @@ and the tests expected for common extensions. The detailed design is in the
 
 ## Start Here
 
+- [Documentation ownership](documentation.md): public instructions belong in
+  vipp-mkdocs; implementation contracts and plans stay here.
+
 - [Scientific behavior requirements](../CONTRIBUTING.md#scientific-behavior-requirements)
 - [Core architecture](architecture.md)
 - [Implementation planning and priorities](planning.md)
 - [Node roadmap and migration choices](node-roadmap.md)
-- [I/O behavior contract](io-user-guide.md)
+- [Public I/O reference](https://rensutheart.github.io/vipp-mkdocs/stable/reference/import-export/)
 - [OME architecture and constraints](ome-io-plan.md)
 
 ## Dependency Direction

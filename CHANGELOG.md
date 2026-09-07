@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Consolidated public guidance in the vipp-mkdocs manual and replaced local user guides with topic links. Planning, architecture, execution contracts, and validation evidence remain beside the application code.
+
 ## 0.15.0a1 - 2026-09-06
 
 ### Workflow workspace and node library

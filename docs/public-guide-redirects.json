@@ -1,0 +1,79 @@
+{
+  "quick-start.md": {
+    "title": "Quick start",
+    "pages": {
+      "Install VIPP": "getting-started/installation",
+      "Install on macOS": "getting-started/macos",
+      "First workflow": "getting-started/example-tour"
+    }
+  },
+  "user-guide.md": {
+    "title": "User guide",
+    "pages": {
+      "Start here": "getting-started",
+      "How-to guides": "how-to",
+      "Toolbar and settings": "reference/interface",
+      "Batch processing": "workflows/batch-processing",
+      "Detailed reference": "reference"
+    }
+  },
+  "gpu-guide.md": {
+    "title": "GPU guide",
+    "pages": {
+      "Windows NVIDIA setup": "getting-started/windows-cuda",
+      "Choose and verify compute": "how-to/choose-compute",
+      "Validation status": "reference/validation-status"
+    }
+  },
+  "io-user-guide.md": {
+    "title": "Image import and export",
+    "pages": {
+      "Supported input and output": "reference/import-export",
+      "Optional readers": "getting-started/installation",
+      "Batch processing": "workflows/batch-processing",
+      "Workflow and export contract": "reference/workflow-contract"
+    }
+  },
+  "cache-and-memory.md": {
+    "title": "Cache and memory",
+    "pages": {
+      "Cache and memory": "reference/cache-memory",
+      "Performance troubleshooting": "troubleshooting/performance",
+      "Crop images": "how-to/crop-images"
+    }
+  },
+  "operator-tips.md": {
+    "title": "Operator tips",
+    "pages": {
+      "Performance troubleshooting": "troubleshooting/performance",
+      "Graph display settings": "reference/display-settings",
+      "Batch processing": "workflows/batch-processing",
+      "PSF restoration": "workflows/psf-deconvolution"
+    }
+  },
+  "measurement-workflows.md": {
+    "title": "Measurement workflows",
+    "pages": {
+      "Object measurements and tables": "workflows/object-measurements-tables",
+      "Measurement tables and units": "reference/measurement-tables",
+      "Skeleton analysis": "workflows/skeleton-network-analysis",
+      "Colocalization": "workflows/colocalization-association"
+    }
+  },
+  "skeleton-nodes.md": {
+    "title": "Skeleton nodes",
+    "pages": {
+      "Skeleton tutorial": "workflows/skeleton-network-analysis",
+      "Skeleton node reference": "reference/skeleton-nodes"
+    }
+  },
+  "colocalization-method-notes.md": {
+    "title": "Colocalization methods",
+    "pages": {
+      "Colocalization tutorial": "workflows/colocalization-association",
+      "Metric definitions": "reference/colocalization-metrics",
+      "RACC-like index": "reference/racc-index",
+      "Object association": "reference/association-metrics"
+    }
+  }
+}

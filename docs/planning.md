@@ -1033,10 +1033,12 @@ A beta candidate should have:
 
 - [architecture.md](architecture.md): runtime, data model, persistence, and
   known seams.
-- [user-guide.md](user-guide.md): current end-user behavior.
-- [io-user-guide.md](io-user-guide.md), [ome-io-plan.md](ome-io-plan.md), and
-  [cache-and-memory.md](cache-and-memory.md): current source, I/O, and
-  eager/lazy boundaries.
+- [Public manual](https://rensutheart.github.io/vipp-mkdocs/nightly/): user-facing
+  tasks and reference; [documentation ownership](documentation.md) defines the split.
+- [OME architecture](ome-io-plan.md), the manual's
+  [I/O reference](https://rensutheart.github.io/vipp-mkdocs/nightly/reference/import-export/),
+  and [memory reference](https://rensutheart.github.io/vipp-mkdocs/nightly/reference/cache-memory/):
+  source, I/O, and eager/lazy boundaries.
 - [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md)
   and [durable-gpu-execution.md](durable-gpu-execution.md): detailed accelerator
   admission and cross-surface execution contracts.

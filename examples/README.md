@@ -1,5 +1,9 @@
 # VIPP Example Workflows
 
+For user-facing tours, use the [manual's example index](https://rensutheart.github.io/vipp-mkdocs/stable/reference/example-workflows/).
+This file documents fixture filenames, launcher IDs, and developer acceptance
+checks beside the executable examples; do not maintain a second tutorial here.
+
 These workflows are checked into the repository as small, deterministic review
 graphs. They are intended for regression testing, manual UI review, and future
 documentation screenshots.

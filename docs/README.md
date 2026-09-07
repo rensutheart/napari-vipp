@@ -1,81 +1,35 @@
-# VIPP Documentation
+# Repository documentation
 
 **Visual image processing made approachable.**
 
-The supporting scientific promise is **visual workflows for reproducible
-bioimage analysis**.
+VIPP builds **visual workflows for reproducible bioimage analysis**.
+The [public manual](https://rensutheart.github.io/vipp-mkdocs/stable/) is maintained
+only in vipp-mkdocs. This directory is for contributors and coding agents.
 
-This index separates current user guidance from implementation references and
-historical planning. Start with the first section unless you are developing or
-reviewing VIPP itself.
+## Start here
 
-## Use VIPP
+- [Documentation ownership and migration map](documentation.md): where to edit,
+  what stays here, and where the former user guides moved.
+- [Developer notes](developer-notes.md): setup, extension points, and local checks.
+- [Architecture](architecture.md): runtime, schema, scientific and UI contracts.
+- [Planning](planning.md): active priorities and release order.
+- [Durable execution contract](durable-gpu-execution.md): shared execution,
+  provenance, fallback, cancellation, and publication invariants.
 
-- [Quick start](quick-start.md): the installer-first Windows and macOS
-  experiences, manual Linux/macOS and advanced routes,
-  CPU/GPU choices, and a first workflow. Start here if you are installing VIPP
-  rather than developing it.
-- [User guide](user-guide.md): build, inspect, save, export, and batch-run
-  workflows.
-- [GPU guide](gpu-guide.md): optional GPU qualification, compute modes,
-  supported operation families, fallback, benchmarking, and
-  reproducibility.
-- [Image import and export](io-user-guide.md): supported formats, optional
-  microscope readers, batch input binding, and output choices.
-- [Durable GPU execution](durable-gpu-execution.md): batch/config migration,
-  generated Python and CLI overrides, exact provenance, OOM fallback,
-  two-level progress, cancellation, and publication safety.
-- [Full collection-batch cancellation verification](full-batch-cancellation-verification.md):
-  implementation status, Apple Silicon evidence, Windows/GPU evidence, and the
-  shared manual smoke procedure.
-- [Cache and memory](cache-and-memory.md): cache modes, memory guard, and
-  large-data tradeoffs.
-- [Operator tips](operator-tips.md): background work, cancellation, previews,
-  and responsive operation.
-- [Example workflows](../examples/README.md): every bundled workflow and its
-  intended review purpose.
+## Validation and release
 
-## Scientific Workflows And Methods
-
-- [Measurement workflows](measurement-workflows.md): object, intensity, mesh,
-  skeleton, colocalization, and table contracts.
-- [Skeleton nodes](skeleton-nodes.md): skeleton inputs, visual QC, and graph
-  measurements.
-- [Colocalization method notes](colocalization-method-notes.md): definitions,
-  assumptions, and publication cautions.
-- [Analytical phantom validation](analytical-phantom-validation.md): generated
-  validation results for calibrated morphology.
-- [Richardson-Lucy TV validation](rl-tv-validation-report.md): deterministic
-  convergence, feature-recovery, PSF-sensitivity, and parameter evidence.
-
-## Develop And Release
-
-- [Developer notes](developer-notes.md): contributor entry point and local
-  checks.
-- [Architecture](architecture.md): runtime model, metadata, UI, persistence,
-  export, and known gaps.
-- [Release notes](../CHANGELOG.md): categorized compatibility, architecture,
-  scientific-behavior, workflow, UI, and validation changes by version.
-- [Release runbook](release-runbook.md): risk-based alpha, release-candidate,
-  and production publication with change-triggered gates.
-- [Release qualification baseline](release-qualification-baseline.md):
-  reusable installer, GPU, schema, packaging, and documentation evidence plus
-  exact invalidation rules.
-- [Public data corpus](public-data-corpus.md): objective, licence-aware,
-  checksum-frozen image selection for SourceItem, pyramid-preview, and
-  per-sample acceptance.
-- [`0.14.0a1` Source-Aware Loading Record](source-aware-loading-0.14.0a1.md):
-  candidate reader contracts, metadata parity, durable item identity, source
-  UX, qualification gates, and explicit deferrals for the next alpha.
-- [Windows installer field acceptance](windows-installer-field-acceptance.md):
-  a short record for exact-artifact CPU, CUDA, rollback, path, and novice checks.
-- [Windows setup packaging](../packaging/windows/README.md): the same-tag wheel,
-  PyInstaller, Authenticode, licence, checksum, and release-asset boundary.
-- [macOS PKG packaging](../packaging/macos/README.md): the exact-wheel offline
-  constructor build, native app shortcut, architecture matrix, and the future
-  Developer ID/notarization boundary.
-- [Research and publication record](research-and-publication.md): evidence
-  boundaries, evaluation plan, and reproducibility artifacts.
+- [Release notes](../CHANGELOG.md)
+- [Release runbook](release-runbook.md)
+- [Release qualification baseline](release-qualification-baseline.md)
+- [Windows installer field acceptance](windows-installer-field-acceptance.md)
+- [Windows setup packaging](../packaging/windows/README.md)
+- [macOS PKG packaging](../packaging/macos/README.md)
+- [Full-batch cancellation verification](full-batch-cancellation-verification.md)
+- [Public data corpus](public-data-corpus.md)
+- [Source-aware loading qualification](source-aware-loading-0.14.0a1.md)
+- [Analytical phantom validation](analytical-phantom-validation.md)
+- [Richardson-Lucy TV validation](rl-tv-validation-report.md)
+- [Research and publication record](research-and-publication.md)
 
 ## Current Planning
 

@@ -54,7 +54,10 @@ points and internal boundaries.
 1. Create a branch from the current default branch.
 2. Keep the change narrowly scoped and preserve unrelated work.
 3. Add or update tests for observable behavior and regressions.
-4. Update user documentation when behavior, terminology, or limitations change.
+4. Update the [vipp-mkdocs manual](https://github.com/rensutheart/vipp-mkdocs)
+   when behavior, terminology, or limitations change. Follow
+   [documentation ownership](docs/documentation.md); do not maintain a second
+   user guide in this repository. Link the companion documentation change.
 5. Add a concise entry under `Unreleased` in [CHANGELOG.md](CHANGELOG.md) for a
    user-visible change.
 
