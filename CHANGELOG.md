@@ -8,6 +8,7 @@
 
 - Preserve legacy batch-workflow hashes when restoring the additive Binary Threshold and Rescale Intensity defaults. Explicit non-default choices still change scientific workflow identity; the deterministic batch demo can be restored and previewed without a false mismatch.
 - Record Binary Threshold range endpoints and inclusive/exclusive rules accurately in operation history instead of describing an inactive single cutoff.
+- Keep the update dialog usable at narrow widths and larger system fonts: installer and checksum buttons stack when needed instead of forcing horizontal scrolling.
 
 ### Mesh creation, object management and export
 

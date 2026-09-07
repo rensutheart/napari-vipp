@@ -17,6 +17,7 @@ from qtpy.QtCore import QEvent, QObject, QSettings, Qt, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices, QPixmap
 from qtpy.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from qtpy.QtWidgets import (
+    QBoxLayout,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -317,6 +318,8 @@ class UpdateDialog(QDialog):
         self.checksums = QPushButton("Download checksums")
         self.checksums.clicked.connect(self._checksums)
         row.addWidget(self.checksums)
+        self.download_row = row
+        self.scroll.viewport().installEventFilter(self)
         self.notes = QPushButton("Release notes on GitHub")
         self.notes.clicked.connect(self._notes)
         layout.addLayout(row)
@@ -369,6 +372,7 @@ class UpdateDialog(QDialog):
     def _fit_initial_size(self):
         if not self.isVisible():
             return
+        self._reflow_downloads()
         body_layout = self.scroll.widget().layout()
         body_layout.activate()
         content_height = body_layout.totalHeightForWidth(self.scroll.viewport().width())
@@ -384,6 +388,30 @@ class UpdateDialog(QDialog):
         self.resize(
             self.width(), min(height, self.screen().availableGeometry().height() - 80)
         )
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.scroll.viewport() and event.type() == QEvent.Resize:
+            self._reflow_downloads()
+        return super().eventFilter(watched, event)
+
+    def _reflow_downloads(self):
+        # Native font metrics can make two readable buttons wider than the
+        # viewport. Stack them instead of clipping text or requiring sideways
+        # scrolling; the viewport also accounts for the vertical scrollbar.
+        required = (
+            max(self.download.minimumWidth(), self.download.minimumSizeHint().width())
+            + max(
+                self.checksums.minimumWidth(), self.checksums.minimumSizeHint().width()
+            )
+            + max(0, self.download_row.spacing())
+        )
+        direction = (
+            QBoxLayout.TopToBottom
+            if required > self.scroll.viewport().width()
+            else QBoxLayout.LeftToRight
+        )
+        if self.download_row.direction() != direction:
+            self.download_row.setDirection(direction)
 
     def refresh(self):
         controller = self.controller
@@ -454,6 +482,7 @@ class UpdateDialog(QDialog):
             checkbox.blockSignals(True)
             checkbox.setChecked(value)
             checkbox.blockSignals(False)
+        self._reflow_downloads()
 
     def _open(self, url):
         if not self.open_url(url):

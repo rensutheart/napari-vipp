@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,49 @@ def test_catalog_accounts_for_every_release_admission_identity(sweep_module):
     assert {case.operation_id for case in cases} == {
         declaration.operation_id for declaration in declarations
     }
+
+
+@pytest.mark.parametrize("version", ("1", "2", "4"))
+def test_threshold_sweep_rejects_unreviewed_implementation_version(
+    sweep_module,
+    version,
+):
+    declarations = tuple(
+        replace(item, implementation_version=version)
+        if item.operation_id == "binary_threshold"
+        else item
+        for item in sweep_module.load_admission_manifest(MANIFEST_PATH)
+    )
+    with pytest.raises(sweep_module.SweepConfigurationError, match="unreviewed"):
+        sweep_module.validate_catalog(sweep_module.sweep_catalog(), declarations)
+
+
+def test_threshold_foreground_lane_visits_and_revisits_each_v3_branch(sweep_module):
+    import numpy as np
+
+    from napari_vipp.core.operations import binary_threshold
+
+    case = next(
+        item
+        for item in sweep_module.sweep_catalog()
+        if item.operation_id == "binary_threshold"
+    )
+    lane = next(item for item in case.lanes if item.parameter_name == "foreground")
+    expected = {
+        "Above": [False, False, True, True, True],
+        "Below": [True, False, False, False, False],
+        "In range": [False, True, True, True, False],
+        "Outside range": [True, False, False, False, True],
+    }
+    assert set(lane.values) == set(expected)
+    for mode, mask in expected.items():
+        assert lane.values.count(mode) >= 2
+        parameters = dict(case.base_parameters, foreground=mode)
+        result = binary_threshold(
+            np.array([0.0, 0.25, 0.5, 0.75, 1.0], np.float32),
+            **parameters,
+        )
+        np.testing.assert_array_equal(result, mask)
 
 
 def test_catalog_has_bounded_explicit_treatment_for_all_21(sweep_module):
@@ -102,7 +146,7 @@ def test_catalog_exercises_expected_numeric_and_branch_controls(sweep_module):
         "sigma_x",
     }
     assert lane_names["convert_dtype"] == {"input_dtype"}
-    assert lane_names["binary_threshold"] == {"threshold"}
+    assert lane_names["binary_threshold"] == {"threshold", "foreground"}
     assert lane_names["extract_channel"] == {"channel"}
     assert lane_names["canny_edges"] == {
         "sigma",
@@ -146,7 +190,7 @@ def test_catalog_exercises_expected_numeric_and_branch_controls(sweep_module):
     assert cases["canny_edges"].fixture_id == "uint16-yx-canny-v1"
     assert cases["canny_edges"].dtype == "uint16"
     assert (
-        sum(len(lane.values) for case in cases.values() for lane in case.lanes) == 135
+        sum(len(lane.values) for case in cases.values() for lane in case.lanes) == 143
     )
 
 
@@ -442,7 +486,7 @@ def test_provider_free_orchestrator_emits_json_safe_complete_evidence(sweep_modu
     assert document["summary"] == {
         "hard_issue_count": 0,
         "relative_cliff_signal_count": 0,
-        "executed_step_count": 135,
+        "executed_step_count": 143,
         "complete_coverage": True,
     }
     assert len(document["cases"]) == 21

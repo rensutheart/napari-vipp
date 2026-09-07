@@ -34,6 +34,7 @@ from napari_vipp.core.compute_registry import (
     RuntimeProbeResult,
 )
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
+from napari_vipp.core.meshes import MeshData
 from napari_vipp.core.pipeline import (
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
@@ -494,6 +495,10 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
         ComputeMode.PREFER_GPU,
     )
 
+    if spec.id == "mesh-refinement-tuned":
+        for pipeline in (cpu_pipeline, prefer_gpu_pipeline):
+            _assert_tuned_mesh_example_result(pipeline)
+
     assert cpu_pipeline.topological_order() == prefer_gpu_pipeline.topological_order()
     for node_id in cpu_pipeline.topological_order():
         cpu_outputs = cpu_pipeline.node_outputs[node_id]
@@ -514,12 +519,66 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
         )
 
 
+def _assert_tuned_mesh_example_result(pipeline: PrototypePipeline) -> None:
+    """Keep the new matrix case meaningful beyond CPU/fallback equality."""
+    outputs = pipeline.outputs
+    original = outputs["mask_to_3d_mesh_1"]
+    assert isinstance(original, MeshData)
+    assert original.object_count == 1
+    for node_id in (
+        "split_mesh_objects_1",
+        "color_mesh_objects_1",
+        "combine_meshes_1",
+        "smooth_mesh_1",
+        "simplify_mesh_1",
+    ):
+        assert isinstance(outputs[node_id], MeshData)
+        assert outputs[node_id].object_count == 5
+    refined = outputs["simplify_mesh_1"]
+    assert 0 < len(refined.faces) < len(original.faces)
+    assert pipeline.nodes["smooth_mesh_1"].params["iterations"] == 2
+    assert pipeline.nodes["smooth_mesh_1"].params["strength"] == 1.0
+    assert pipeline.nodes["simplify_mesh_1"].params["target_percent"] == 10.0
+    assert pipeline.nodes["simplify_mesh_1"].params["aggressiveness"] == 4.0
+    table = outputs["measure_3d_mesh_morphology_1"]
+    assert isinstance(table, TableData)
+    assert table.row_count == 5
+    assert {row["mesh_id"] for row in table.records()} == {
+        item.object_id for item in refined.objects
+    }
+    assert outputs["batch_output_1"] is refined
+
+
 def test_compute_matrix_covers_every_bundled_example():
-    assert len(EXAMPLE_WORKFLOWS) == 20
     ids = [spec.id for spec in EXAMPLE_WORKFLOWS]
     filenames = [spec.filename for spec in EXAMPLE_WORKFLOWS]
     assert len(ids) == len(set(ids))
     assert len(filenames) == len(set(filenames))
+    # Explicit release inventory: a removed or renamed example cannot make
+    # registry-driven parametrization silently shrink the exercised matrix.
+    assert set(ids) == {
+        "exhaustive-inspector",
+        "graph-authoring",
+        "responsive-crop",
+        "safe-node-bypass",
+        "general-node-bypass",
+        "batch-provenance",
+        "label-cleanup",
+        "gpu-segmentation",
+        "object-intensity",
+        "merged-measurements",
+        "summary-table",
+        "derived-morphology",
+        "mesh-morphology",
+        "mesh-objects",
+        "mesh-refinement-tuned",
+        "skeleton-qc",
+        "advanced-skeleton",
+        "racc-colocalization",
+        "object-colocalization",
+        "deconvolution-2d",
+        "deconvolution-3d",
+    }
     example_directory = _example_workflow_path(EXAMPLE_WORKFLOWS[0]).parent
     assert set(filenames) == {
         path.name for path in example_directory.glob("*.json")

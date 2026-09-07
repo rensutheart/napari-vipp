@@ -198,22 +198,73 @@ def test_overlapping_objects_remain_separate_with_ids_and_colours(refine):
         np.testing.assert_allclose(a.vertices, b.vertices)
 
 
-def test_simplifier_keeps_a_small_disconnected_component_and_cavity_winding():
+def test_simplifier_keeps_a_minimal_disconnected_component_exactly(monkeypatch):
+    import napari_vipp.core.mesh_refinement as module
+
     large = _sphere(6)
-    tiny = _sphere(1)
+    # A tetrahedron is already at the four-face minimum for a closed component.
+    # Do not ask the native provider to turn a symmetric voxel sphere into one:
+    # at that extreme reduction, platform-dependent edge ties can produce a
+    # rejected candidate. A 50% request still exercises the component floor
+    # (two requested faces become four) while actually reducing the large shell.
+    tiny_vertices = np.array([[0, 0, 0], [0, 0, 1], [0, 1, 0], [1, 0, 0]]) + 50
+    tiny_faces = np.array([[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]])
     offset = len(large.vertices)
     mesh = MeshData(
-        np.concatenate((large.vertices, tiny.vertices + 50)),
-        np.concatenate((large.faces, tiny.faces + offset)),
+        np.concatenate((large.vertices, tiny_vertices)),
+        np.concatenate((large.faces, tiny_faces + offset)),
         large.state,
     )
-    result = simplify_mesh(mesh, target_percent=5)
-    assert np.any(result.vertices[:, 0] > 40) and np.any(result.vertices[:, 0] < 30)
+    native_face_counts = []
+    simplify_component = module._simplify_component
+
+    def record_component(points, faces, *args):
+        native_face_counts.append(len(faces))
+        return simplify_component(points, faces, *args)
+
+    monkeypatch.setattr(module, "_simplify_component", record_component)
+    result = simplify_mesh(mesh, target_percent=50)
+    assert native_face_counts == [len(large.faces)]
+    assert 4 < len(result.faces) < len(mesh.faces)
+    small_vertices = result.vertices[:, 0] > 40
+    np.testing.assert_array_equal(result.vertices[small_vertices], tiny_vertices)
+    small_faces = result.faces[np.all(small_vertices[result.faces], axis=1)]
+    small_offset = np.flatnonzero(small_vertices)[0]
+    np.testing.assert_array_equal(small_faces - small_offset, tiny_faces)
+    assert not np.any(
+        np.any(small_vertices[result.faces], axis=1)
+        & ~np.all(small_vertices[result.faces], axis=1)
+    )
+
+
+@pytest.mark.parametrize("reverse_output", [False, True])
+def test_simplifier_preserves_cavity_winding_at_provider_boundary(
+    monkeypatch, reverse_output
+):
+    import napari_vipp.core.mesh_refinement as module
+
     # An inward-wound shell remains inward. We do not independently reverse
-    # all shells to make their enclosed volumes positive.
-    inward = replace(tiny, faces=tiny.faces[:, ::-1])
+    # all shells to make their enclosed volumes positive. Exercise both sides
+    # of this contract with exact candidate geometry rather than assuming that
+    # native QEM tie-breaking always finds a valid low-triangle inward surface.
+    shell = _sphere(1)
+    inward = replace(shell, faces=shell.faces[:, ::-1])
+    vertices = np.array([[0, 0, 0], [0, 0, 1], [0, 1, 0], [1, 0, 0]], float)
+    faces = np.array([[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]])[:, ::-1]
+    if reverse_output:
+        faces = faces[:, ::-1]
+    monkeypatch.setattr(
+        module, "_simplify_component", lambda *_args: (vertices.copy(), faces.copy())
+    )
+    assert _signed_volume(inward) < 0
+    if reverse_output:
+        with pytest.raises(ValueError, match="inverted an enclosed surface"):
+            simplify_mesh(inward, target_percent=50)
+        return
     inward_result = simplify_mesh(inward, target_percent=50)
-    assert _signed_volume(inward_result) < 0
+    assert len(inward_result.faces) < len(inward.faces)
+    assert _signed_volume(inward_result) == pytest.approx(-1 / 6)
+    np.testing.assert_array_equal(inward_result.faces, faces)
 
 
 def test_noop_parameters_and_empty_inputs():

@@ -362,6 +362,30 @@ def test_no_update_for_equal_or_older_release_and_final_defaults_to_stable(qapp)
         controller.shutdown()
 
 
+def test_installer_actions_reflow_with_wider_native_font_metrics(
+    controller, qtbot, monkeypatch,
+):
+    monkeypatch.setattr(updates.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(updates.platform, "machine", lambda: "AMD64")
+    deliver(controller, [release(assets=[
+        "VIPP-Setup-0.16.0a1-Windows-x86_64-UNSIGNED.exe",
+        "SHA256SUMS-Windows-0.16.0a1.txt",
+    ])])
+    dialog = UpdateDialog(controller)
+    qtbot.addWidget(dialog)
+    # Simulate wider native text metrics without depending on one OS font.
+    for button in (dialog.download, dialog.checksums):
+        button.setMinimumWidth(240)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog.download.y() == dialog.checksums.y())
+    dialog.resize(440, 320)
+    qtbot.waitUntil(lambda: dialog.checksums.y() > dialog.download.geometry().bottom())
+    assert dialog.download.x() == dialog.checksums.x()
+    assert dialog.scroll.horizontalScrollBar().maximum() == 0
+    dialog.resize(600, 320)
+    qtbot.waitUntil(lambda: dialog.download.y() == dialog.checksums.y())
+
+
 @pytest.mark.parametrize("theme", ("dark", "light"))
 @pytest.mark.parametrize("state", ("current", "installer", "offline"))
 @pytest.mark.parametrize("font_size", (10, 14))
