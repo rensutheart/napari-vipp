@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from qtpy.QtCore import QPoint, Qt
 from qtpy.QtWidgets import QComboBox
 
@@ -151,7 +152,7 @@ def test_representative_nodes_render_semantic_sections_in_order(qtbot):
         widget.histograms_section.summary_label.text()
         == "Intensity → binary mask"
     )
-    assert widget.parameter_group.summary_label.text() == "2 values"
+    assert widget.parameter_group.summary_label.text() == "3 values"
     assert widget.mask_summary_section.title() == "Mask summary"
     assert not widget.rescale_input_histogram_group.isHidden()
     assert not widget.histogram_group.isHidden()
@@ -280,7 +281,8 @@ def test_connected_inputs_are_read_only_and_threshold_guidance_is_visible(qtbot)
 
     assert not widget.histogram_interaction_hint.isHidden()
     assert widget.histogram_interaction_hint.text() == (
-        "Drag the orange threshold line to tune the threshold."
+        "Foreground: values strictly above the threshold. Equal values stay "
+        "background. Drag the orange line to tune the threshold."
     )
     assert widget.histogram_interaction_hint.accessibleName() == (
         "Interactive histogram guidance"
@@ -764,6 +766,182 @@ def test_colocalization_threshold_scrub_preserves_inspector_allocation(qtbot):
             candidate.minimumHeight(),
             candidate.maximumHeight(),
         ) == original_constraints[id(candidate)]
+
+
+@pytest.mark.parametrize("width", (340, 620))
+@pytest.mark.parametrize("theme", ("dark", "light"))
+@pytest.mark.parametrize("font_size", (10, 14))
+def test_reader_support_is_a_separate_scrollable_system_section(
+    qtbot, qapp, monkeypatch, tmp_path, width, theme, font_size,
+):
+    from napari._qt.qt_resources import get_stylesheet
+    from qtpy.QtCore import QCoreApplication, QEvent
+    from qtpy.QtGui import QFont
+
+    from napari_vipp.core.reader_support import READERS, ReaderStatus
+    from napari_vipp.ui.reader_support import ReaderSupportControl
+
+    checks = []
+    monkeypatch.setattr(
+        ReaderSupportControl, "check", lambda _self, keys: checks.append(keys)
+    )
+    previous_font = qapp.font()
+    qapp.setFont(QFont("Segoe UI", font_size))
+    widget = _widget(qtbot)
+    widget.setStyleSheet(
+        get_stylesheet(theme, extra_variables={"font_size": f"{font_size}pt"})
+    )
+    try:
+        _select(widget, "input")
+        control = widget._parameter_widgets["image_source"]
+        # Switch the UI to a file source without initiating I/O in this layout test.
+        control.set_options([], [], value={
+            "source_mode": "file path", "file_path": "example.oir",
+        })
+        widget._sync_inspector_presentation()
+        widget._sync_parameter_form_height()
+        info = control.reader_support
+        section = widget.reader_support_section
+        assert not section.isHidden()
+        assert section.summary_label.text() == "System information"
+        assert not section.isExpanded() and not checks
+        assert info.toggle.isHidden()
+        assert info.isHidden()  # No empty diagnostic row remains in Parameters.
+        assert info.content.parentWidget() is section.content_widget
+        assert not widget.parameter_form_widget.isAncestorOf(info.content)
+
+        panel = widget.inspector_panel
+        panel.setParent(None)
+        qtbot.addWidget(panel)
+        panel.setStyleSheet(widget.styleSheet())
+        panel.resize(width, 650)
+        panel.show()
+        qapp.processEvents()
+        parameter_height = widget.parameter_form_widget.height()
+        section.setExpanded(True)
+        details = (
+            "Installed reader and native libraries load correctly.",
+            "This reader is not installed in the current environment.",
+            "The native library could not load. Retry or open Reader help.",
+        )
+        for index, spec in enumerate(READERS):
+            info._show_status(ReaderStatus(
+                spec.key, ("ready", "missing", "broken")[index % 3],
+                details[index % 3],
+            ))
+        qapp.processEvents()
+        assert len(checks) == 1
+        assert widget.parameter_form_widget.height() == parameter_height
+        assert section.height() > 300
+        assert panel.verticalScrollBar().maximum() > 0
+        for label in info.rows.values():
+            assert label.height() >= label.heightForWidth(label.width())
+            assert info.content.rect().contains(label.geometry())
+        # The real napari stylesheet must select readable bright dark-theme
+        # colours, not the dark foregrounds intended for light backgrounds.
+        from napari_vipp.ui.palette_roles import theme_colors
+        tones = theme_colors(info.palette())
+        for key, tone in (
+            ("tiff", tones.success), ("czi", tones.warning), ("lif", tones.error),
+        ):
+            color = tone.accent if theme == "dark" else tone.foreground
+            assert f'color: {color.name()}' in info.rows[key].text()
+        panel.ensureWidgetVisible(info.help)
+        def help_is_reachable():
+            panel.ensureWidgetVisible(info.help)
+            return panel.viewport().rect().contains(
+                info.help.mapTo(panel.viewport(), info.help.rect().bottomRight())
+            )
+
+        qtbot.waitUntil(help_is_reachable, timeout=2000)
+        def rows_are_separated():
+            labels = list(info.rows.values())
+            return all(
+                first.geometry().bottom() < second.geometry().top()
+                for first, second in zip(labels, labels[1:], strict=False)
+            )
+
+        qtbot.waitUntil(rows_are_separated, timeout=2000)
+        # Allow queued layout/scroll paints to settle before capturing the view.
+        qtbot.wait(50)
+        panel.ensureWidgetVisible(info.help)
+        qtbot.wait(50)
+        panel.viewport().repaint()
+        panel.repaint()
+        assert panel.viewport().rect().contains(
+            info.help.mapTo(panel.viewport(), info.help.rect().bottomRight())
+        )
+        assert panel.grab().save(str(tmp_path / "reader-section.png"))
+
+        # Failure recovery remains beside Source even with the system panel shut.
+        section.setExpanded(False)
+        info.set_source("example.oir", "Could not open this acquisition")
+        qapp.processEvents()
+        assert not info.isHidden() and not info.failure.isHidden()
+        assert not info.failure_action.isHidden()
+        assert widget.parameter_form_widget.height() > parameter_height
+        qtbot.waitUntil(lambda: widget.parameter_form_widget.rect().contains(
+            info.retry.mapTo(
+                widget.parameter_form_widget, info.retry.rect().bottomRight()
+            )
+        ))
+        info.set_source("another.oir", "")
+        assert info.isHidden()
+
+        retired_content = info.content
+        widget._clear_parameter_form()
+        assert info.content_host is None
+        assert retired_content.parentWidget() is info
+        assert section.content_widget.layout().count() == 0
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert info._lifetime["closed"]
+    finally:
+        qapp.setFont(previous_font)
+
+
+def test_reader_support_follows_all_image_sources_with_session_cached_results(
+    qtbot, monkeypatch,
+):
+    from napari_vipp.core.reader_support import READERS, ReaderStatus
+    from napari_vipp.ui.reader_support import ReaderSupportControl
+
+    calls = []
+    monkeypatch.setattr(
+        ReaderSupportControl, "check", lambda _self, keys: calls.append(keys)
+    )
+    widget = _widget(qtbot)
+    _select(widget, "input")  # Existing live-layer source, no file opened.
+    section = widget.reader_support_section
+    info = widget._parameter_widgets["image_source"].reader_support
+    assert not section.isHidden()
+    assert info.content.parentWidget() is section.content_widget
+    assert not section.isExpanded() and not calls
+    section.setExpanded(True)
+    assert len(calls) == 1
+    for spec in READERS:
+        info._show_status(ReaderStatus(spec.key, "ready", "Cached result"))
+    session = info._session
+
+    new_source = widget.add_node_from_palette("input")  # Same path as dropping a node.
+    crop = widget.add_node_from_palette("crop_stack")
+    _select(widget, crop.id)
+    assert section.isHidden()
+    for source_id in (new_source.id, "input", new_source.id):
+        _select(widget, source_id)
+        control = widget._parameter_widgets["image_source"]
+        assert not section.isHidden()
+        assert control.reader_support._session is session
+        assert "Cached result" in control.reader_support.rows["oir"].text()
+        for mode in ("sample", "file path", "napari layer"):
+            # Change presentation without opening files or recalculating pixels.
+            control.set_options([], [], value={"source_mode": mode})
+            widget._sync_inspector_presentation()
+            assert not section.isHidden()
+            assert control.reader_support.isHidden()  # No empty inline form row.
+            assert section.content_widget.layout().count() == 1
+        section.setExpanded(False)
+        section.setExpanded(True)
+    assert len(calls) == 1
 
 
 def test_source_representation_panel_moves_with_selection_without_stale_ownership(

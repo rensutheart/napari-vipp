@@ -148,7 +148,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         "Expanded labels": ("expand_labels_1", 0, 1),
         "Green channel": ("split_channels_1", 1, 14),
         "Object labels": ("relabel_sequential_1", 0, 4),
-        "ROI mask": ("binary_threshold_1", 0, 10),
+        "ROI mask": ("binary_threshold_1", 0, 12),
         "Raw volume": ("input_2", 0, 4),
         "Red channel": ("split_channels_1", 0, 19),
         "Skeleton mask": ("skeletonize_1", 0, 5),
@@ -174,8 +174,8 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 60
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 82
+    assert sum(tunnel_counts.values()) == 62
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 90
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:

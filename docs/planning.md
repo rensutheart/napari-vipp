@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-06
+Last reviewed: 2026-09-07
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -32,14 +32,17 @@ count or accelerator badges. A workflow should:
 - produce enough structured evidence for another person to reproduce or audit
   the run.
 
-Registration, model-backed segmentation, stitching, tracking, AI-assisted graph
-authoring, and custom code remain possible future directions. They are recorded
+Registration, image comparison, and template matching are the planned theme
+for **0.16**, with a [detailed proposal](registration-and-template-matching-plan.md).
+Model-backed segmentation, stitching,
+tracking, AI-assisted graph authoring, and custom code remain possible future
+directions. They are recorded
 in [product ideas](product-ideas.md) and do not displace the active source,
 scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.15.0a1` is the release target for this source tree. Its official
+`0.15.0a1` is the released baseline for this source tree. Its official
 [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a1),
 checksum sidecars,
 [PyPI package](https://pypi.org/project/napari-vipp/0.15.0a1/), and
@@ -98,12 +101,41 @@ Important remaining limits are:
 
 ## Active Release Order
 
-The `0.15.0a1` release consolidates the batch, inspector, measurement, and
-workflow-interface overhaul. New major features are deferred until final
-changed-domain checks, exact-commit CI, artifact qualification, and the updated
-illustrated manual are complete. See the [release notes](../release-notes.md)
-for the complete user-facing changes. The implementation records below retain
-their original delivered versions, including the 0.14 and 0.13 milestones.
+The released `0.15.0a1` consolidates the batch, inspector, measurement, and
+workflow-interface overhaul; see the [release notes](../release-notes.md).
+Post-release improvements remain subject to their own changed-domain checks.
+
+The next planned feature series is **0.16: registration, image comparison,
+and template matching**. See the [release scope below](#planned-016-registration-image-comparison-and-template-matching)
+and the [detailed proposal](registration-and-template-matching-plan.md).
+This records intent, not completed implementation, a version bump, or a release
+date. Existing correctness and qualification gates remain mandatory. The
+implementation records below retain their original 0.14 and 0.13 versions.
+
+### Current 0.15 follow-up: 3D surface output
+
+The implemented, unreleased **3D Meshes** category includes mask/label surface
+creation, object IDs and measurement colours, combine/split/filter controls,
+explicit smoothing/simplification, and calibrated OBJ/3MF publication through
+the inspector, batch and generated Python. **Measure 3D Mesh Morphology**
+measures supplied triangles per object without remeshing. The bundled
+**Mesh Objects, Colours & Refinement** workflow exercises the connected path.
+See the [implementation contract](object-mesh-morphology-plan.md#object-aware-mesh-workflow-unreleased).
+Geometric union, external measurement-table colouring, repair and print
+qualification remain separate future work; input geometry is never changed.
+
+### Current 0.15 follow-up: batteries-included file readers
+
+- [x] Include native CZI, Leica, ND2/legacy codecs and Olympus readers in base
+  plugin dependencies and the managed desktop recipes.
+- [x] Put collapsed reader checks and missing-reader setup in Image Source,
+  with explicit package review and close-before-install handling.
+- [ ] Complete native macOS clean-plugin and installed-PKG qualification on
+  Apple Silicon and Intel before publishing this change. CI gates are wired;
+  local Windows results are not a substitute for those runs.
+
+The [reader implementation and qualification record](update-and-reader-plan.md)
+defines the exact packages, optional Bio-Formats boundary and safety limits.
 
 ### Delivered Record: `0.13.0a9` Correctness Rollup
 
@@ -971,20 +1003,53 @@ exact scientific region reads.
   object association, skeleton/network topology, real PSFs/deconvolution,
   microscope metadata, interrupted batch, and OME-Zarr round-tripping.
 
-## Pending Correctness Follow-Ups
+## Planned 0.16: Registration, Image Comparison, And Template Matching
 
-### Binary Threshold: Above / Below Selection
+The [detailed implementation proposal](registration-and-template-matching-plan.md)
+defines the planned **0.16 release series**. The goal is to align images, assess
+the result, and find template-like structures in explicit 2D/3D data. This is
+planning only; no implementation or alpha release date is claimed.
 
-- [ ] Add an explicit above/below foreground option to Binary Threshold.
-  Confirmed on 2026-09-05: both the CPU operation
-  (`core/operations.py::binary_threshold`) and CuPy provider
-  (`core/gpu/cupy_binary_threshold.py::binary_threshold`) use strict `>`;
-  the node declaration in `core/pipeline.py` exposes no direction parameter.
-  Preserve strictly-above behavior for existing workflows. Define and explain
-  equality handling, expose the choice clearly in the inspector, and carry it
-  through saved workflows, batch execution, and generated Python/export.
-  Verify CPU/GPU parity with below/equal/above-threshold and non-finite inputs.
-  This is a recorded follow-up, not an implemented fix or release commitment.
+Core delivery order:
+
+1. A versioned transform output and coordinate/grid contract, then **Estimate
+   Translation** and **Apply Transform** for reviewable 2D/3D alignment.
+2. **Compare Images** with SSIM, correlation, RMSE, and optional PSNR in an
+   exportable metrics table. Before/after measurements use the same valid
+   region and settings; similarity is supporting evidence, not registration
+   confidence. See the [metric contract](registration-and-template-matching-plan.md#compare-images-similarity-and-quality-evidence).
+3. **Template Match** and **Find Peaks** for score maps, detection tables,
+   and inspector overlays, separate from registration and segmentation.
+
+**Not core release gates:** Estimate Drift is a stretch candidate. Rigid/affine
+estimators, mutual-information comparisons, mask/landmark validation metrics,
+and full SSIM maps are follow-ups. Non-rigid registration, stitching, and
+tracking remain separate longer-horizon work.
+
+The core uses existing SciPy/scikit-image dependencies. Alpha milestones may
+ship complete workflows incrementally, with explicit spatial axes, label-safe
+interpolation, truthful diagnostics, headless/batch/export parity, known-answer
+2D/3D examples, and concise illustrated vipp-mkdocs tutorials. Next action:
+confirm representative alignment/detection data and open an implementation
+issue before coding. Source, memory, and reproducibility priorities still apply.
+
+## 0.15 Correctness Follow-Ups
+
+### Binary Threshold: Cutoff And Range Selection
+
+- [x] Implemented locally after `0.15.0a1`: Binary Threshold exposes
+  **Foreground: Above / Below**. Above uses strict `>` and remains the default
+  for old workflows; Below uses strict `<`. Equality and NaN are background in
+  both modes. The inspector explains the comparison and retains the draggable
+  cutoff. The authored choice participates in scientific identity and follows
+  the shared workflow, batch, generated Python, and supported GPU paths.
+  Regression coverage includes threshold equality, signed zero, non-finite
+  pixels, explicit RGB luma, old-workflow defaults, persistence, and undo/redo.
+- [x] Added **In range / Outside range** with finite ordered low/high limits,
+  paired sliders and histogram guides. In range includes endpoints; Outside
+  range excludes them; both keep NaN as background. CPU/CuPy parity, range GPU
+  workspace, workflow/export/batch behavior, and mode-dependent inspector
+  controls have regression coverage.
 
 ## Continuous Product And Release Gates
 

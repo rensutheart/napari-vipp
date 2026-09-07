@@ -6,6 +6,8 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from napari_vipp.core.operation_search import operation_search_aliases
+
 
 @dataclass(frozen=True)
 class GraphSearchMatch:
@@ -26,7 +28,8 @@ def find_graph_matches(
     """Return graph elements whose searchable fields match ``query``.
 
     Matching is case-insensitive and punctuation-insensitive. A query matches
-    when every normalized query token is present in the candidate text.
+    when every normalized query token is present in the candidate text,
+    including common alternative names for the node's operation.
     """
 
     normalized_query = normalize_search_text(query)
@@ -92,6 +95,9 @@ def _node_search_fields(node: object) -> tuple[tuple[str, str], ...]:
         ("title", str(getattr(node, "title", "") or "")),
         ("operation id", str(getattr(node, "operation_id", "") or "")),
     ]
+    aliases = operation_search_aliases(str(getattr(node, "operation_id", "") or ""))
+    if aliases:
+        fields.append(("alternative name", " ".join(aliases)))
     params = getattr(node, "params", {}) or {}
     tag = ""
     if isinstance(params, dict):

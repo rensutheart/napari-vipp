@@ -56,7 +56,7 @@ from napari_vipp._theme import (
 from napari_vipp.core.pipeline import EXECUTION_BLOCKED, NODE_LIBRARY_BY_ID
 
 OPERATION_MIME = "application/x-napari-vipp-operation"
-PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels"}
+PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels", "mesh"}
 STALE_EXECUTION_ACCENT = "#f59e0b"
 ISOLATED_TUNING_ACCENT = "#8b5cf6"
 BLOCKED_EXECUTION_ACCENT = "#b45309"
@@ -782,7 +782,8 @@ class NodeCard(QFrame):
                 ComputeBadgeKind.BYPASSED,
                 tooltip=(
                     "Workflow output forwards this node's exact primary input without "
-                    "calling the operation. Its thumbnail remains a "
+                    "calling the operation. For image outputs, an available "
+                    "thumbnail is a "
                     "presentation-only preview of what the node would produce "
                     "if run."
                 ),
@@ -1755,11 +1756,13 @@ class PortItem(QGraphicsEllipseItem):
             color = "#c084fc"
         elif self.data_type == "labels":
             color = "#f472b6"
-        elif self.data_type == "mask_or_labels":
+        elif self.data_type in {"mask_or_labels", "mask_or_labels_or_mesh"}:
             color = "#f472b6"
         elif self.data_type == "table":
             color = "#facc15"
-        elif self.data_type == "array":
+        elif self.data_type == "mesh":
+            color = "#2dd4bf"
+        elif self.data_type in {"array", "array_or_mesh"}:
             color = "#38bdf8"
         elif self.data_type == "any":
             color = "#f59e0b"
@@ -3391,6 +3394,11 @@ class PipelineGraphView(QGraphicsView):
             node.title,
             node.category,
             can_pin=node.output_type in PINNABLE_OUTPUT_TYPES,
+        )
+        # Output capability is known before the first calculation. Tables and
+        # meshes must not reserve an image placeholder while waiting for data.
+        card.set_preview_enabled(
+            any(kind not in {"table", "mesh"} for kind in _node_output_port_types(node))
         )
         card.set_graph_palette(self.palette())
         card.set_bypassed(getattr(node, "execution_mode", "run") == "bypass")
@@ -5785,8 +5793,12 @@ def _types_compatible(output_type: str, input_type: str | None) -> bool:
         return True
     if input_type == "array":
         return output_type in {"array", "image", "mask", "labels"}
+    if input_type == "array_or_mesh":
+        return output_type in {"array", "image", "mask", "labels", "mesh"}
     if input_type == "mask_or_labels":
         return output_type in {"mask", "labels"}
+    if input_type == "mask_or_labels_or_mesh":
+        return output_type in {"mask", "labels", "mesh"}
     if input_type == "table":
         return output_type == "table"
     return output_type == input_type

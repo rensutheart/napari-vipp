@@ -10,6 +10,7 @@ for swapping editor state.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from uuid import uuid4
@@ -360,10 +361,12 @@ class WorkflowTabBar(QTabBar):
     activateTabRequested = Signal(int)
     closeTabRequested = Signal(int)
     renameTabRequested = Signal(int, str)
+    revealTabRequested = Signal(str)
     tabsReordered = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._session_paths: dict[str, Path | None] = {}
         self.setObjectName("WorkflowTabBar")
         self.setAccessibleName("Open workflows")
         self.setDocumentMode(True)
@@ -385,6 +388,9 @@ class WorkflowTabBar(QTabBar):
         """Replace tab presentation with one coherent model snapshot."""
         blocker = QSignalBlocker(self)
         try:
+            self._session_paths = {
+                session.session_id: session.path for session in model
+            }
             while self.count():
                 self.removeTab(self.count() - 1)
             for session in model:
@@ -402,6 +408,7 @@ class WorkflowTabBar(QTabBar):
             raise IndexError("Workflow tab index is out of range.")
         if self.tabData(index) != session.session_id:
             raise ValueError("Workflow tab bar and model session order differ.")
+        self._session_paths[session.session_id] = session.path
         self.setTabText(index, _tab_text(session))
         self.setTabToolTip(index, _tab_tooltip(session))
 
@@ -447,8 +454,25 @@ class WorkflowTabBar(QTabBar):
         new_action = menu.addAction("New workflow tab")
         rename_action = None
         close_action = None
+        reveal_action = None
+        session_id = None
         if index >= 0:
+            session_id = str(self.tabData(index))
             rename_action = menu.addAction("Rename tab")
+            label = {
+                "win32": "Open in File Explorer",
+                "darwin": "Open in Finder",
+            }.get(sys.platform, "Open containing folder")
+            reveal_action = menu.addAction(label)
+            path = self._session_paths.get(session_id)
+            reveal_action.setEnabled(path is not None)
+            reveal_action.setToolTip(
+                f"Locate the saved workflow: {path}"
+                if path is not None
+                else "Save this workflow first to give it a location on disk."
+            )
+            menu.setToolTipsVisible(True)
+            menu.addSeparator()
             close_action = menu.addAction("Close tab")
         chosen = menu.exec(self.mapToGlobal(position))
         if chosen is new_action:
@@ -457,6 +481,14 @@ class WorkflowTabBar(QTabBar):
             self.request_rename(index)
         elif close_action is not None and chosen is close_action:
             self.closeTabRequested.emit(index)
+        elif (
+            reveal_action is not None
+            and chosen is reveal_action
+            and reveal_action.isEnabled()
+        ):
+            # A stable identity keeps the target independent of the active tab
+            # and of any reorder while the menu's nested event loop is open.
+            self.revealTabRequested.emit(session_id)
 
 
 def _validate_snapshot_matches_pipeline(

@@ -17,7 +17,7 @@ from napari_vipp.core.workflow import (
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     "exhaustive-inspector-showcase.json": (
-        "9d02b0d0c7d16437330a23f2f35ace2d910718b257927ae636894e5022822b49"
+        "d84cc62863208486a7cb68acfb306e54d0805c5df5b27fbdd9d688e944663fd2"
     ),
     "general-node-bypass-acceptance.json": (
         "79b42499676ba18da66d3340d53f0328828bf129eb91bf0041bf53b2589c7f69"
@@ -66,6 +66,9 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-measurement-summary.json": (
         "34ada05bf06ba895a6e33fcba913fa7272f3c7ba9feb50809dbc95e967db20f8"
+    ),
+    "synthetic-mesh-objects.json": (
+        "198f7e34b4753d39d0289813961498f53c3fef42ef78e62c6eb4bc13083f2f4a"
     ),
     "synthetic-object-colocalization-association.json": (
         "4e5c80f8fc1390efa82696b031f5e02fea1a4af5bbc4fef0ff14bb6b99ac5eae"
@@ -178,6 +181,30 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
 
     assert scientific_workflow_hash(document) == expected_hash
     assert scientific_workflow_hash(reserialized) == expected_hash
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameter", "value"),
+    (
+        ("mask_to_3d_mesh", "object_mode", "Single object"),
+        ("color_mesh_objects", "color_by", "triangle_count"),
+        ("filter_mesh_objects", "minimum", 11.0),
+        ("smooth_mesh", "strength", 0.1),
+        ("simplify_mesh", "target_percent", 60.0),
+    ),
+)
+def test_mesh_example_hash_tracks_object_and_geometry_choices(
+    operation_id, parameter, value
+):
+    original = _load_example("synthetic-mesh-objects.json")
+    changed = deepcopy(original)
+    node = next(n for n in changed["nodes"] if n["operation_id"] == operation_id)
+    assert node["params"][parameter] != value
+    node["params"][parameter] = value
+    assert scientific_workflow_hash(changed) != scientific_workflow_hash(original)
+    assert scientific_workflow_hash(changed) == scientific_workflow_hash(
+        _restore_and_reserialize(changed)
+    )
 
 
 def _reverse_mapping_key_order(value: Any) -> Any:

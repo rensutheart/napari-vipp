@@ -144,8 +144,7 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "Derived 2D Object Morphology",
         "synthetic-derived-object-morphology.json",
         ("VIPP synthetic object morphology",),
-        "Calculate 2D morphology, circularity, perimeter-area ratio, and Hu "
-        "moments.",
+        "Calculate 2D morphology, circularity, perimeter-area ratio, and Hu moments.",
     ),
     ExampleWorkflowSpec(
         "mesh-morphology",
@@ -164,6 +163,27 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         ("VIPP synthetic skeleton network",),
         "Inspect skeleton keypoints, components, branches, pruning, graph "
         "tables, and network summaries.",
+    ),
+    ExampleWorkflowSpec(
+        "mesh-objects",
+        "3D Meshes",
+        "Mesh Objects, Colours & Refinement",
+        "synthetic-mesh-objects.json",
+        ("VIPP synthetic 3D mesh morphology",),
+        "Create five calibrated mesh objects, colour by volume, filter two "
+        "disjoint groups and combine them again. Compare original, smoothed "
+        "and simplified geometry; measure objects and declare a 3MF batch output.",
+    ),
+    ExampleWorkflowSpec(
+        "mesh-refinement-tuned",
+        "3D Meshes",
+        "Mesh Objects — Tuned Refinement",
+        "synthetic-mesh-refinement-tuned.json",
+        ("VIPP synthetic 3D mesh morphology",),
+        "Saved interactive workflow: split a single mesh into five objects, "
+        "colour by triangle count with Turbo, filter and recombine. Compare "
+        "two smoothing iterations at strength 1 with 10% simplification at "
+        "aggressiveness 4; retain the saved layout and inspector settings.",
     ),
     ExampleWorkflowSpec(
         "advanced-skeleton",
@@ -210,8 +230,7 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
             "VIPP synthetic 3D deconvolution volume",
             "VIPP synthetic 3D measured PSF",
         ),
-        "Run volumetric PSF-aware restoration with matched 3D image and PSF "
-        "sources.",
+        "Run volumetric PSF-aware restoration with matched 3D image and PSF sources.",
     ),
 )
 

@@ -64,6 +64,7 @@ _DISPLAYABLE_ACTION_KINDS = frozenset(
         "image",
         "labels",
         "mask",
+        "mesh",
         "multi_image",
         "multi_labels",
         "multi_mask",
@@ -126,6 +127,7 @@ def test_every_registered_operation_resolves_one_complete_inspector_profile():
             "image",
             "labels",
             "mask",
+            "mesh",
             "multi_image",
             "multi_labels",
             "multi_mask",
@@ -322,7 +324,7 @@ def test_every_effective_output_profile_has_only_valid_actions_and_pinning():
                     else "multi_runtime"
                 )
             )
-        elif spec.output_type in {"image", "labels", "mask", "table"}:
+        elif spec.output_type in {"image", "labels", "mask", "table", "mesh"}:
             expected_action = spec.output_type
         else:
             expected_action = "runtime"
@@ -345,6 +347,30 @@ def test_every_effective_output_profile_has_only_valid_actions_and_pinning():
             assert LABEL_DISTRIBUTION_SECTION in profile.primary_sections, spec.id
         if expected_action in {"mask", "multi_mask"}:
             assert MASK_SUMMARY_SECTION in profile.primary_sections, spec.id
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    tuple(spec.id for spec in NODE_LIBRARY if spec.output_type == "mesh"),
+)
+def test_mesh_profiles_use_surface_actions_without_image_diagnostics(operation_id):
+    profile = _profile(operation_id)
+    assert profile.output_action_kind == "mesh"
+    assert profile.supports_pin
+    assert profile.execution_is_manual
+    if operation_id == "filter_mesh_objects":
+        assert profile.distribution_kind == "mesh_filter"
+        assert LABEL_DISTRIBUTION_SECTION in profile.primary_sections
+    else:
+        assert profile.distribution_kind == "none"
+    assert METADATA_SECTION in profile.section_order
+    assert not {
+        HISTOGRAMS_SECTION,
+        MASK_SUMMARY_SECTION,
+        TABLE_RESULTS_SECTION,
+    }.intersection(profile.section_order)
+    if operation_id != "filter_mesh_objects":
+        assert LABEL_DISTRIBUTION_SECTION not in profile.section_order
 
 
 @pytest.mark.parametrize(

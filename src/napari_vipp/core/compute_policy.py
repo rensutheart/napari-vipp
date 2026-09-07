@@ -43,6 +43,7 @@ from napari_vipp.core.richardson_lucy_compute import (
     evaluate_richardson_lucy_region,
     evaluate_richardson_lucy_tv_region,
 )
+from napari_vipp.core.threshold_range import validate_threshold_range
 
 OTSU_DEFAULT_HISTOGRAM_BINS = 256
 OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS = 65_536
@@ -1054,9 +1055,16 @@ def estimate_candidate_memory(
         # The admitted preserve conversion is one uint8/uint16-to-float32 cast.
         # Its only image-sized allocation is the already-counted output array.
         workspace = 0
-    elif spec.memory_model_id == "cupy-binary-threshold-memory-v1":
-        # The elementwise comparison owns only the already-counted bool output.
-        workspace = 0
+    elif spec.memory_model_id == "cupy-binary-threshold-memory-v2":
+        # Range modes combine two comparisons in place: one boolean output
+        # (counted separately) and one temporary boolean comparison array.
+        workspace = (
+            primary_elements
+            if dict(workload.parameters).get("foreground") in (
+                "In range", "Outside range",
+            )
+            else 0
+        )
     elif spec.memory_model_id == "cupy-sigma-filter-memory-v1":
         parameters = dict(workload.parameters)
         shape = workload.input_shapes[0]
@@ -1572,6 +1580,22 @@ def _binary_threshold_region_policy(
             fallback_allowed=False,
         )
     parameters = dict(workload.parameters)
+    foreground = parameters.get("foreground", "Above")
+    if foreground not in ("Above", "Below", "In range", "Outside range"):
+        return _workload_rejection(
+            "Binary Threshold foreground must be 'Above', 'Below', "
+            "'In range' or 'Outside range'.",
+            fallback_allowed=False,
+        )
+    range_mode = foreground in ("In range", "Outside range")
+    if range_mode:
+        try:
+            validate_threshold_range(
+                parameters.get("low_threshold", 0.25),
+                parameters.get("high_threshold", 0.75),
+            )
+        except ValueError as exc:
+            return _workload_rejection(str(exc), fallback_allowed=False)
     channel_axis = parameters.get("channel_axis")
     if channel_axis is not None:
         _axis, channel_error = _validated_luma_axis(
@@ -1586,7 +1610,8 @@ def _binary_threshold_region_policy(
             "explicit RGB/RGBA luma conversion remains authoritative on CPU."
         )
 
-    raw_threshold = parameters.get("threshold", 0.5)
+    # The single cutoff is inactive in range modes and need not be numeric.
+    raw_threshold = 0.5 if range_mode else parameters.get("threshold", 0.5)
     try:
         threshold = float(raw_threshold)
     except (TypeError, ValueError, OverflowError):
@@ -2237,22 +2262,31 @@ def _mesh_morphology_region_policy(
 ) -> SupportDecision | None:
     if len(workload.input_shapes) != 1:
         return _workload_rejection(
-            "3D mesh morphology requires exactly one label input.",
+            "3D mesh morphology requires exactly one mask, label image or mesh input.",
             fallback_allowed=False,
+        )
+    if dict(workload.parameters).get("_vipp_input_kind") == "mesh":
+        return _workload_rejection(
+            "Existing mesh geometry is measured directly on CPU without remeshing. "
+            "The hybrid GPU implementation accepts only native int32 label images."
         )
     try:
         labels_dtype = np.dtype(workload.input_dtypes[0])
     except (TypeError, ValueError):
         return _workload_rejection(
-            "3D mesh morphology requires a valid non-boolean integer label dtype.",
+            "3D mesh morphology requires a Boolean mask, integer label image "
+            "or typed mesh input.",
             fallback_allowed=False,
         )
-    if labels_dtype == np.dtype(bool) or not np.issubdtype(
-        labels_dtype,
-        np.integer,
-    ):
+    if labels_dtype == np.dtype(bool):
         return _workload_rejection(
-            "3D mesh morphology requires a non-boolean integer label image; "
+            "Binary masks are measured on CPU. The hybrid GPU implementation "
+            "accepts only native int32 label images."
+        )
+    if not np.issubdtype(labels_dtype, np.integer):
+        return _workload_rejection(
+            "3D mesh morphology requires a Boolean mask, integer label image "
+            "or typed mesh; "
             f"{labels_dtype} is invalid for both CPU and GPU execution.",
             fallback_allowed=False,
         )
@@ -2392,7 +2426,7 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
         "convert-dtype-f32-preserve-parameters-v1": _convert_dtype_region_policy,
-        "binary-threshold-f32-scalar-parameters-v1": (_binary_threshold_region_policy),
+        "binary-threshold-f32-scalar-parameters-v3": (_binary_threshold_region_policy),
         "extract-channel-semantic-axis-parameters-v1": (_extract_channel_region_policy),
         "rl-parameters-v2": _richardson_lucy_region_policy,
         "rl-tv-parameters-v2": _richardson_lucy_tv_region_policy,
@@ -3089,7 +3123,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
             "convert-dtype-f32-preserve-parameters-v1",
-            "binary-threshold-f32-scalar-parameters-v1",
+            "binary-threshold-f32-scalar-parameters-v3",
             "extract-channel-semantic-axis-parameters-v1",
             *RICHARDSON_LUCY_POLICY_IDS["parameter"],
             "canny-parameters-v1",
@@ -3148,7 +3182,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-gaussian-3d-memory-v1",
             "cupy-dynamic-gaussian-memory-v1",
             "cupy-convert-dtype-memory-v1",
-            "cupy-binary-threshold-memory-v1",
+            "cupy-binary-threshold-memory-v2",
             "cupy-allocation-sharing-view-v1",
             *RICHARDSON_LUCY_POLICY_IDS["memory"],
             "cupyx-canny-exact-memory-v1",
@@ -3257,7 +3291,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "sigma-nearest-circular-footprint-v1",
             "imagej-rankfilters-nearest-yx-v1",
             "elementwise-no-boundary-v1",
-            "strict-greater-elementwise-v1",
+            "strict-cutoff-closed-range-elementwise-v3",
             "semantic-channel-view-v1",
             *RICHARDSON_LUCY_POLICY_IDS["boundary"],
             "skimage-canny-constant-zero-v1",

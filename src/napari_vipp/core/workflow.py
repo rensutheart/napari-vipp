@@ -749,6 +749,18 @@ def _inspector_metadata_to_dict(
         )
         if profiles:
             result["display_profiles"] = profiles
+    if "source_channel_displays" in raw_inspector:
+        choices = raw_inspector["source_channel_displays"]
+        if not isinstance(choices, dict) or any(
+            not isinstance(node_id, str) or mode not in ("stack", "layers")
+            for node_id, mode in choices.items()
+        ):
+            raise ValueError(
+                "Source channel displays must map node IDs to stack/layers."
+            )
+        result["source_channel_displays"] = {
+            node_id: mode for node_id, mode in choices.items() if node_id in node_id_set
+        }
     return result
 
 

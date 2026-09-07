@@ -951,6 +951,15 @@ def test_remove_small_label_objects_uses_input_size_distribution_and_marker(qtbo
     assert widget.label_volume_plot.marker_values()["min"] == pytest.approx(6.0)
     assert "minimum marker" in widget.label_volume_interaction_hint.text()
 
+    plot = widget.label_volume_plot
+    assert plot._hover_counts.sum() == 2
+    assert plot._bin_edges[0] == pytest.approx(0)
+    assert plot._bin_edges[-1] == pytest.approx(16)
+    assert "Objects: 1" in plot._bin_tooltip(len(plot._bin_edges) - 2)
+    widget.label_volume_log_checkbox.setChecked(True)
+    assert plot._bin_edges[-1] == pytest.approx(16)
+    assert plot._hover_counts.sum() == 2
+
     widget._on_label_volume_marker_changed("min", 10.0)
 
     assert widget.pipeline.nodes[remove.id].params["min_size"] == 10

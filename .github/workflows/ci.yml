@@ -146,6 +146,9 @@ jobs:
           - os: macos-latest
             python-version: "3.13"
             archive: sdist
+          - os: macos-15-intel
+            python-version: "3.12"
+            archive: wheel
 
     steps:
       - name: Check out repository for path-isolation checks
@@ -174,6 +177,7 @@ jobs:
       - name: Verify installed package, resources, and headless entry points
         run: |
           python -m pip check
+          python -m napari_vipp.core.reader_support all-native
           python -c "from importlib.metadata import distribution, version; from importlib.resources import files; from pathlib import Path; import napari_vipp; repo = Path.cwd().resolve(); installed = Path(napari_vipp.__file__).resolve(); assert repo not in installed.parents, (repo, installed); assert napari_vipp.__version__ == version('napari-vipp'); root = files('napari_vipp'); assert root.joinpath('napari.yaml').is_file(); assert root.joinpath('compute_policies', 'phase1-gpu-public-v10.json').is_file(); points = {(point.group, point.name) for point in distribution('napari-vipp').entry_points}; assert {('console_scripts', 'vipp-compute-doctor'), ('console_scripts', 'vipp-install-plan')} <= points"
           python -c "import numpy as np; from napari_vipp.core.operations import gaussian_blur; source = np.arange(63, dtype=np.float32).reshape(7, 9); result = gaussian_blur(source, sigma=1.0); assert result.shape == source.shape; assert np.isfinite(result).all()"
           vipp-compute-doctor --help

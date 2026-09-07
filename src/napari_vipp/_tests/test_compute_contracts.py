@@ -36,6 +36,23 @@ from napari_vipp.core.compute_specs import (
 )
 
 
+@pytest.mark.parametrize("dependency", ["fast-simplification", "matplotlib"])
+def test_mesh_dependency_versions_change_environment_fingerprint(
+    monkeypatch, dependency
+):
+    import napari_vipp.core.compute as module
+
+    versions = dict(ComputeEnvironment().scientific_stack_versions)
+    assert dependency in versions
+    monkeypatch.setattr(module.importlib.metadata, "version", versions.__getitem__)
+    before = ComputeEnvironment()
+    versions[dependency] = "999.0"
+    after = ComputeEnvironment()
+    assert before.fingerprint != after.fingerprint
+    assert after.as_dict()["scientific_stack_versions"][dependency] == "999.0"
+    assert ComputeEnvironment.from_dict(after.as_dict()) == after
+
+
 def test_compute_request_is_strict_immutable_and_json_safe():
     request = ComputeRequest(
         mode="custom",

@@ -33,6 +33,12 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
+  planned 0.16 scope for 2D/3D alignment, SSIM and related comparisons, template
+  detection, and transform contracts; drift/rigid/affine follow-ups are separate.
+- [Update discovery and reader packaging](update-and-reader-plan.md): quiet
+  update checks and the proposed default-reader dependency set.
+
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
 - [Product ideas](product-ideas.md) preserves promising concepts that are not

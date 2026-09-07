@@ -650,8 +650,11 @@ def build_workflow() -> tuple[
     top_hat = place("top_hat", 2040, 4790, size=2)
     black_hat = place("black_hat", 2380, 4790, size=2)
     gradient = place("morphological_gradient", 2720, 4790, size=2)
-    for morph in (dilate, erode, opening, closing, top_hat, black_hat, gradient):
+    hull = place("convex_hull", 3060, 4790, spatial_mode="Auto from axes")
+    for morph in (dilate, erode, opening, closing, top_hat, black_hat, gradient, hull):
         wire(binary, morph, tunnel_name=roi_mask_tunnel)
+    surface = place("mask_to_3d_mesh", 3400, 4790)
+    wire(binary, surface, tunnel_name=roi_mask_tunnel)
 
     outliers = place(
         "remove_binary_outliers",
@@ -855,6 +858,25 @@ def build_workflow() -> tuple[
     wire(select_columns, summarize)
     wire(summarize, batch)
 
+    # Object-aware surfaces occupy the unused lower-right of the morphology lane.
+    # Combining is deliberately not a geometric union: these two input
+    # representations may overlap, and their object identities stay separate.
+    label_surface = place("labels_to_3d_mesh", 4080, 6070)
+    split_surface = place("split_mesh_objects", 4420, 6070)
+    color_surface = place("color_mesh_objects", 4760, 6070)
+    filter_surface = place("filter_mesh_objects", 5100, 6070)
+    combined_surface = place("combine_meshes", 5440, 6070, input_count=2)
+    smoothed_surface = place("smooth_mesh", 5780, 6070, iterations=3)
+    simplified_surface = place("simplify_mesh", 6120, 6070, target_percent=75.0)
+    wire(relabel, label_surface)
+    wire(label_surface, split_surface)
+    wire(split_surface, color_surface)
+    wire(color_surface, filter_surface)
+    wire(filter_surface, combined_surface, target_port=0)
+    wire(surface, combined_surface, target_port=1)
+    wire(combined_surface, smoothed_surface)
+    wire(smoothed_surface, simplified_surface)
+
     # Lane 5: colocalization and spatial relationships on the same registered grid.
     lane_note(
         "lane_colocalization",
@@ -879,30 +901,6 @@ def build_workflow() -> tuple[
         threshold_mode="Manual",
         channel_1_threshold=12000.0,
         channel_2_threshold=12000.0,
-    )
-    scatter = place(
-        "colocalization_scatter_plot",
-        1360,
-        6590,
-        threshold_mode="Manual",
-        channel_1_threshold=12000.0,
-        channel_2_threshold=12000.0,
-        bins=96,
-        output_size=512,
-        range_percentile=99.5,
-        log_counts=True,
-    )
-    masked_scatter = place(
-        "masked_colocalization_scatter_plot",
-        1700,
-        6590,
-        threshold_mode="Manual",
-        channel_1_threshold=12000.0,
-        channel_2_threshold=12000.0,
-        bins=96,
-        output_size=512,
-        range_percentile=99.5,
-        log_counts=True,
     )
     coloc_voxels = place(
         "colocalized_voxels",
@@ -949,8 +947,8 @@ def build_workflow() -> tuple[
         output_dtype="float32",
     )
 
-    unmasked_pairs = (coloc_metrics, scatter, coloc_voxels, racc)
-    masked_triples = (masked_metrics, masked_scatter, masked_voxels, masked_racc)
+    unmasked_pairs = (coloc_metrics, coloc_voxels, racc)
+    masked_triples = (masked_metrics, masked_voxels, masked_racc)
     for analysis in unmasked_pairs:
         wire(
             split_channels,

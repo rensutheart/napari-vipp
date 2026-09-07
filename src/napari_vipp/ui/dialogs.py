@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp._theme import category_foreground, palette_is_dark
+from napari_vipp.core.operation_search import operation_search_aliases
 from napari_vipp.ui.examples import (
     EXAMPLE_WORKFLOWS,
     ExampleWorkflowSpec,
@@ -142,7 +143,18 @@ class ConnectionInsertDialog(QDialog):
         self.tree.clear()
         first_item = None
         for candidate in self._candidates:
-            if normalized and normalized not in candidate.search_text:
+            # Keep literal name matching here: fuzzy subsequences of insertion
+            # hints such as "partial insert" can otherwise match unrelated nodes.
+            terms = (
+                _normalize_search_text(candidate.search_text),
+                *(
+                    _normalize_search_text(alias)
+                    for alias in operation_search_aliases(candidate.operation_id)
+                ),
+            )
+            if not all(
+                any(token in term for term in terms) for token in normalized.split()
+            ):
                 continue
             item = QTreeWidgetItem(
                 [

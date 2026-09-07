@@ -118,9 +118,11 @@ for name in ("cupy", "cupyx", "cucim"):
         float(np.nextafter(np.float32(1.0), np.float32(2.0))),
     ),
 )
+@pytest.mark.parametrize("foreground", ("Above", "Below"))
 def test_fake_provider_is_bitwise_exact_for_scalar_float32_region(
     fake_cupy,
     threshold,
+    foreground,
 ) -> None:
     del fake_cupy
     values = np.asarray(
@@ -142,8 +144,10 @@ def test_fake_provider_is_bitwise_exact_for_scalar_float32_region(
     before_bits = values.view(np.uint32).copy()
     values.setflags(write=False)
 
-    actual = provider.binary_threshold(values, threshold=threshold)
-    expected = cpu_binary_threshold(values, threshold=threshold)
+    actual = provider.binary_threshold(
+        values, threshold=threshold, foreground=foreground
+    )
+    expected = cpu_binary_threshold(values, threshold=threshold, foreground=foreground)
 
     np.testing.assert_array_equal(actual, expected, strict=True)
     np.testing.assert_array_equal(values.view(np.uint32), before_bits)
@@ -297,7 +301,8 @@ def _real_cuda_or_skip():
     return cupy
 
 
-def test_real_cuda_output_is_resident_exact_and_input_is_immutable() -> None:
+@pytest.mark.parametrize("foreground", ("Above", "Below"))
+def test_real_cuda_output_is_resident_exact_and_input_is_immutable(foreground) -> None:
     cupy = _real_cuda_or_skip()
     host = np.asarray(
         [
@@ -309,7 +314,9 @@ def test_real_cuda_output_is_resident_exact_and_input_is_immutable() -> None:
     device = cupy.asarray(host)[:, ::2]
     before = device.copy()
 
-    actual = provider.binary_threshold(device, threshold=1.00000008)
+    actual = provider.binary_threshold(
+        device, threshold=1.00000008, foreground=foreground
+    )
 
     assert isinstance(actual, cupy.ndarray)
     assert actual.dtype == cupy.bool_
@@ -317,12 +324,13 @@ def test_real_cuda_output_is_resident_exact_and_input_is_immutable() -> None:
     cupy.testing.assert_array_equal(device, before)
     np.testing.assert_array_equal(
         cupy.asnumpy(actual),
-        cpu_binary_threshold(host[:, ::2], threshold=1.00000008),
+        cpu_binary_threshold(host[:, ::2], threshold=1.00000008, foreground=foreground),
         strict=True,
     )
 
 
-def test_real_cuda_reported_decimal_thresholds_match_cpu_bitwise() -> None:
+@pytest.mark.parametrize("foreground", ("Above", "Below"))
+def test_real_cuda_reported_decimal_thresholds_match_cpu_bitwise(foreground) -> None:
     cupy = _real_cuda_or_skip()
 
     for threshold in (5613.0001, 5613.375, 5613.9999, 17906.348):
@@ -339,11 +347,20 @@ def test_real_cuda_reported_decimal_thresholds_match_cpu_bitwise() -> None:
         actual = provider.binary_threshold(
             cupy.asarray(host),
             threshold=threshold,
+            foreground=foreground,
         )
 
         assert isinstance(actual, cupy.ndarray)
         np.testing.assert_array_equal(
             cupy.asnumpy(actual),
-            cpu_binary_threshold(host, threshold=threshold),
+            cpu_binary_threshold(host, threshold=threshold, foreground=foreground),
             strict=True,
         )
+
+
+@pytest.mark.parametrize("foreground", ("above", "invalid", "", None, 0))
+def test_provider_rejects_invalid_foreground_before_upload(fake_cupy, foreground):
+    cupy, _stream = fake_cupy
+    with pytest.raises(ValueError, match="foreground must be"):
+        provider.binary_threshold(np.zeros((2, 3), np.float32), foreground=foreground)
+    assert not cupy.asarray_sizes

@@ -81,6 +81,7 @@ from napari_vipp.core.io import (
     read_image,
 )
 from napari_vipp.core.io.raster import RASTER_SUFFIXES
+from napari_vipp.core.meshes import is_mesh_data, save_mesh_output
 from napari_vipp.core.metadata import (
     AmbiguousAxisError,
     AxisDeclaration,
@@ -136,6 +137,8 @@ _KNOWN_SUFFIXES = (
     ".npy",
     ".csv",
     ".tsv",
+    ".obj",
+    ".3mf",
 )
 _IMAGE_SUFFIXES = {
     "ome-tiff": ".ome.tif",
@@ -145,7 +148,10 @@ _IMAGE_SUFFIXES = {
 }
 _IMAGE_FORMATS = frozenset(_IMAGE_SUFFIXES)
 _TABLE_FORMATS = frozenset(("csv", "tsv"))
-_OUTPUT_FORMATS = frozenset(("batch default", *_IMAGE_FORMATS, *_TABLE_FORMATS))
+_MESH_FORMATS = frozenset(("obj", "3mf"))
+_OUTPUT_FORMATS = frozenset(
+    ("batch default", *_IMAGE_FORMATS, *_TABLE_FORMATS, *_MESH_FORMATS)
+)
 _OVERWRITE_VALUES = frozenset(("batch default", "yes", "no"))
 _HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
 _WINDOWS_RESERVED_STEMS = frozenset(
@@ -344,14 +350,18 @@ class BatchOutputConfig:
         _require_text(self.node_id, "Batch output node_id")
         _require_text(self.node_title, "Batch output node_title")
         _require_text(self.tag, "Batch output tag")
-        if self.kind not in {"image", "table"}:
-            raise ValueError("Batch output kind must be 'image' or 'table'.")
+        if self.kind not in {"image", "table", "mesh"}:
+            raise ValueError("Batch output kind must be 'image', 'table', or 'mesh'.")
         if self.format not in _OUTPUT_FORMATS:
             raise ValueError(f"Unsupported batch output format: {self.format!r}.")
         if self.kind == "table" and self.format in _IMAGE_FORMATS:
             raise ValueError("A table batch output cannot use an image format.")
         if self.kind == "image" and self.format in _TABLE_FORMATS:
             raise ValueError("An image batch output cannot use a table format.")
+        if self.kind == "mesh" and self.format not in {"batch default", *_MESH_FORMATS}:
+            raise ValueError("A mesh batch output requires OBJ or 3MF format.")
+        if self.kind != "mesh" and self.format in _MESH_FORMATS:
+            raise ValueError("Only a mesh batch output can use OBJ or 3MF format.")
         _require_text(self.filename_template, "Batch output filename_template")
         if self.overwrite not in _OVERWRITE_VALUES:
             raise ValueError(
@@ -2998,7 +3008,9 @@ def _validate_effective_batch_output_contract(
                 f"Effective batch output {output.node_id!r} has no output port."
             )
         effective_type = ports[0].output_type
-        effective_kind = "table" if effective_type == "table" else "image"
+        effective_kind = (
+            effective_type if effective_type in {"table", "mesh"} else "image"
+        )
         if output.kind == effective_kind:
             continue
         resolved_format = _resolved_output_format(config, output)
@@ -3069,7 +3081,7 @@ def _plan_output(
     filename = format_batch_filename(output.filename_template, values)
     resolved_format = _resolved_output_format(config, output)
     suffix = (
-        ".tsv"
+        f".{resolved_format}" if resolved_format in _MESH_FORMATS else ".tsv"
         if resolved_format == "tsv"
         else ".csv"
         if resolved_format == "csv"
@@ -3105,6 +3117,8 @@ def _plan_output(
 def _resolved_output_format(config: BatchConfig, output: BatchOutputConfig) -> str:
     if output.format != "batch default":
         return output.format
+    if output.kind == "mesh":
+        return "obj"
     return "csv" if output.kind == "table" else config.default_image_format
 
 
@@ -3127,6 +3141,8 @@ def _resolved_existing_file_policy(
 
 def _filename_suffix_matches_format(filename: str, output_format: str) -> bool:
     lower = filename.lower()
+    if output_format in _MESH_FORMATS:
+        return lower.endswith(f".{output_format}")
     if output_format == "ome-tiff":
         return lower.endswith((".ome.tif", ".ome.tiff", ".tif", ".tiff"))
     if output_format in {"imagej-tiff", "tiff"}:
@@ -3228,7 +3244,7 @@ def _validate_pipeline_config(
         node = pipeline.nodes[output.node_id]
         ports = pipeline.output_ports(output.node_id)
         output_type = ports[0].output_type if ports else "any"
-        expected_kind = "table" if output_type == "table" else "image"
+        expected_kind = output_type if output_type in {"table", "mesh"} else "image"
         if output.kind != expected_kind:
             raise ValueError(
                 f"Batch output {output.node_id!r} kind does not match the workflow."
@@ -3988,7 +4004,11 @@ def _save_planned_output(
     temporary = _temporary_output_path(output.path)
     saved_temporary = temporary
     try:
-        if is_table_data(data):
+        if is_mesh_data(data):
+            if output.format not in _MESH_FORMATS:
+                raise ValueError("Mesh batch outputs require OBJ or 3MF format.")
+            saved_temporary = save_mesh_output(data, temporary, format=output.format)
+        elif is_table_data(data):
             if output.format not in _TABLE_FORMATS:
                 raise ValueError(
                     f"Table output {output.node_id!r} has invalid format "

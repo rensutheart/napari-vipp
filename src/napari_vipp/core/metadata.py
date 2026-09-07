@@ -759,6 +759,12 @@ def transform_split_output_state(
 
 def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
+    mesh_state = _coerce_mesh_state(state_or_data)
+    if mesh_state is not None:
+        objects = mesh_state.object_count
+        return (f"MESH: {objects:,} object{'s' if objects != 1 else ''} | "
+                f"{mesh_state.vertex_count:,} vertices\n"
+                f"{mesh_state.triangle_count:,} triangles | 3D surface")
     table_state = _coerce_table_state(state_or_data)
     if table_state is not None:
         return (
@@ -779,6 +785,26 @@ def format_compact_metadata(state_or_data) -> str:
 
 def metadata_table_rows(state_or_data) -> list[MetadataRow]:
     """Return display rows for the selected-node metadata table."""
+    mesh_state = _coerce_mesh_state(state_or_data)
+    if mesh_state is not None:
+        return [
+            MetadataRow("Kind", mesh_state.kind),
+            MetadataRow("Objects", f"{mesh_state.object_count:,}"),
+            MetadataRow("Vertices", f"{mesh_state.vertex_count:,}"),
+            MetadataRow("Triangles", f"{mesh_state.triangle_count:,}"),
+            MetadataRow(
+                "Source extraction",
+                "Lewiner marching cubes; level 0.5; full resolution",
+            ),
+            MetadataRow("Image border", mesh_state.boundary),
+            MetadataRow("Geometry processing", "; ".join(mesh_state.processing_history)
+                        or "None — original extracted geometry"),
+            MetadataRow("Coordinates", "ZYX voxel centres; carried image calibration"),
+            MetadataRow("Calibration", "; ".join(
+                f"{a.name.upper()}: scale {a.scale:g}, origin {a.translation:g} "
+                f"{a.unit or 'voxel'}" for a in mesh_state.spatial_axes)),
+            MetadataRow("Source", mesh_state.source_name or "—"),
+        ]
     table_state = _coerce_table_state(state_or_data)
     if table_state is not None:
         rows = [
@@ -981,6 +1007,9 @@ def _table_quality_rows(quality: TableQuality) -> list[MetadataRow]:
 
 def metadata_history_items(state_or_data) -> list[str]:
     """Return operation history entries for inspector display."""
+    mesh_state = _coerce_mesh_state(state_or_data)
+    if mesh_state is not None:
+        return list(mesh_state.history)
     table_state = _coerce_table_state(state_or_data)
     if table_state is not None:
         return list(table_state.history)
@@ -993,6 +1022,11 @@ def metadata_history_items(state_or_data) -> list[str]:
 
 def format_detailed_metadata(state_or_data) -> str:
     """Multi-line metadata summary for the selected node inspector."""
+    if _coerce_mesh_state(state_or_data) is not None:
+        return "\n".join(
+            f"{row.label}: {row.value}"
+            for row in metadata_table_rows(state_or_data)
+        )
     table_state = _coerce_table_state(state_or_data)
     if table_state is not None:
         lines = [
@@ -2625,6 +2659,7 @@ def _operation_history(
             f"{operation_title}: {active}; output "
             f"{_format_number(params.get('out_min', 0.0))}.."
             f"{_format_number(params.get('out_max', 1.0))}"
+            + ("; inverted intensity" if params.get("invert_intensity", False) else "")
         )
     if operation_id == "clip_intensity":
         mode = str(params.get("cutoff_mode", "Data range"))
@@ -2858,6 +2893,15 @@ def _operation_history(
         )
     if operation_id == "euclidean_distance_transform":
         return f"{operation_title}: {params.get('spatial_mode', 'Auto from axes')}"
+    if operation_id == "convex_hull":
+        ndim = params.get("resolved_spatial_ndim")
+        scope = {2: "2D YX planes", 3: "3D ZYX volumes"}.get(
+            ndim, str(params.get("spatial_mode", "Auto from axes"))
+        )
+        return (
+            f"{operation_title}: {scope}, one hull for all foreground per block; "
+            "half-pixel axis offsets, borders included; original grid retained"
+        )
     if operation_id == "h_maxima_markers":
         h_value = _format_number(params.get("h", 1.0))
         return (
@@ -2875,6 +2919,13 @@ def _operation_history(
         return (
             f"{operation_title}: distance {distance}, "
             f"{params.get('spatial_mode', 'Auto from axes')}"
+        )
+    if operation_id == "binary_threshold":
+        foreground = params.get("foreground", "Above")
+        threshold = _format_number(params.get("threshold", 0.5))
+        return (
+            f"{operation_title}: Foreground {foreground}, strict cutoff {threshold}; "
+            "equal values and NaN are background"
         )
     if operation_id == "convert_dtype":
         return (
@@ -3234,6 +3285,15 @@ def _channel_axis_index(axes: tuple[AxisMetadata, ...]) -> int | None:
         if axis.type == "channel" or axis.name.lower() == "c":
             return index
     return None
+
+
+def _coerce_mesh_state(state_or_data):
+    # Meshes depend on ImageState; lazy import keeps that dependency acyclic.
+    from napari_vipp.core.meshes import MeshData, MeshState
+
+    if isinstance(state_or_data, MeshState):
+        return state_or_data
+    return state_or_data.state if isinstance(state_or_data, MeshData) else None
 
 
 def _coerce_state(state_or_data) -> ImageState | None:

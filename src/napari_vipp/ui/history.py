@@ -22,6 +22,7 @@ class WorkflowHistorySnapshot:
     compute_node_preferences: tuple[tuple[str, str, str], ...] = ()
     compute_optimizer_locked_node_ids: tuple[str, ...] = ()
     inspect_display_profiles: tuple[dict[str, object], ...] = ()
+    source_channel_displays: tuple[tuple[str, str], ...] = ()
 
 
 class WorkflowHistory:

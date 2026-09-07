@@ -183,6 +183,8 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
             "numpy": "2.5.1",
             "scipy": "1.18.0",
             "scikit-image": "0.26.0",
+            "fast-simplification": "0.2.0",
+            "matplotlib": "3.10.8",
         }[distribution]
 
     monkeypatch.setattr(compute_module.importlib.metadata, "version", version)
@@ -193,8 +195,16 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
         "numpy": "2.5.1",
         "scipy": "1.18.0",
         "scikit-image": "0.26.0",
+        "fast-simplification": "0.2.0",
+        "matplotlib": "3.10.8",
     }
-    assert requested_distributions == ["numpy", "scipy", "scikit-image"]
+    assert requested_distributions == [
+        "numpy",
+        "scipy",
+        "scikit-image",
+        "fast-simplification",
+        "matplotlib",
+    ]
 
 
 def test_custom_all_cpu_preserves_a_healthy_host_environment(monkeypatch):
@@ -1019,6 +1029,8 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
         "numpy": "2.5.1",
         "scipy": "1.18.0",
         "scikit-image": "0.26.0",
+        "fast-simplification": "0.2.0",
+        "matplotlib": "3.10.8",
     }
     monkeypatch.setattr(
         compute_module.importlib.metadata,

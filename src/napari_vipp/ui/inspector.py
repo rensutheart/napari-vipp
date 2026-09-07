@@ -30,6 +30,7 @@ TABLE_RESULTS_SECTION = "table_results"
 HISTOGRAMS_SECTION = "histograms"
 WRITER_STATUS_SECTION = "writer_status"
 BEHAVIOR_SECTION = "behavior"
+READER_SUPPORT_SECTION = "reader_support"
 COMPUTE_SECTION = "compute"
 METADATA_SECTION = "metadata"
 HISTORY_SECTION = "history"
@@ -177,6 +178,7 @@ class InspectorProfile:
     def section_order(self) -> tuple[str, ...]:
         sections = (
             *self.primary_sections,
+            *((READER_SUPPORT_SECTION,) if self.operation_id == "input" else ()),
             BEHAVIOR_SECTION,
             COMPUTE_SECTION,
             METADATA_SECTION,
@@ -265,6 +267,12 @@ def inspector_profile(
                 primary.append(TABLE_RESULTS_SECTION)
             primary.append(HISTOGRAMS_SECTION)
             distribution_kind = "colocalization_inputs"
+        elif operation_id == "filter_mesh_objects":
+            primary.extend((LABEL_DISTRIBUTION_SECTION, METADATA_SECTION))
+            distribution_kind = "mesh_filter"
+        elif output_type == "mesh":
+            primary.append(METADATA_SECTION)
+            distribution_kind = "none"
         elif is_table:
             primary.append(TABLE_RESULTS_SECTION)
             distribution_kind = "table"
@@ -333,7 +341,7 @@ def inspector_profile(
     elif is_table:
         action_kind = "table"
         supports_pin = False
-    elif output_type in {"image", "mask", "labels"}:
+    elif output_type in {"image", "mask", "labels", "mesh"}:
         action_kind = output_type
         supports_pin = True
     else:
@@ -617,6 +625,8 @@ class InspectorSection(QWidget):
             return "history"
         if "behavior" in title:
             return "eye"
+        if "reader support" in title:
+            return "chip"
         if any(
             word in title
             for word in ("parameter", "measurement", "setting")
@@ -719,6 +729,7 @@ __all__ = [
     "METADATA_SECTION",
     "OUTPUT_SELECTOR_SECTION",
     "PARAMETERS_SECTION",
+    "READER_SUPPORT_SECTION",
     "SOURCE_REPRESENTATION_SECTION",
     "TABLE_RESULTS_SECTION",
     "WRITER_STATUS_SECTION",

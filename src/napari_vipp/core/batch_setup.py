@@ -254,7 +254,7 @@ def _batch_output_config(
         node_id=node_id,
         node_title=node.title,
         tag=batch_output_tag(pipeline, node_id),
-        kind="table" if output_type == "table" else "image",
+        kind=output_type if output_type in {"table", "mesh"} else "image",
         format=str(params.get("format", "batch default")),
         subfolder=str(params.get("subfolder", "")),
         filename_template=str(params.get("filename_template", "{source_stem}__{tag}")),
