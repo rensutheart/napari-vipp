@@ -3,8 +3,9 @@
 
 The combined evidence owner follows the first useful resident segmentation
 corridor across a zero-allocation semantic channel view and an exact float32
-fixed threshold.  It records all ten public-admission facets, including safe
-CPU fallback and both resident and transfer-inclusive timings.
+fixed threshold or closed-range selection. It records all ten public-admission
+facets, including safe CPU fallback and both resident and transfer-inclusive
+timings.
 
 Importing this module, asking for ``--help``, or validating an existing JSON
 artifact does not import CuPy or initialize CUDA.
@@ -65,6 +66,7 @@ SOURCE_PROVENANCE_PATHS = (
     Path("src/napari_vipp/core/operations.py"),
     Path("src/napari_vipp/core/metadata.py"),
     Path("src/napari_vipp/core/gpu/cupy_binary_threshold.py"),
+    Path("src/napari_vipp/core/threshold_range.py"),
     Path("src/napari_vipp/core/gpu/cupy_extract_channel.py"),
     Path("src/napari_vipp/core/compute_specs.py"),
     Path("src/napari_vipp/core/compute_policy.py"),
@@ -84,6 +86,11 @@ REQUIRED_ADMISSION_COVERAGE = {
             "values:nonfinite",
             "values:signed-zero",
             "threshold:float32-rounding-boundary",
+            "foreground:above",
+            "foreground:below",
+            "foreground:in-range",
+            "foreground:outside-range",
+            "range:equal-cutoffs",
             "repeat:deterministic",
         }
     ),
@@ -326,7 +333,7 @@ def build_evidence(profile: str, device_index: int) -> dict[str, object]:
 
 
 def _admission_cases() -> tuple[AdmissionCase, ...]:
-    return (
+    base = (
         AdmissionCase(
             "binary_threshold",
             "binary-boundaries-plane",
@@ -337,6 +344,7 @@ def _admission_cases() -> tuple[AdmissionCase, ...]:
                 "layout:contiguous",
                 "values:signed-zero",
                 "threshold:float32-rounding-boundary",
+                "foreground:above",
             ),
         ),
         AdmissionCase(
@@ -409,9 +417,34 @@ def _admission_cases() -> tuple[AdmissionCase, ...]:
             ),
         ),
     )
+    variants = tuple(
+        dataclasses.replace(
+            case,
+            case_id=f"{case.case_id}-{mode}",
+            kind=f"{case.kind}@{mode}",
+            coverage=tuple(
+                item for item in case.coverage if not item.startswith("foreground:")
+            )
+            + (f"foreground:{mode}",),
+        )
+        for case in base
+        if case.operation_id == "binary_threshold"
+        for mode in ("below", "in-range", "outside-range")
+    )
+    equal_cutoffs = tuple(
+        AdmissionCase(
+            "binary_threshold",
+            f"binary-equal-cutoffs-{mode}",
+            f"binary-nonfinite-strided@{mode}-equal",
+            ("foreground:" + mode, "range:equal-cutoffs", "values:nonfinite"),
+        )
+        for mode in ("in-range", "outside-range")
+    )
+    return base + variants + equal_cutoffs
 
 
 def _host_case(kind: str):
+    kind = kind.split("@", 1)[0]
     np = _numpy()
     if kind == "binary-boundaries":
         return np.asarray(
@@ -457,6 +490,20 @@ def _host_case(kind: str):
 
 
 def _case_parameters(kind: str) -> dict[str, object]:
+    if "@" in kind:
+        base, mode = kind.split("@", 1)
+        parameters = _case_parameters(base)
+        parameters["foreground"] = {
+            "below": "Below",
+            "in-range": "In range",
+            "outside-range": "Outside range",
+        }[mode.removesuffix("-equal")]
+        if mode != "below":
+            parameters.update(
+                low_threshold=0.0,
+                high_threshold=0.0 if mode.endswith("-equal") else 1.00000008,
+            )
+        return parameters
     if kind == "binary-boundaries":
         return {"threshold": 1.00000008, "channel_axis": None}
     if kind == "binary-nonfinite-strided":
@@ -489,6 +536,7 @@ def _case_parameters(kind: str) -> dict[str, object]:
 def _device_case(cp, host, kind: str):
     """Recreate authored non-contiguous layouts in the resident domain."""
 
+    kind = kind.split("@", 1)[0]
     np = _numpy()
     if kind == "binary-nonfinite-strided":
         base = np.asarray(
@@ -726,7 +774,12 @@ def _run_lifecycle(cp, cpu_functions, gpu_functions) -> dict[str, object]:
         (
             "binary_threshold",
             np.linspace(-1, 1, 257 * 263, dtype=np.float32).reshape(257, 263),
-            {"threshold": 0.125, "channel_axis": None},
+            {
+                "foreground": "In range",
+                "low_threshold": -0.25,
+                "high_threshold": 0.125,
+                "channel_axis": None,
+            },
             "Applying binary threshold",
         ),
         (
@@ -971,6 +1024,24 @@ def _performance_cases(profile: str) -> tuple[PerformanceCase, ...]:
             ),
         ),
     )
+    quick += tuple(
+        PerformanceCase(
+            "binary_threshold",
+            f"binary-{mode}-31x37-allocator-rounding",
+            (31, 37),
+            "float32",
+            (
+                ("foreground", foreground),
+                ("low_threshold", 0.25),
+                ("high_threshold", 0.75),
+                ("channel_axis", None),
+            ),
+        )
+        for mode, foreground in (
+            ("in-range", "In range"),
+            ("outside-range", "Outside range"),
+        )
+    )
     if profile == "quick":
         return quick
     return quick + (
@@ -980,6 +1051,18 @@ def _performance_cases(profile: str) -> tuple[PerformanceCase, ...]:
             (16, 512, 512),
             "float32",
             (("threshold", 0.6), ("channel_axis", None)),
+        ),
+        PerformanceCase(
+            "binary_threshold",
+            "binary-range-stack-16x512",
+            (16, 512, 512),
+            "float32",
+            (
+                ("foreground", "In range"),
+                ("low_threshold", 0.25),
+                ("high_threshold", 0.75),
+                ("channel_axis", None),
+            ),
         ),
         PerformanceCase(
             "extract_channel",
@@ -1181,7 +1264,7 @@ def _method_record(profile: str, rounds: int) -> dict[str, object]:
         "profile": profile,
         "admission_repeats": ADMISSION_REPEATS,
         "benchmark_rounds": rounds,
-        "public_region": ("semantic-channel-view-plus-float32-scalar-threshold-v1"),
+        "public_region": ("semantic-channel-view-plus-float32-cutoff-range-v3"),
         "parity": "bitwise-array-v1",
         "gpu_resident_timing_scope": "synchronized-resident-operation-v1",
         "gpu_transfer_inclusive_timing_scope": (
@@ -1614,11 +1697,7 @@ def _validate_document(document: object, *, require_current_sources: bool) -> No
         operation_id = str(item.get("operation_id"))
         case_id = str(item.get("case_id"))
         definition = next(
-            (
-                case
-                for case in _performance_cases(profile)
-                if case.case_id == case_id
-            ),
+            (case for case in _performance_cases(profile) if case.case_id == case_id),
             None,
         )
         if definition is None or definition.operation_id != operation_id:
@@ -1635,8 +1714,7 @@ def _validate_document(document: object, *, require_current_sources: bool) -> No
             or memory.get("model_id") != estimate.model_id
             or memory.get("runtime_managed_peak_bytes")
             != estimate.runtime_managed_peak_bytes
-            or memory.get("total_device_peak_bytes")
-            != estimate.total_device_peak_bytes
+            or memory.get("total_device_peak_bytes") != estimate.total_device_peak_bytes
             or memory.get("uncertainty_bytes") != estimate.uncertainty_bytes
             or memory.get("estimated_peak_with_uncertainty_bytes") != expected_peak
             or isinstance(observed_reserved, bool)
@@ -1679,9 +1757,7 @@ def _validate_admission_records(value: object) -> None:
         ]
         expected_cases = [case.case_id for case in expected_definitions]
         expected_coverage = {
-            item
-            for definition in expected_definitions
-            for item in definition.coverage
+            item for definition in expected_definitions for item in definition.coverage
         } | {"repeat:deterministic"}
         cases = section.get("cases")
         if (
@@ -1721,6 +1797,7 @@ def _validate_admission_records(value: object) -> None:
                 or not _cleanup_passed(_mapping(item.get("cleanup"), "cleanup"))
             ):
                 raise EvidenceError("Admission parity/integrity evidence is invalid.")
+
 
 def _validate_metadata_records(value: object) -> None:
     metadata = _mapping(value, "metadata")

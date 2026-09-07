@@ -121,6 +121,29 @@ def test_workflow_roundtrip_and_generated_python_preserve_direction(foreground):
     )
 
 
+@pytest.mark.parametrize("foreground", ("In range", "Outside range"))
+def test_range_history_records_endpoints_and_actual_boundary_semantics(foreground):
+    pipeline, node = _pipeline(foreground)
+    pipeline.set_param(node.id, "threshold", 999)
+    pipeline.set_param(node.id, "low_threshold", 10)
+    pipeline.set_param(node.id, "high_threshold", 20)
+    data = np.array([[9, 10, 15, 20, 21, np.nan]], dtype=np.float32)
+    result = pipeline.run(data)[node.id]
+    history = pipeline.output_states[node.id].history[-1]
+    if foreground == "In range":
+        np.testing.assert_array_equal(result, [[False, True, True, True, False, False]])
+        assert "10 <= value <= 20" in history
+        assert "equal endpoints are foreground; NaN is background" in history
+    else:
+        np.testing.assert_array_equal(
+            result, [[True, False, False, False, True, False]]
+        )
+        assert "value < 10 or value > 20" in history
+        assert "equal endpoints and NaN are background" in history
+    assert "999" not in history
+    assert "strict cutoff" not in history
+
+
 def test_old_workflow_without_direction_keeps_above_and_new_choice_changes_identity():
     pipeline, node = _pipeline()
     document = serialize_workflow(pipeline)

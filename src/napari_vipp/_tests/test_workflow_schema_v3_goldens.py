@@ -16,8 +16,11 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
+    # The two examples regenerated during a2 development had explicitly added
+    # no-op threshold/rescale defaults. Their new canonical hashes omit those
+    # fields, as pre-a2 documents already did; authored values are unchanged.
     "exhaustive-inspector-showcase.json": (
-        "d84cc62863208486a7cb68acfb306e54d0805c5df5b27fbdd9d688e944663fd2"
+        "54a9d1145c119130e8a9cf8dd7a88fa819ddf637f9d84c92c086bae829393b18"
     ),
     "general-node-bypass-acceptance.json": (
         "79b42499676ba18da66d3340d53f0328828bf129eb91bf0041bf53b2589c7f69"
@@ -68,7 +71,10 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "34ada05bf06ba895a6e33fcba913fa7272f3c7ba9feb50809dbc95e967db20f8"
     ),
     "synthetic-mesh-objects.json": (
-        "198f7e34b4753d39d0289813961498f53c3fef42ef78e62c6eb4bc13083f2f4a"
+        "54c844e7c9e280185c41b3c8c8475bd58fa9f98a4350e19d72346e07e871c5d6"
+    ),
+    "synthetic-mesh-refinement-tuned.json": (
+        "5551e6579baa275a1b5281be67b60b4bcff0b6e2e2cebc15735820d142101479"
     ),
     "synthetic-object-colocalization-association.json": (
         "4e5c80f8fc1390efa82696b031f5e02fea1a4af5bbc4fef0ff14bb6b99ac5eae"
@@ -121,6 +127,16 @@ def _canonical_schema_v6_document(document: dict[str, Any]) -> dict[str, Any]:
         key=lambda item: item["name"],
     )
     canonical["version"] = WORKFLOW_VERSION
+    # These are the explicit compatibility defaults supplied by the persisted
+    # node loader. Keep the old example fixtures intact and assert the exact
+    # expected migration, rather than comparing the loader with itself.
+    for node in canonical["nodes"]:
+        if node["operation_id"] == "binary_threshold":
+            node["params"].setdefault("foreground", "Above")
+            node["params"].setdefault("low_threshold", 0.25)
+            node["params"].setdefault("high_threshold", 0.75)
+        elif node["operation_id"] == "rescale_intensity":
+            node["params"].setdefault("invert_intensity", False)
     if document["version"] == 3:
         canonical["execution"] = {
             "compute": {

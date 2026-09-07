@@ -1,6 +1,69 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-06
+Last reviewed: 2026-09-07
+
+## 0.15.0a2 qualification declaration
+
+This iterative alpha covers the complete delta from public `v0.15.0a1`, not
+only the final release-preparation commit. Publication remains gated on the
+pending checks below; this declaration is not a claim of completed release.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  source_reader_packaging: true
+  gpu_scientific_shared_execution: true
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  windows_transactional_lifecycle: v0.13.0a8
+  macos_native_lifecycle: v0.14.0a2
+```
+
+- Core/UI covers update discovery, display settings, search, reader status,
+  source channel presentation, numeric parameter constraints, non-image node
+  cards, mesh histograms, export choices, and saved-workflow navigation.
+- Scientific changes include threshold direction/ranges, explicit rescale
+  inversion, 2D/3D convex hulls, and object-aware mesh extraction, measurement,
+  colouring, combination, filtering, smoothing, simplification and export.
+  Mesh refinement remains explicit and non-destructive; it does not claim
+  geometric union, print repair, or GPU acceleration for mesh-object nodes.
+- Workflow/batch compatibility checks preserve historical scientific hashes
+  when additive no-op defaults are restored. Active range endpoints and
+  inclusivity are recorded in threshold history. Both the generated original
+  mesh example and the independently captured tuned example are checked.
+- Shared execution and provenance changes require refreshed real-CUDA
+  measurement evidence and full public-catalogue admission. Binary Threshold
+  implementation v3 additionally requires strict parity, range workspace,
+  endpoint, cancellation and cleanup/reuse checks. No device tier or scientific
+  admission region is promoted by updating the evidence.
+- Default reader dependencies and the compiled mesh simplifier require clean
+  wheel/sdist checks on Windows, Linux, Apple Silicon and Intel macOS. These
+  checks exercise reader imports/codecs and the installed packaged mesh
+  example through measurement and OBJ/3MF export, not merely library imports.
+  Dated public-file reader evidence is tracked in the reader-packaging plan.
+- Installer transaction engines retain the cited lifecycle evidence, but
+  their changed dependency payloads do not inherit clean-install qualification.
+  Native macOS arm64/x86_64 installed PKGs, Windows frozen-installer smoke,
+  exact-main distribution identity, and final exact-tag installer integrity
+  remain gates for the three unsigned installers intended for this release.
+- Documentation covers the complete a1-to-a2 feature and bug-fix delta. The
+  numbered manual and stable alias must follow public package publication;
+  historical manuals remain unchanged.
+
+Initial focused checks passed: 452 workflow/batch/threshold/rescale/example
+tests; 108 GPU harness, bridge and range tests including real CUDA; and the
+headless five-object mesh example with calibrated OBJ/3MF export. Long-running
+GPU qualification, cross-platform CI, native installed-package validation and
+artifact publication are tracked separately. Untouched evidence records retain
+their actual collection commit, environment and source fingerprints; final
+release records bind their hashes to the reviewed candidate without relabelling
+the original measurements.
 
 ## 0.15.0a1 qualification declaration
 

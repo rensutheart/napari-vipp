@@ -2922,6 +2922,20 @@ def _operation_history(
         )
     if operation_id == "binary_threshold":
         foreground = params.get("foreground", "Above")
+        if foreground in {"In range", "Outside range"}:
+            low = _format_number(params.get("low_threshold", 0.25))
+            high = _format_number(params.get("high_threshold", 0.75))
+            if foreground == "In range":
+                return (
+                    f"{operation_title}: Foreground In range, "
+                    f"{low} <= value <= {high}; "
+                    "equal endpoints are foreground; NaN is background"
+                )
+            return (
+                f"{operation_title}: Foreground Outside range, "
+                f"value < {low} or value > {high}; "
+                "equal endpoints and NaN are background"
+            )
         threshold = _format_number(params.get("threshold", 0.5))
         return (
             f"{operation_title}: Foreground {foreground}, strict cutoff {threshold}; "

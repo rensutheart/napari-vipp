@@ -31,7 +31,7 @@
       "id": "mask_to_3d_mesh_1",
       "operation_id": "mask_to_3d_mesh",
       "params": {
-        "object_mode": "Single object",
+        "object_mode": "Connected objects",
         "boundary": "Close at image border"
       }
     },
@@ -44,9 +44,8 @@
       "id": "color_mesh_objects_1",
       "operation_id": "color_mesh_objects",
       "params": {
-        "color_by": "triangle_count",
-        "color_map": "turbo",
-        "_vipp_auto_recalculate": true
+        "color_by": "mesh_volume_physical",
+        "color_map": "viridis"
       }
     },
     {
@@ -80,20 +79,18 @@
       "id": "smooth_mesh_1",
       "operation_id": "smooth_mesh",
       "params": {
-        "iterations": 2,
-        "strength": 1.0,
-        "preserve_boundary": true,
-        "_vipp_auto_recalculate": true
+        "iterations": 3,
+        "strength": 0.3,
+        "preserve_boundary": true
       }
     },
     {
       "id": "simplify_mesh_1",
       "operation_id": "simplify_mesh",
       "params": {
-        "target_percent": 10.0,
-        "aggressiveness": 4.0,
-        "preserve_boundary": true,
-        "_vipp_auto_recalculate": true
+        "target_percent": 65.0,
+        "aggressiveness": 7.0,
+        "preserve_boundary": true
       }
     },
     {
@@ -194,8 +191,8 @@
   "tunnels": [],
   "positions": {
     "input": [
-      -9.0,
-      -2.0
+      0.0,
+      0.0
     ],
     "binary_threshold_1": [
       350.0,
@@ -226,8 +223,8 @@
       120.0
     ],
     "smooth_mesh_1": [
-      2502.0,
-      123.0
+      2450.0,
+      120.0
     ],
     "simplify_mesh_1": [
       2800.0,
@@ -283,207 +280,8 @@
   "metadata": {
     "vipp": {
       "inspector": {
-        "selected_node_id": "simplify_mesh_1",
-        "right_panel_visible": true,
-        "display_profiles": [
-          {
-            "node_id": "batch_output_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "binary_threshold_1",
-            "output_port": 0,
-            "data_kind": "mask",
-            "display_kind": "image",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "colormap": "gray",
-              "blending": "opaque",
-              "interpolation2d": "nearest",
-              "interpolation3d": "linear",
-              "projection_mode": "mean",
-              "rendering": "mip",
-              "depiction": "volume",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0,
-              "attenuation": 0.05
-            },
-            "intensity_settings": {
-              "bool": {}
-            }
-          },
-          {
-            "node_id": "color_mesh_objects_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "combine_meshes_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "filter_mesh_objects_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "filter_mesh_objects_2",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "input",
-            "output_port": 0,
-            "data_kind": "image",
-            "display_kind": "image",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "colormap": "gray",
-              "blending": "translucent",
-              "interpolation2d": "nearest",
-              "interpolation3d": "linear",
-              "projection_mode": "mean",
-              "rendering": "mip",
-              "depiction": "volume",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0,
-              "attenuation": 0.05
-            },
-            "intensity_settings": {
-              "uint16": {}
-            }
-          },
-          {
-            "node_id": "mask_to_3d_mesh_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "simplify_mesh_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "smooth_mesh_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          },
-          {
-            "node_id": "split_mesh_objects_1",
-            "output_port": 0,
-            "data_kind": "mesh",
-            "display_kind": "mesh",
-            "display_rgb": false,
-            "display_rgb_as_channels": false,
-            "display_ndim": 3,
-            "settings": {
-              "blending": "translucent",
-              "projection_mode": "all",
-              "visible": true,
-              "opacity": 1.0,
-              "gamma": 1.0
-            }
-          }
-        ]
-      },
-      "compute_optimizer": {
-        "locked_node_ids": []
+        "selected_node_id": "color_mesh_objects_1",
+        "right_panel_visible": true
       }
     }
   }

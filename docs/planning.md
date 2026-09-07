@@ -42,7 +42,8 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.15.0a1` is the released baseline for this source tree. Its official
+`0.15.0a2` is the current release candidate; `0.15.0a1` remains the published
+baseline until the candidate passes its changed-domain gates. The a1 official
 [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a1),
 checksum sidecars,
 [PyPI package](https://pypi.org/project/napari-vipp/0.15.0a1/), and
@@ -102,8 +103,12 @@ Important remaining limits are:
 ## Active Release Order
 
 The released `0.15.0a1` consolidates the batch, inspector, measurement, and
-workflow-interface overhaul; see the [release notes](../release-notes.md).
-Post-release improvements remain subject to their own changed-domain checks.
+workflow-interface overhaul. The `0.15.0a2` candidate adds batteries-included
+readers, quiet update discovery, clearer display/search/inspector controls,
+threshold ranges, explicit intensity inversion, convex hulls and object-aware
+3D mesh workflows; see the [release notes](../release-notes.md). Qualification
+and publication follow the [release runbook](release-runbook.md), with the
+complete a1-to-a2 delta declared in the [qualification baseline](release-qualification-baseline.md).
 
 The next planned feature series is **0.16: registration, image comparison,
 and template matching**. See the [release scope below](#planned-016-registration-image-comparison-and-template-matching)

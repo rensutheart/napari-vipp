@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.15.0a2 - 2026-09-07
+
+### Compatibility fixes
+
+- Preserve legacy batch-workflow hashes when restoring the additive Binary Threshold and Rescale Intensity defaults. Explicit non-default choices still change scientific workflow identity; the deterministic batch demo can be restored and previewed without a false mismatch.
+- Record Binary Threshold range endpoints and inclusive/exclusive rules accurately in operation history instead of describing an inactive single cutoff.
+
+### Mesh creation, object management and export
+
 - Add **Mesh Objects — Tuned Refinement** under **Open example → 3D Meshes**, captured from an interactive workflow with its authored parameters, layout and inspector settings. It demonstrates Turbo triangle-count colours, two smoothing iterations at strength 1, and 10% simplification at aggressiveness 4 without automatic file output.
 - Extend **Save Image** to write meshes as OBJ or 3MF without converting geometry to an image. Its output retains mesh identity, colours and calibration for downstream nodes. **Save Image** and **Batch Output** now list formats for the connected image, mesh or batch table; incompatible saved selections require an explicit replacement. Overwrite safeguards and batch restrictions on auto-saving nodes remain in place.
 - Make mesh-refinement failures actionable: distinguish invalid input from defects introduced by smoothing or simplification, identify the object/component and requested settings, and suggest the relevant controls to adjust. Duplicate-face errors include the count; rejected results do not replace the input or silently repair geometry.
@@ -20,12 +29,16 @@
 
 - Add **Mask to 3D Mesh**: manual/cached, full-resolution Lewiner marching cubes for one explicitly identified Boolean Z/Y/X volume. Choose whether to close foreground at the image border, inspect/pin a native napari Surface, and export calibrated geometry. Extraction never silently smooths or simplifies the surface.
 
+### Intensity, threshold and display controls
+
 - Rescale Intensity now keeps **Output min ≤ Output max** and has an explicit **Invert intensity** checkbox. Inversion reverses the cutoff-to-output mapping without changing the bounds, and is retained in history, saved workflows, batch runs and Python exports. Old reversed bounds remain authored but require explicit correction before calculation; they are not silently swapped.
 
 - Add an explicit **Channel display** choice to Image Source: **Stack (C slider)** or **Separate coloured layers**. It applies immediately and is saved as workflow presentation metadata. Colour edits no longer silently remove the source's C slider; image pixels, axes and processing are unchanged.
 
 - Binary Threshold adds **In range** and **Outside range** foreground choices with linked low/high sliders and draggable histogram limits. In range includes both endpoints; Outside range excludes them, and NaN remains background. CPU, supported CuPy execution, saved workflows, batch runs, and Python exports share these rules; Above/Below behavior is unchanged.
 - Clarify that graph contrast settings refresh automatically without Calculate, and explain why different choices can look identical when their contrast ranges coincide. Pixel-level checks cover immediate refresh, the startup example, and unchanged scientific results.
+### Readers, updates and workspace improvements
+
 - Move Image Source reader diagnostics into a separate, collapsible **Reader support** inspector section marked **System information**, available on every Image Source, including new and live-layer/sample nodes. Checks and cached results are shared for the VIPP session, with explicit rechecking. Format names stay bold in the normal text colour; status text shows green when loading succeeds, yellow for missing/outdated support, and red for failed loading. Expanded statuses use the inspector's full scroll area; file-specific install/retry actions remain beside Source.
 - Fix 3D inspection of interleaved microscope axes such as Olympus OIR's ZCYX: render spatial Z/Y/X and keep channels as a working slider. Viewer ordering changes only presentation, preserving pixel storage, calibration, and linked VIPP/napari channel navigation.
 - Make the update dialog content-sized, keep its controls together, and show the official VIPP wordmark; longer guidance remains scrollable on small screens.

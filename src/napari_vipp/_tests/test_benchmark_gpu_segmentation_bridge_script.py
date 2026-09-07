@@ -72,7 +72,7 @@ builtins.__import__ = guarded_import
 
 def test_admission_manifest_covers_both_exact_public_regions(evidence_script):
     cases = evidence_script._admission_cases()
-    assert [case.case_id for case in cases] == [
+    assert [case.case_id for case in cases[:7]] == [
         "binary-boundaries-plane",
         "binary-nonfinite-strided",
         "binary-volume",
@@ -82,6 +82,7 @@ def test_admission_manifest_covers_both_exact_public_regions(evidence_script):
         "extract-f32-type-precedence",
     ]
     assert len({case.case_id for case in cases}) == len(cases)
+    assert len(cases) == 18
     for operation_id, required in evidence_script.REQUIRED_ADMISSION_COVERAGE.items():
         coverage = {
             item
@@ -90,6 +91,32 @@ def test_admission_manifest_covers_both_exact_public_regions(evidence_script):
             for item in case.coverage
         } | {"repeat:deterministic"}
         assert required <= coverage
+
+
+def test_threshold_v3_modes_and_range_workspace_have_executable_evidence(
+    evidence_script,
+):
+    parameters = [
+        evidence_script._case_parameters(case.kind)
+        for case in evidence_script._admission_cases()
+        if case.operation_id == "binary_threshold"
+    ]
+    assert {item.get("foreground", "Above") for item in parameters} == {
+        "Above",
+        "Below",
+        "In range",
+        "Outside range",
+    }
+    for mode in ("In range", "Outside range"):
+        assert any(
+            item.get("foreground") == mode
+            and item["low_threshold"] == item["high_threshold"]
+            for item in parameters
+        )
+        assert any(
+            dict(case.parameters).get("foreground") == mode
+            for case in evidence_script._performance_cases("quick")
+        )
 
 
 def test_adversarial_inputs_are_deterministic_and_semantically_exact(
@@ -257,9 +284,7 @@ def test_metadata_and_admission_integrity_tampering_is_rejected(evidence_script)
     metadata = evidence_script._expected_metadata_records()
     evidence_script._validate_metadata_records(metadata)
     tampered_metadata = json.loads(json.dumps(metadata))
-    tampered_metadata["extract_channel"][
-        "selected_channel_metadata_preserved"
-    ] = False
+    tampered_metadata["extract_channel"]["selected_channel_metadata_preserved"] = False
     with pytest.raises(evidence_script.EvidenceError, match="metadata evidence"):
         evidence_script._validate_metadata_records(tampered_metadata)
 
@@ -282,9 +307,7 @@ def test_metadata_and_admission_integrity_tampering_is_rejected(evidence_script)
             {
                 "case_id": definition.case_id,
                 "shape": list(evidence_script._host_case(definition.kind).shape),
-                "input_dtype": str(
-                    evidence_script._host_case(definition.kind).dtype
-                ),
+                "input_dtype": str(evidence_script._host_case(definition.kind).dtype),
                 "output_dtype": (
                     "bool"
                     if operation_id == "binary_threshold"
@@ -321,9 +344,7 @@ def test_metadata_and_admission_integrity_tampering_is_rejected(evidence_script)
         }
 
     evidence_script._validate_admission_records(admission)
-    admission["extract_channel"]["cases"][0]["output_integrity_contract"] = (
-        "not-a-view"
-    )
+    admission["extract_channel"]["cases"][0]["output_integrity_contract"] = "not-a-view"
     with pytest.raises(evidence_script.EvidenceError, match="integrity evidence"):
         evidence_script._validate_admission_records(admission)
 

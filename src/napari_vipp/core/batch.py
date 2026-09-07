@@ -4769,6 +4769,22 @@ def _canonical_scientific_node(value: object) -> dict[str, object]:
         for name in ("z_start", "z_end"):
             if params.get(name, 0) == 0:
                 params.pop(name, None)
+    # Match the additive legacy defaults at graph_node_from_persisted_params,
+    # not every current ParameterSpec default. An omitted parameter and its
+    # explicit migration value have the same scientific meaning; preserving
+    # the older representation also preserves already attached batch hashes.
+    # Keep all non-default authored values, including currently hidden ones.
+    legacy_defaults = {
+        "binary_threshold": {
+            "foreground": "Above",
+            "low_threshold": 0.25,
+            "high_threshold": 0.75,
+        },
+        "rescale_intensity": {"invert_intensity": False},
+    }
+    for name, default in legacy_defaults.get(operation_id, {}).items():
+        if params.get(name) == default:
+            params.pop(name, None)
     threshold_mode = str(params.get("threshold_mode", "Manual")).casefold()
     source_item = source_item_from_params(params) if operation_id == "input" else None
     source_item_bound = source_item is not None
