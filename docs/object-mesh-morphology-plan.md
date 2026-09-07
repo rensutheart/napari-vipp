@@ -1,8 +1,8 @@
 # Object And Mesh Morphology Plan
 
-Status: implementation record; phases 1-3 complete, phase 4 deferred
+Status: implementation record; phases 1-3 complete; object-aware phase-4 workflow implemented, unreleased
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-09-07
 
 This plan covers the next morphology milestone after the skeleton/network
 work. It is informed by the old MitoMorph `morphology.py` implementation, but
@@ -55,10 +55,9 @@ Already implemented:
 - `Merge Tables`, `Select Table Columns`, `Summarize Measurements`,
   `Add Metadata Columns`, and `Filter Labels By Property`.
 
-The current gap is not "run regionprops". The gap is:
-
-- optional mesh export/preview and later specialist mesh metrics beyond the
-  implemented first-pass table measurements.
+The object-aware surface viewing/export path is implemented (phase 4), including
+per-label identity, colours, collection operations, refinement and 3MF.
+Specialist mesh metrics, Boolean union and repair remain future work.
 
 ## Implementation Strategy
 
@@ -237,21 +236,136 @@ Tests assert:
 
 ## Phase 4: Optional Mesh Export And Visualization
 
-Do this only after table metrics are stable.
+The initial implementation after 0.15.0a1 was **Mask to 3D Mesh**
+(`mask_to_3d_mesh`), originally under Morphology and now under **3D Meshes**.
+Extraction uses the existing scikit-image dependency; napari owns Surface
+presentation; `core/meshes.py` owns immutable geometry and the shared writer.
+The subsequent object-aware extension and its dependencies are detailed below.
 
-Possible nodes:
+- Input: one Boolean 3D volume with explicit Z/Y/X spatial axes, in any order.
+  Canonicalize axes and calibration together to ZYX. Reject 2D, singleton
+  spatial dimensions and unresolved/channel/time dimensions. Raw function
+  calls without metadata use documented ZYX.
+- Extraction: Lewiner marching cubes, level 0.5, step 1, no smoothing/decimation.
+  Default border closure pads one background voxel and shifts vertices back;
+  the open choice makes no outside-background assumption. Do not label, merge,
+  repair or derive quantitative metrics here.
+- Output: immutable `MeshData` (owned read-only N×3 float64 vertices and M×3
+  int64 triangle indices) plus `MeshState`. Coordinates are voxel-centre ZYX;
+  calibration and source history remain separate. It is not an ImageState or
+  an image-compatible graph port. Bypass cannot substitute a mask for a mesh.
+- Execution: manual/cached CPU; full-volume extraction can consume substantial
+  memory. Progress and cancellation checkpoints surround the opaque extraction
+  call. Input pixels are unchanged. Empty surfaces carry zero counts; napari
+  presentation removes old geometry rather than constructing dummy vertices.
+- Presentation: native Surface with independent buffers, source scale/origin,
+  3D inspection and pinning. Smooth lighting is not geometric smoothing. No
+  image histogram or thumbnail is generated for a mesh.
+- OBJ: stream calibrated XYZ coordinates and 1-based triangle indices. Reverse
+  winding when swapping coordinate handedness; outward orientation is tested.
+  Convert compatible length units to the X unit. Reject incompatible units.
+  Embed units, calibration, boundary and history as JSON comments in the same
+  atomically published file. OBJ has no standard unit field. Keep absolute
+  origin; never silently adapt scientific dimensions for printing.
+- Manual saving, Batch Output (default OBJ for mesh), and generated Python
+  publication share the writer. Existing batch skip/overwrite and source
+  verification boundaries remain in force. Empty mesh exports fail explicitly.
 
-- `Object Mesh Preview`: labels -> RGB/points/surface-like QC output where
-  feasible in napari;
-- `Export Object Meshes`: labels -> files, probably OBJ/PLY/STL;
-- optional `trimesh` dependency for robust export and oriented bounding boxes.
+Tests: `test_meshes.py` covers geometry, axis permutations, calibration, border
+behavior, empty/invalid inputs, orientation, cancellation, atomic publication,
+workflow round trips, native Surface inspection/pinning, batch and generated
+Python. These regression checks do not establish biological or print validity.
 
-This should not block the first mesh-morphology table node.
+### Existing-mesh measurement (unreleased)
+
+`measure_3d_mesh_morphology` accepts `mask_or_labels_or_mesh`. Integer label
+measurement is unchanged; a Boolean mask is a single foreground ID per spatial
+block. Mesh inputs use the supplied vertices/faces directly on CPU, one row per
+explicit object, with no marching cubes, voxel reconstruction or minimum
+voxel filter. The mesh row uses `mesh_id`, vertex/triangle counts and
+`watertight`, not label IDs or invented voxel counts. Compatible spatial units
+are converted to the X-axis unit; incompatible units are rejected.
+
+Triangle cross products give area; signed tetrahedral sums give enclosed
+volume, preserving cavity orientation. Boundary/non-manifold edges,
+inconsistent winding, duplicate faces and zero-area triangles suppress
+volume-dependent metrics, retaining area/extents and explicit status/error.
+These checks do not prove absence of self-intersections. No geometry is
+repaired. Optional convex-hull metrics use the same SciPy helper as the label
+path. `test_mesh_input_measurements.py` covers analytical geometry, calibration,
+cavities, input immutability, invalid surfaces, workflow/export and graph cards.
+
+### Object-aware mesh workflow (unreleased)
+
+Implemented under **3D Meshes**, immediately after Morphology. Subgroups:
+**Create surfaces**, **Objects & colours**, **Refine geometry**. Measurement
+stays under Measurements. All geometry/object nodes are manual/cached CPU.
+
+- **Mask to 3D Mesh** retains its single-object default; explicit **Connected
+  objects** uses 6-connected foreground voxels. **Labels to 3D Mesh** extracts
+  positive integer IDs independently, preserving int64 identities and cavity
+  winding. Both require one explicit non-singleton Z/Y/X volume, no leading
+  dimensions, and use full-resolution Lewiner marching cubes.
+- `MeshData` adds immutable face IDs and sorted `MeshObject` records: name,
+  RGBA, parent/source ID, source axes/scale/units/origin and history. Empty
+  collections contain no objects. **Colour Mesh Objects** chooses distinct ID
+  colours or a fresh volume, area, sphericity or triangle-count gradient.
+  Missing measurements are grey; colouring changes no coordinates/metrics.
+  Gradients are normalized per collection, not comparable scales across runs.
+- **Combine Meshes** accepts 2–16 inputs and converts compatible units into
+  the first input's coordinate frame. Duplicate IDs are remapped with retained
+  lineage and colours. It never welds vertices or unions overlapping solids.
+  Mixed physical/uncalibrated units are rejected rather than guessed.
+- **Split Mesh Objects** separates shared-edge connected triangle components
+  within each object; child IDs retain their parent and colour. Cavity shells
+  can become separate objects: this operation is not biological segmentation.
+  **Filter Mesh Objects** uses current volume, area, sphericity, triangle count
+  or ID; inside range is inclusive, outside is exclusive. Missing/non-finite
+  values are excluded in both modes. No external measurement-table input yet.
+- **Smooth Mesh** applies a two-pass Taubin-style filter in physical space
+  with fixed inverse initial-edge-length weights. Controls: iterations, strength
+  and boundary preservation. Lambda is half the strength; mu uses passband
+  0.1. Zero strength is an exact no-op. **Simplify Mesh** uses the native
+  `fast-simplification` QEM provider, with percentage of triangles to keep,
+  aggressiveness and boundary preservation. Each disconnected component is
+  handled separately, so small shells are not silently lost; reduction targets
+  are not guaranteed under topology/boundary constraints.
+- Refinement creates new immutable buffers and records parameters/provider.
+  Degenerate triangles and inconsistent/non-manifold edges are rejected; output topology,
+  winding and boundary checks reject unsafe changes rather than repairing them.
+  Volume, shape and self-intersection freedom are not guaranteed. Source mesh
+  remains available for comparison; measurements always use current geometry.
+- Native napari Surface receives detached object-coloured presentation buffers
+  and common-unit scale/origin. Shared vertices are duplicated for display only.
+  Cached scientific arrays and IDs cannot be mutated by viewer colour changes.
+- **3MF** uses core surface objects, base-material RGBA, components and one build
+  assembly retaining positions. Calibrated physical units are mandatory; tiny
+  units are converted to supported micron units. Scientific int64 IDs, original
+  float colours, calibration and processing/source history are embedded as JSON.
+  No automatic scale-to-print, packing or repair. Surface export is not a
+  printability certificate. Core material channels are quantized to 8-bit.
+  OBJ retains geometry/object groups and embedded metadata; standard OBJ alone
+  does not carry VIPP colours or units. Both use atomic publication and existing
+  source-revision, skip/overwrite and cancellation boundaries.
+
+Dependencies: Matplotlib for colour maps and
+[`fast-simplification`](https://pyvista.github.io/fast-simplification/) 0.2.x
+for QEM. Standard-library ZIP/XML implements
+[3MF Core](https://github.com/3MFConsortium/spec_core); no trimesh dependency.
+The 3MF writer was checked against the official Core XSD, including open and
+closed multi-object surfaces. This establishes structure, not printer support.
+
+Regression modules: `test_mesh_objects.py`, `test_mesh_refinement.py`,
+`test_mesh_3mf.py`, `test_mesh_workflow_integration.py` and
+`test_mesh_objects_example.py`. The synthetic five-object workflow exercises
+colours, disjoint size filtering/recombination, refinement, per-object
+measurement and 3MF output without modifying its source.
 
 ## Deferred
 
-- `trimesh`-backed mesh export, mesh preview/rendering, oriented bounding
-  boxes, principal mesh inertia, and mesh repair;
+- Geometric union, external measurement-table colouring, PLY/STL, marching tetrahedra, oriented
+  bounding boxes, principal mesh inertia and mesh repair; introduce `trimesh`
+  or another dependency only for a concrete capability gap;
 - `porespy`-backed pore-network, pore-size, local-thickness, chord-length, or
   porous-media metrics;
 - object tracking and fission/fusion event features;

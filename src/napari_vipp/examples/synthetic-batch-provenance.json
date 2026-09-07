@@ -41,6 +41,7 @@
       "operation_id": "binary_threshold",
       "params": {
         "threshold": 50,
+        "foreground": "Above",
         "channel_axis": -1
       }
     },
@@ -49,6 +50,7 @@
       "operation_id": "binary_threshold",
       "params": {
         "threshold": 50,
+        "foreground": "Above",
         "channel_axis": -1
       }
     },

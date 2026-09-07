@@ -1,77 +1,58 @@
-# VIPP 0.15.0a1
+# VIPP 0.15.0a2
 
-VIPP 0.15.0a1 is a substantial update to both everyday workflow building and batch analysis. Since **0.14.0a3**, the main toolbar and node library have been redesigned, the inspector has become more closely tailored to each operation, and plots and measurement tables have gained richer ways to explore results. New normalization methods, measurement optimizations, a reworked batch workflow, and important correctness fixes round out the release.
+VIPP 0.15.0a2 makes microscope files easier to open, adds a complete mesh-object workflow, and improves everyday searching, display and parameter editing. It also expands Binary Threshold and makes intensity inversion explicit.
 
-This is alpha software. Keep original data and copies of your workflows and batch configurations, and validate important analyses on representative data before drawing scientific conclusions.
+This is alpha software. Preserve original data, workflows and environments, and compare consequential analyses with representative reference data after upgrading.
 
-## A redesigned workspace and node library
+## Microscope readers and updates
 
-- **Clearer toolbar organization.** Workflow commands, preview settings, compute controls, and graph navigation have distinct groups, with consistent icons and spacing, narrower-window layouts, and a persistent status/activity footer. Presentation options live in the Preview menu; general configuration is collected in Settings.
-- **A node library that can give space back to the graph.** Collapse it to a category-icon rail, then use category and global-search popups to find nodes. Category counts, operation icons, explanatory tooltips, and accessible labels improve discovery. Clearing a search restores the previous expansion state, and context menus provide add-node and expand/collapse actions.
-- **Quicker workflow building.** Drop an image file onto an Image Source card, or paste a copied file or image with Ctrl+V/Cmd+V. Dropping a compatible palette node onto a terminal output appends and connects it as one undoable edit.
-- **More informative Find fastest.** Total and current-stage elapsed timers continue updating during long benchmarks. They show elapsed time, not an estimated finish or proof of numerical progress inside an opaque CPU/GPU call; cancellation and time limits still wait for safe checkpoints.
+- **Native microscope readers are included.** Ordinary plugin and managed desktop installations include Zeiss CZI, Leica LIF/LOF/XLIF, Nikon ND2 with legacy codecs, and Olympus OIF/OIB/OIR support. Bio-Formats, including the IMS/VSI route, remains optional and can require Java downloads on first use.
+- **Reader support is visible in Image Source.** A separate, collapsed system-information section checks installed reader support and shares results across the session. Missing-reader setup offers a package review and waits for VIPP/napari to close before adding missing packages; it does not replace the installed scientific stack. A successful dependency check is not validation of a particular acquisition or its metadata.
+- **A quiet update badge.** Daily GitHub checks highlight newer releases without opening a dialog. Click for release notes and download guidance, or check manually. Automatic checks and prerelease inclusion are configurable; VIPP never updates a running environment automatically.
 
-## An inspector built around the selected operation
+## A more comfortable workspace
 
-The inspector overhaul goes beyond appearance. Operation-specific layouts organize connected inputs, parameters, distributions, results, metadata, and compute evidence according to what is useful for the selected node.
+- **Display settings** replaces the toolbar’s Preview menu, with clearer thumbnail, contrast, colour and input/output-label choices. Display changes apply immediately without Calculate and do not change scientific pixels or processing.
+- **Find nodes using familiar words.** Palette, insert-node and workflow searches recognize alternatives such as dilate, erode, thinning, NLM, clipping and British spellings. Search fields have clearer icons and more room; Ctrl+F focuses workflow search when the host has not claimed the shortcut.
+- **Choose channel presentation explicitly.** Image Source offers **Stack (C slider)** or **Separate coloured layers**. Colour edits preserve that choice. Interleaved microscope axes such as ZCYX display spatial Z/Y/X correctly while retaining working channel navigation and unchanged underlying data.
+- **Inspect and navigate with less clutter.** Compact histograms show cached bin counts and ranges on hover. Table- and mesh-only cards omit empty image placeholders. Workflow-tab menus can reveal the saved file in Explorer, Finder or the containing folder without switching tabs or saving edits.
 
-- **Understand the inputs.** Connected-input cards identify each input's role, source, and image or table characteristics. Image, label, table, source, and writer nodes expose appropriate controls and output actions.
-- **See relevant scientific feedback.** Object filters emphasize object-size or measurement distributions instead of label-ID histograms. Deconvolution compares the observed image with its output, rather than treating the point-spread function as the comparison image. Calculate New Image shows its weighted equation alongside the connected inputs.
-- **Inspect comfortably.** Collapsible sections, responsive parameter forms, consistent sliders, theme-aware colours, and clearer spacing make narrow docks and detached windows easier to use.
-- **Keep graph interaction responsive.** Moving a selected node preserves its inspector and scroll position. Heavy diagnostics and routing work are deferred during dragging; large diagnostics run in the background, reuse cached results, and discard obsolete requests.
+## Thresholding, intensity and mask morphology
 
-## Richer plots, tables, and analysis
+- **Binary Threshold gains four foreground choices:** strict **Above** and **Below**, inclusive **In range**, and strict **Outside range**. Linked bounds and draggable histogram guides support range selection; equal endpoints are included only by In range, and NaN stays background. Supported CuPy execution uses the same comparison rules.
+- **Rescale Intensity adds Invert intensity.** Output bounds remain ordered; inversion reverses their mapping explicitly. Older reversed bounds are retained on load but require correction before calculation rather than being silently swapped.
+- **Safer numeric editing.** Odd-only windows and PSF sizes, paired bounds, percentages, counts and small positive minima retain their constraints. Fractional mesh settings no longer round to whole numbers. Editing one bound does not move its partner, and loading a workflow does not silently repair its parameters.
+- **New Convex Hull.** Fill one Boolean hull per 2D YX slice or 3D ZYX volume, with independent time/channel blocks and support for sparse or flat masks. One hull can join separate foreground objects; it is not a per-label operation.
 
-- **Complete measurement tables.** Resizable windows offer numeric/natural sorting, units, missing and non-finite value diagnostics, and background CSV/TSV export. Sorting changes only the view; exports preserve the original scientific rows and values.
-- **New Intensity Histogram node.** Calculate reproducible scalar or multichannel distributions with shared bin edges, explicit ranges, and linear or logarithmic spacing. Results include counts, fractions, densities, and cumulative values, with excluded and out-of-range values recorded in metadata. Display changes reuse the calculated table instead of rescanning the image.
-- **Improved colocalization and histogram exploration.** Metric-node scatter pop-outs gain smoother threshold-guide interaction, zero-inclusive shared axes, equal-axis and populated-data zoom, and up to 4096 density bins per axis through background, memory-gated calculation. Plot controls do not change the full ROI used for exact metrics. Overlapping channel histograms have clearer colours and translucent fills.
-- **Four additional Normalize methods.** Robust z-score (median/MAD), maximum-absolute scaling, reference z-score using saved mean/standard deviation, and percentile-based 0–1 scaling join the existing min–max and z-score methods. Fitted statistics use the whole input, not separate per-channel fits; signed methods should not be mistaken for 0–1 scaling. Existing methods retain their previous calculation.
-- **Faster object measurements.** CPU mesh and skeleton analysis reduce work to relevant object regions, and nearest-object calculations use spatial indexing while retaining coordinate, calibration, and tie-breaking rules.
-- **New GPU measurement paths.** Eligible NVIDIA workflows gain hybrid **Measure 3D Mesh Morphology** for non-negative int32 3D labels and GPU **Analyze Skeleton** measurement for already-skeletonized boolean 2D/3D inputs. Mesh preparation is accelerated while marching cubes and convex hulls remain CPU work. Skeleton measurement retains the CPU reference's voxel-graph and calibration rules; it does not add GPU thinning.
+## Create, manage, refine and export mesh objects
 
-## A clearer batch workflow, from checking to the final report
+The new **3D Meshes** family works with explicit, calibrated surfaces. Mask and label extraction use full-resolution Lewiner marching cubes without implicit smoothing or simplification. Select one Z/Y/X volume before extraction; these manual/cached operations run on CPU.
 
-**Setup → Items & outputs → Overrides → Run & results** separates preparing a collection from calculating it, with a persistent next action and activity strip.
+- **Create and organize objects.** Labels retain their IDs; masks can form one object or separate connected objects. Colour by identity, volume, surface area, sphericity or triangle count. Combine retains separate objects rather than performing registration or geometric union; split separates disconnected surfaces, including cavity walls.
+- **Filter and refine deliberately.** Filter by measurement or ID, using an input-object histogram with units and linked limits. Smooth Mesh and Simplify Mesh produce new geometry while preserving the input. Fractional controls, boundary options and actionable failure messages help tune results; refinement can change shape, volume and measurements.
+- **Measure the resulting surface.** Measure 3D Mesh Morphology accepts Boolean masks and existing meshes as well as labels. Existing triangles are measured directly on CPU, one row per object, without remeshing or inventing voxel counts. Open or invalid surfaces retain available measurements but report unavailable volume-derived fields.
+- **Export through the inspector, Save Image or Batch Output.** OBJ retains geometry and object groups, with VIPP metadata in comments. 3MF carries physical units, separate objects and display colours; uncalibrated data requires explicit calibration. Connected-input format menus prevent silently retaining an incompatible format. Neither format certifies a repaired or print-ready solid.
+- **Two bundled examples** cover mesh objects, colours and refinement, including **Mesh Objects — Tuned Refinement** with authored layout, triangle-count colours and refinement settings. They create no files automatically.
 
-- **Review files while checks continue.** The source inventory appears before slower metadata/content checks finish, with active-file feedback and checked counts. One container may contain several samples, so inspection determines the final item list. Check batch does not calculate images; Preview selected remains a separate, optional graph calculation.
-- **Understand outputs and edit exceptions.** Output details emphasize the producing node, data kind, and format, with paths available separately. The labelled override matrix has clearer workflow defaults, a guided bulk editor, separate selection/reset actions, and a matching collapsible Run/Bypass section with highlighted exceptions. The main workflow's sample navigator links directly back to batch details.
-- **Keep some outputs and rerun others.** Right-click an item to choose **Keep existing outputs**, **Rerun and overwrite outputs**, or **Use batch default**. Choices follow exact sources and destinations, not row numbers. Policy-only changes reuse source checks; keeping existing files still permits missing outputs to be created. Counts distinguish files to create, keep, overwrite, or review, while protected inputs and duplicate destinations remain safety errors.
-- **Follow preparation and each sample.** Run reports its final validation before processing; the worker reuses that fresh plan instead of repeating the collection scan. Progress shows the sample and **Running (node 12/32)**, then the readable node name below. Two bottom-aligned text lines reduce layout movement.
-- **Read the outcome in the window.** Completed and stopped runs show elapsed time, item outcomes, newly saved versus kept files, and expandable failure reasons. Row selection reveals outputs; clicking the underlined name explicitly opens item review. Completed runs remain in report-review state. The JSON manifest is secondary technical provenance; Refresh file status checks disk presence without revalidating or restarting the batch. Keeping an existing file does not claim this run calculated or scientifically verified it.
+## Upgrading and limits
 
-## Important fixes
+Two compatibility fixes protect saved analysis records: legacy threshold and rescaling defaults no longer cause a false batch-workflow hash mismatch when a workflow is restored, and Binary Threshold history now records both range bounds with the correct inclusive/exclusive endpoint rules. Non-default authored values remain part of workflow identity.
 
-- **Source loading and stale results:** CZI metadata and pixels share one container-open lifetime, avoiding duplicate opens while retaining mutation checks. A failed source replacement no longer presents incompatible downstream pixels as current results, while independent branches remain available.
-- **Axis and colour correctness:** fixes cover mixed-rank time/channel navigation, scalar images incorrectly inferred as RGB, encoded-colour axis validation, and Crop/Inspect layer lifetime. Rendering Select/Reorder axis controls no longer silently changes saved parameters. Combine Channels colour edits now propagate consistently to previews, layers, and saved workflows.
-- **Large object-label IDs:** association pair counting preserves unsigned label IDs beyond the signed 64-bit range instead of corrupting them through integer conversion.
-- **Execution and cache reuse:** mixed CPU/GPU branches no longer produce a false execution-unit cycle. Calculate All preserves already-running upstream work, and downstream composite edits retain valid expensive manual deconvolution results. Presentation failures no longer leave the application indefinitely showing Processing.
-- **Stable result windows:** detached plots stay associated with their originating node/workflow, outdated results are marked stale, and late background table work cannot replace a newer result. Themed histogram/table startup is corrected.
-- **Safe batch cancellation:** a cooperative stop is no longer mistaken for a CPU/GPU cleanup failure. Genuine cleanup failures still block unsafe reuse.
+Workflow schema 6, batch configuration 6 and manifest schema 5 remain unchanged. Supported older workflows retain migration paths; new operations and parameters require this release. Preserve old records, review threshold and rescaling choices, recalculate representative results, and regenerate Python exports for the exact installed VIPP version.
 
-## Upgrading: changes worth reviewing
+Large images and full-resolution meshes can require substantial memory. Cancellation is cooperative and may wait for the current library call. Mesh extraction, object management and refinement are not GPU operations; the existing label-morphology GPU path remains hybrid. GPU availability depends on supported input, parameters, memory and environment, not merely the selected compute preference. This release does not add general lazy execution, Apple GPU support or broad biological validation.
 
-- **Batch configuration version 6** stores individual existing-file choices and reads supported earlier versions 1–5. Workflow version 6 and manifest version 5 remain unchanged. Older VIPP releases that only understand version-5 batch configurations cannot read a newly saved version-6 configuration.
-- **ImageJ Default Threshold (8-bit)** replaces the public ImageJ Auto Threshold method dropdown with a fixed Default method. Previously saved ImageJ Triangle nodes keep their distinct legacy calculation; they are not silently changed to Default or to VIPP's generic Triangle Threshold.
-- The ImageJ implementation remains experimental and source-aligned to ImageJ 1.54p. Independent ImageJ-generated golden parity is not claimed; generic Triangle and Isodata remain separate scientific methods.
-- **Clip** is now labelled **Clamp Intensity**. The name clarifies its existing bound behavior rather than introducing a new operation.
-- **Minimum Threshold** explains histogram valley detection and its smoothing-pass convergence limit more explicitly. Encoded RGB/RGBA inputs now receive clearer validation when a scalar-only axis choice would be misleading.
-- Legacy scatter-raster nodes remain loadable and executable but are hidden from the palette; use the corresponding metrics-node pop-out for new interactive plots. Regenerate exported Python after upgrading, because exported programs require the exact VIPP runtime version.
+## Install and read more
 
-## Installation and limits
+Use the [canonical 0.15.0a2 GitHub release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a2) for assets, checksums and qualification evidence, or [PyPI 0.15.0a2](https://pypi.org/project/napari-vipp/0.15.0a2/) for an exact package pin. Windows installers are explicitly unsigned; separate Apple Silicon and Intel macOS packages are unsigned, unnotarized and CPU-only. Verify the matching checksum before installation.
 
-Use the [0.15.0a1 release page](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a1) for Python packages and installer assets. Windows setup is explicitly unsigned. The separate Apple Silicon and Intel macOS packages are unsigned, unnotarized, and CPU-only. Verify the matching SHA-256 checksum and follow the platform installation instructions.
-
-Manual installation remains available in a dedicated CPython 3.12 or 3.13 environment. On Windows or Linux:
+In a dedicated supported Python environment on Windows or Linux:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.15.0a1"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.15.0a2"
 vipp
 ```
 
-On macOS, use `"napari[pyside6]>=0.6"` in place of `"napari[pyqt6]>=0.6"`; macOS execution remains CPU-only.
+On macOS, use `"napari[pyside6]>=0.6"` instead of `"napari[pyqt6]>=0.6"`. Follow the [0.15.0a2 manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a2/) for installation, reader diagnostics, mesh workflows and scientific boundaries.
 
-Exact source-content checks can still take time on large containers or slow disks. Cancellation is cooperative: a running kernel, library call, or output write may need to finish a safe unit of work. Most graph operations still materialize their inputs in memory; this release does not introduce general lazy/chunked execution. GPU eligibility and speed depend on the operation, data, memory, and supported environment.
-
-The [0.15.0a1 manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a1/) describes the updated interface and the distinction between checking, previewing, running, and reviewing results.
-
-[Full source comparison: 0.14.0a3 → 0.15.0a1](https://github.com/rensutheart/napari-vipp/compare/v0.14.0a3...v0.15.0a1)
+[Full source comparison: 0.15.0a1 → 0.15.0a2](https://github.com/rensutheart/napari-vipp/compare/v0.15.0a1...v0.15.0a2)

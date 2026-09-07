@@ -264,6 +264,7 @@ from napari_vipp.core.io import (
     write_ome_zarr_analysis_dataset,
 )
 from napari_vipp.core.io.errors import as_image_source_error
+from napari_vipp.core.meshes import MeshState, is_mesh_data, save_mesh_output
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
     AxisDeclaration,
@@ -612,6 +613,12 @@ from napari_vipp.ui.file_sources import SourceLoadProgress as SourceLoadProgress
 from napari_vipp.ui.file_sources import (
     SourceLoadProgressUnit as SourceLoadProgressUnit,
 )
+from napari_vipp.ui.graph_display_settings import (
+    GRAPH_DISPLAY_NOTE,
+    GRAPH_DISPLAY_TITLE,
+    graph_display_option_label,
+    thumbnail_has_stack,
+)
 from napari_vipp.ui.histogram_dialog import (
     HistogramDialog,
     histogram_arrays_from_table,
@@ -629,6 +636,7 @@ from napari_vipp.ui.inspector import (
     METADATA_SECTION,
     OUTPUT_SELECTOR_SECTION,
     PARAMETERS_SECTION,
+    READER_SUPPORT_SECTION,
     SOURCE_REPRESENTATION_SECTION,
     TABLE_RESULTS_SECTION,
     WRITER_STATUS_SECTION,
@@ -636,9 +644,19 @@ from napari_vipp.ui.inspector import (
     inspector_profile,
 )
 from napari_vipp.ui.lifecycle import WidgetLifecycle
+from napari_vipp.ui.mesh_diagnostics import MeshMeasurementDiagnostics
+from napari_vipp.ui.mesh_histogram import (
+    MESH_FILTER_LABELS,
+    mesh_filter_decimals,
+    mesh_filter_histogram,
+)
 from napari_vipp.ui.palette import NodeLibraryPanel
 from napari_vipp.ui.palette_roles import blend_colors, palette_is_dark, theme_colors
 from napari_vipp.ui.panel_toggle import SidePanelToggleButton
+from napari_vipp.ui.parameter_constraints import (
+    constrain_parameter_bounds,
+    has_linked_bounds,
+)
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_BINS as COLOCALIZATION_SCATTER_BINS,
 )
@@ -693,6 +711,10 @@ from napari_vipp.ui.search import (
     _fuzzy_token_match as _fuzzy_token_match,
 )
 from napari_vipp.ui.search import _normalize_search_text
+from napari_vipp.ui.search_fields import (
+    SearchLineEdit,
+    workflow_find_shortcut_available,
+)
 from napari_vipp.ui.sliders import VippSlider
 from napari_vipp.ui.source_adapter import (
     LiveLayerSnapshot,
@@ -720,6 +742,7 @@ from napari_vipp.ui.toolbar_controls import (
     ToolbarCommandButton as _ToolbarCommandButton,
 )
 from napari_vipp.ui.toolbar_controls import toolbar_icon as _toolbar_icon
+from napari_vipp.ui.updates import VersionBadge
 from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
@@ -961,6 +984,11 @@ CLAMP_INTENSITY_DESCRIPTION_TOOLTIP = (
     "unchanged. This is not a background-removal threshold."
 )
 INSPECTOR_TITLE_TOOLTIPS = {
+    "convex_hull": (
+        "Fills one convex hull around all foreground in a Boolean mask. "
+        "Choose independent 2D YX slices or 3D ZYX volumes. Separate objects "
+        "can be joined; this is not a per-label operation."
+    ),
     "sigma_filter": SIGMA_FILTER_DESCRIPTION_TOOLTIP,
     "clip_intensity": CLAMP_INTENSITY_DESCRIPTION_TOOLTIP,
     "imagej_auto_threshold": (
@@ -1885,6 +1913,7 @@ class VippWidget(QWidget):
         "_source_inspection_errors",
         "_source_preview_errors",
         "_source_view_modes",
+        "_source_channel_stack_positions",
         "_source_memory_crop_dismissals",
         "_psf_preflight_cache",
         "_file_source_payload_cache",
@@ -2055,6 +2084,8 @@ class VippWidget(QWidget):
         self._source_inspection_errors: dict[str, str] = {}
         self._source_preview_errors: dict[str, str] = {}
         self._source_view_modes: dict[str, str] = {}
+        self._source_channel_displays: dict[str, str] = {}
+        self._source_channel_stack_positions: dict[str, dict[str, int]] = {}
         self._source_memory_crop_dismissals: set[
             tuple[str, str, tuple[tuple[int, int], ...]]
         ] = set()
@@ -2380,16 +2411,26 @@ class VippWidget(QWidget):
         ):
             _configure_toolbar_combo(combo)
         self.preview_mode_combo.setToolTip(
-            "Choose a current slice, a maximum-intensity projection, or hide "
-            "node thumbnails."
+            "Choose the current slice (or a plain 2D image), a maximum-intensity "
+            "projection, or hide thumbnails across the graph. This does not "
+            "change the main image viewer."
         )
         self.thumbnail_contrast_combo.setToolTip(
-            "Choose percentile, min-max, or raw presentation contrast. This "
-            "changes thumbnails only, never pipeline data."
+            "Choose Percentile, Minimum–maximum, or Raw display contrast for "
+            "node thumbnails. Applies automatically without calculating the "
+            "workflow. Different methods can look identical when their contrast "
+            "limits coincide, as in the startup example's middle slices. "
+            "Label colours and encoded 8-bit RGB colours are preserved. "
+            "Image data and analysis results are unchanged."
         )
         self.thumbnail_scope_combo.setToolTip(
-            "Stack keeps contrast consistent across slices and may scan each "
-            "full result after calculation. Slice adapts quickly to the current view."
+            "Entire stack keeps contrast consistent across slices and may scan "
+            "each full result after calculation. Current slice adapts to the "
+            "displayed slice; in MIP mode it uses the current projection. "
+            "Changes refresh automatically using available results; larger "
+            "stack scans show Thumbnail contrast progress. The two choices "
+            "look the same when their contrast limits coincide. These settings "
+            "apply across the graph, not just the selected node."
         )
         self.thumbnail_colormap_combo.setToolTip(
             "Choose the presentation-only colormap for scalar thumbnails."
@@ -2534,22 +2575,30 @@ class VippWidget(QWidget):
         self.leave_batch_button.hide()
         self.export_ome_button = QPushButton("Export OME dataset...")
         self.preview_menu_button = _ToolbarChevronButton()
-        self.preview_menu_button.setText("Preview")
+        self.preview_menu_button.setText("Display settings")
         self.preview_menu_button.setIcon(_toolbar_icon("preview"))
         self.preview_menu_button.setIconSize(QSize(18, 18))
         self.preview_menu_button.setToolTip(
-            "Preview display settings. These controls change presentation only, "
-            "never analysis pixels."
+            "Graph display settings: change node thumbnails and input/output "
+            "labels, not the main image viewer. Image data and analysis results "
+            "are unchanged."
         )
         self.preview_display_menu = QMenu(self.preview_menu_button)
         self.preview_display_menu.setObjectName("VippPreviewDisplayMenu")
-        self.preview_display_menu.setAccessibleName("Preview display settings")
+        self.preview_display_menu.setAccessibleName(GRAPH_DISPLAY_TITLE)
         self._preview_menu_panel: QFrame | None = None
         self._preview_menu_action: QWidgetAction | None = None
         self._preview_menu_combos: dict[str, QComboBox] = {}
+        self._preview_menu_sync_timer = QTimer(self)
+        self._preview_menu_sync_timer.setInterval(250)
+        self._preview_menu_sync_timer.timeout.connect(
+            self._sync_preview_display_controls
+        )
         self.preview_display_menu.aboutToShow.connect(
             self._populate_preview_display_menu
         )
+        self.preview_display_menu.aboutToShow.connect(self._preview_menu_sync_timer.start)
+        self.preview_display_menu.aboutToHide.connect(self._preview_menu_sync_timer.stop)
         self.preview_menu_button.setMenu(self.preview_display_menu)
 
         self.settings_menu_button = QToolButton()
@@ -2593,8 +2642,9 @@ class VippWidget(QWidget):
         )
         self.port_label_mode_combo.setCurrentText(PortLabelMode.AMBIGUOUS_ONLY.value)
         self.port_label_mode_combo.setToolTip(
-            "Show port names only on ambiguous multi-port nodes, on every node, "
-            "or nowhere on the graph."
+            "When needed shows input/output names on nodes whose multiple "
+            "connections need distinguishing. Always shows all names; Never "
+            "hides them across the graph."
         )
         self.compute_mode_combo = QComboBox()
         for option in COMPUTE_MODE_OPTIONS:
@@ -2701,11 +2751,7 @@ class VippWidget(QWidget):
         self.cache_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.cache_status_label.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         self.cache_status_label.setToolTip("Estimated VIPP cache and system memory.")
-        self.version_label = QLabel(f"VIPP {VIPP_VERSION}")
-        self.version_label.setStyleSheet(
-            "font-size: 11px; font-weight: 600; padding: 2px 8px;"
-        )
-        self.version_label.setToolTip(f"napari-vipp {VIPP_VERSION}")
+        self.version_label = VersionBadge(VIPP_VERSION, self)
         self.run_activity_button = _ToolbarChevronButton()
         self.run_activity_button.setText("Run activity")
         self.run_activity_button.setIcon(_toolbar_icon("activity"))
@@ -2722,13 +2768,17 @@ class VippWidget(QWidget):
             "Select an Image Source node to choose data for the workflow."
         )
 
-        self.graph_search_edit = QLineEdit()
+        self.graph_search_edit = SearchLineEdit()
         self.graph_search_edit.setPlaceholderText("Find in workflow")
+        self.graph_search_edit.setAccessibleName("Find in workflow")
         self.graph_search_edit.setClearButtonEnabled(True)
         self.graph_search_edit.setToolTip(
-            "Search node titles, operation IDs, tunnel names, and output tags."
+            "Search node titles, operation IDs, tunnel names, and output tags. "
+            "Ctrl+F focuses search when not assigned to napari or another shortcut."
         )
-        self.graph_search_edit.setMaximumWidth(260)
+        self.graph_search_edit.setMinimumWidth(140)
+        self.graph_search_edit.setMaximumWidth(400)
+        self.graph_search_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.graph_search_focus_button = QPushButton("Focus")
         self.graph_search_focus_button.setToolTip("Focus the next graph search match.")
         self.graph_search_focus_button.setEnabled(False)
@@ -2775,6 +2825,10 @@ class VippWidget(QWidget):
         self._pipeline_thread_pool.setMaxThreadCount(1)
         self._label_volume_thread_pool = QThreadPool(self)
         self._label_volume_thread_pool.setMaxThreadCount(1)
+        self._mesh_measurement_diagnostics = MeshMeasurementDiagnostics(self)
+        self._mesh_measurement_diagnostics.ready.connect(
+            self._on_mesh_measurements_ready
+        )
         self._collection_batch_thread_pool = QThreadPool(self)
         self._collection_batch_thread_pool.setMaxThreadCount(1)
         self._batch_workspace_preview_thread_pool = QThreadPool(self)
@@ -3324,6 +3378,9 @@ class VippWidget(QWidget):
         )
         self.header_calculate_button.hide()
         self.behavior_section = InspectorSection("Node behavior", expanded=False)
+        self.reader_support_section = InspectorSection("Reader support", expanded=False)
+        self.reader_support_section.setSummary("System information")
+        self.reader_support_section.hide()
         self.compute_section = InspectorSection("Compute", expanded=False)
         self.writer_status_section = InspectorSection("Output status", expanded=True)
         self.writer_status_label = QLabel("")
@@ -3747,6 +3804,8 @@ class VippWidget(QWidget):
             event.ignore()
             return
         self._closing = True
+        self._mesh_measurement_diagnostics.close()
+        self.version_label.shutdown()
         self._cancel_selected_inspector_refresh()
         self._cancel_selected_viewer_refresh()
         self._discard_crop_draft(remove_layers=True)
@@ -3911,12 +3970,7 @@ class VippWidget(QWidget):
                 self.colocalization_scatter_hint,
             ):
                 hint.setStyleSheet(interaction_hint_style)
-            self.version_label.setStyleSheet(
-                f"color: {muted}; font-size: 11px; font-weight: 600;"
-                f" padding: 2px 8px; border: 1px solid {color(colors.border)};"
-                " border-radius: 999px;"
-                f" background: {color(colors.alternate_surface)};"
-            )
+            self.version_label.refresh_theme(palette)
             for separator in (
                 self._toolbar_document_separator,
                 self._toolbar_preview_separator,
@@ -4473,7 +4527,7 @@ class VippWidget(QWidget):
             parent.updateGeometry()
 
     def _workflow_shortcut_belongs_to_this_window(self) -> bool:
-        """Return whether a global Save key belongs to this VIPP host window."""
+        """Return whether a workflow shortcut belongs to this VIPP host window."""
         if self._closing or not self.isVisible():
             return False
         if QApplication.activeModalWidget() is not None:
@@ -4530,6 +4584,16 @@ class VippWidget(QWidget):
                     return True
                 if not event.isAutoRepeat():
                     self._request_workflow_save(force_choose_path=save_as)
+                return True
+            if (
+                event.matches(QKeySequence.Find)
+                and QApplication.activePopupWidget() is None
+                and workflow_find_shortcut_available(self.viewer, self.window())
+            ):
+                event.accept()
+                if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+                    self.graph_search_edit.setFocus(Qt.ShortcutFocusReason)
+                    self.graph_search_edit.selectAll()
                 return True
         dock = self._dock_widget()
         palette_panel = getattr(self, "palette_panel", None)
@@ -5078,7 +5142,7 @@ class VippWidget(QWidget):
         panel_controls.setContentsMargins(0, 0, 0, 0)
         panel_controls.setSpacing(4)
         panel_controls.addWidget(self.left_panel_toggle)
-        panel_controls.addWidget(self.graph_search_edit)
+        panel_controls.addWidget(self.graph_search_edit, 1)
         panel_controls.addWidget(self.graph_search_focus_button)
         panel_controls.addWidget(self.graph_search_status)
         panel_controls.addStretch(1)
@@ -5224,19 +5288,19 @@ class VippWidget(QWidget):
 
         if mode == "wide":
             self.batch_button.setText("Batch workflow")
-            self.preview_menu_button.setText("Preview")
+            self.preview_menu_button.setText("Display settings")
             self.calculate_all_button.setText("Calculate all")
             self.optimize_pipeline_button.setText("Find fastest")
             self.auto_structure_button.setText("Auto Arrange")
         elif mode == "medium":
             self.batch_button.setText("Batch")
-            self.preview_menu_button.setText("Preview")
+            self.preview_menu_button.setText("Display")
             self.calculate_all_button.setText("Calculate")
             self.optimize_pipeline_button.setText("Find fastest")
             self.auto_structure_button.setText("Arrange")
         else:
             self.batch_button.setText("")
-            self.preview_menu_button.setText("")
+            self.preview_menu_button.setText("Display")
             self.calculate_all_button.setText("")
             self.optimize_pipeline_button.setText("")
             self.auto_structure_button.setText("")
@@ -5247,7 +5311,7 @@ class VippWidget(QWidget):
         )
         self.leave_batch_button.setAccessibleName("Leave batch mode")
         self.batch_button.setAccessibleName("Batch workflow")
-        self.preview_menu_button.setAccessibleName("Preview display settings")
+        self.preview_menu_button.setAccessibleName(GRAPH_DISPLAY_TITLE)
         self.calculate_all_button.setAccessibleName("Calculate all")
         self.optimize_pipeline_button.setAccessibleName("Find fastest pipeline")
         self.auto_structure_button.setAccessibleName("Auto Arrange graph")
@@ -5298,6 +5362,8 @@ class VippWidget(QWidget):
             available = max(width - 12, 1)
             return self._command_toolbar_minimum_width() <= available
 
+        if not command_row_fits():
+            self.preview_menu_button.setText("Display")
         if (
             not command_row_fits()
             and not self.leave_batch_button.isHidden()
@@ -5327,11 +5393,14 @@ class VippWidget(QWidget):
             self.calculate_all_button.setText("Calculate")
         if not command_row_fits():
             self.batch_button.setText("")
-            self.preview_menu_button.setText("")
             self.calculate_all_button.setText("")
             self.optimize_pipeline_button.setText("")
         if not command_row_fits() and not self.compute_toolbar_group.isHidden():
             self.compute_toolbar_group.hide()
+        if not command_row_fits():
+            # Retain Display at ordinary narrow widths; only the smallest
+            # windows need the accessible eye-icon fallback.
+            self.preview_menu_button.setText("")
 
         self.cache_status_label.setVisible(mode != "narrow")
         self.cache_status_label.setMinimumWidth(140 if mode == "wide" else 80)
@@ -5368,7 +5437,7 @@ class VippWidget(QWidget):
 
         panel = QFrame(menu)
         panel.setObjectName("VippPreviewDisplayPanel")
-        panel.setAccessibleName("Preview display settings")
+        panel.setAccessibleName(GRAPH_DISPLAY_TITLE)
         panel.setMinimumWidth(360)
         panel.setStyleSheet(
             "QFrame#VippPreviewDisplayPanel {"
@@ -5399,9 +5468,9 @@ class VippWidget(QWidget):
             _toolbar_icon("preview", QWidget.palette(self)).pixmap(18, 18)
         )
         icon.setFixedSize(18, 18)
-        heading = QLabel("Preview display settings", header)
+        heading = QLabel(GRAPH_DISPLAY_TITLE, header)
         heading.setObjectName("VippPreviewDisplayHeading")
-        heading.setAccessibleName("Preview display settings")
+        heading.setAccessibleName(GRAPH_DISPLAY_TITLE)
         header_layout.addWidget(icon)
         header_layout.addWidget(heading)
         header_layout.addStretch(1)
@@ -5412,19 +5481,12 @@ class VippWidget(QWidget):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(7)
         form.setColumnStretch(1, 1)
-        for label, combo in (
-            ("Mode", self.preview_mode_combo),
-            ("Contrast", self.thumbnail_contrast_combo),
-            ("Range", self.thumbnail_scope_combo),
-            ("Colormap", self.thumbnail_colormap_combo),
-            ("Detail", self.thumbnail_resolution_combo),
-            ("Port labels", self.port_label_mode_combo),
-        ):
+        for label, combo in self._graph_display_sources().items():
             row = form.rowCount()
             row_label = QLabel(label, panel)
             row_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             picker = QComboBox(panel)
-            picker.setAccessibleName(f"Preview {label.lower()}")
+            picker.setAccessibleName(label)
             picker.setToolTip(combo.toolTip())
             for index in range(combo.count()):
                 picker.addItem(
@@ -5445,6 +5507,7 @@ class VippWidget(QWidget):
             picker.setMinimumContentsLength(18)
             picker.setMinimumWidth(220)
             picker.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            picker.ensurePolished()
             picker.currentIndexChanged.connect(
                 lambda index, source=combo: source.setCurrentIndex(int(index))
             )
@@ -5452,24 +5515,109 @@ class VippWidget(QWidget):
             form.addWidget(row_label, row, 0)
             form.addWidget(picker, row, 1)
             self._preview_menu_combos[label] = picker
+        self._sync_preview_display_controls()
         layout.addLayout(form)
 
         note = QLabel(
-            "Presentation only · analysis pixels are unchanged",
+            GRAPH_DISPLAY_NOTE,
             panel,
         )
         note.setObjectName("VippPreviewDisplayNote")
-        note.setAccessibleName(
-            "Presentation only; analysis pixels are unchanged"
-        )
+        note.setAccessibleName(GRAPH_DISPLAY_NOTE)
+        note.setWordWrap(True)
         layout.addWidget(note)
 
         action = QWidgetAction(menu)
-        action.setText("Preview display settings")
+        action.setText(GRAPH_DISPLAY_TITLE)
         action.setDefaultWidget(panel)
         menu.addAction(action)
         self._preview_menu_panel = panel
         self._preview_menu_action = action
+
+    def _graph_display_sources(self) -> dict[str, QComboBox]:
+        return {
+            "Thumbnail view": self.preview_mode_combo,
+            "Contrast method": self.thumbnail_contrast_combo,
+            "Contrast based on": self.thumbnail_scope_combo,
+            "Colour map": self.thumbnail_colormap_combo,
+            "Thumbnail resolution": self.thumbnail_resolution_combo,
+            "Input/output labels": self.port_label_mode_combo,
+        }
+
+    def _graph_display_has_stack(self) -> bool:
+        """Look across available graph previews, not just the selected node."""
+        for node_id in self.pipeline.nodes:
+            if node_id in self._preview_disabled_node_ids:
+                continue
+            data, state, _port = self._node_thumbnail_display_payload(node_id)
+            if data is None or is_table_data(data) or is_mesh_data(data):
+                continue
+            if thumbnail_has_stack(tuple(getattr(data, "shape", ())), state):
+                return True
+        return False
+
+    def _sync_preview_display_controls(self, *_args) -> None:
+        """Refresh wording and availability without changing stored preferences."""
+        if not self._preview_menu_combos:
+            return
+        has_stack = self._graph_display_has_stack()
+        mode = self.preview_mode_combo.currentText()
+        field_width = 220
+        for label, source in self._graph_display_sources().items():
+            picker = self._preview_menu_combos[label]
+            with QSignalBlocker(picker):
+                for index in range(source.count()):
+                    text = graph_display_option_label(
+                        label,
+                        source.itemText(index),
+                        has_stack=has_stack,
+                        preview_mode=mode,
+                    )
+                    if picker.itemText(index) != text:
+                        picker.setItemText(index, text)
+                # Size the entire field column together, including long options
+                # such as MIP and fonts applied when the host polishes the menu.
+                field_width = max(
+                    field_width,
+                    max(
+                        picker.fontMetrics().horizontalAdvance(picker.itemText(i))
+                        for i in range(picker.count())
+                    ) + 48,
+                )
+                selected = source.currentIndex()
+                if source is self.thumbnail_scope_combo:
+                    stack_index = source.findText("Stack")
+                    picker.model().item(stack_index).setEnabled(has_stack)
+                    picker.setItemData(
+                        stack_index,
+                        source.toolTip() if has_stack else (
+                            "No available node preview has a stack or series. "
+                            "Contrast uses the current image."
+                        ),
+                        Qt.ToolTipRole,
+                    )
+                    if not has_stack:
+                        # Both scopes are equivalent for a plain image. Keep
+                        # the stored preference for when a stack is available.
+                        selected = source.findText("Slice")
+                picker.setCurrentIndex(selected)
+                picker.setEnabled(source.isEnabled())
+
+        resized = False
+        for picker in self._preview_menu_combos.values():
+            if picker.minimumWidth() != field_width:
+                picker.setMinimumWidth(field_width)
+                resized = True
+        if resized and self._preview_menu_panel is not None:
+            self._preview_menu_panel.layout().activate()
+            self._preview_menu_panel.setMinimumWidth(
+                max(360, self._preview_menu_panel.minimumSizeHint().width())
+            )
+            self._preview_menu_panel.updateGeometry()
+            # QMenu otherwise keeps its original popup width while an individual
+            # child grows beyond its edge on the first live wording refresh.
+            if self.preview_display_menu.isVisible():
+                self.preview_display_menu.adjustSize()
 
     @staticmethod
     def _format_activity_duration(seconds: float) -> str:
@@ -5936,7 +6084,9 @@ class VippWidget(QWidget):
         font = heading.font()
         font.setBold(True)
         heading.setFont(font)
-        heading.setContentsMargins(24, 4, 12, 3)
+        heading.setAlignment(Qt.AlignCenter)
+        heading.setContentsMargins(12, 7, 12, 5)
+        heading.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         heading.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         heading.setAccessibleName(label)
 
@@ -6228,6 +6378,9 @@ class VippWidget(QWidget):
         self.source_representation_layout.setContentsMargins(7, 5, 7, 7)
         self.source_representation_layout.setSpacing(5)
         self.source_representation_layout.addWidget(self.source_representation_label)
+        reader_layout = QVBoxLayout(self.reader_support_section.content_widget)
+        reader_layout.setContentsMargins(7, 5, 7, 7)
+        reader_layout.setAlignment(Qt.AlignTop)
 
         output_selector_layout = QVBoxLayout(
             self.output_selector_section.content_widget
@@ -6445,6 +6598,7 @@ class VippWidget(QWidget):
             MASK_SUMMARY_SECTION: self.mask_summary_section,
             WRITER_STATUS_SECTION: self.writer_status_section,
             BEHAVIOR_SECTION: self.behavior_section,
+            READER_SUPPORT_SECTION: self.reader_support_section,
             COMPUTE_SECTION: self.compute_section,
             METADATA_SECTION: self.metadata_group,
             HISTORY_SECTION: self.history_group,
@@ -6472,6 +6626,9 @@ class VippWidget(QWidget):
         return scroll
 
     def _connect_signals(self) -> None:
+        self.reader_support_section.toggle_button.toggled.connect(
+            self._on_reader_support_section_toggled
+        )
         self.status_label.message_changed.connect(
             self._reserve_status_toolbar_height
         )
@@ -6488,6 +6645,7 @@ class VippWidget(QWidget):
         )
         self.workflow_tab_bar.closeTabRequested.connect(self._close_workflow_tab)
         self.workflow_tab_bar.renameTabRequested.connect(self._rename_workflow_tab)
+        self.workflow_tab_bar.revealTabRequested.connect(self._reveal_workflow_tab)
         self.workflow_tab_bar.tabsReordered.connect(self._reorder_workflow_tabs)
         self.open_example_button.clicked.connect(self._open_example_workflow_dialog)
         self.auto_structure_button.clicked.connect(self._auto_structure_graph)
@@ -6559,6 +6717,8 @@ class VippWidget(QWidget):
         self.thumbnail_resolution_combo.currentIndexChanged.connect(
             self._on_thumbnail_resolution_changed
         )
+        for source in self._graph_display_sources().values():
+            source.currentIndexChanged.connect(self._sync_preview_display_controls)
         self.thumbnail_statistics_policy_combo.currentIndexChanged.connect(
             self._on_thumbnail_statistics_policy_changed
         )
@@ -9961,6 +10121,7 @@ class VippWidget(QWidget):
             "_source_inspection_errors": {},
             "_source_preview_errors": {},
             "_source_view_modes": {},
+            "_source_channel_stack_positions": {},
             "_source_memory_crop_dismissals": set(),
             "_psf_preflight_cache": {},
             "_file_source_payload_cache": {},
@@ -10513,6 +10674,7 @@ class VippWidget(QWidget):
             snapshot.inspect_display_profiles,
             valid_node_ids,
         )
+        self._load_source_channel_displays(dict(snapshot.source_channel_displays))
         self._preview_disabled_node_ids = (
             set(snapshot.preview_disabled_node_ids) & valid_node_ids
         )
@@ -10703,6 +10865,11 @@ class VippWidget(QWidget):
             inspect_display_profiles=tuple(
                 self._inspect_display_profile_documents(valid_node_ids)
             ),
+            source_channel_displays=tuple(sorted(
+                (node_id, mode)
+                for node_id, mode in self._source_channel_displays.items()
+                if node_id in valid_node_ids
+            )),
         )
 
     def _push_undo_snapshot(
@@ -11006,6 +11173,7 @@ class VippWidget(QWidget):
             "compute_node_preferences",
             "compute_optimizer_locked_node_ids",
             "inspect_display_profiles",
+            "source_channel_displays",
         ):
             if getattr(current, attribute) != getattr(target, attribute):
                 return None
@@ -11338,6 +11506,7 @@ class VippWidget(QWidget):
                 snapshot.inspect_display_profiles,
                 valid_node_ids,
             )
+            self._load_source_channel_displays(dict(snapshot.source_channel_displays))
             self._preview_disabled_node_ids = (
                 set(snapshot.preview_disabled_node_ids) & valid_node_ids
             )
@@ -13715,6 +13884,10 @@ class VippWidget(QWidget):
             "keep_mode",
         }:
             self._update_label_volume_histogram()
+        if node.operation_id == "filter_mesh_objects" and changed & {
+            "property_name", "minimum", "maximum", "keep"
+        }:
+            self._update_label_volume_histogram()
         if node.operation_id in INPUT_HISTOGRAM_OPERATIONS:
             self._update_rescale_input_histogram(node_id, self._current_step())
 
@@ -14060,6 +14233,19 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Renamed workflow tab to '{session.title}'.")
 
+    def _reveal_workflow_tab(self, session_id: str) -> None:
+        """Locate a tab's saved file without activating, saving or running it."""
+        from napari_vipp.ui.file_reveal import reveal_file
+
+        session = self._workflow_tab_session(session_id)
+        if session is None:
+            return
+        if session.path is None:
+            self.status_label.setText("Save this workflow first to locate it on disk.")
+            return
+        result = reveal_file(session.path)
+        self.status_label.setText(result.message)
+
     def _reorder_workflow_tabs(
         self,
         source_index: int,
@@ -14102,6 +14288,11 @@ class VippWidget(QWidget):
         display_profiles = self._inspect_display_profile_documents(valid_node_ids)
         if display_profiles:
             inspector["display_profiles"] = display_profiles
+        if self._source_channel_displays:
+            inspector["source_channel_displays"] = {
+                node_id: mode for node_id, mode in self._source_channel_displays.items()
+                if node_id in valid_node_ids
+            }
 
         vipp: dict[str, object] = {"inspector": inspector}
         vipp["compute_optimizer"] = {
@@ -14450,6 +14641,7 @@ class VippWidget(QWidget):
                     source_snapshot.compute_optimizer_locked_node_ids
                 ),
                 inspect_display_profiles=(source_snapshot.inspect_display_profiles),
+                source_channel_displays=source_snapshot.source_channel_displays,
             ),
             history=WorkflowHistory(limit=self.HISTORY_LIMIT),
             title=f"Untitled {len(self._workflow_tabs) + 1}",
@@ -14566,6 +14758,9 @@ class VippWidget(QWidget):
         self._load_inspect_display_profiles(
             inspector_metadata.get("display_profiles", ()),
             valid_node_ids,
+        )
+        self._load_source_channel_displays(
+            inspector_metadata.get("source_channel_displays", {})
         )
         selected_node_id = str(inspector_metadata.get("selected_node_id", "") or "")
         if selected_node_id not in valid_node_ids:
@@ -18639,15 +18834,18 @@ class VippWidget(QWidget):
 
     def _on_port_label_mode_changed(self, mode: str) -> None:
         self.graph_view.set_port_label_mode(mode)
+        label = graph_display_option_label(
+            "Input/output labels", mode, has_stack=False, preview_mode="Slice"
+        )
         overlaps = self.graph_view.overlapping_node_pairs()
         if overlaps:
             suffix = "pair overlaps" if len(overlaps) == 1 else "pairs overlap"
             self.status_label.setText(
-                f"Port labels set to {mode}; {len(overlaps)} node {suffix}. "
+                f"Input/output labels set to {label}; {len(overlaps)} node {suffix}. "
                 "Use Auto Arrange to create space."
             )
             return
-        self.status_label.setText(f"Port labels set to {mode}.")
+        self.status_label.setText(f"Input/output labels set to {label}.")
 
     def _on_cache_mode_changed(self, _mode: str) -> None:
         self._memory_guard_dialog_shown = False
@@ -20836,6 +21034,8 @@ class VippWidget(QWidget):
             self._preview_disabled_node_ids.discard(node_id)
             self._source_preview_errors.pop(node_id, None)
             self._source_view_modes.pop(node_id, None)
+            self._source_channel_displays.pop(node_id, None)
+            self._source_channel_stack_positions.pop(node_id, None)
             self._inspector_output_port_by_node.pop(node_id, None)
             deleted_dismissals = tuple(
                 key
@@ -21191,8 +21391,15 @@ class VippWidget(QWidget):
             is_filter = node.operation_id in {
                 "filter_labels_by_volume",
                 "remove_small_objects",
+                "filter_mesh_objects",
             }
-            if node.operation_id == "remove_small_objects":
+            if node.operation_id == "filter_mesh_objects":
+                self.label_volume_group.setTitle("Input Mesh Object Distribution")
+                self.label_volume_log_checkbox.setText("Log size axis")
+                self.label_volume_interaction_hint.setText(
+                    "Drag the minimum and maximum markers to tune the mesh filter."
+                )
+            elif node.operation_id == "remove_small_objects":
                 self.label_volume_group.setTitle("Input Object Size Distribution")
                 self.label_volume_log_checkbox.setText("Log size axis")
                 self.label_volume_interaction_hint.setText(
@@ -21304,6 +21511,13 @@ class VippWidget(QWidget):
             self._active_label_volume_key,
             self._pending_label_volume_request,
         )
+        if profile.distribution_kind == "mesh_filter":
+            mesh_input = self.pipeline.input_data_for_node(node.id)
+            label_busy = bool(
+                is_mesh_data(mesh_input)
+                and self._mesh_measurement_diagnostics.cached(mesh_input) is None
+                and not self._mesh_measurement_diagnostics.error(mesh_input)
+            )
         input_busy = self._diagnostic_request_matches(
             self._current_input_histogram_key,
             self._active_input_histogram_key,
@@ -21480,6 +21694,7 @@ class VippWidget(QWidget):
         self._sync_inspector_header(spec)
         self._sync_connected_inputs_ui(profile)
         self._sync_source_representation_ui(profile)
+        self._sync_reader_support_ui(profile)
         self._sync_output_selector_ui(profile)
         self._sync_writer_status_ui(profile)
         self._sync_histogram_interaction_hint()
@@ -21629,6 +21844,7 @@ class VippWidget(QWidget):
                 and not self.writer_status_section.isHidden()
             ),
             BEHAVIOR_SECTION: behavior_visible,
+            READER_SUPPORT_SECTION: not self.reader_support_section.isHidden(),
             COMPUTE_SECTION: (
                 not self.execution_group.isHidden()
                 or not self.compute_repair_panel.isHidden()
@@ -21826,6 +22042,25 @@ class VippWidget(QWidget):
         self._update_image_calculator_equation_preview(self._selected_node_id)
         if ports:
             self.parameter_group.show()
+
+    def _sync_reader_support_ui(self, profile) -> None:
+        control = self._parameter_widgets.get("image_source")
+        visible = (
+            profile.operation_id == "input"
+            and isinstance(control, ImageSourceControl)
+        )
+        if isinstance(control, ImageSourceControl):
+            control.reader_support.set_content_host(
+                self.reader_support_section.content_widget if visible else None
+            )
+        self.reader_support_section.setVisible(visible)
+        if visible and self.reader_support_section.isExpanded():
+            control.reader_support.check_if_needed()
+
+    def _on_reader_support_section_toggled(self, expanded: bool) -> None:
+        control = self._parameter_widgets.get("image_source")
+        if expanded and isinstance(control, ImageSourceControl):
+            control.reader_support.check_if_needed()
 
     def _sync_source_representation_ui(self, profile) -> None:
         visible = profile.operation_id == "input"
@@ -22064,7 +22299,24 @@ class VippWidget(QWidget):
             self.histogram_interaction_hint.hide()
             return
         if node.operation_id == "binary_threshold":
-            text = "Drag the orange threshold line to tune the threshold."
+            foreground = node.params.get("foreground", "Above")
+            if foreground in ("In range", "Outside range"):
+                selection = (
+                    "between low and high, including both limits"
+                    if foreground == "In range"
+                    else "below low or above high, excluding both limits"
+                )
+                text = (
+                    f"Foreground: values {selection}. "
+                    "Drag the orange and blue lines to tune the range."
+                )
+            else:
+                text = (
+                    f"Foreground: values strictly {str(foreground).lower()} "
+                    "the threshold. "
+                    "Equal values stay background. "
+                    "Drag the orange line to tune the threshold."
+                )
         elif node.operation_id == "hysteresis_threshold":
             text = "Drag the orange and blue lines to tune the low and high thresholds."
         elif node.operation_id == "rescale_intensity":
@@ -22112,6 +22364,7 @@ class VippWidget(QWidget):
             "table": "Export table…",
             "image": "Save image…",
             "mask": "Save mask…",
+            "mesh": "Save mesh…",
             "labels": "Save labels…",
             "runtime": "Save output…",
             "multi": "Save output…",
@@ -22771,6 +23024,19 @@ class VippWidget(QWidget):
         self,
         error: OptionalMicroscopeReaderError,
     ) -> None:
+        from napari_vipp.core.reader_support import reader_for_path
+        from napari_vipp.reader_setup import launch_setup
+
+        control = self._source_load_control_for_node()
+        if control is not None:
+            control.reader_support.set_source(control.path_edit.text(), str(error))
+            self._set_status(
+                "Image reader unavailable. Use Reader support in Image Source "
+                "to check or set up its reader.",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
         command = error.install_command
         fallback = error.fallback_install_command
         suffix = error.suffix or "this file"
@@ -22792,6 +23058,12 @@ class VippWidget(QWidget):
         box.setText(f"{error.reader_label} is not installed.")
         box.setInformativeText("\n".join(lines))
         box.setDetailedText(str(error))
+        reader = reader_for_path("source" + error.suffix)
+        setup_button = None
+        if reader is not None:
+            setup_button = box.addButton(
+                "Review reader setup…", QMessageBox.ActionRole
+            )
         copy_button = None
         if command:
             copy_button = box.addButton(
@@ -22800,6 +23072,10 @@ class VippWidget(QWidget):
             )
         box.addButton(QMessageBox.Close)
         box.exec()
+
+        if setup_button is not None and box.clickedButton() == setup_button:
+            launch_setup(reader.key)
+            return
 
         if copy_button is not None and box.clickedButton() == copy_button:
             clipboard = QApplication.clipboard()
@@ -23820,7 +24096,7 @@ class VippWidget(QWidget):
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
         minimum = spec.minimum
         if not auto and spec.name in BORN_WOLF_PSF_AUTO_PARAMETERS:
-            minimum = 0.0001 if spec.decimals else 1
+            minimum = max(0.0001, 10 ** -spec.decimals)
         if not auto and spec.name == "channel":
             minimum = 0
         value = None
@@ -23832,7 +24108,9 @@ class VippWidget(QWidget):
         except Exception:
             current = float(spec.default)
         maximum = max(float(spec.maximum), current * 1.25, float(minimum))
-        return ParameterBounds(
+        if spec.name in {"xy_size", "z_size"}:
+            maximum = spec.maximum
+        bounds = ParameterBounds(
             minimum,
             maximum,
             spec.step,
@@ -23840,6 +24118,13 @@ class VippWidget(QWidget):
             expandable=False,
             entry_minimum=minimum,
             entry_maximum=max(float(spec.maximum), maximum),
+        )
+        if auto:
+            return bounds
+        return constrain_parameter_bounds(
+            "born_wolf_psf", spec,
+            {name: result.value for name, result in resolution.parameters.items()},
+            bounds,
         )
 
     def _born_wolf_psf_status_text(self, result, *, auto: bool) -> str:
@@ -24211,6 +24496,12 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id == "convex_hull":
+            return (
+                "One hull around all foreground in each slice or volume. "
+                "Separate objects can join. Use a Boolean mask, such as a "
+                "threshold output."
+            )
         if node.operation_id == "normalize_image":
             return self._normalize_help_note(node_id)
         if node.operation_id == "minimum_threshold":
@@ -24240,6 +24531,11 @@ class VippWidget(QWidget):
                 "- Mask: foreground constraint region (>0 = inside)."
             )
         if node.operation_id == "measure_3d_mesh_morphology":
+            if self._node_input_is_mesh(node_id):
+                return (
+                    "Existing mesh: one row per object; "
+                    "no remeshing or voxel filtering."
+                )
             return "3D-only measurement: verify Z/Y/X axes and voxel spacing."
         return ""
 
@@ -24247,6 +24543,8 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id == "convex_hull":
+            return INSPECTOR_TITLE_TOOLTIPS["convex_hull"]
         if node.operation_id == "normalize_image":
             return self._normalize_help_note_tooltip(node_id)
         if node.operation_id == "minimum_threshold":
@@ -24263,6 +24561,12 @@ class VippWidget(QWidget):
         if node.operation_id != "measure_3d_mesh_morphology":
             return ""
         return (
+            "A mesh input produces one row per object from the supplied geometry, "
+            "without "
+            "remeshing. Its calibration is retained; open or invalid surfaces "
+            "have no volume-based results. Voxel counts are not inferred. "
+            "A binary mask treats all foreground as one object; use Label "
+            "Connected Components for separate objects. "
             "Each label is reconstructed as a surface mesh using its Z/Y/X "
             "voxel spacing. Labels below Minimum voxel count remain in the "
             "results, with mesh fields set to NaN. Calculation failures are "
@@ -24272,7 +24576,10 @@ class VippWidget(QWidget):
 
     def _operation_help_note_status(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
-        if node is not None and node.operation_id == "minimum_threshold":
+        if node is not None and node.operation_id in {
+            "minimum_threshold",
+            "convex_hull",
+        }:
             return "Info"
         if node is not None and node.operation_id == "normalize_image":
             method = str(node.params.get("method", "min-max")).strip().casefold()
@@ -25113,6 +25420,14 @@ class VippWidget(QWidget):
             )
         )
         control.sourceLoadCancelRequested.connect(self._cancel_source_file_load)
+        control.reader_support.set_source(
+            str(node.params.get("file_path", "")),
+            self._source_inspection_errors.get(node_id, ""),
+        )
+        control.sourceReaderRetryRequested.connect(
+            lambda node_id=node_id: self._retry_source_reader(node_id)
+        )
+        control.reader_support.layoutChanged.connect(self._sync_parameter_form_height)
         control.viewerDisplayChanged.connect(
             lambda mode, node_id=node_id: self._on_source_viewer_display_changed(
                 node_id,
@@ -25609,6 +25924,8 @@ class VippWidget(QWidget):
         self.graph_view.set_node_subtitle(node_id, subtitle, tooltip)
 
     def _render_channel_color_controls(self, node_id: str) -> None:
+        if self.pipeline.nodes[node_id].operation_id == "input":
+            self._render_source_channel_display_control(node_id)
         count = self._channel_color_control_count(node_id)
         if count <= 0:
             if self.pipeline.nodes[node_id].operation_id == "input":
@@ -25648,6 +25965,81 @@ class VippWidget(QWidget):
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
+
+    def _load_source_channel_displays(self, choices) -> None:
+        self._source_channel_displays = {
+            node_id: mode for node_id, mode in choices.items()
+            if node_id in self.pipeline.nodes
+            and self.pipeline.nodes[node_id].operation_id == "input"
+            and mode in ("stack", "layers")
+        } if isinstance(choices, dict) else {}
+
+    def _render_source_channel_display_control(self, node_id: str) -> None:
+        choices = ("Stack (C slider)", "Separate coloured layers")
+        mode = self._source_channel_displays.get(node_id, "stack")
+        spec = ParameterSpec(
+            "source_channel_display", "Channel display", "choice", choices[0],
+            0, 0, 1, choices=choices,
+            tooltip=(
+                "Applies immediately to the full-resolution napari view and pinned "
+                "source. Stack keeps the C slider; separate layers show all channels "
+                "together using the same colours as VIPP's thumbnail. "
+                "Display only: image data, axis labels and processing are unchanged. "
+                "Requires a multi-channel C axis, not encoded RGB/RGBA."
+            ),
+        )
+        control = ChoiceControl(
+            spec, choices[mode == "layers"], ParameterBounds(0, 1, 1, 0)
+        )
+        state = self._channel_color_reference_state(node_id)
+        control.setEnabled(state is None or _explicit_channel_count(state) > 1)
+        control.valueChanged.connect(
+            lambda value: self._on_source_channel_display_changed(
+                node_id, "layers" if value == choices[1] else "stack"
+            )
+        )
+        self.parameter_form.addRow(spec.label, control)
+        self._parameter_widgets[spec.name] = control
+        self._apply_parameter_tooltip(spec, control)
+
+    def _on_source_channel_display_changed(self, node_id: str, mode: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            node is None or node.operation_id != "input"
+            or mode not in ("stack", "layers")
+        ):
+            return
+        if self._source_channel_displays.get(node_id, "stack") == mode:
+            return
+        positions = self._source_channel_stack_positions.setdefault(node_id, {})
+        active_metadata = getattr(self._active_viewer_layer(), "metadata", {})
+        restore_positions = (
+            node_id == self._selected_node_id
+            and active_metadata.get("node_id") == node_id
+        )
+        if restore_positions:
+            positions.update({axis.name: axis.value for axis in self._view_dim_axes()})
+        self._source_channel_displays[node_id] = mode
+        # This is inspector metadata, never an operation parameter or dirty node.
+        if any(
+            getattr(layer, "metadata", {}).get("node_id") == node_id
+            for layer in self._generated_layers_for_name(self._inspect_layer_name)
+        ):
+            self._refresh_inspection_layer_if_active()
+        if self._active_pinned_node_id == node_id:
+            self._refresh_pinned_layer_if_active()
+        if restore_positions:
+            for axis in self._view_dim_axes():
+                if axis.name in positions:
+                    self._on_view_dim_changed(axis.step_axis, positions[axis.name])
+        self._sync_view_dims_bar()
+        self._sync_current_workflow_tab_state()
+        self._set_status(
+            "Showing separate coloured channel layers; use their eye icons in napari."
+            if mode == "layers"
+            else "Showing channels as a stack; use the C slider to select a channel.",
+            severity=MessageSeverity.INFO,
+        )
 
     def _channel_color_control_count(self, node_id: str) -> int:
         state = self._channel_color_reference_state(node_id)
@@ -25868,6 +26260,30 @@ class VippWidget(QWidget):
         self._debounce_timer.start()
         self._sync_current_workflow_tab_state()
 
+    def _retry_source_reader(self, node_id: str) -> None:
+        """Retry the same authored source without changing its identity/axes."""
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node_id != self._selected_node_id:
+            return
+        if (
+            self._active_source_load_id is not None
+            or self._active_pipeline_run_id is not None
+        ):
+            self._set_status(
+                "Wait for the current operation to finish before retrying this image."
+            )
+            return
+        import importlib
+
+        importlib.invalidate_caches()
+        self._source_inspection_errors.pop(node_id, None)
+        control = self._source_load_control_for_node(node_id)
+        if control is not None:
+            control.reader_support.set_source(str(node.params.get("file_path", "")), "")
+        self._on_image_source_changed(
+            self._image_source_value(node), force=True, validate_path=True
+        )
+
     def _refresh_image_source_options(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
         control = self._parameter_widgets.get("image_source")
@@ -25888,6 +26304,10 @@ class VippWidget(QWidget):
             self._source_memory_repair_presentation(node)
         )
         self._apply_image_source_params(self._selected_node_id, control.value())
+        control.reader_support.set_source(
+            str(node.params.get("file_path", "")),
+            self._source_inspection_errors.get(node.id, ""),
+        )
 
     def _source_inspection_for_node(self, node) -> SourceInspection | None:
         if (
@@ -25944,6 +26364,9 @@ class VippWidget(QWidget):
             item=self._file_source_series_index_for_node(node),
         )
         self._source_inspection_errors[node.id] = error.display_text
+        control = self._source_load_control_for_node(node.id)
+        if control is not None:
+            control.reader_support.set_source(str(path), error.display_text)
         self.pipeline.set_node_execution_error(node.id, error.display_text)
         self._set_status(
             f"Image source inspection error: {error.display_text}",
@@ -27488,7 +27911,11 @@ class VippWidget(QWidget):
                     spec.name,
                     previous,
                 )
-            if spec.kind == "choice" and previous not in spec.choices:
+            if (
+                spec.kind == "choice"
+                and previous not in spec.choices
+                and spec.dynamic_choice_kind != "output_format"
+            ):
                 previous = spec.default
             bounds = self._parameter_bounds_for(
                 self._selected_node_id,
@@ -27700,6 +28127,18 @@ class VippWidget(QWidget):
             return projected
         return cached
 
+    def _node_input_is_mesh(self, node_id: str) -> bool:
+        if isinstance(self.pipeline.input_state_for_node(node_id), MeshState):
+            return True
+        for connection in self.pipeline.connections:
+            if connection.target_id == node_id and connection.target_port == 0:
+                ports = self.pipeline.output_ports(connection.source_id)
+                return (
+                    connection.source_port < len(ports)
+                    and ports[connection.source_port].output_type == "mesh"
+                )
+        return False
+
     def _parameter_spec_hidden(
         self,
         node_id: str,
@@ -27710,6 +28149,18 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return False
+        if (
+            node.operation_id == "measure_3d_mesh_morphology"
+            and spec.name in {"spatial_mode", "minimum_voxel_count"}
+            and self._node_input_is_mesh(node_id)
+        ):
+            return True
+        if (
+            node.operation_id == "color_mesh_objects"
+            and spec.name == "color_map"
+            and node.params.get("color_by", "Object ID") == "Object ID"
+        ):
+            return True
         if node.operation_id == "split_channels" and spec.name == "preview_channel":
             # The capability-driven Displayed output section is the single
             # presentation selector. Keeping the legacy parameter as a second
@@ -27807,6 +28258,54 @@ class VippWidget(QWidget):
         context: ParameterVisibilityContext | None = None,
     ):
         node = self.pipeline.nodes.get(node_id)
+        if (
+            node is not None
+            and node.operation_id in {"save_output", "batch_output"}
+            and spec.name == "format"
+        ):
+            from napari_vipp.ui.output_formats import writer_format_choices
+
+            return replace(
+                spec,
+                choices=writer_format_choices(self.pipeline, node_id, spec.choices),
+                dynamic_choice_kind="output_format",
+                tooltip=(
+                    "Formats follow the connected input. OBJ stores mesh geometry "
+                    "and object groups; 3MF also stores colours and requires "
+                    "physical calibration. An incompatible saved choice must be "
+                    "changed explicitly before saving."
+                ),
+            )
+        if (
+            node is not None
+            and node.operation_id == "filter_mesh_objects"
+            and spec.name in {"minimum", "maximum"}
+        ):
+            state = self.pipeline.input_state_for_node(node_id)
+            prop = node.params.get("property_name", "mesh_volume_physical")
+            mesh = self.pipeline.input_data_for_node(node_id)
+            table = (
+                self._mesh_measurement_diagnostics.cached(mesh)
+                if is_mesh_data(mesh)
+                else None
+            )
+            spec = replace(
+                spec,
+                decimals=mesh_filter_decimals(
+                    table,
+                    prop,
+                    (node.params.get("minimum", 0.0), node.params.get("maximum", 1e12)),
+                ),
+            )
+            if isinstance(state, MeshState) and prop in {
+                "mesh_volume_physical",
+                "mesh_surface_area_physical",
+            }:
+                unit = state.spatial_axes[2].unit or "voxel"
+                power = "³" if prop == "mesh_volume_physical" else "²"
+                return replace(spec, label=f"{spec.label} ({unit}{power})")
+            if prop in {"mesh_id", "triangle_count"}:
+                return replace(spec, decimals=0, step=1)
         if node is not None and (
             (
                 node.operation_id == "clip_intensity"
@@ -28324,6 +28823,19 @@ class VippWidget(QWidget):
         *,
         context: ParameterVisibilityContext | None = None,
     ) -> ParameterBounds:
+        bounds = self._base_parameter_bounds_for(node_id, spec, context=context)
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return bounds
+        return constrain_parameter_bounds(node.operation_id, spec, node.params, bounds)
+
+    def _base_parameter_bounds_for(
+        self,
+        node_id: str,
+        spec,
+        *,
+        context: ParameterVisibilityContext | None = None,
+    ) -> ParameterBounds:
         if spec.kind == "choice":
             return ParameterBounds(0, max(len(spec.choices) - 1, 0), 1, 0)
         node = self.pipeline.nodes.get(node_id)
@@ -28431,6 +28943,10 @@ class VippWidget(QWidget):
         if spec.name in {"channel", "red_channel", "green_channel", "blue_channel"}:
             return self._channel_bounds(node_id, spec)
         if spec.name == "block_size":
+            return self._block_size_bounds(node_id, spec)
+        if spec.name == "window_size" and node is not None and node.operation_id in {
+            "sauvola_threshold", "niblack_threshold",
+        }:
             return self._block_size_bounds(node_id, spec)
         if (
             node is not None
@@ -29777,8 +30293,8 @@ class VippWidget(QWidget):
         return bool(
             operation.supports_bypass
             and len(ports) == 1
-            and operation.output_type != "table"
-            and ports[0].output_type != "table"
+            and operation.output_type not in {"table", "mesh"}
+            and ports[0].output_type not in {"table", "mesh"}
         )
 
     def _presentation_shadow_data_kind(
@@ -29790,6 +30306,8 @@ class VippWidget(QWidget):
     ) -> str:
         """Infer card rendering semantics from the what-if result, not its alias."""
 
+        if is_mesh_data(data):
+            return "mesh"
         if is_table_data(data):
             return "table"
         state_kind = str(getattr(state, "kind", "") or "").strip().casefold()
@@ -30157,6 +30675,7 @@ class VippWidget(QWidget):
         self._current_label_volume_key = None
         self._label_volume_cache.clear()
         self._property_filter_value_cache.clear()
+        self._mesh_measurement_diagnostics.clear()
 
     def _clear_colocalization_scatter_cache(self) -> None:
         """Invalidate cached and in-flight colocalization inspector results."""
@@ -32870,6 +33389,7 @@ class VippWidget(QWidget):
         for control in self._parameter_widgets.values():
             if isinstance(control, ImageSourceControl):
                 control.restore_source_representation_panel()
+                control.reader_support.set_content_host(None)
         self._parameter_widgets.clear()
         while self.parameter_form.rowCount():
             row = self.parameter_form.takeRow(0)
@@ -33034,11 +33554,17 @@ class VippWidget(QWidget):
             or (node.operation_id == "mask_image" and name == "outside_value")
         ):
             self._refresh_selected_parameter_controls()
+        if (node.operation_id == "filter_mesh_objects" and name == "property_name") or (
+            node.operation_id == "color_mesh_objects" and name == "color_by"
+        ):
+            self._render_parameters(node.id)
         if (
             node.operation_id in COLOCALIZATION_COSTES_OPERATIONS
             and name == "threshold_mode"
         ):
             self._refresh_colocalization_threshold_control_states(node.id)
+        if has_linked_bounds(node.operation_id, name):
+            self._refresh_selected_parameter_controls()
         if presentation_only:
             if split_channel_presentation_only:
                 self._refresh_split_channel_display_surfaces({node.id})
@@ -33195,6 +33721,10 @@ class VippWidget(QWidget):
             }
         ):
             self._update_label_volume_histogram()
+        elif node.operation_id == "filter_mesh_objects" and name in {
+            "property_name", "minimum", "maximum", "keep"
+        }:
+            self._update_label_volume_histogram()
         if node.operation_id == "rescale_intensity" and name == (
             RESCALE_CUTOFF_MODE_PARAMETER
         ):
@@ -33207,6 +33737,8 @@ class VippWidget(QWidget):
                 self._selected_node_id,
                 self._current_step(),
             )
+        if node.operation_id == "binary_threshold" and name == "foreground":
+            self._sync_histogram_interaction_hint()
         if (
             node.operation_id in {"clip_intensity", "rescale_intensity"}
             and name == RESCALE_CUTOFF_MODE_PARAMETER
@@ -33222,7 +33754,12 @@ class VippWidget(QWidget):
             )
         if (
             (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
-            or (node.operation_id == "binary_threshold" and name == "threshold")
+            or (
+                node.operation_id == "binary_threshold"
+                and name in {
+                    "foreground", "threshold", "low_threshold", "high_threshold",
+                }
+            )
             or (
                 node.operation_id == "hysteresis_threshold"
                 and name in {"low_threshold", "high_threshold"}
@@ -34362,6 +34899,7 @@ class VippWidget(QWidget):
             if control is not None:
                 control.finish_source_load(result.run_id, error=result.error)
             if result.node_id:
+                self._source_inspection_errors[result.node_id] = result.error
                 self.pipeline.set_node_execution_error(result.node_id, result.error)
             self._sync_execution_ui()
             self._set_pipeline_busy(False)
@@ -34429,6 +34967,11 @@ class VippWidget(QWidget):
                         snapshot.source_item,
                     )
                 break
+        if result.node_id:
+            self._source_inspection_errors.pop(result.node_id, None)
+        if completed_worker is not None:
+            for spec in completed_worker.specs:
+                self._source_inspection_errors.pop(spec.node_id, None)
         if control is not None:
             control.finish_source_load(result.run_id)
         self._set_pipeline_busy(False)
@@ -36343,7 +36886,7 @@ class VippWidget(QWidget):
             data, state, _output_port = self._node_display_payload(
                 self._active_pinned_node_id
             )
-            if state is not None and data is not None and not is_table_data(data):
+            if isinstance(state, ImageState) and data is not None:
                 return state
         selected = self.pipeline.nodes.get(self._selected_node_id)
         if (
@@ -36362,11 +36905,11 @@ class VippWidget(QWidget):
                     if preview_state is not None and preview_state.axes:
                         return preview_state
         data, state, _output_port = self._node_display_payload(self._selected_node_id)
-        if state is not None and data is not None and not is_table_data(data):
+        if isinstance(state, ImageState) and data is not None:
             return state
         data = self.pipeline.outputs.get("input")
         state = self.pipeline.output_states.get("input")
-        if state is not None and data is not None and not is_table_data(data):
+        if isinstance(state, ImageState) and data is not None:
             return state
         return None
 
@@ -36533,6 +37076,10 @@ class VippWidget(QWidget):
     def _on_dims_changed(self, _event=None) -> None:
         if self._closing:
             return
+        if getattr(_event, "type", None) == "ndisplay":
+            _sync_viewer_spatial_order_from_layer(
+                self.viewer, self._active_viewer_layer()
+            )
         if self._selected_viewer_refresh_in_progress:
             self._selected_viewer_dims_refresh_pending = True
             return
@@ -36831,7 +37378,7 @@ class VippWidget(QWidget):
         self.graph_view.set_node_output_type(node_id, node_output_type)
         preview_enabled = (
             mode.lower() != "off"
-            and preview_output_type != "table"
+            and preview_output_type not in {"table", "mesh"}
             and node_id not in self._preview_disabled_node_ids
         )
         self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
@@ -37605,6 +38152,13 @@ class VippWidget(QWidget):
     def _metadata_summary(rows, state) -> str:
         values = {str(row.label).casefold(): str(row.value) for row in rows}
         kind = values.get("kind", "")
+        if "mesh" in kind.casefold():
+            objects = values.get("objects", "1")
+            return (
+                f"{objects} object{'s' if objects != '1' else ''} · "
+                f"{values.get('vertices', '0')} vertices · "
+                f"{values.get('triangles', '0')} triangles"
+            )
         axes = ""
         if state is not None:
             axes = "".join(
@@ -37833,7 +38387,7 @@ class VippWidget(QWidget):
             None,
             log_scale=False,
         )
-        if is_table_data(data):
+        if is_table_data(data) or is_mesh_data(data):
             self._current_output_histogram_key = None
             self._pending_output_histogram_request = None
             self.rescale_input_histogram_group.setHidden(True)
@@ -37866,7 +38420,7 @@ class VippWidget(QWidget):
             self.mask_summary_section.setSummary("Calculating…")
         suppress_output_histogram = bool(
             profile.distribution_kind
-            in {"labels", "property_filter", "metadata"}
+            in {"labels", "property_filter", "mesh_filter", "metadata"}
             or (
                 profile.distribution_kind == "object_sizes"
                 and output_kind != "mask"
@@ -38129,6 +38683,7 @@ class VippWidget(QWidget):
             log_scale=self.histogram_log_checkbox.isChecked(),
             x_range=(0.0, float(max(largest, 1))),
             colors=[QColor("#bef264")],
+            bin_edges=_edges,
         )
         self._set_histogram_explanation(
             self.measurement_object_size_histogram_group,
@@ -38145,7 +38700,7 @@ class VippWidget(QWidget):
             x_axis_label="Intensity (a.u.)",
             y_axis_label="Voxels",
         )
-        if data is None or is_table_data(data):
+        if data is None or is_table_data(data) or is_mesh_data(data):
             self._current_input_histogram_key = None
             self._pending_input_histogram_request = None
             self.measurement_intensity_histogram_status.setText(
@@ -39838,6 +40393,13 @@ class VippWidget(QWidget):
             node.params.get("cutoff_mode", "Data range")
         ).lower().startswith("value"):
             return
+        if (
+            node.operation_id == "binary_threshold"
+            and label not in _input_histogram_draggable_markers(
+                node.operation_id, node.params,
+            )
+        ):
+            return
         name = _input_histogram_marker_parameter(node.operation_id, label)
         if name is None:
             return
@@ -39914,6 +40476,8 @@ class VippWidget(QWidget):
             name = {"min": "min_volume", "max": "max_volume"}.get(str(label))
         elif node.operation_id == "filter_labels_by_property":
             name = {"min": "min_value", "max": "max_value"}.get(str(label))
+        elif node.operation_id == "filter_mesh_objects":
+            name = {"min": "minimum", "max": "maximum"}.get(str(label))
         elif node.operation_id == "remove_small_objects":
             name = {"min": "min_size"}.get(str(label))
         else:
@@ -39923,6 +40487,9 @@ class VippWidget(QWidget):
         value = self._paired_histogram_marker_value(node_id, name, value)
         value = self._coerce_histogram_parameter_value(node_id, name, value)
         if not self._set_histogram_parameter_value(node_id, name, value):
+            # The plot emits raw drag coordinates, including again on release.
+            # Restore its marker to the unchanged rounded/linked control value.
+            self._update_label_volume_histogram()
             return
         self._mark_pipeline_dirty(node_id)
         self._update_label_volume_histogram()
@@ -39934,11 +40501,14 @@ class VippWidget(QWidget):
         spec = self._parameter_spec_by_name(node_id, name)
         if node is None or spec is None:
             return False
+        spec = self._effective_parameter_spec(node_id, spec)
         if not self._parameter_value_changed(spec, node.params.get(name), value):
             return False
         self._record_parameter_undo(node_id, name)
         self.pipeline.set_param(node_id, name, value)
         self._set_parameter_control_value(node_id, name, value)
+        if has_linked_bounds(node.operation_id, name):
+            self._refresh_selected_parameter_controls()
         return True
 
     def _coerce_histogram_parameter_value(self, node_id: str, name: str, value):
@@ -40217,7 +40787,7 @@ class VippWidget(QWidget):
             return
 
         data = self.pipeline.input_data_for_node(node_id)
-        if data is None or is_table_data(data):
+        if data is None or is_table_data(data) or is_mesh_data(data):
             self._current_input_histogram_key = None
             self._pending_input_histogram_request = None
             self.rescale_input_histogram_group.setTitle("Input Histogram")
@@ -41202,7 +41772,9 @@ class VippWidget(QWidget):
             else None
         )
         distribution_kind = profile.distribution_kind if profile is not None else ""
-        visible = distribution_kind in {"labels", "object_sizes", "property_filter"}
+        visible = distribution_kind in {
+            "labels", "object_sizes", "property_filter", "mesh_filter"
+        }
         self.label_volume_group.setHidden(not visible)
         if not visible:
             self._current_label_volume_key = None
@@ -41212,12 +41784,15 @@ class VippWidget(QWidget):
             self.label_volume_plot.set_histogram(None, log_scale=False)
             return
 
-        if distribution_kind == "property_filter":
+        if distribution_kind in {"property_filter", "mesh_filter"}:
             self._current_label_volume_key = None
             self._pending_label_volume_request = None
             if self._active_label_volume_cancel_event is not None:
                 self._active_label_volume_cancel_event.set()
-            self._update_property_filter_histogram(node)
+            if distribution_kind == "mesh_filter":
+                self._update_mesh_filter_histogram(node)
+            else:
+                self._update_property_filter_histogram(node)
             return
 
         self.label_volume_group.setSummary("")
@@ -41324,6 +41899,100 @@ class VippWidget(QWidget):
             is_filter=is_filter,
         )
 
+    def _on_mesh_measurements_ready(self, mesh) -> None:
+        """Only the still-selected input may publish background diagnostics."""
+        if self._closing:
+            return
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if (
+            node is not None
+            and node.operation_id == "filter_mesh_objects"
+            and self.pipeline.input_data_for_node(node.id) is mesh
+        ):
+            self._refresh_selected_parameter_controls()
+            self._update_label_volume_histogram()
+            self._sync_inspector_diagnostic_busy_state()
+
+    def _update_mesh_filter_histogram(self, node) -> None:
+        """Inspect all input objects using the same measurements as filtering."""
+        self.label_volume_group.setTitle("Input Mesh Object Distribution")
+        self.label_volume_group.setSummary("")
+        self.label_volume_log_checkbox.setText("Log size axis")
+        self.label_volume_interaction_hint.setText(
+            "Drag the range markers; limits outside the data appear at the edges. "
+            "Hover a bar for its object count."
+        )
+        mesh = self.pipeline.input_data_for_node(node.id)
+        if not is_mesh_data(mesh):
+            self.label_volume_summary.setText(
+                "Calculate the connected mesh to inspect its object sizes."
+            )
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_log_checkbox.hide()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+        diagnostics = self._mesh_measurement_diagnostics
+        table = diagnostics.cached(mesh)
+        error = diagnostics.error(mesh)
+        if table is None:
+            self.label_volume_group.setSummary(
+                "Unavailable" if error else "Calculating…"
+            )
+            self.label_volume_summary.setText(
+                f"Mesh measurements unavailable: {error}"
+                if error
+                else "Measuring input mesh objects in the background…"
+            )
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_log_checkbox.hide()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            if not error:
+                diagnostics.request(mesh)
+            return
+        prop = node.params.get("property_name", "mesh_volume_physical")
+        minimum = node.params.get("minimum", 0.0)
+        maximum = node.params.get("maximum", 1e12)
+        try:
+            distribution = mesh_filter_histogram(
+                table,
+                prop,
+                minimum,
+                maximum,
+                node.params.get("keep", "In range"),
+                log=self.label_volume_log_checkbox.isChecked(),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            self.label_volume_group.setSummary("Review filter settings")
+            self.label_volume_summary.setText(str(error))
+            self.label_volume_interaction_hint.hide()
+            self.label_volume_log_checkbox.hide()
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+        self.label_volume_group.setSummary(distribution.label)
+        self.label_volume_summary.setText(distribution.summary)
+        has_values = bool(distribution.counts.size)
+        self.label_volume_interaction_hint.setVisible(has_values)
+        self.label_volume_log_checkbox.setVisible(has_values)
+        self.label_volume_log_checkbox.setEnabled(True)
+        self.label_volume_plot.set_plot_labels(
+            title=f"Input object {MESH_FILTER_LABELS[prop].lower()}",
+            x_axis_label=distribution.label,
+            y_axis_label="Objects",
+        )
+        self.label_volume_plot.set_histogram(
+            distribution.counts if has_values else None,
+            log_scale=False,
+            x_range=distribution.x_range,
+            colors=[QColor("#a78bfa")],
+            markers=[
+                ("min", minimum, QColor("#f59e0b")),
+                ("max", maximum, QColor("#38bdf8")),
+            ],
+            x_scale="log" if self.label_volume_log_checkbox.isChecked() else "linear",
+            draggable_markers={"min", "max"},
+            bin_edges=distribution.edges if has_values else None,
+        )
+
     def _update_property_filter_histogram(self, node) -> None:
         """Show the measurement property that actually drives label filtering."""
 
@@ -41424,6 +42093,7 @@ class VippWidget(QWidget):
             markers=markers,
             x_scale="linear",
             draggable_markers=draggable_markers,
+            bin_edges=_edges,
         )
 
     def _cached_property_filter_column_values(
@@ -41599,6 +42269,7 @@ class VippWidget(QWidget):
             markers=markers,
             x_scale=x_scale,
             draggable_markers=draggable_markers,
+            bin_edges=np.expm1(_edges) if logarithmic else _edges,
         )
 
     def _queue_label_volume_request(
@@ -41811,6 +42482,19 @@ class VippWidget(QWidget):
             if len(ports) > 1 and 0 <= output_port < len(ports)
             else ""
         )
+        if is_mesh_data(selected_data):
+            path, selected_filter = QFileDialog.getSaveFileName(
+                self, "Save 3D mesh",
+                f"{safe_batch_filename(self._node_title(node_id))}{port_suffix}",
+                "3MF — objects, colours and physical units (*.3mf);;"
+                "Wavefront OBJ — geometry and object groups (*.obj)",
+            )
+            if path:
+                fmt = (Path(path).suffix.lstrip(".").lower()
+                       if Path(path).suffix else
+                       "obj" if selected_filter.startswith("Wavefront") else "3mf")
+                self._save_node_output(node_id, path, format=fmt)
+            return
         if is_table_data(selected_data):
             default_name = (
                 f"{safe_batch_filename(self._node_title(node_id))}"
@@ -41909,7 +42593,9 @@ class VippWidget(QWidget):
                 f"{self._node_title(node_id)}_{port.label or port.name}"
             )
             try:
-                if is_table_data(data):
+                if is_mesh_data(data):
+                    output_path = save_mesh_output(data, root / f"{stem}.obj")
+                elif is_table_data(data):
                     output_path = save_table_output(
                         data,
                         root / f"{stem}.csv",
@@ -41987,7 +42673,7 @@ class VippWidget(QWidget):
 
     def _can_save_selected_output_as_raster(self, node_id: str) -> bool:
         data, _state, _output_port = self._node_display_payload(node_id)
-        if data is None or is_table_data(data):
+        if data is None or is_table_data(data) or is_mesh_data(data):
             return False
         shape = getattr(data, "shape", None)
         if shape is None:
@@ -42015,7 +42701,16 @@ class VippWidget(QWidget):
             self.status_label.setText("That node has no output to save yet.")
             return None
         try:
-            if is_table_data(data):
+            if is_mesh_data(data):
+                if self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY:
+                    self._set_status(
+                        "Calculate the updated mesh before saving; "
+                        "no file was written.",
+                        severity=MessageSeverity.WARNING, actionable=True,
+                    )
+                    return None
+                output_path = save_mesh_output(data, path, format=format)
+            elif is_table_data(data):
                 output_path = save_table_output(
                     data,
                     path,
@@ -42132,6 +42827,13 @@ class VippWidget(QWidget):
         if is_table_data(data):
             self.status_label.setText(
                 f"'{self._node_title(node_id)}' is shown in the table inspector."
+            )
+            return
+        if is_mesh_data(data) and not data.faces.size:
+            self._discard_inspect_layers()
+            self.status_label.setText(
+                "Empty mesh: no surface to display. "
+                "Check the mask and image-border choice."
             )
             return
         title = self._node_title(node_id)
@@ -42328,6 +43030,9 @@ class VippWidget(QWidget):
         metadata: dict,
         role: str,
     ) -> None:
+        if is_mesh_data(data):
+            self._set_or_add_mesh_layer(name, data, metadata, role)
+            return
         if role == "inspect" and name == self._inspect_layer_name:
             self._remember_current_inspect_display_profiles()
         saved_step = self._raw_current_step()
@@ -42356,6 +43061,11 @@ class VippWidget(QWidget):
                 output_port,
             ),
         }
+        source = self.pipeline.nodes.get(metadata.get("node_id"))
+        if source is not None and source.operation_id == "input":
+            metadata["source_channel_display"] = self._source_channel_displays.get(
+                source.id, "stack"
+            )
         if self._display_rgb_as_channel_layers(display_data, metadata):
             self._remove_colored_channel_axis_layers(name)
             self._set_or_add_rgb_channel_layers(name, display_data, metadata)
@@ -42445,6 +43155,80 @@ class VippWidget(QWidget):
         self._configure_generated_layer(layer, data, metadata)
         self._restore_inspect_layer_display_settings(layer, preserved_display)
         self._restore_viewer_step(saved_step, saved_nsteps)
+
+    def _set_or_add_mesh_layer(self, name, mesh, metadata, role) -> None:
+        """Keep geometry separate from image contrast/channel presentation."""
+        from napari.layers import Surface
+
+        from napari_vipp.core.meshes import _mesh_calibration
+        from napari_vipp.ui.mesh_display import mesh_surface_display
+
+        axes = mesh.state.spatial_axes
+        factors, display_unit, _dimension = _mesh_calibration(mesh.state)
+        metadata = {
+            **metadata,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_ndim": 3,
+            "display_rgb": False,
+            "vipp_mesh_state": mesh.state.to_dict(),
+            "vipp_mesh_objects": [item.to_dict() for item in mesh.objects],
+            "vipp_mesh_display_unit": display_unit,
+        }
+        metadata.pop("vipp_image_state", None)
+        layers = self._generated_layers_for_name(name)
+        if not mesh.faces.size:
+            # napari's Surface cannot initialize an empty vertex-value range.
+            # Remove stale generated geometry; never substitute a dummy object.
+            for item in layers:
+                if item.metadata.get("napari_vipp_kind") == role:
+                    self._remove_layer(item)
+            return
+        layer = next(
+            (
+                item
+                for item in layers
+                if isinstance(item, Surface)
+                and item.metadata.get("napari_vipp_kind") == role
+            ),
+            None,
+        )
+        for item in layers:
+            if item is not layer and item.metadata.get("napari_vipp_kind") == role:
+                self._remove_layer(item)
+        # napari may own mutable presentation buffers. Never expose the cached
+        # scientific mesh to those writes.
+        surface, vertex_colors = mesh_surface_display(mesh)
+        settings = dict(
+            scale=tuple(
+                axis.scale * factor for axis, factor in zip(axes, factors, strict=True)
+            ),
+            translate=tuple(
+                axis.translation * factor
+                for axis, factor in zip(axes, factors, strict=True)
+            ),
+            axis_labels=tuple(axis.name.upper() for axis in axes),
+        )
+        if layer is None:
+            layer = self.viewer.add_surface(
+                surface,
+                name=name,
+                metadata=metadata,
+                shading="smooth",
+                vertex_colors=vertex_colors,
+                **settings,
+            )
+            self.viewer.dims.ndisplay = 3
+        else:
+            # A new mesh can have a different vertex count. Napari slices during
+            # the data setter, so old per-vertex colours must be cleared first.
+            layer.vertex_colors = None
+            layer.data = surface
+            layer.vertex_colors = vertex_colors
+            layer.metadata.update(metadata)
+            for key, value in settings.items():
+                setattr(layer, key, value)
+            layer.visible = True
 
     def _viewer_nsteps(self) -> tuple[int, ...] | None:
         try:
@@ -42579,7 +43363,11 @@ class VippWidget(QWidget):
     def _colored_channel_axis_spec(display_data, metadata: dict):
         """Describe an authored fluorescence channel axis for napari layers."""
 
-        if metadata.get("display_kind") != "image" or metadata.get("display_rgb"):
+        if (
+            metadata.get("display_kind") != "image"
+            or metadata.get("display_rgb")
+            or metadata.get("source_channel_display") == "stack"
+        ):
             return None
         carried = metadata.get("vipp_image_state")
         state = ImageState.from_dict(carried) if isinstance(carried, dict) else None
@@ -42597,7 +43385,9 @@ class VippWidget(QWidget):
         metadata_colors = tuple(
             getattr(channel, "color", None) for channel in channels[:count]
         )
-        if not any(color_value_to_rgb(color) is not None for color in metadata_colors):
+        if metadata.get("source_channel_display") != "layers" and not any(
+            color_value_to_rgb(color) is not None for color in metadata_colors
+        ):
             return None
         colors = channel_color_table(
             None,
@@ -43768,6 +44558,8 @@ class VippWidget(QWidget):
         node_id: str | None = None,
         output_port: int = 0,
     ) -> str:
+        if is_mesh_data(data):
+            return "mesh"
         if is_table_data(data):
             return "table"
         if node_id is not None:
@@ -43791,16 +44583,16 @@ class VippWidget(QWidget):
         node_id: str | None = None,
         output_port: int = 0,
     ) -> bool:
-        if data is None or is_table_data(data):
+        if data is None or is_table_data(data) or is_mesh_data(data):
             return False
         arr = np.asarray(data)
         state = self._node_output_state(node_id, output_port) if node_id else None
         return _image_state_displays_as_rgb(state, tuple(arr.shape))
 
     def _display_data(self, data, *, as_labels: bool = False):
-        if is_table_data(data):
+        if is_table_data(data) or is_mesh_data(data):
             raise ValueError(
-                "Table outputs cannot be displayed as napari image layers."
+                "Non-image outputs cannot be displayed as napari image layers."
             )
         arr = np.asarray(data)
         if as_labels and arr.dtype == bool:
@@ -43878,7 +44670,7 @@ class VippWidget(QWidget):
             return
         data, _state, output_port = self._node_display_payload(self._selected_node_id)
         matching_layer = False
-        if data is not None and not is_table_data(data):
+        if data is not None and not is_table_data(data) and not is_mesh_data(data):
             for layer in self._generated_layers_for_name(self._inspect_layer_name):
                 try:
                     metadata = layer.metadata
@@ -44052,7 +44844,9 @@ class VippWidget(QWidget):
         panel.show()
 
     def _sync_preview_ui(self) -> None:
-        previewable = self._node_output_type(self._selected_node_id) != "table"
+        previewable = self._node_output_type(self._selected_node_id) not in {
+            "table", "mesh",
+        }
         self.thumbnail_checkbox.setVisible(previewable)
         self.thumbnail_checkbox.setEnabled(previewable)
         with QSignalBlocker(self.thumbnail_checkbox):
@@ -44120,7 +44914,7 @@ class VippWidget(QWidget):
             )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
-        if self._node_output_type(node_id) == "table":
+        if self._node_output_type(node_id) in {"table", "mesh"}:
             return False
         return node_id not in self._preview_disabled_node_ids
 
@@ -44129,6 +44923,8 @@ class VippWidget(QWidget):
         if node is None:
             return False
         data, _state, output_port = self._node_display_payload(node_id)
+        if is_mesh_data(data):
+            return bool(data.faces.size)
         if data is not None:
             return (
                 not is_table_data(data)
@@ -44796,7 +45592,9 @@ def _input_histogram_marker_key(operation_id: str, params: dict | None) -> tuple
         names = ("minimum", "maximum") if mode == "values" else ()
         return (mode, selected(*names))
     if operation_id == "binary_threshold":
-        return selected("threshold")
+        if values.get("foreground", "Above") in ("In range", "Outside range"):
+            return selected("foreground", "low_threshold", "high_threshold")
+        return selected("threshold", "foreground")
     if operation_id == "hysteresis_threshold":
         return selected("low_threshold", "high_threshold")
     if operation_id in GLOBAL_THRESHOLD_OPERATIONS:
@@ -44859,6 +45657,17 @@ def _input_histogram_markers(
             markers.append(("max", high, QColor("#38bdf8")))
         return markers
     if operation_id == "binary_threshold":
+        if (params or {}).get("foreground") in ("In range", "Outside range"):
+            from napari_vipp.core.threshold_range import validate_threshold_range
+
+            low, high = validate_threshold_range(
+                (params or {}).get("low_threshold", 0.25),
+                (params or {}).get("high_threshold", 0.75),
+            )
+            return [
+                ("low", low, QColor("#f59e0b")),
+                ("high", high, QColor("#38bdf8")),
+            ]
         threshold = _finite_marker_value(
             (params or {}).get("threshold"),
             "Binary threshold",
@@ -45004,6 +45813,8 @@ def _input_histogram_draggable_markers(
             return {"min", "max"}
         return set()
     if operation_id == "binary_threshold":
+        if (params or {}).get("foreground") in ("In range", "Outside range"):
+            return {"low", "high"}
         return {"threshold"}
     if operation_id == "hysteresis_threshold":
         return {"low", "high"}
@@ -45017,7 +45828,9 @@ def _input_histogram_marker_parameter(operation_id: str, label: str) -> str | No
     if operation_id == "clip_intensity":
         return {"min": "minimum", "max": "maximum"}.get(label)
     if operation_id == "binary_threshold":
-        return "threshold" if label == "threshold" else None
+        return {
+            "threshold": "threshold", "low": "low_threshold", "high": "high_threshold",
+        }.get(label)
     if operation_id == "hysteresis_threshold":
         return {"low": "low_threshold", "high": "high_threshold"}.get(label)
     return None
@@ -45462,7 +46275,53 @@ def _sync_viewer_axis_labels_from_layer(viewer, layer) -> bool:
         labels = tuple(str(label) for label in layer.axis_labels)
     except Exception:
         return False
-    return _set_viewer_axis_labels(viewer, labels)
+    applied = _set_viewer_axis_labels(viewer, labels)
+    _sync_viewer_spatial_order_from_layer(viewer, layer)
+    return applied
+
+
+def _sync_viewer_spatial_order_from_layer(viewer, layer) -> bool:
+    """Keep channel/time axes out of a managed spatial volume, without transposing.
+
+    napari displays the last ``ndisplay`` entries of ``dims.order``, not the
+    axes named Z/Y/X. Native OIR's ZCYX storage would otherwise render C/Y/X
+    and leave Z as the slider. Axis indices still refer to the original array
+    and retain their scale, translation, and bidirectional VIPP step mapping.
+    """
+    metadata = getattr(layer, "metadata", None)
+    if not isinstance(metadata, Mapping) or metadata.get("napari_vipp_kind") not in {
+        "inspect", "pinned", "source_preview", "crop_source",
+    }:
+        return False
+    carried = metadata.get("vipp_image_state")
+    state = ImageState.from_dict(carried) if isinstance(carried, dict) else None
+    if state is None:
+        return False
+    indices = _state_axis_indices_for_napari_layer(state, metadata)
+    try:
+        dims = viewer.dims
+        order = tuple(dims.order)
+        ndisplay = int(dims.ndisplay)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not indices or len(indices) > len(order):
+        return False
+    offset = len(order) - len(indices)
+    spatial = {
+        offset + position
+        for position, index in enumerate(indices)
+        if _axis_is_explicit(state.axes[index])
+        and state.axes[index].type == "space"
+        and state.axes[index].name.lower() in {"x", "y", "z"}
+    }
+    # Do not invent a Z axis for a 2D image, infer unknown semantics, or undo
+    # an already valid spatial orientation chosen with napari's axis controls.
+    if len(spatial) < ndisplay or set(order[-ndisplay:]).issubset(spatial):
+        return False
+    spatial_order = tuple(axis for axis in order if axis in spatial)
+    nonspatial_order = tuple(axis for axis in order if axis not in spatial)
+    dims.order = nonspatial_order + spatial_order
+    return True
 
 
 def _layer_scale_from_metadata(metadata: dict) -> tuple[float, ...] | None:

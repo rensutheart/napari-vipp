@@ -30,7 +30,9 @@ from napari_vipp.core.channel_colors import channel_color_table, color_value_to_
 from napari_vipp.core.connected_components import (
     label_connected_components as label_connected_components,
 )
+from napari_vipp.core.convex_hull import convex_hull_block
 from napari_vipp.core.io import write_image
+from napari_vipp.core.progress import ProgressContext
 from napari_vipp.core.remove_outliers import (
     imagej_remove_outliers_footprint as imagej_remove_outliers_footprint,
 )
@@ -1311,13 +1313,41 @@ def binary_threshold(
     data,
     threshold: float = 0.5,
     channel_axis: int | None = None,
+    foreground: str = "Above",
+    low_threshold: float = 0.25,
+    high_threshold: float = 0.75,
 ) -> np.ndarray:
-    """Return a fixed mask, optionally reducing declared RGB/RGBA to luma."""
+    """Select values above/below a cutoff or inside/outside a closed interval.
+
+    Above/Below exclude equality. In range includes both finite bounds;
+    Outside range excludes them. NaN is background in every mode. NumPy comparison
+    handles infinities and scalar promotion, preserving the legacy Above path.
+    Only declared RGB/RGBA input is reduced to luma; scalar axes are unchanged.
+    """
+    if foreground not in ("Above", "Below", "In range", "Outside range"):
+        raise ValueError(
+            "Binary Threshold foreground must be 'Above', 'Below', "
+            "'In range' or 'Outside range'."
+        )
+    if foreground in ("In range", "Outside range"):
+        from .threshold_range import validate_threshold_range
+
+        low, high = validate_threshold_range(low_threshold, high_threshold)
     arr = _to_explicit_grayscale(
         np.asarray(data),
         channel_axis=channel_axis,
         operation="Binary threshold",
     )
+    if foreground == "Below":
+        return arr < float(threshold)
+    if foreground == "In range":
+        result = arr >= low
+        result &= arr <= high
+        return result
+    if foreground == "Outside range":
+        result = arr < low
+        result |= arr > high
+        return result
     return arr > float(threshold)
 
 
@@ -1405,6 +1435,50 @@ def niblack_threshold(
         return values > local
 
     return _apply_scalar_plane_wise(arr, threshold_plane)
+
+
+def convex_hull(
+    data,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+    progress=None,
+) -> np.ndarray:
+    """One binary hull per YX plane or ZYX volume; leading axes stay separate.
+
+    Input must be Boolean, not an intensity or label image. All foreground
+    within a spatial block contributes to one hull, including separate objects.
+    Shape and pixel grid are unchanged. Empty masks stay empty; point, line and
+    coplanar masks are supported. The result never aliases the input.
+    """
+    if progress is not None:
+        progress.check_cancelled()
+    mask = np.asarray(data)
+    if mask.dtype != np.dtype(bool):
+        raise ValueError(
+            "Convex Hull requires a Boolean mask. Use a threshold node to "
+            "select foreground explicitly before computing its hull."
+        )
+    spatial_ndim = _resolved_spatial_ndim(mask, spatial_mode, resolved_spatial_ndim)
+    if spatial_ndim not in {2, 3}:
+        raise ValueError("Convex Hull requires a 2D YX plane or 3D ZYX volume.")
+    leading_shape = mask.shape[:-spatial_ndim]
+    block_count = int(np.prod(leading_shape, dtype=np.int64)) if leading_shape else 1
+    result = np.empty(mask.shape, dtype=bool)
+    for index, leading_index in enumerate(np.ndindex(leading_shape)):
+        block_progress = None
+        if progress is not None:
+            block_progress = ProgressContext(
+                cancelled=progress.is_cancelled,
+                reporter=lambda update, index=index: progress.report(
+                    index * 100 + update.current,
+                    block_count * 100,
+                    f"Block {index + 1}/{block_count}: {update.message}",
+                ),
+            )
+        result[leading_index] = convex_hull_block(
+            mask[leading_index], progress=block_progress
+        )
+    return result
 
 
 def dilate(data, size: int = 10, iterations: int = 1) -> np.ndarray:
@@ -3226,8 +3300,18 @@ def measure_3d_mesh_morphology(
     source_name: str = "",
     progress=None,
 ) -> TableData:
-    """Measure 3D mesh/surface morphology for labeled objects."""
-    labels = _validated_labels(data)
+    """Measure labeled volumes, binary foreground, or an existing 3D mesh."""
+    from napari_vipp.core.meshes import MeshData, measure_mesh_geometry
+
+    if isinstance(data, MeshData):
+        return measure_mesh_geometry(
+            data, include_convex_hull_metrics=include_convex_hull_metrics,
+            progress=progress,
+        )
+    # A binary mask has one foreground ID, including disconnected pieces;
+    # Label Connected Components upstream gives a row for each object instead.
+    array = np.asarray(data)
+    labels = array.astype(np.uint8) if array.dtype == bool else _validated_labels(data)
     spatial_ndim = _resolved_spatial_ndim(
         labels,
         spatial_mode,
@@ -5710,10 +5794,18 @@ def rescale_intensity(
     in_high_value: float | None = None,
     *,
     cutoff_mode: str = "Percentiles",
+    invert_intensity: bool = False,
     progress=None,
 ) -> np.ndarray:
-    """Rescale intensity from input cutoffs to a requested output range."""
+    """Rescale to ordered output bounds, optionally reversing the mapping.
+
+    Inversion maps the low input cutoff to out_max and the high cutoff to
+    out_min. Equal input cutoffs fill the low-cutoff endpoint. Boolean inputs
+    retain their mask values, or use logical NOT when inversion is explicit.
+    """
     arr = np.asarray(data)
+    if not isinstance(invert_intensity, (bool, np.bool_)):
+        raise ValueError("Rescale Intensity 'Invert intensity' must be a boolean.")
     mode = str(cutoff_mode).strip().casefold()
     if mode not in {"percentiles", "values"}:
         raise ValueError(
@@ -5730,6 +5822,19 @@ def rescale_intensity(
         if integer_data
         else _required_finite_float(out_max, "Output maximum")
     )
+    if output_minimum > output_maximum:
+        raise ValueError(
+            "Rescale Intensity Output min must not exceed Output max. "
+            "For an inverted result, put the bounds in ascending order and "
+            "enable Invert intensity."
+        )
+    # Only the explicit checkbox reverses the affine endpoints. Keep using
+    # the existing exact integer/chunked float arithmetic, without a second
+    # image-wide subtraction or unsigned-integer overflow.
+    minimum_source, maximum_source = out_min, out_max
+    if invert_intensity:
+        output_minimum, output_maximum = output_maximum, output_minimum
+        minimum_source, maximum_source = maximum_source, minimum_source
     if mode == "percentiles":
         low_p = _required_finite_float(in_low_percentile, "Low percentile")
         high_p = _required_finite_float(in_high_percentile, "High percentile")
@@ -5742,7 +5847,7 @@ def rescale_intensity(
         if arr.dtype == bool:
             if progress is not None:
                 progress.report(100, 100, "Rescale complete")
-            return arr.copy()
+            return np.logical_not(arr) if invert_intensity else arr.copy()
         if progress is not None:
             progress.report(0, 100, "Calculating exact intensity cutoffs")
         if integer_data:
@@ -5755,8 +5860,8 @@ def rescale_intensity(
                 high=high,
                 output_minimum=output_minimum,
                 output_maximum=output_maximum,
-                output_minimum_source=out_min,
-                output_maximum_source=out_max,
+                output_minimum_source=minimum_source,
+                output_maximum_source=maximum_source,
                 progress=progress,
             )
         low, high = _exact_float_percentile_cutoffs(
@@ -5785,7 +5890,7 @@ def rescale_intensity(
         if arr.dtype == bool:
             if progress is not None:
                 progress.report(100, 100, "Rescale complete")
-            return arr.copy()
+            return np.logical_not(arr) if invert_intensity else arr.copy()
         if integer_data:
             _reject_rounded_wide_integer_control(
                 arr,
@@ -5803,8 +5908,8 @@ def rescale_intensity(
                 high=high,
                 output_minimum=output_minimum,
                 output_maximum=output_maximum,
-                output_minimum_source=out_min,
-                output_maximum_source=out_max,
+                output_minimum_source=minimum_source,
+                output_maximum_source=maximum_source,
                 progress=progress,
             )
         if progress is not None:
@@ -6670,8 +6775,27 @@ def save_output(
     format: str = "auto",
     overwrite: str = "no",
     image_state=None,
-) -> np.ndarray:
+):
     """Pipeline node that writes the current output and passes data downstream."""
+    from napari_vipp.core.meshes import is_mesh_data, save_mesh_output
+
+    if is_mesh_data(data):
+        if str(enabled).lower() == "on" and str(path).strip():
+            save_mesh_output(
+                data, path, format=format, overwrite=str(overwrite).lower() == "yes"
+            )
+        # MeshData owns immutable geometry, IDs, colours and calibration.
+        return data
+    if isinstance(data, TableData):
+        raise TypeError("Save Image accepts images or 3D meshes, not tables.")
+    if str(enabled).lower() == "on" and str(path).strip() and (
+        str(format).strip().lower() in {"obj", "3mf"}
+        or Path(path).suffix.lower() in {".obj", ".3mf"}
+    ):
+        raise ValueError(
+            "The connected input is an image, not a mesh. "
+            "Choose an image format and an image filename, not OBJ or 3MF."
+        )
     arr = np.asarray(data).copy()
     if str(enabled).lower() == "on" and str(path).strip():
         save_array_output(

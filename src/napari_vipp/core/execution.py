@@ -178,6 +178,7 @@ _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
         "auto_watershed_from_mask": "fixed:int32",
         "black_hat": "fixed:bool",
         "closing": "fixed:bool",
+        "convex_hull": "fixed:bool",
         "dilate": "fixed:bool",
         "erode": "fixed:bool",
         "euclidean_distance_transform": "fixed:float32",
@@ -5355,6 +5356,8 @@ def _workload_parameters(
     node_id: str,
     call: PreparedNodeCall | None,
 ) -> tuple[tuple[str, object], ...]:
+    from napari_vipp.core.meshes import MeshData
+
     raw = (
         dict(call.kwargs)
         if call is not None
@@ -5368,6 +5371,14 @@ def _workload_parameters(
             parameters.append((name, _json_contract_value(value)))
         except TypeError:
             continue
+    # Meshes have no array dtype. Preserve their semantic type for preflight,
+    # but never trust an authored parameter to turn an object array into a mesh.
+    if (
+        call is not None
+        and len(call.inputs) == 1
+        and isinstance(call.inputs[0], MeshData)
+    ):
+        parameters.append(("_vipp_input_kind", "mesh"))
     return tuple(parameters)
 
 

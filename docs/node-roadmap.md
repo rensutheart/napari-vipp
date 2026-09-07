@@ -2,7 +2,7 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-09-07
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -17,11 +17,13 @@ specialist docs for implementation detail:
   mesh, skeleton, table, and colocalization table workflows.
 - [skeleton-nodes.md](skeleton-nodes.md): skeleton and network node behaviour.
 - [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md): 3D mesh
-  morphology and deferred mesh export/preview.
+  morphology and the first mask-to-surface viewing/export contract.
 - [colocalization-racc-plan.md](colocalization-racc-plan.md): colocalization,
   RACC-like outputs, object association, and interop decisions.
 - [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF
   generation and deconvolution.
+- [registration-and-template-matching-plan.md](registration-and-template-matching-plan.md):
+  planned 0.16 alignment/comparison/detection nodes, transform contracts, and gates.
 - [ome-io-plan.md](ome-io-plan.md) and
   [cache-and-memory.md](cache-and-memory.md): I/O, lazy data, preview, cache,
   and memory policy.
@@ -49,10 +51,11 @@ library feature parity. The important workflow families remain:
 
 PSF generation, deconvolution foundations, and optional microscope-reader
 routing are implemented foundations. Their remaining work is real-data
-validation, metadata coverage, and performance polish. Registration,
-model-backed segmentation, stitching, object tracking, and specialist
-mitochondrial indices remain later work unless a current validation or
-publication workflow needs them.
+validation, metadata coverage, and performance polish. Registration and template
+matching, with image comparison, now form the planned 0.16 feature scope. These
+nodes are not implemented; the detailed proposal defines release gates. Model-backed
+segmentation, stitching, object tracking, and specialist mitochondrial indices
+remain later work unless a current validation or publication workflow needs them.
 
 ## Priority Definitions
 
@@ -71,7 +74,7 @@ publication workflow needs them.
 3. Make slice-wise versus volumetric processing visible.
 4. Use physical spacing when distance, size, volume, or surface area is being
    measured.
-5. Keep images, masks, labels, tables, RGB views, and future points/surfaces
+5. Keep images, masks, labels, tables, RGB views, meshes, and future points
    semantically distinct.
 6. Prefer SciPy and scikit-image while they cover the requirement. Add OpenCV or
    heavier libraries only for a demonstrated workflow, performance, or file
@@ -97,7 +100,7 @@ truth is `NODE_LIBRARY` in `src/napari_vipp/core/pipeline.py`.
 | Filtering, enhancement, and restoration foundation | Average/Gaussian/3D Gaussian/median/bilateral/non-local-means filtering, rolling-ball background, subtract background, DoG, unsharp mask, Sobel, Canny, Laplace, `Born-Wolf PSF`, `Prepare / Validate PSF`, baseline Richardson-Lucy, and Richardson-Lucy TV deconvolution. | Real microscopy/PSF validation, reflect-padded edge-policy follow-up, performance profiling for large 3D restoration, wavelet denoising, noise estimation, Laplacian-of-Gaussian/blob-oriented helpers, and clearer performance/progress guidance on expensive restoration steps. |
 | Thresholding and segmentation | Otsu, Triangle, Li, Yen, Isodata, Minimum, Binary, Hysteresis, Adaptive Mean/Gaussian, Sauvola, Niblack, Auto Watershed From Mask, distance transform, H-maxima markers, marker-controlled watershed, and expand labels. | Watershed validation and marker QC summaries, better defaults from microscopy examples, optional mask-port semantics where needed, and possible consolidation into selector nodes only if the palette becomes hard to scan. |
 | Binary morphology and label cleanup | Binary erosion/dilation/opening/closing/top-hat/black-hat/gradient, ImageJ-compatible Remove Outliers (Binary), fill holes, remove small objects, connected-component labels, clear border, filter by volume, filter by property, relabel sequential. | Find label boundaries, kept/removed object count reporting, direct calibrated-unit size filtering if the table-based path proves too indirect, grayscale morphology, convex hull per object, and object boundary/thickness maps. |
-| Tables and object measurements | First-class table outputs, object morphology, intensity measurements, calibrated physical variants, 3D mesh morphology, table merge, column selection, metadata annotation, grouped summaries, CSV/TSV output. | Optional mesh export/preview, specialist mesh repair/smoothing only if validated, richer intensity distribution columns if requested, and continued analytical validation. |
+| Tables and object measurements | First-class table outputs, object morphology, intensity measurements, calibrated physical variants, 3D mesh morphology, table merge, column selection, metadata annotation, grouped summaries, CSV/TSV output. The separate mask-to-surface/OBJ path is implemented, unreleased. | Per-label mesh export, specialist mesh repair/smoothing only if validated, richer intensity distribution columns if requested, and continued analytical validation. |
 | Skeleton and network analysis | Skeletonize, skeleton keypoints, graph overlay, component labels, branch labels, branch pruning, component analysis, branch tables, branch summaries, graph node/edge tables, and whole-network metrics. | Skeleton/network validation report, specialist mitochondrial network indices, and broader progress/cancellation coverage for dense networks. |
 | Colocalization and spatial association | Whole-image and ROI-masked Pearson/Manders/overlap/Costes metrics, colocalized-voxel RGB views, RACC-like index images, object colocalization metrics, label overlap, nearest-object distance, and event localization tables. | Validation figures/notebooks, RACC core/interop decision, and publication-facing example artifacts. |
 | Graph platform | Typed ports, named heterogeneous inputs, dynamic multi-outputs, tunnels, graph search, notes, undo/redo, duplicate/delete, insert-on-wire mapping, atomic insert-before-tunnel, multi-node selection and movement, validated graph-fragment copy/paste, exact-operation value paste, manual/cached nodes, cache modes, memory guard. | Complete cross-platform acceptance for the new graph-authoring interactions; pursue broader large-workflow navigation only if user workflows demand it, and AI-assisted authoring after batch/provenance and validation are stronger. |
@@ -120,7 +123,7 @@ and reproducible.
 | Acquisition metadata normalization | Partial | PSF generation and publication provenance need objective, channel, wavelength, scale, scene, source identity, and upstream processing flags regardless of file format. | Extend every reader to populate the same normalized `ImageState`/source metadata fields where possible. |
 | Points output type | Not implemented | Spot detection, peak finding, puncta workflows, and nearest-neighbor analyses need coordinates as first-class outputs. | Design a points + table contract before adding blob/peak nodes. |
 | Transform output type | Not implemented | Registration needs reusable estimated transforms and interpolation policy by semantic type. | Design before adding several registration algorithms. |
-| Surface/mesh output type | Not implemented | Mesh morphology currently outputs tables only; mesh preview/export needs a proper graph contract. | Design before adding mesh preview/export nodes. |
+| Surface/mesh output type | Implemented, unreleased | `Mask to 3D Mesh`: immutable geometry/calibration, manual full-resolution extraction, native napari Surface and OBJ publication. Mesh morphology measurements still output tables. | Per-label identities, repair and 3MF remain deferred. |
 
 ## P1: Near-Term Node And Workflow Work
 
@@ -204,18 +207,28 @@ Reader requirements:
 
 `Non-Local Means` is already implemented as a slice-wise denoising node.
 
-### Registration And Drift Correction
+### Registration, Drift Correction, And Template Matching
+
+The [0.16 proposal](registration-and-template-matching-plan.md) defines the
+input/output contracts and gates. Translation, application, comparison, and
+template detection are core; drift is stretch, with rigid/affine as follow-ups.
+Start with complete 2D/3D workflows, not a menu of disconnected algorithms.
 
 | Node | Suggested backend | Prerequisite |
 | --- | --- | --- |
 | Estimate Translation | `skimage.registration.phase_cross_correlation` | Transform output type. |
-| Apply Translation | `scipy.ndimage.shift` | Interpolation policy for images, masks, and labels. |
-| Register Stack To Reference | repeated phase cross-correlation | Batch/axis iteration semantics. |
-| Affine Transform | `scipy.ndimage.affine_transform` or `skimage.transform.warp` | Transform representation plus metadata updates. |
+| Apply Transform | `scipy.ndimage.affine_transform`, initially translation | Explicit reference grid, transform direction, image interpolation, and nearest-neighbor masks/labels. Replaces the narrower Apply Translation proposal. |
+| Compare Images | `skimage.metrics` plus reviewed correlation/reduction primitives | Same-grid valid-region contract; SSIM, correlation, RMSE, optional PSNR; table-first, with explicit range/window settings. |
+| Template Match | `skimage.feature.match_template` | Calibrated center-based score grid, valid-score handling, and explicit template scope. Promoted from Defer; fixed size/orientation first. |
+| Find Peaks | Local maxima plus deterministic suppression | Locations/values table and inspector overlay first; reusable points ports remain a separate contract. |
+| Estimate Drift | Repeated phase cross-correlation | Explicit time axis/reference frame, indexed transform series, shared-channel application, and failure policy. |
+| Estimate Rigid / Affine Transform | Optional SimpleITK evaluation | Qualified reusable transforms/resampling first; no new required dependency committed. |
 
 Registration should not start as several disconnected image-output nodes. It
 needs a transform contract, label-safe interpolation, metadata updates, and
-validation phantoms.
+validation phantoms. Do not require a general batch-axis iterator before a
+bounded explicit time-series drift workflow. Template detection remains a
+separate capability from aligning images or segmenting their contents.
 
 ### Geometry And Sampling
 
@@ -254,12 +267,13 @@ Candidate nodes:
 
 - Blob LoG;
 - Blob DoG;
-- peak local maximum;
+- Find Peaks (shared with the proposed template-matching workflow);
 - spot intensity measurement;
 - count spots per labeled object.
 
-These should wait for the `points` output contract unless an interim
-labels/table implementation is needed for a concrete puncta workflow.
+Find Peaks has a proposed table-first contract with non-editing inspector
+markers. General points-port workflows and the other candidates should wait for
+the `points` contract unless a concrete table-first puncta workflow is agreed.
 
 ### Colocalization Follow-Up
 
@@ -288,8 +302,8 @@ better platform contracts, or optional dependency boundaries.
 - stitching and mosaics;
 - object tracking across time;
 - model-backed segmentation such as Cellpose, StarDist, or ilastik;
-- mesh export, mesh preview/rendering, oriented bounding boxes, mesh repair, or
-  specialist mesh inertia metrics;
+- per-label mesh export, 3MF, oriented bounding boxes, mesh repair, or specialist
+  mesh inertia metrics (basic mask surface/OBJ is implemented, unreleased);
 - specialist mitochondrial fission/fusion/event tracking metrics;
 - frequency-domain notch filtering;
 - blind deconvolution;
@@ -310,7 +324,6 @@ near-term VIPP priorities:
 - contour hierarchy operations;
 - polygon approximation and rotated boxes;
 - ORB/SIFT-like keypoints and descriptors;
-- template matching;
 - face/object detection APIs;
 - camera calibration and video-stream processing;
 - broad colour-space conversion catalogues;
@@ -470,8 +483,8 @@ Decided:
 4. Registration requires a transform contract before adding several algorithms.
 5. Deconvolution is active near-term work, but it must use first-class PSF
    images, named `Image`/`PSF` ports, and manual/cached execution.
-6. Mesh tables are implemented; mesh preview/export waits for a surface-output
-   contract.
+6. Mesh tables and the first mask-to-surface/OBJ path are implemented. Keep
+   mesh geometry/calibration separate from image arrays and measurement tables.
 7. Model-backed segmentation should be optional and dependency-isolated.
 8. Proprietary microscope readers should be optional and normalized through the
    shared I/O model instead of becoming ad hoc widget code.
@@ -484,8 +497,8 @@ Still open:
    points plus table, or table-first with point inspection?
 3. What is the minimal transform representation for translation and affine
    registration?
-4. What is the minimal surface/mesh representation for preview/export without
-   adding a heavy dependency?
+4. Which per-label identities or additional formats justify extending the
+   initial dependency-light MeshData/OBJ contract?
 5. Should threshold nodes remain named, or should an `Automatic Threshold`
    selector node replace part of the palette once node count grows further?
 6. Should VIPP and the standalone RACC plugin share a small numerical core, or
@@ -508,8 +521,8 @@ Keep core dependencies focused:
 Optional or deferred dependencies should be attached to a workflow:
 
 - OpenCV only for a clear capability/performance gap.
-- `trimesh` only when mesh export/preview, oriented bounding boxes, inertia, or
-  repair become first-class.
+- `trimesh` only for a concrete gap beyond the initial dependency-light OBJ
+  exporter, such as oriented bounding boxes, inertia, or repair.
 - `porespy` only for explicit pore/local-thickness/chord/network analysis.
 - Nikon ND2, Zeiss CZI/LSM, Leica LIF/LOF/XLIF, Olympus OIR/OIB/OIF/VSI, and
   other proprietary microscope readers only behind optional reader boundaries

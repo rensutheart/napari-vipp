@@ -115,6 +115,11 @@ class HistogramPlot(QWidget):
         super().__init__(parent)
         self._counts = np.array([], dtype=np.float32)
         self._series_counts = np.empty((0, 0), dtype=np.float32)
+        # Retain original values separately from float32 drawing heights so a
+        # tooltip never rounds a large integer count through the paint buffer.
+        self._hover_counts = np.empty((0, 0), dtype=np.int64)
+        self._bin_edges: np.ndarray | None = None
+        self._hovered_bin: int | None = None
         self._series_colors: list[QColor] = []
         self._log_scale = False
         self._title = ""
@@ -150,6 +155,7 @@ class HistogramPlot(QWidget):
         self._title = str(title).strip()
         self._x_axis_label = str(x_axis_label).strip()
         self._y_axis_label = str(y_axis_label).strip()
+        self._clear_hover()
         self.update()
 
     def set_histogram(
@@ -161,7 +167,37 @@ class HistogramPlot(QWidget):
         markers: list[tuple[str, float, QColor]] | None = None,
         x_scale: str = "linear",
         draggable_markers: set[str] | None = None,
+        bin_edges: np.ndarray | None = None,
     ) -> None:
+        """Display cached counts; optional edges describe the original units.
+
+        Do not infer edges from x_range: integer-level, Boolean, and continuous
+        histograms use different interval conventions. Log-size callers supply
+        edges converted back to sizes, not their logarithms.
+        """
+        raw_counts = np.asarray(counts) if counts is not None else np.array([])
+        hover_counts = raw_counts.reshape(1, -1) if raw_counts.ndim == 1 else raw_counts
+        edges = None
+        if bin_edges is not None:
+            edges = np.asarray(bin_edges)
+            if (
+                hover_counts.ndim != 2
+                or edges.ndim != 1
+                or edges.size != hover_counts.shape[1] + 1
+                or not np.all(np.isfinite(edges))
+                or not np.all(edges[1:] > edges[:-1])
+            ):
+                raise ValueError(
+                    "Provide one increasing, finite edge per bin boundary."
+                )
+            edges = edges.copy()
+        self._clear_hover()
+        self._hover_counts = (
+            hover_counts.copy()
+            if hover_counts.ndim == 2
+            else np.empty((0, 0), dtype=np.int64)
+        )
+        self._bin_edges = edges
         self._counts = (
             np.asarray(counts, dtype=np.float32)
             if counts is not None
@@ -237,6 +273,7 @@ class HistogramPlot(QWidget):
             super().mousePressEvent(event)
             return
         self._drag_marker = marker
+        self._clear_hover()
         self._drag_start_x = float(point.x())
         self._drag_moved = False
         self._begin_gesture()
@@ -255,8 +292,18 @@ class HistogramPlot(QWidget):
             return
         if self._marker_at_point(point) is None:
             self.unsetCursor()
+            self._show_bin_hover(point)
         else:
             self.setCursor(Qt.SizeHorCursor)
+            self._clear_hover()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._clear_hover()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self._clear_hover()
+        super().resizeEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if self._drag_marker is None or event.button() != Qt.LeftButton:
@@ -270,7 +317,77 @@ class HistogramPlot(QWidget):
     def event(self, event) -> bool:
         if event.type() in {QEvent.Hide, QEvent.UngrabMouse}:
             self._cancel_marker_drag()
+            self._clear_hover()
         return super().event(event)
+
+    def _clear_hover(self) -> None:
+        if self._hovered_bin is not None:
+            self._hovered_bin = None
+            self.setToolTip("")
+            QToolTip.hideText()
+
+    def _show_bin_hover(self, point) -> None:
+        index = self._bin_at_point(point)
+        if index == self._hovered_bin:
+            return
+        if index is None:
+            self._clear_hover()
+            return
+        self._hovered_bin = index
+        detail = self._bin_tooltip(index)
+        self.setToolTip(detail)
+        QToolTip.showText(self.mapToGlobal(point), detail, self)
+
+    def _bin_at_point(self, point) -> int | None:
+        """O(1) lookup using the same slots/strokes as the compact painter.
+
+        Hover anywhere in the bin's column, making tiny/empty bars reachable.
+        Once rendering reduces several bins into a maximum-height stroke there
+        is no single truthful count for that stroke, so disable bin hover until
+        the plot is wider. No source image or histogram is recalculated here.
+        """
+        if self._hover_counts.size == 0:
+            return None
+        rect = self._plot_rect()
+        count = self._hover_counts.shape[1]
+        if not rect.contains(point) or count > max(rect.width(), 1):
+            return None
+        fraction = (float(point.x()) - rect.left()) / max(rect.width(), 1)
+        index = int(fraction * count) if count <= 8 else round(fraction * (count - 1))
+        return max(0, min(index, count - 1))
+
+    def _bin_tooltip(self, index: int) -> str:
+        count = self._hover_counts.shape[1]
+        lines = [f"Bin {index + 1:,} of {count:,}"]
+        if self._bin_edges is not None:
+            left = self._bin_edges[index]
+            right = self._bin_edges[index + 1]
+            closing = "]" if index == count - 1 else ")"
+            bounds = [
+                _format_histogram_label(value)
+                if isinstance(value, (int, np.integer))
+                else _format_detailed_histogram_value(value)
+                for value in (left, right)
+            ]
+            if bounds[0] == bounds[1]:
+                # Fine property bins must not look like zero-width intervals.
+                bounds = [str(left), str(right)]
+            lines.append(
+                f"{self._x_axis_label or 'Range'}: "
+                f"[{bounds[0]}, {bounds[1]}{closing}"
+            )
+        label = self._y_axis_label or "Count"
+        for series, values in enumerate(self._hover_counts):
+            value = values[index]
+            if isinstance(value, (int, np.integer)):
+                text = f"{int(value):,}"
+            elif np.isfinite(value) and float(value).is_integer():
+                text = f"{int(value):,}"
+            else:
+                text = _format_histogram_label(value)
+            prefix = f"Series {series + 1} · " if len(self._hover_counts) > 1 else ""
+            lines.append(f"{prefix}{label}: {text}")
+        return "\n".join(lines)
 
     def _begin_gesture(self) -> None:
         if self._gesture_active:
@@ -487,7 +604,7 @@ class HistogramPlot(QWidget):
         if self._x_scale == "log":
             shifted_value = max(value - minimum, 0.0)
             shifted_maximum = maximum - minimum
-            return float(np.log1p(shifted_value) / np.log1p(max(shifted_maximum, 1.0)))
+            return float(np.log1p(shifted_value) / np.log1p(shifted_maximum))
         return float((value - minimum) / (maximum - minimum))
 
     def _plot_rect(self) -> QRect:
@@ -557,7 +674,7 @@ class HistogramPlot(QWidget):
         fraction = float(np.clip((float(x) - plot_rect.left()) / width, 0.0, 1.0))
         if self._x_scale == "log":
             shifted_maximum = maximum - minimum
-            shifted = np.expm1(fraction * np.log1p(max(shifted_maximum, 1.0)))
+            shifted = np.expm1(fraction * np.log1p(shifted_maximum))
             return float(np.clip(minimum + shifted, minimum, maximum))
         return float(minimum + fraction * (maximum - minimum))
 
@@ -2425,6 +2542,10 @@ def _format_histogram_label(value: int | float | Rational) -> str:
         return str(int(value))
     if not np.isfinite(value):
         return ""
+    if abs(value) >= 1e9 or 0 < abs(value) < 1e-6:
+        # Physical mesh volumes can be far below one (e.g. mm³). Never
+        # round those labels to zero, or let a remote float limit fill a plot.
+        return f"{value:.4g}"
     if abs(value - round(value)) < 1e-9:
         return str(int(round(value)))
     return f"{value:.4g}"

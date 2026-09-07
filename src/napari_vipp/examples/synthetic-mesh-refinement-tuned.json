@@ -1,0 +1,490 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D mesh morphology",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "foreground": "Above",
+        "threshold": 1000,
+        "low_threshold": 0.25,
+        "high_threshold": 0.75,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "mask_to_3d_mesh_1",
+      "operation_id": "mask_to_3d_mesh",
+      "params": {
+        "object_mode": "Single object",
+        "boundary": "Close at image border"
+      }
+    },
+    {
+      "id": "split_mesh_objects_1",
+      "operation_id": "split_mesh_objects",
+      "params": {}
+    },
+    {
+      "id": "color_mesh_objects_1",
+      "operation_id": "color_mesh_objects",
+      "params": {
+        "color_by": "triangle_count",
+        "color_map": "turbo",
+        "_vipp_auto_recalculate": true
+      }
+    },
+    {
+      "id": "filter_mesh_objects_1",
+      "operation_id": "filter_mesh_objects",
+      "params": {
+        "property_name": "mesh_volume_physical",
+        "minimum": 10,
+        "maximum": 1000000000000.0,
+        "keep": "In range"
+      }
+    },
+    {
+      "id": "filter_mesh_objects_2",
+      "operation_id": "filter_mesh_objects",
+      "params": {
+        "property_name": "mesh_volume_physical",
+        "minimum": 10,
+        "maximum": 1000000000000.0,
+        "keep": "Outside range"
+      }
+    },
+    {
+      "id": "combine_meshes_1",
+      "operation_id": "combine_meshes",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "smooth_mesh_1",
+      "operation_id": "smooth_mesh",
+      "params": {
+        "iterations": 2,
+        "strength": 1.0,
+        "preserve_boundary": true,
+        "_vipp_auto_recalculate": true
+      }
+    },
+    {
+      "id": "simplify_mesh_1",
+      "operation_id": "simplify_mesh",
+      "params": {
+        "target_percent": 10.0,
+        "aggressiveness": 4.0,
+        "preserve_boundary": true,
+        "_vipp_auto_recalculate": true
+      }
+    },
+    {
+      "id": "measure_3d_mesh_morphology_1",
+      "operation_id": "measure_3d_mesh_morphology",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "minimum_voxel_count": 16,
+        "include_convex_hull_metrics": false
+      }
+    },
+    {
+      "id": "batch_output_1",
+      "operation_id": "batch_output",
+      "params": {
+        "tag": "mesh_objects",
+        "format": "3mf",
+        "subfolder": "",
+        "filename_template": "{source_stem}__{tag}",
+        "overwrite": "no"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "mask_to_3d_mesh_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "mask_to_3d_mesh_1",
+      "target": "split_mesh_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_mesh_objects_1",
+      "target": "color_mesh_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "color_mesh_objects_1",
+      "target": "filter_mesh_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "color_mesh_objects_1",
+      "target": "filter_mesh_objects_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filter_mesh_objects_1",
+      "target": "combine_meshes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "combine_meshes_1",
+      "target": "smooth_mesh_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "smooth_mesh_1",
+      "target": "simplify_mesh_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "simplify_mesh_1",
+      "target": "measure_3d_mesh_morphology_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "simplify_mesh_1",
+      "target": "batch_output_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filter_mesh_objects_2",
+      "target": "combine_meshes_1",
+      "target_port": 1,
+      "source_port": 0
+    }
+  ],
+  "tunnels": [],
+  "positions": {
+    "input": [
+      -9.0,
+      -2.0
+    ],
+    "binary_threshold_1": [
+      350.0,
+      0.0
+    ],
+    "mask_to_3d_mesh_1": [
+      700.0,
+      0.0
+    ],
+    "split_mesh_objects_1": [
+      1050.0,
+      0.0
+    ],
+    "color_mesh_objects_1": [
+      1400.0,
+      0.0
+    ],
+    "filter_mesh_objects_1": [
+      1750.0,
+      0.0
+    ],
+    "filter_mesh_objects_2": [
+      1750.0,
+      340.0
+    ],
+    "combine_meshes_1": [
+      2100.0,
+      120.0
+    ],
+    "smooth_mesh_1": [
+      2502.0,
+      123.0
+    ],
+    "simplify_mesh_1": [
+      2800.0,
+      120.0
+    ],
+    "measure_3d_mesh_morphology_1": [
+      3150.0,
+      0.0
+    ],
+    "batch_output_1": [
+      3150.0,
+      340.0
+    ]
+  },
+  "notes": [
+    {
+      "id": "mesh_start",
+      "text": "1. CALCULATE ALL, THEN INSPECT THE MESHES\nFive synthetic objects; explicit Z/Y/X, 2 x 0.5 x 0.5 micrometres. Extract as Single object, then Split Mesh Objects gives disconnected surfaces separate IDs. Colour, Smooth and Simplify have Auto Recalculate enabled in this saved workflow.",
+      "position": [
+        0.0,
+        -250.0
+      ],
+      "width": 670.0
+    },
+    {
+      "id": "mesh_identity",
+      "text": "2. IDENTITIES, COLOURS AND TWO DISJOINT GROUPS\nSplit uses shared triangle edges; no implicit union. Colour uses Triangle count with Turbo. Volume filtering keeps four objects >= 10 um^3 in one branch and the tiny object in the other. Combine reunites all five without welding or lost colours.",
+      "position": [
+        1050.0,
+        -250.0
+      ],
+      "width": 670.0
+    },
+    {
+      "id": "mesh_refine",
+      "text": "3. COMPARE ORIGINAL AND REFINED GEOMETRY\nSaved settings: Smooth 2 iterations at strength 1; Simplify keeps a target of 10% at aggressiveness 4. Open boundaries stay fixed. These sample-specific settings can change shape and measurements; upstream originals remain available. The 3MF Batch Output only declares an output: Calculate all saves nothing.",
+      "position": [
+        2450.0,
+        -250.0
+      ],
+      "width": 1000.0
+    }
+  ],
+  "execution": {
+    "compute": {
+      "mode": "cpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "smooth_mesh_1",
+        "right_panel_visible": true,
+        "display_profiles": [
+          {
+            "node_id": "batch_output_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "binary_threshold_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "color_mesh_objects_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "combine_meshes_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "filter_mesh_objects_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "filter_mesh_objects_2",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "input",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "mask_to_3d_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "simplify_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "smooth_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "split_mesh_objects_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          }
+        ]
+      },
+      "compute_optimizer": {
+        "locked_node_ids": []
+      }
+    }
+  }
+}

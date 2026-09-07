@@ -66,6 +66,7 @@ def _binary_workload(
     dtype: str = "float32",
     threshold: object = 0.5,
     channel_axis: object = None,
+    foreground: object = "Above",
     shape: tuple[int, ...] = (31, 37),
 ) -> WorkloadDescriptor:
     return WorkloadDescriptor(
@@ -73,7 +74,11 @@ def _binary_workload(
         "binary_threshold",
         (shape,),
         (dtype,),
-        parameters=(("channel_axis", channel_axis), ("threshold", threshold)),
+        parameters=(
+            ("channel_axis", channel_axis),
+            ("threshold", threshold),
+            ("foreground", foreground),
+        ),
         resolved_spatial_ndim=2,
     )
 
@@ -122,17 +127,33 @@ def test_bridge_declarations_are_public_custom_resident_and_policy_complete():
     validate_spec_policy_references(extract)
 
 
-def test_binary_threshold_admits_nonfinite_pixels_without_requiring_a_scan():
+@pytest.mark.parametrize("foreground", ("Above", "Below"))
+def test_binary_threshold_admits_nonfinite_pixels_without_requiring_a_scan(foreground):
     spec = compute_specs_for("binary_threshold", include_cpu=False)[0]
     decision = evaluate_candidate_support(
         spec,
-        _binary_workload(),
+        _binary_workload(foreground=foreground),
         _cuda_environment(),
         allow_experimental=False,
     )
 
     assert decision.supported
     assert not decision.requires_complete_facts
+
+
+@pytest.mark.parametrize("foreground", ("above", "invalid", "", None, 0))
+def test_binary_threshold_invalid_direction_is_not_a_cpu_fallback(foreground):
+    spec = compute_specs_for("binary_threshold", include_cpu=False)[0]
+    decision = evaluate_candidate_support(
+        spec,
+        _binary_workload(foreground=foreground),
+        _cuda_environment(),
+        allow_experimental=False,
+    )
+    assert not decision.supported
+    assert not decision.fallback_allowed
+    assert "foreground" in decision.reason_text
+    assert spec.implementation_version == "3"
 
 
 @pytest.mark.parametrize(
@@ -295,9 +316,7 @@ def test_extract_channel_distinguishes_cpu_regions_from_invalid_authoring(worklo
     )
 
     assert not support.supported
-    assert support.fallback_allowed is (
-        workload.input_dtypes[0] in {"float64", ">u2"}
-    )
+    assert support.fallback_allowed is (workload.input_dtypes[0] in {"float64", ">u2"})
 
 
 def test_prefer_gpu_slices_on_host_before_uploading_a_multichannel_source():

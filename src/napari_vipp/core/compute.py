@@ -275,7 +275,13 @@ class MemoryTopology(StrEnum):
     UNIFIED = "unified"
 
 
-_SCIENTIFIC_STACK_DISTRIBUTIONS = ("numpy", "scipy", "scikit-image")
+_SCIENTIFIC_STACK_DISTRIBUTIONS = (
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "fast-simplification",
+    "matplotlib",
+)
 
 
 def _installed_scientific_stack_versions() -> tuple[tuple[str, str], ...]:

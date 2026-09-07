@@ -168,12 +168,29 @@ def test_unpromoted_mesh_integer_dtypes_keep_visible_cpu_fallback(dtype: str) ->
     assert decision.fallback_allowed
 
 
-@pytest.mark.parametrize("dtype", ("bool", "float32", "complex64"))
+@pytest.mark.parametrize("dtype", ("float32", "complex64", "object"))
 def test_invalid_mesh_label_domains_do_not_claim_cpu_fallback(dtype: str) -> None:
     decision = evaluate_candidate_workload_support(_spec(), _workload(dtype=dtype))
 
     assert not decision.supported
     assert not decision.fallback_allowed
+
+
+def test_binary_masks_keep_visible_cpu_fallback() -> None:
+    decision = evaluate_candidate_workload_support(_spec(), _workload(dtype="bool"))
+
+    assert not decision.supported and decision.fallback_allowed
+    assert "Binary masks" in decision.reason_text
+
+
+def test_typed_existing_mesh_keeps_visible_cpu_fallback() -> None:
+    workload = _workload(
+        shape=(), dtype="object", parameters=(("_vipp_input_kind", "mesh"),)
+    )
+    decision = evaluate_candidate_workload_support(_spec(), workload)
+
+    assert not decision.supported and decision.fallback_allowed
+    assert "without remeshing" in decision.reason_text
 
 
 def test_mesh_region_rejects_spatial_blocks_outside_compact_index_contract() -> None:

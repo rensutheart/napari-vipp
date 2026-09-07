@@ -1,6 +1,98 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-06
+Last reviewed: 2026-09-08
+
+## 0.15.0a2 qualification declaration
+
+This iterative alpha covers the complete delta from public `v0.15.0a1`, not
+only the final release-preparation commit. Publication requires exact-final-main
+CI and exact-artifact integrity in addition to the behavioral evidence below.
+Final commit, distribution hashes and publication records belong with the
+canonical release assets; they must not be inferred from this declaration.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  source_reader_packaging: true
+  gpu_scientific_shared_execution: true
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  windows_transactional_lifecycle: v0.13.0a8
+  macos_native_lifecycle: v0.14.0a2
+```
+
+- Core/UI covers update discovery, display settings, search, reader status,
+  source channel presentation, numeric parameter constraints, non-image node
+  cards, mesh histograms, export choices, and saved-workflow navigation.
+- Scientific changes include threshold direction/ranges, explicit rescale
+  inversion, 2D/3D convex hulls, and object-aware mesh extraction, measurement,
+  colouring, combination, filtering, smoothing, simplification and export.
+  Mesh refinement remains explicit and non-destructive; it does not claim
+  geometric union, print repair, or GPU acceleration for mesh-object nodes.
+- Workflow/batch compatibility checks preserve historical scientific hashes
+  when additive no-op defaults are restored. Active range endpoints and
+  inclusivity are recorded in threshold history. Both the generated original
+  mesh example and the independently captured tuned example are checked.
+- Shared execution and provenance changes require refreshed real-CUDA
+  measurement evidence and full public-catalogue admission. Binary Threshold
+  implementation v3 additionally requires strict parity, range workspace,
+  endpoint, cancellation and cleanup/reuse checks. No device tier or scientific
+  admission region is promoted by updating the evidence.
+- Default reader dependencies and the compiled mesh simplifier require clean
+  wheel/sdist checks on Windows, Linux, Apple Silicon and Intel macOS. These
+  checks exercise reader imports/codecs and the installed packaged mesh
+  example through measurement and OBJ/3MF export, not merely library imports.
+  Dated public-file reader evidence is tracked in the reader-packaging plan.
+- Installer transaction engines retain the cited lifecycle evidence, but
+  their changed dependency payloads do not inherit clean-install qualification.
+  Native macOS arm64/x86_64 installed PKGs, Windows frozen-installer smoke,
+  exact-main distribution identity, and final exact-tag installer integrity
+  remain gates for the three unsigned installers intended for this release.
+- Documentation covers the complete a1-to-a2 feature and bug-fix delta. The
+  numbered manual and stable alias must follow public package publication;
+  historical manuals remain unchanged.
+
+Initial focused checks passed: 452 workflow/batch/threshold/rescale/example
+tests; 108 GPU harness, bridge and range tests including real CUDA; and the
+headless five-object mesh example with calibrated OBJ/3MF export. Long-running
+GPU qualification, cross-platform CI, native installed-package validation and
+artifact publication are tracked separately. Untouched evidence records retain
+their actual collection commit, environment and source fingerprints; final
+release records bind their hashes to the reviewed candidate without relabelling
+the original measurements.
+
+### Refreshed behavioral evidence
+
+- All 26 real-GPU owners passed, covering 21 admitted implementations and ten
+  required facets per implementation, with zero skipped selected GPU tests.
+  Collection used Windows 11, CPython 3.12.9, RTX 5090, CuPy 14.1.1 and CUDA
+  runtime 13.2. Current-source validation of full bridge and measurement
+  evidence passed, as did 55 CPU-safe evidence/harness checks. Early owners
+  retain their actual pre-final-commit provenance; the full bridge and aggregate
+  identify clean candidate `668ab9f01f322a2c18eebd4c9b447ac2b96bb3f4`.
+- The audited GPU qualification ZIP retains the genuine aggregate, artifacts,
+  logs, source inputs and per-member integrity inventory. Its SHA-256 is
+  `4d209a731706d3ee13634ea39d6ae83a1d18a9448a308cab5538d47b2cf96ca5`.
+  This is evidence of the recorded device/environment, not portable timing or
+  expanded support. No user images/workflows or credentials are included.
+- [Native installed-PKG qualification run 34164632153](https://github.com/rensutheart/napari-vipp/actions/runs/34164632153)
+  passed separately on arm64 and x86_64. Each architecture opened eight pinned
+  native-reader files and passed 16 strict pixel/metadata tests, zero skipped,
+  from installed site-packages. Both also passed the calibrated five-object
+  mesh example, OBJ/3MF export and native startup. The later changes do not
+  alter the qualified reader, dependency or mesh runtime contracts.
+- Candidate `668ab9f` also passed the Windows frozen-installer check in
+  [run 34167264358](https://github.com/rensutheart/napari-vipp/actions/runs/34167264358)
+  and both native macOS checks in
+  [run 34167264362](https://github.com/rensutheart/napari-vipp/actions/runs/34167264362).
+  Final installers still require their own exact-tag artifact checks; these
+  development packages are not the public release downloads.
 
 ## 0.15.0a1 qualification declaration
 

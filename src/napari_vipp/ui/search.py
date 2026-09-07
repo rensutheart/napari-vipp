@@ -10,11 +10,23 @@ def _normalize_search_text(value) -> str:
     ).strip()
 
 
-def _fuzzy_match(query: str, haystack: str) -> bool:
+def _fuzzy_match(
+    query: str, haystack: str, *, aliases: tuple[str, ...] = ()
+) -> bool:
+    """Keep fuzzy name matching, with literal tokens in optional alternatives.
+
+    Do not join aliases into the fuzzy haystack: unrelated letters across a
+    growing list of synonyms would otherwise create accidental matches.
+    """
     tokens = query.split()
     if not tokens:
         return True
-    return all(_fuzzy_token_match(token, haystack) for token in tokens)
+    alternatives = tuple(_normalize_search_text(alias) for alias in aliases)
+    return all(
+        _fuzzy_token_match(token, haystack)
+        or any(token in alias for alias in alternatives)
+        for token in tokens
+    )
 
 
 def _fuzzy_token_match(token: str, haystack: str) -> bool:

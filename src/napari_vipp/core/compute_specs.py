@@ -277,7 +277,7 @@ def _convert_dtype_spec() -> OperationComputeSpec:
 def _binary_threshold_spec() -> OperationComputeSpec:
     """Return the exact resident float32-to-bool comparison contract."""
 
-    boundary_policy_id = "strict-greater-elementwise-v1"
+    boundary_policy_id = "strict-cutoff-closed-range-elementwise-v3"
     precision_policy_id = "binary-threshold-ieee-f32-exact-v1"
     input_port = ComputePortContract(
         0,
@@ -316,7 +316,7 @@ def _binary_threshold_spec() -> OperationComputeSpec:
     return OperationComputeSpec(
         operation_id="binary_threshold",
         implementation_id="cupy-binary-threshold-f32-exact-v1",
-        implementation_version="1",
+        implementation_version="3",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cupy",
@@ -328,10 +328,10 @@ def _binary_threshold_spec() -> OperationComputeSpec:
         ),
         input_ports=(input_port,),
         output_ports=(output_port,),
-        parameter_policy_id="binary-threshold-f32-scalar-parameters-v1",
+        parameter_policy_id="binary-threshold-f32-scalar-parameters-v3",
         workload_policy_id="binary-threshold-f32-scalar-exact-v1",
         parity_policy_id="mask-bitwise-v1",
-        memory_model_id="cupy-binary-threshold-memory-v1",
+        memory_model_id="cupy-binary-threshold-memory-v2",
         shape_policy_id="shape-preserving-v1",
         boundary_policy_id=boundary_policy_id,
         precision_policy_id=precision_policy_id,
@@ -1394,6 +1394,7 @@ def _value_kind(value: str) -> ValueKind:
         "image": ValueKind.IMAGE,
         "labels": ValueKind.LABELS,
         "mask": ValueKind.MASK,
+        "mesh": ValueKind.MESH,
         "table": ValueKind.TABLE,
         "scalar": ValueKind.SCALAR,
     }

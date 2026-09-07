@@ -48,6 +48,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_build_failure_provenance",
     "_build_publication_failure_provenance",
     "_atomic_publish_artifacts",
+    "_automatic_output_path",
     "_cli_compute_request",
     "_cleanup_publication_path",
     "_coerce_source_payload",
@@ -58,6 +59,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_generated_source_sha256",
     "_effective_compute_request",
     "_new_pipeline",
+    "_mesh_output_format",
     "_node_preference_overrides",
     "_progress_printer",
     "_provenance_sidecar_path",
@@ -75,6 +77,8 @@ _RESERVED_FUNCTION_NAMES = {
     "argparse",
     "batch_process",
     "is_table_data",
+    "is_mesh_data",
+    "save_mesh_output",
     "json",
     "load_image",
     "load_frozen_file_source_snapshot",
@@ -465,15 +469,13 @@ def _build_imports() -> str:
                 "from napari_vipp.core.source_item_persistence import "
                 "source_item_from_params"
             ),
-            (
-                "from napari_vipp.core.source_resolution import "
-                "select_inspected_item"
-            ),
+            ("from napari_vipp.core.source_resolution import select_inspected_item"),
             (
                 "from napari_vipp.core.source_window_planning import "
                 "plan_exact_source_crop_window"
             ),
             "from napari_vipp.core.tables import is_table_data, save_table_output",
+            "from napari_vipp.core.meshes import is_mesh_data, save_mesh_output",
             "from napari_vipp.core.workflow import deserialize_workflow",
         )
     )
@@ -679,8 +681,7 @@ def _build_function_body(
             f"{_INDENT}try:",
             f"{_INDENT}{_INDENT}run_result = execute_pipeline_request(",
             f"{_INDENT}{_INDENT}{_INDENT}request,",
-            f"{_INDENT}{_INDENT}{_INDENT}"
-            f"node_started_callback=node_started_callback,",
+            f"{_INDENT}{_INDENT}{_INDENT}node_started_callback=node_started_callback,",
             f"{_INDENT}{_INDENT}{_INDENT}"
             f"node_finished_callback=node_finished_callback,",
             f"{_INDENT}{_INDENT}{_INDENT}"
@@ -694,8 +695,7 @@ def _build_function_body(
             f"{_INDENT}{_INDENT}if failure is None:",
             f"{_INDENT}{_INDENT}{_INDENT}failure = {{",
             f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'kind': 'execution_error',",
-            f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-            f"'error_type': type(exc).__name__,",
+            f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'error_type': type(exc).__name__,",
             f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'message': str(exc),",
             f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
             f"'reason_code': 'unclassified_execution_error',",
@@ -748,14 +748,12 @@ def _build_function_body(
             f"{_INDENT}):",
             f"{_INDENT}{_INDENT}failure = {{",
             f"{_INDENT}{_INDENT}{_INDENT}'kind': 'cleanup_failure',",
-            f"{_INDENT}{_INDENT}{_INDENT}"
-            f"'error_type': 'PipelineRuntimeCleanupError',",
+            f"{_INDENT}{_INDENT}{_INDENT}'error_type': 'PipelineRuntimeCleanupError',",
             f"{_INDENT}{_INDENT}{_INDENT}'message': (",
             f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
             f"'Accelerator cleanup could not be proven; outputs were withheld.'",
             f"{_INDENT}{_INDENT}{_INDENT}),",
-            f"{_INDENT}{_INDENT}{_INDENT}"
-            f"'reason_code': 'accelerator_cleanup_failed',",
+            f"{_INDENT}{_INDENT}{_INDENT}'reason_code': 'accelerator_cleanup_failed',",
             f"{_INDENT}{_INDENT}{_INDENT}'cleanup_succeeded': False,",
             f"{_INDENT}{_INDENT}}}",
             f"{_INDENT}{_INDENT}failure_execution = (",
@@ -770,8 +768,7 @@ def _build_function_body(
             f"{_INDENT}{_INDENT})",
             f"{_INDENT}{_INDENT}raise PipelineExecutionError(",
             f"{_INDENT}{_INDENT}{_INDENT}failure['message'],",
-            f"{_INDENT}{_INDENT}{_INDENT}"
-            f"execution_report=run_result.execution_report,",
+            f"{_INDENT}{_INDENT}{_INDENT}execution_report=run_result.execution_report,",
             f"{_INDENT}{_INDENT}{_INDENT}failure=failure,",
             f"{_INDENT}{_INDENT}{_INDENT}provenance=_build_export_provenance(",
             f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}effective_request,",
@@ -1583,7 +1580,14 @@ def _write_output_uncommitted(
 ):
     """Write only inside a private publication directory."""
     try:
-        if is_table_data(data):
+        if is_mesh_data(data):
+            mesh_path = Path(path)
+            if mesh_path.suffix.lower() not in {".obj", ".3mf"}:
+                mesh_path = mesh_path.with_suffix(
+                    "." + _mesh_output_format(output_node_id)
+                )
+            saved_path = save_mesh_output(data, mesh_path)
+        elif is_table_data(data):
             saved_path = _table_output_path(path)
             save_table_output(
                 data,
@@ -1818,6 +1822,39 @@ def _publish_output_set(
         shutil.rmtree(stage_root, ignore_errors=True)
 
 
+def _mesh_output_format(node_id):
+    """Keep an explicit output-node mesh format in automatic file names."""
+    selected = "batch default"
+    for node in _workflow_document()["nodes"]:
+        if node["id"] == node_id and node["operation_id"] in {
+            "batch_output", "save_output"
+        }:
+            params = node.get("params", {})
+            selected = params.get("format", "batch default")
+            if selected == "auto":
+                selected = (
+                    Path(str(params.get("path", ""))).suffix.lower().lstrip(".")
+                    or "obj"
+                )
+            break
+    if selected == "batch default":
+        return "obj"
+    if selected not in {"obj", "3mf"}:
+        raise ValueError(
+            f"Mesh output {node_id!r} requires OBJ or 3MF, "
+            f"not {selected!r}."
+        )
+    return selected
+
+
+def _automatic_output_path(directory, source_stem, node_id, data):
+    """Name convenience-loop and multi-output CLI artifacts by output kind."""
+    suffix = (
+        "." + _mesh_output_format(node_id) if is_mesh_data(data) else ".ome.tif"
+    )
+    return Path(directory) / f"{source_stem}__{node_id}{suffix}"
+
+
 def _table_output_path(path):
     path = Path(path)
     if path.suffix.lower() in {".csv", ".tsv"}:
@@ -1885,8 +1922,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}results = {function_name}(",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{batch_feed_prefix}",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}compute_request=effective_request,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"progress_callback=progress_callback,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}progress_callback=progress_callback,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event=cancel_event,",
         f"{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT}publication_entries = []",
@@ -1899,7 +1935,10 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}name,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f'output_dir / f"{{source_path.stem}}__{{name}}.ome.tif",',
+        "_automatic_output_path(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        "output_dir, source_path.stem, name, output,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}),",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f"results.image_states.get(name),",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
@@ -1910,8 +1949,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}results=results,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f"write_provenance=write_provenance,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"cancel_event=cancel_event,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event=cancel_event,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT}record = {{",
@@ -1981,14 +2019,14 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}parser.add_argument(",
         f'{_INDENT}{_INDENT}"--node-preference",',
         f'{_INDENT}{_INDENT}action="append",',
-        f'{_INDENT}{_INDENT}default=[],',
+        f"{_INDENT}{_INDENT}default=[],",
         f'{_INDENT}{_INDENT}metavar="NODE_ID=PREFERENCE",',
         f'{_INDENT}{_INDENT}help="Repeat for per-node compute overrides.",',
         f"{_INDENT})",
         f"{_INDENT}parser.add_argument(",
         f'{_INDENT}{_INDENT}"--provenance",',
-        f'{_INDENT}{_INDENT}action=argparse.BooleanOptionalAction,',
-        f'{_INDENT}{_INDENT}default=True,',
+        f"{_INDENT}{_INDENT}action=argparse.BooleanOptionalAction,",
+        f"{_INDENT}{_INDENT}default=True,",
         f'{_INDENT}{_INDENT}help="Write an atomic .vipp-provenance.json sidecar.",',
         f"{_INDENT})",
         f"{_INDENT}parser.add_argument(",
@@ -2029,8 +2067,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}compute_request=request,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}progress_callback=progress,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event=cancel_event,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"write_provenance=args.provenance,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}write_provenance=args.provenance,",
         f"{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT}return 0",
         f"{_INDENT}{_INDENT}results = {function_name}(",
@@ -2048,8 +2085,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}name,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}results[name],",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}out_path,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"results.image_states.get(name),",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}results.image_states.get(name),",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}else:",
@@ -2062,7 +2098,10 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}name,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f'out_path / f"{{in_path.stem}}__{{name}}.ome.tif",',
+        "_automatic_output_path(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        "out_path, in_path.stem, name, output,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}),",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f"results.image_states.get(name),",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT})",

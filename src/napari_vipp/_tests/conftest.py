@@ -6,9 +6,30 @@ from qtpy.compat import isalive
 from napari_vipp.core.compute_history import PIPELINE_TIMING_HISTORY_PATH_ENV
 from napari_vipp.ui import (
     presentation_settings,
+    reader_support,
     recent_paths,
+    updates,
     workflow_save_settings,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_reader_support_session(monkeypatch):
+    """Share diagnostics within each test, never across QApplication test reuse."""
+    sessions = []
+
+    def cache():
+        if not sessions:
+            sessions.append(reader_support._ReaderSupportSession(
+                reader_support.QApplication.instance()
+            ))
+        return sessions[0]
+
+    monkeypatch.setattr(reader_support, "_session_cache", cache)
+    yield
+    for session in sessions:
+        session.close()
+        session.deleteLater()
 
 
 @pytest.fixture
@@ -68,6 +89,8 @@ def _isolate_ui_settings(monkeypatch):
     monkeypatch.setattr(recent_paths, "_settings", lambda: settings)
     monkeypatch.setattr(presentation_settings, "_settings", lambda: settings)
     monkeypatch.setattr(workflow_save_settings, "_settings", lambda: settings)
+    monkeypatch.setattr(updates, "_settings", lambda: settings)
+    monkeypatch.setenv(updates.DISABLE_AUTO_ENV, "1")
 
 
 @pytest.fixture(autouse=True)

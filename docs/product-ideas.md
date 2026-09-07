@@ -1,6 +1,6 @@
 # VIPP Product Ideas
 
-Last reviewed: 2026-08-26
+Last reviewed: 2026-09-07
 
 This page preserves promising product concepts that are not committed to an
 active release. An idea moves into the [active roadmap](planning.md) only after
@@ -110,12 +110,15 @@ before implementation.
 
 ## Longer-Horizon Product Concepts
 
-These remain worthwhile but are deliberately outside the active source and
-interactivity milestones:
+These remain worthwhile but are not all release commitments. Translation,
+image comparison (including SSIM), and template matching have moved into the
+[planned 0.16 scope](registration-and-template-matching-plan.md). Drift remains
+a stretch candidate; the broader concepts below are not core 0.16 gates.
 
 - first-class points followed by puncta/spot detection and point measurements;
-- first-class transforms followed by translation, drift correction, affine,
-  and later non-rigid registration;
+- rigid/affine alignment and separately qualified non-rigid registration,
+  building on the transform foundation planned for 0.16;
+- rotation/scale-aware template detection beyond the fixed-template 0.16 scope;
 - first-class surfaces followed by mesh preview/export and specialist surface
   analysis;
 - full plate/well/field browsing and broader HCS traversal after SourceItem;

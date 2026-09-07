@@ -12,6 +12,7 @@ optional array provider or initialize a device.
 
 from __future__ import annotations
 
+import importlib.metadata
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -47,6 +48,13 @@ _BYPASS_IMPLEMENTATION_ID = "vipp-safe-bypass-v1"
 _EXACT_IMMUTABLE_TYPES = frozenset({str, bytes, bool, int, float, complex, type(None)})
 _RESULT_CONTRACT_TAG = "vipp-result-v1"
 _MISSING = object()
+_ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION = MappingProxyType(
+    {
+        "simplify_mesh": ("fast-simplification",),
+        # These colours are carried output data, not an inspector-only LUT.
+        "color_mesh_objects": ("matplotlib",),
+    }
+)
 _REQUIRED_DEPENDENCIES_BY_ENVIRONMENT_POLICY = MappingProxyType(
     {
         "vipp-cpu-supported-v1": frozenset(
@@ -193,6 +201,7 @@ class CachedNodeComputeProvenance:
     fallback_reason: FallbackReason | str = FallbackReason.NONE
     fallback_preference: NodeComputePreference | None = None
     source_reuse_envelope_fingerprint: str = ""
+    additional_dependency_versions: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -250,6 +259,14 @@ class CachedNodeComputeProvenance:
         )
         object.__setattr__(self, "fallback_reason", fallback)
         object.__setattr__(self, "fallback_preference", preference)
+        dependencies = _string_mapping(
+            dict(self.additional_dependency_versions), "additional_dependency_versions"
+        )
+        if len(dependencies) != len(self.additional_dependency_versions):
+            raise ValueError("Additional scientific dependency IDs must be unique.")
+        object.__setattr__(
+            self, "additional_dependency_versions", tuple(sorted(dependencies.items()))
+        )
 
     @property
     def produced_by_fallback(self) -> bool:
@@ -258,14 +275,16 @@ class CachedNodeComputeProvenance:
     @property
     def result_context_fingerprint(self) -> str:
         """Exact upstream identity consumed by a downstream cached node."""
-
-        return canonical_digest(
-            {
-                "schema_id": "vipp-cached-result-context-v1",
-                "scientific_context": self.scientific_context_fingerprint,
-                "actual_implementation": asdict(self.actual_implementation),
-            }
-        )
+        payload = {
+            "schema_id": "vipp-cached-result-context-v1",
+            "scientific_context": self.scientific_context_fingerprint,
+            "actual_implementation": asdict(self.actual_implementation),
+        }
+        if self.additional_dependency_versions:
+            payload["additional_dependency_versions"] = dict(
+                self.additional_dependency_versions
+            )
+        return canonical_digest(payload)
 
 
 def node_compute_context_fingerprint(
@@ -337,6 +356,7 @@ def build_cached_node_compute_provenance(
         scientific_context_fingerprint=scientific_context_fingerprint,
         fallback_reason=decision.fallback_reason,
         fallback_preference=fallback_preference,
+        additional_dependency_versions=_additional_dependency_versions(spec),
     )
 
 
@@ -479,7 +499,27 @@ def cached_node_provenance_matches(
         )
     except (KeyError, TypeError, ValueError):
         return False
-    return implementation_identity(current) == provenance.actual_implementation
+    return (
+        implementation_identity(current) == provenance.actual_implementation
+        and provenance.additional_dependency_versions
+        == _additional_dependency_versions(current)
+    )
+
+
+def _additional_dependency_versions(spec):
+    """Read mesh-kernel/LUT identities without importing their native modules."""
+    if spec.runtime_id != _CPU_RUNTIME_ID:
+        return ()
+    versions = []
+    for distribution in _ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION.get(
+        spec.operation_id, ()
+    ):
+        try:
+            value = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            value = "not-installed"
+        versions.append((distribution, value))
+    return tuple(versions)
 
 
 def _compute_spec_for_decision(
@@ -733,6 +773,10 @@ def required_scientific_dependency_ids(
             "Unknown validated environment policy for scientific caching: "
             f"{policy_id!r}."
         ) from exc
+    if spec.runtime_id == _CPU_RUNTIME_ID:
+        required = required.union(
+            _ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION.get(spec.operation_id, ())
+        )
     return tuple(sorted(required))
 
 

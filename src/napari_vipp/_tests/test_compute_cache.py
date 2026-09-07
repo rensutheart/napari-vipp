@@ -352,11 +352,95 @@ _DEPENDENCY_VERSIONS = {
     "numpy": "2.3.2",
     "scipy": "1.16.0",
     "scikit-image": "0.25.2",
+    "fast-simplification": "0.2.0",
+    "matplotlib": "3.10.8",
     "cupy": "14.1.1",
     "cuda-runtime": "13.2.0",
     "cucim": "26.6.0",
     "cucim-artifact": "sha256:cucim-wheel-build-v1",
 }
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "dependency"),
+    [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib")],
+)
+def test_mesh_provider_versions_are_required_in_scientific_result_keys(
+    operation_id, dependency
+):
+    spec = compute_specs_for(operation_id)[0]
+    versions = _dependency_versions(spec)
+    assert dependency in required_scientific_dependency_ids(spec)
+    original = _key(spec)
+    changed = _key(spec, dependency_versions={**versions, dependency: "999.0"})
+    assert original.digest != changed.digest
+    versions.pop(dependency)
+    with pytest.raises(ValueError, match="missing required identifier"):
+        _key(spec, dependency_versions=versions)
+    assert dependency not in required_scientific_dependency_ids(_spec())
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "dependency"),
+    [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib")],
+)
+def test_mesh_provider_upgrade_invalidates_structural_and_downstream_caches(
+    monkeypatch, operation_id, dependency
+):
+    import napari_vipp.core.compute_cache as module
+
+    current_version = ["1.0"]
+    monkeypatch.setattr(
+        module.importlib.metadata, "version", lambda _name: current_version[0]
+    )
+    spec = compute_specs_for(operation_id)[0]
+    request = ComputeRequest(mode="cpu")
+    old = build_cached_node_compute_provenance(
+        _decision(spec), request, scientific_context_fingerprint="same-inputs"
+    )
+    common = dict(
+        request=request,
+        node_id="node",
+        operation_id=operation_id,
+        scientific_context_fingerprint="same-inputs",
+    )
+    assert old.additional_dependency_versions == ((dependency, "1.0"),)
+    assert cached_node_provenance_matches(old, **common)
+    # Missing version evidence from an older cached mesh cannot pass silently.
+    assert not cached_node_provenance_matches(
+        replace(old, additional_dependency_versions=()), **common
+    )
+    current_version[0] = "2.0"
+    new = build_cached_node_compute_provenance(
+        _decision(spec), request, scientific_context_fingerprint="same-inputs"
+    )
+    assert not cached_node_provenance_matches(old, **common)
+    assert cached_node_provenance_matches(new, **common)
+    assert old.result_context_fingerprint != new.result_context_fingerprint
+
+
+def test_mesh_dependencies_do_not_change_unrelated_structural_cache_identity(
+    monkeypatch,
+):
+    import napari_vipp.core.compute_cache as module
+
+    def forbidden(_name):
+        raise AssertionError("Unrelated CPU cache must not probe mesh providers")
+
+    monkeypatch.setattr(module.importlib.metadata, "version", forbidden)
+    spec = compute_specs_for("median_filter")[0]
+    request = ComputeRequest(mode="cpu")
+    provenance = build_cached_node_compute_provenance(
+        _decision(spec), request, scientific_context_fingerprint="same-inputs"
+    )
+    assert provenance.additional_dependency_versions == ()
+    assert cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="same-inputs",
+    )
 
 
 def _dependency_versions(spec: OperationComputeSpec) -> dict[str, str]:

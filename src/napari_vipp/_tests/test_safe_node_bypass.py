@@ -74,9 +74,11 @@ def test_bypass_capability_is_derived_from_operation_schema_and_live_graph() -> 
 
 
 def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> None:
-    assert len(NODE_LIBRARY) == 115
+    assert len({spec.id for spec in NODE_LIBRARY}) == len(NODE_LIBRARY)
     assert {spec.id for spec in NODE_LIBRARY if not spec.supports_bypass} == {
         "input",
+        "mask_to_3d_mesh",
+        "labels_to_3d_mesh",
         "analyze_skeleton",
         "born_wolf_psf",
         "colocalization_metrics",
@@ -98,6 +100,18 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "save_output",
         "batch_output",
     }
+
+
+def test_mesh_creation_cannot_bypass_into_a_surface_consumer() -> None:
+    for creator in ("mask_to_3d_mesh", "labels_to_3d_mesh"):
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        surface = pipeline.add_node(creator)
+        consumer = pipeline.add_node("smooth_mesh")
+        assert pipeline.connect(surface.id, consumer.id).success
+        assert not pipeline.operation_spec(creator).supports_bypass
+        with pytest.raises(ValueError):
+            pipeline.set_node_execution_mode(surface.id, "bypass")
 
 
 def test_type_changing_node_rejects_bypass_when_consumer_needs_native_output() -> None:

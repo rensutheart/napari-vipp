@@ -21,6 +21,20 @@ from napari_vipp.core.grid import (
     validate_mask_broadcast_image_states,
     validate_psf_image_states,
 )
+from napari_vipp.core.mesh_objects import (
+    color_mesh_objects,
+    combine_meshes,
+    filter_mesh_objects,
+    split_mesh_objects,
+)
+from napari_vipp.core.mesh_refinement import simplify_mesh, smooth_mesh
+from napari_vipp.core.meshes import (
+    MeshState,
+    is_mesh_data,
+    labels_to_3d_mesh,
+    mask_mesh_axes,
+    mask_to_3d_mesh,
+)
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
     AmbiguousAxisError,
@@ -68,6 +82,7 @@ from napari_vipp.core.operations import (
     combine_channels,
     composite_to_rgb,
     convert_dtype,
+    convex_hull,
     crop_stack,
     difference_of_gaussians_filter,
     dilate,
@@ -185,6 +200,7 @@ class ParameterSpec:
     slider_minimum: float | int | None = None
     slider_maximum: float | int | None = None
     data_dependent_bounds: bool = False
+    odd_only: bool = False
 
     def __post_init__(self) -> None:
         """Validate an optional ergonomic slider window.
@@ -194,6 +210,10 @@ class ParameterSpec:
         that range. A narrower slider window is presentation-only and must
         stay inside the declared range.
         """
+        if self.odd_only and (self.kind != "int" or self.step != 2):
+            raise ValueError(
+                "Odd-only controls require an integer parameter with step 2."
+            )
         if not isinstance(self.data_dependent_bounds, bool):
             raise TypeError(
                 f"Parameter {self.name!r} data_dependent_bounds must be Boolean."
@@ -1083,6 +1103,8 @@ SAFE_BYPASS_BOUNDARY_OPERATION_IDS = frozenset(
         "input",
         "save_output",
         "batch_output",
+        "mask_to_3d_mesh",
+        "labels_to_3d_mesh",
     }
 )
 
@@ -1582,6 +1604,7 @@ SPATIAL_OPERATIONS = {
     "auto_watershed_from_mask",
     "born_wolf_psf",
     "clear_border_objects",
+    "convex_hull",
     "euclidean_distance_transform",
     "expand_labels",
     "event_localization",
@@ -1664,6 +1687,7 @@ _SLICE_HISTOGRAM_POSITIONAL_OPERATIONS = frozenset(
 )
 _POSITIONAL_RESOLVED_SPATIAL_OPERATIONS = frozenset(
     {
+        "convex_hull",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
         "rolling_ball_background",
@@ -2116,6 +2140,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 9,
                 1025,
                 2,
+                odd_only=True,
                 tooltip=(
                     "Odd Y/X width of the generated PSF kernel. This controls "
                     "the finite support window, not the physical sampling "
@@ -2132,6 +2157,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 1025,
                 2,
+                odd_only=True,
                 tooltip=(
                     "Odd Z depth of the generated PSF kernel. This controls the "
                     "finite support window, not the physical Z sampling interval. "
@@ -2516,7 +2542,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("size", "Kernel size", "int", 5, 1, 51, 2),
+            ParameterSpec("size", "Kernel size", "int", 5, 1, 51, 2, odd_only=True),
             SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         median_filter,
@@ -2601,7 +2627,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("diameter", "Diameter", "int", 5, 3, 31, 2),
+            ParameterSpec("diameter", "Diameter", "int", 5, 3, 31, 2, odd_only=True),
             ParameterSpec(
                 "sigma_color",
                 "Sigma color",
@@ -2635,7 +2661,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("patch_size", "Patch size", "int", 5, 3, 15, 2),
+            ParameterSpec(
+                "patch_size", "Patch size", "int", 5, 3, 15, 2, odd_only=True
+            ),
             ParameterSpec("patch_distance", "Patch distance", "int", 6, 1, 20, 1),
             ParameterSpec("h", "Filter strength", "float", 0.08, 0.0, 1.0, 0.01, 3),
             ParameterSpec("fast_mode", "Fast mode", "bool", True, 0, 1, 1),
@@ -2802,7 +2830,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("kernel_size", "Kernel size", "int", 3, 3, 15, 2),
+            ParameterSpec(
+                "kernel_size", "Kernel size", "int", 3, 3, 15, 2, odd_only=True
+            ),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         laplace_filter,
@@ -3287,6 +3317,22 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (
             ParameterSpec(
+                "foreground",
+                "Foreground",
+                "choice",
+                "Above",
+                0,
+                0,
+                1,
+                choices=("Above", "Below", "In range", "Outside range"),
+                tooltip=(
+                    "Above/Below select values strictly above/below the threshold. "
+                    "In range includes both low and high limits; Outside range "
+                    "selects values below low or above high. Equal values belong "
+                    "to In range, not Outside range. NaN always stays background."
+                ),
+            ),
+            ParameterSpec(
                 "threshold",
                 "Threshold",
                 "float",
@@ -3296,6 +3342,45 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.01,
                 3,
                 data_dependent_bounds=True,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="foreground",
+                visibility_values=("Above", "Below"),
+            ),
+            ParameterSpec(
+                "low_threshold",
+                "Low threshold",
+                "float",
+                0.25,
+                0.0,
+                1.0,
+                0.01,
+                3,
+                data_dependent_bounds=True,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="foreground",
+                visibility_values=("In range", "Outside range"),
+                tooltip=(
+                    "Lower intensity limit. Included by In range; "
+                    "excluded by Outside range."
+                ),
+            ),
+            ParameterSpec(
+                "high_threshold",
+                "High threshold",
+                "float",
+                0.75,
+                0.0,
+                1.0,
+                0.01,
+                3,
+                data_dependent_bounds=True,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="foreground",
+                visibility_values=("In range", "Outside range"),
+                tooltip=(
+                    "Upper intensity limit. Included by In range; "
+                    "excluded by Outside range."
+                ),
             ),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
@@ -3344,7 +3429,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "mask",
         (
-            ParameterSpec("block_size", "Block size", "int", 11, 3, 101, 2),
+            ParameterSpec(
+                "block_size", "Block size", "int", 11, 3, 101, 2, odd_only=True
+            ),
             ParameterSpec("c", "C", "float", 2.0, -50.0, 50.0, 0.1, 2),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
@@ -3359,7 +3446,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "mask",
         (
-            ParameterSpec("block_size", "Block size", "int", 11, 3, 101, 2),
+            ParameterSpec(
+                "block_size", "Block size", "int", 11, 3, 101, 2, odd_only=True
+            ),
             ParameterSpec("c", "C", "float", 2.0, -50.0, 50.0, 0.1, 2),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
@@ -3374,7 +3463,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "mask",
         (
-            ParameterSpec("window_size", "Window size", "int", 15, 3, 151, 2),
+            ParameterSpec(
+                "window_size", "Window size", "int", 15, 3, 151, 2, odd_only=True
+            ),
             ParameterSpec("k", "k", "float", 0.2, -2.0, 2.0, 0.01, 3),
             ParameterSpec(
                 "dynamic_range",
@@ -3401,7 +3492,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "mask",
         (
-            ParameterSpec("window_size", "Window size", "int", 15, 3, 151, 2),
+            ParameterSpec(
+                "window_size", "Window size", "int", 15, 3, 151, 2, odd_only=True
+            ),
             ParameterSpec("k", "k", "float", 0.2, -2.0, 2.0, 0.01, 3),
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
@@ -3608,6 +3701,342 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         erode,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "mask_to_3d_mesh",
+        "Mask to 3D Mesh",
+        "3D Meshes",
+        "mask",
+        "mesh",
+        (
+            ParameterSpec(
+                "object_mode",
+                "Objects",
+                "choice",
+                "Single object",
+                0,
+                0,
+                1,
+                choices=("Single object", "Connected objects"),
+                tooltip=(
+                    "Single object retains the entire foreground as one mesh. "
+                    "Connected objects gives face-connected foreground components "
+                    "separate IDs and colours, keeping each object's cavity walls."
+                ),
+            ),
+            ParameterSpec(
+                "boundary",
+                "Image border",
+                "choice",
+                "Close at image border",
+                0,
+                0,
+                1,
+                choices=("Close at image border", "Leave open at image border"),
+                tooltip=(
+                    "Close assumes background just outside the image and caps "
+                    "objects cut by its border. Leave open makes no assumption "
+                    "outside the acquired volume. Full-resolution marching "
+                    "cubes; no geometry smoothing."
+                ),
+            ),
+        ),
+        mask_to_3d_mesh,
+        subcategory="Create surfaces",
+        execution_policy="manual",
+        stack_processing_note=(
+            "One Z/Y/X volume only. Select a channel/time point upstream. "
+            "CPU; full-resolution mesh."
+        ),
+    ),
+    OperationSpec(
+        "labels_to_3d_mesh",
+        "Labels to 3D Mesh",
+        "3D Meshes",
+        "labels",
+        "mesh",
+        (
+            ParameterSpec(
+                "boundary",
+                "Image border",
+                "choice",
+                "Close at image border",
+                0,
+                0,
+                1,
+                choices=("Close at image border", "Leave open at image border"),
+                tooltip="Close caps objects at the image edge; Leave open does not.",
+            ),
+        ),
+        labels_to_3d_mesh,
+        subcategory="Create surfaces",
+        execution_policy="manual",
+        stack_processing_note=(
+            "One Z/Y/X label volume. Each positive label retains its ID and gets "
+            "a distinct colour; zero is background. No smoothing or union."
+        ),
+    ),
+    OperationSpec(
+        "color_mesh_objects",
+        "Colour Mesh Objects",
+        "3D Meshes",
+        "mesh",
+        "mesh",
+        (
+            ParameterSpec(
+                "color_by",
+                "Colour by",
+                "choice",
+                "Object ID",
+                0,
+                0,
+                1,
+                choices=(
+                    "Object ID",
+                    "mesh_volume_physical",
+                    "mesh_surface_area_physical",
+                    "sphericity",
+                    "triangle_count",
+                ),
+                choice_labels=(
+                    "Object ID",
+                    "Volume",
+                    "Surface area",
+                    "Sphericity",
+                    "Triangle count",
+                ),
+                tooltip=(
+                    "Distinct object colours, or a gradient based on freshly "
+                    "measured geometry. Missing measurements are shown in grey. "
+                    "Only colour changes; the geometry remains unchanged."
+                ),
+            ),
+            ParameterSpec(
+                "color_map",
+                "Colour map",
+                "choice",
+                "viridis",
+                0,
+                0,
+                1,
+                choices=("viridis", "plasma", "magma", "turbo"),
+                choice_labels=("Viridis", "Plasma", "Magma", "Turbo"),
+            ),
+        ),
+        color_mesh_objects,
+        subcategory="Objects & colours",
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "combine_meshes",
+        "Combine Meshes",
+        "3D Meshes",
+        "mesh",
+        "mesh",
+        (ParameterSpec("input_count", "Input meshes", "int", 2, 2, 16, 1),),
+        combine_meshes,
+        max_inputs=16,
+        subcategory="Objects & colours",
+        execution_policy="manual",
+        stack_processing_note=(
+            "Collect objects without welding or geometric union. Retains colours "
+            "and positions; converts compatible units to the first input's frame. "
+            "Overlapping objects remain separate. This is not registration."
+        ),
+    ),
+    OperationSpec(
+        "split_mesh_objects",
+        "Split Mesh Objects",
+        "3D Meshes",
+        "mesh",
+        "mesh",
+        (),
+        split_mesh_objects,
+        subcategory="Objects & colours",
+        execution_policy="manual",
+        stack_processing_note=(
+            "Separate edge-connected surface components within each object. "
+            "Cavity walls become separate shells; use Connected objects during "
+            "mask extraction to keep cavity walls with their foreground object."
+        ),
+    ),
+    OperationSpec(
+        "filter_mesh_objects",
+        "Filter Mesh Objects",
+        "3D Meshes",
+        "mesh",
+        "mesh",
+        (
+            ParameterSpec(
+                "property_name",
+                "Measure",
+                "choice",
+                "mesh_volume_physical",
+                0,
+                0,
+                1,
+                choices=(
+                    "mesh_volume_physical",
+                    "mesh_surface_area_physical",
+                    "sphericity",
+                    "triangle_count",
+                    "mesh_id",
+                ),
+                choice_labels=(
+                    "Volume",
+                    "Surface area",
+                    "Sphericity",
+                    "Triangle count",
+                    "Object ID",
+                ),
+                tooltip=(
+                    "Measure each current object, then keep the chosen range. "
+                    "Volume requires a closed valid surface. Missing measurements "
+                    "are excluded, including in Outside range mode."
+                ),
+            ),
+            ParameterSpec(
+                "minimum", "Minimum", "float", 0.0, 0, 1e12, 0.01, decimals=6
+            ),
+            ParameterSpec(
+                "maximum", "Maximum", "float", 1e12, 0, 1e12, 0.01, decimals=6
+            ),
+            ParameterSpec(
+                "keep",
+                "Keep objects",
+                "choice",
+                "In range",
+                0,
+                0,
+                1,
+                choices=("In range", "Outside range"),
+                tooltip="In range includes both bounds. Outside range excludes them.",
+            ),
+        ),
+        filter_mesh_objects,
+        subcategory="Objects & colours",
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "smooth_mesh",
+        "Smooth Mesh",
+        "3D Meshes",
+        "mesh",
+        "mesh",
+        (
+            ParameterSpec("iterations", "Iterations", "int", 10, 1, 1000, 1),
+            ParameterSpec(
+                "strength",
+                "Strength",
+                "float",
+                0.5,
+                0,
+                1,
+                0.01,
+                decimals=2,
+                tooltip=(
+                    "How strongly each iteration smooths the surface (0 to 1, "
+                    "in steps of 0.01). 0 leaves geometry unchanged; 0.5 is the "
+                    "default; higher values smooth more strongly. Iterations "
+                    "repeat this effect. Shape and volume can change; strength "
+                    "is not a percentage of volume reduction."
+                ),
+            ),
+            ParameterSpec(
+                "preserve_boundary",
+                "Keep open boundaries fixed",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        smooth_mesh,
+        subcategory="Refine geometry",
+        execution_policy="manual",
+        stack_processing_note=(
+            "Taubin-style smoothing in physical coordinates. Creates new geometry; "
+            "input meshes are unchanged. Shape, volume and measurements can change. "
+            "No repair or topology guarantee."
+        ),
+    ),
+    OperationSpec(
+        "simplify_mesh",
+        "Simplify Mesh",
+        "3D Meshes",
+        "mesh",
+        "mesh",
+        (
+            ParameterSpec(
+                "target_percent",
+                "Triangles to keep (%)",
+                "float",
+                50.0,
+                0.01,
+                100,
+                0.1,
+                decimals=2,
+                tooltip=(
+                    "Approximate target per surface component; "
+                    "actual counts may differ. Lower percentages remove more "
+                    "triangles. A safe minimum depends on the mesh, not just the "
+                    "slider range. If the simplified result is invalid, increase "
+                    "this value and recalculate; VIPP does not delete invalid "
+                    "faces or repair the mesh automatically."
+                ),
+            ),
+            ParameterSpec(
+                "aggressiveness",
+                "Aggressiveness",
+                "float",
+                7.0,
+                0,
+                10,
+                0.1,
+                decimals=1,
+                tooltip=(
+                    "Higher values favour faster reduction over geometric fidelity."
+                ),
+            ),
+            ParameterSpec(
+                "preserve_boundary",
+                "Keep open boundaries fixed",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        simplify_mesh,
+        subcategory="Refine geometry",
+        execution_policy="manual",
+        stack_processing_note=(
+            "Approximate quadric-error triangle reduction, independently per object "
+            "and component. Input geometry is unchanged. Inspect the result before "
+            "measuring: shape and volume can change."
+        ),
+    ),
+    OperationSpec(
+        "convex_hull",
+        "Convex Hull",
+        "Morphology",
+        "mask",
+        "mask",
+        (
+            replace(
+                SPATIAL_MODE_PARAMETER,
+                tooltip=(
+                    "One hull around all foreground in each plane or volume; "
+                    "separate objects can be joined. Auto uses declared axes. "
+                    "2D YX treats each slice independently; 3D ZYX fills a "
+                    "volume hull. Time points and channels stay separate. "
+                    "Requires a Boolean mask (for example, a threshold output)."
+                ),
+            ),
+        ),
+        convex_hull,
     ),
     OperationSpec(
         "opening",
@@ -4192,7 +4621,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "measure_3d_mesh_morphology",
         "Measure 3D Mesh Morphology",
         MEASUREMENTS_CATEGORY,
-        "labels",
+        "mask_or_labels_or_mesh",
         "table",
         (
             VOLUMETRIC_SPATIAL_MODE_PARAMETER,
@@ -4207,7 +4636,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 slider_minimum=1,
                 slider_maximum=1_000,
                 tooltip=(
-                    "Objects with fewer labeled voxels than this are not "
+                    "For mask/label inputs only. Existing meshes are measured "
+                    "directly without voxel filtering. Objects with fewer "
+                    "labeled voxels than this are not "
                     "meshed. They remain in the results table; mesh-derived "
                     "fields are NaN, and mesh_status identifies them as "
                     "skipped_too_few_voxels. This setting does not remove or "
@@ -4236,6 +4667,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         measure_3d_mesh_morphology,
         execution_policy="manual",
+        stack_processing_note=(
+            "Mask/labels: reconstruct surfaces using Z/Y/X spacing. Mesh: measure "
+            "one row per object from its supplied geometry; "
+            "no remeshing or voxel filtering."
+        ),
     ),
     OperationSpec(
         "analyze_skeleton",
@@ -5551,6 +5987,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 0.01,
                 3,
+                tooltip=(
+                    "Lower output bound. Must not exceed Output max. "
+                    "Use Invert intensity to reverse the mapping."
+                ),
             ),
             ParameterSpec(
                 "out_max",
@@ -5561,6 +6001,26 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 0.01,
                 3,
+                tooltip=(
+                    "Upper output bound. Must not be below Output min. "
+                    "Equal output bounds produce a constant numeric image."
+                ),
+            ),
+            ParameterSpec(
+                "invert_intensity",
+                "Invert intensity",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+                tooltip=(
+                    "Map the low input cutoff to Output max and the high "
+                    "cutoff to Output min. Output bounds stay ordered. "
+                    "Equal input cutoffs fill Output max when inverted, or "
+                    "Output min otherwise. Boolean masks use logical NOT; "
+                    "their output bounds do not rescale mask values."
+                ),
             ),
         ),
         rescale_intensity,
@@ -5743,7 +6203,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "save_output",
         "Save Image",
         IMAGE_DATA_CATEGORY,
-        "array",
+        "array_or_mesh",
         "any",
         (
             ParameterSpec(
@@ -5780,6 +6240,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "webp",
                     "tga",
                     "pnm",
+                    "obj",
+                    "3mf",
                 ),
             ),
             ParameterSpec(
@@ -5795,6 +6257,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         save_output,
         subcategory=SOURCE_OUTPUT_GROUP,
+        preserves_input_type=True,
+        stack_processing_note=(
+            "Save images or 3D meshes and pass the result downstream unchanged. "
+            "Mesh formats: OBJ (geometry/object groups) or 3MF (objects, colours "
+            "and physical units). 3MF requires physical calibration."
+        ),
     ),
     OperationSpec(
         "batch_output",
@@ -5820,6 +6288,8 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "npy",
                     "csv",
                     "tsv",
+                    "obj",
+                    "3mf",
                 ),
             ),
             ParameterSpec("subfolder", "Subfolder", "text", "", 0, 0, 1),
@@ -5993,6 +6463,20 @@ def graph_node_from_persisted_params(
         saved_params = dict(saved_params)
         saved_params.setdefault("z_start", 0)
         saved_params.setdefault("z_end", 0)
+    # Fixed thresholding originally supported strict Above only. Supply its
+    # exact old behavior at the shared restore boundary, including undo and
+    # generated/batch snapshots, without repairing explicitly invalid choices.
+    elif operation_id == "binary_threshold":
+        saved_params = dict(saved_params)
+        saved_params.setdefault("foreground", "Above")
+        saved_params.setdefault("low_threshold", 0.25)
+        saved_params.setdefault("high_threshold", 0.75)
+    elif operation_id == "rescale_intensity":
+        saved_params = dict(saved_params)
+        saved_params.setdefault("invert_intensity", False)
+        # Preserve authored endpoints, including old reversed bounds. The
+        # kernel requests an explicit correction instead of silently changing
+        # a scientific result (old boolean rescaling was a pass-through).
     # Select Axis Slice originally persisted only ``axis``/``index`` (and,
     # later, ``axes``/``indices``). The modern range/removal control explicitly
     # saves ``range_mode=True``. Missing range_mode must therefore retain the
@@ -6111,9 +6595,11 @@ class PrototypePipeline:
         self.nodes: dict[str, GraphNode] = {}
         self.connections: list[GraphConnection] = []
         self.outputs: dict[str, Any] = {}
-        self.output_states: dict[str, ImageState | TableState | None] = {}
+        self.output_states: dict[str, ImageState | TableState | MeshState | None] = {}
         self.node_outputs: dict[str, list[Any]] = {}
-        self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
+        self.node_output_states: dict[
+            str, list[ImageState | TableState | MeshState | None]
+        ] = {}
         self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
         self.node_compute_provenance: dict[str, CachedNodeComputeProvenance] = {}
@@ -9059,7 +9545,7 @@ class PrototypePipeline:
                     f"unhandled multi-output image operation {node.title!r}."
                 )
             return [(None, None)] * max(call.output_port_count, 1)
-        if spec.output_type == "table":
+        if spec.output_type in {"table", "mesh"}:
             return [(None, None)] * max(call.output_port_count, 1)
         try:
             dtype_policies = (
@@ -10125,6 +10611,8 @@ class PrototypePipeline:
         kwargs = self._operation_kwargs(node)
         primary_state = resolved_states[0] if resolved_states else None
         primary_input = resolved_inputs[0]
+        if node.operation_id in {"mask_to_3d_mesh", "labels_to_3d_mesh"}:
+            mask_mesh_axes(getattr(primary_input, "shape", ()), primary_state)
         _validate_operation_axis_semantics(node, primary_state, kwargs)
         self._inject_progress_context(
             spec,
@@ -10133,7 +10621,10 @@ class PrototypePipeline:
             progress_callback,
             cancel_callback,
         )
-        if node.operation_id in SPATIAL_OPERATIONS:
+        if node.operation_id in SPATIAL_OPERATIONS and not (
+            node.operation_id == "measure_3d_mesh_morphology"
+            and isinstance(primary_state, MeshState)
+        ):
             spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
             if node.operation_id == "clear_border_objects":
                 spatial_mode = "Auto from axes"
@@ -10315,7 +10806,7 @@ class PrototypePipeline:
         input_state: ImageState | TableState | None,
         kwargs: dict[str, Any],
     ) -> None:
-        if node.operation_id == "save_output":
+        if node.operation_id in {"save_output", "mask_to_3d_mesh", "labels_to_3d_mesh"}:
             kwargs["image_state"] = input_state
         if node.operation_id in {
             "measure_objects",
@@ -10473,6 +10964,10 @@ class PrototypePipeline:
             )
         spec = self.operation_spec(node.operation_id)
         input_states = list(call.input_states)
+        if spec.output_type == "mesh" or (
+            node.operation_id == "save_output" and is_mesh_data(output)
+        ):
+            return [(output, output.state)]
         if call.multiple_inputs:
             if spec.output_type == "table":
                 history = _table_history(input_states, node.title, output)
@@ -10981,8 +11476,12 @@ class PrototypePipeline:
             return True
         if input_type == "array":
             return output_type in {"array", "image", "mask", "labels"}
+        if input_type == "array_or_mesh":
+            return output_type in {"array", "image", "mask", "labels", "mesh"}
         if input_type == "mask_or_labels":
             return output_type in {"mask", "labels"}
+        if input_type == "mask_or_labels_or_mesh":
+            return output_type in {"mask", "labels", "mesh"}
         if input_type == "table":
             return output_type == "table"
         return output_type == input_type
@@ -10996,6 +11495,13 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
     prior = _combined_history(states)
     row_count = getattr(table, "row_count", 0)
     table_kind = str(getattr(table, "table_kind", "")).lower()
+    if table_kind == "3d mesh morphology" and any(
+        isinstance(state, MeshState) for state in states
+    ):
+        return prior + (
+            f"{operation_title}: measured supplied mesh geometry as {row_count} row; "
+            "no remeshing or voxel filtering",
+        )
     if "histogram" in table_kind:
         noun = "bin" if row_count == 1 else "bins"
         action = "binned"

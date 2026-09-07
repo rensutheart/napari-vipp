@@ -21,6 +21,27 @@ and the tests expected for common extensions. The detailed design is in the
 
 ## Dependency Direction
 
+For the unreleased surface-output path, `core/meshes.py` owns extraction,
+immutable geometry/calibration and atomic OBJ writing. Keep it Qt-free; the
+widget routes only presentation copies to napari Surface. See the
+[mesh contract](object-mesh-morphology-plan.md#phase-4-optional-mesh-export-and-visualization)
+and `test_meshes.py` before adding mesh consumers or additional formats.
+`test_mesh_input_measurements.py` additionally covers the direct geometry
+consumer, input-domain-specific metrics and pre-calculation card layout.
+Compute preflight derives the private `_vipp_input_kind=mesh` workload marker
+from an actual `MeshData` value, never from authored parameters. Meshes and
+Boolean masks fall back to CPU; the hybrid GPU region still requires native
+non-negative int32 labels. Test cached/manual frontiers as well as fresh runs.
+
+Object-aware meshes add `core/mesh_objects.py`, `core/mesh_refinement.py` and
+`core/mesh_3mf.py`; their matching tests cover identity, calibration, topology
+limits and publication. `test_mesh_workflow_integration.py` covers multi-input
+metadata, object-coloured Surface replacement, parameter visibility and
+batch/export dispatch. `test_mesh_objects_example.py` executes the shipped
+five-object example under the shared execution contract and exported Python.
+Keep face IDs int64, normalize compatible units before geometry comparisons,
+and never treat Combine as union or smoothing/simplification as presentation.
+
 ```text
 napari / npe2
     -> _widget.py       composition root and compatibility facade
@@ -40,6 +61,45 @@ napari / npe2
   applies graph mutations to the headless model.
 
 `test_architecture.py` enforces the first two rules.
+
+## Rescale Output Direction
+
+`rescale_intensity` requires finite ordered `out_min <= out_max` and an explicit
+boolean `invert_intensity` (default false). Interactive bounds are linked, but
+rendering never repairs loaded parameters. Shared persisted-node restoration
+adds the false default to older nodes; reversed legacy endpoints remain
+authored and fail with correction guidance when executed, because swapping
+them could change the old boolean pass-through result.
+
+Inversion reverses affine endpoints before the existing chunked floating or
+exact-offset integer calculation, not through a second image subtraction.
+Equal input cutoffs fill the low-cutoff endpoint (out_min normally, out_max
+when inverted); equal output bounds fill that value. Boolean inputs retain
+their established pass-through behavior unless inversion explicitly requests
+logical NOT. The parameter is scientific state: it invalidates the node cache,
+appears in provenance and is shared by batch and generated execution.
+
+## Source Channel Presentation
+
+Image Source's channel presentation is explicitly selected in the inspector.
+`metadata.vipp.inspector.source_channel_displays` stores per-source `stack` or
+`layers` choices, outside operation parameters and scientific cache keys.
+Missing choices default to `stack`; rendering the controls does not author a
+choice. Tab/history snapshots retain these preferences. The layers mode uses
+read-only channel views and the thumbnail's shared colour mapping; stack mode
+retains the explicit C dimension. Encoded RGB/RGBA and downstream operation
+presentations retain their existing policies. Lower-resolution source previews
+remain their separate presentation path.
+
+## Reader Support Diagnostics
+
+Image Source reader diagnostics use an application-owned, lazy session cache
+in `ui/reader_support.py`. Every source mode exposes the same system section.
+Disposable reader-check processes and their queue outlive individual inspector
+controls; selection changes neither cancel checks nor repeat completed probes.
+Explicit rechecks update all subscribers, and application shutdown stops pending
+probes. Results are not persisted across application starts or stored in workflows;
+they describe reader loading, never source validity or scientific cache state.
 
 ## Known Upstream Notices
 

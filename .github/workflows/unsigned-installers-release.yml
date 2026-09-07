@@ -266,6 +266,8 @@ jobs:
           test -x "$prefix/bin/python"
           test -x "$app/Contents/MacOS/vipp"
           "$prefix/bin/python" -m pip check
+          "$prefix/bin/python" -m napari_vipp.core.reader_support all-native
+          "$prefix/bin/python" scripts/smoke_mesh_install.py --require-installed
           "$prefix/bin/python" -c \
             "from importlib.metadata import version; assert version('napari-vipp') == '$version'; assert version('napari') == '0.9.0'; assert version('PySide6') == '6.9.3'"
 

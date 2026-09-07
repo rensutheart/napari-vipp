@@ -3,6 +3,31 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
+Unreleased surface outputs use `core/meshes.py`: immutable `MeshData` vertices
+and faces, immutable per-face object IDs and `MeshObject` identity/colour/source
+records, with separate `MeshState` calibration/history, not an ImageState.
+`mask_to_3d_mesh` is a manual CPU boundary, cannot be bypassed into an array,
+and is displayed with a native napari Surface. Batch and generated Python
+publication dispatch meshes to OBJ or 3MF. `save_output` accepts `array_or_mesh`,
+preserves its connected port type, and routes immutable meshes to the same atomic
+mesh writer. Image-only writers and contrast paths cannot consume meshes. Output
+format menus are presentation-only and never replace an incompatible saved choice.
+See the [detailed contract](object-mesh-morphology-plan.md#phase-4-optional-mesh-export-and-visualization).
+
+The unreleased mesh-morphology measurement consumer accepts existing meshes
+as a CPU geometry boundary (no remeshing), alongside masks and integer labels.
+Mesh rows do not invent label IDs or voxel counts; invalid/open surfaces mark
+volume-derived fields unavailable. Graph thumbnail space follows declared
+output capabilities even when no result has been calculated yet.
+
+`core/mesh_objects.py` owns object extraction, grouping, colour and measurement
+filters. `core/mesh_refinement.py` creates new Taubin-smoothed or QEM-simplified
+geometry with immutable inputs and explicit history. Combine converts compatible
+coordinate units, never welds/Boolean-unions objects, and keeps source lineage.
+`ui/mesh_display.py` creates detached per-object RGBA buffers for one Surface;
+viewer scale/origin use a common unit. `core/mesh_3mf.py` writes atomic core-3MF
+surface assemblies with physical units, materials and embedded source records.
+
 Last reviewed: 2026-09-06
 
 It reflects the live codebase through VIPP `0.15.0a1`. The durable SourceItems,
@@ -447,6 +472,24 @@ each cutoff. On 2D inputs the control is hidden because stack versus slice is
 not meaningful. Fixed `Binary Threshold` and local threshold nodes do not expose
 this control. Global automatic threshold nodes also show the selected input
 histogram with a marker at the computed cutoff.
+
+Fixed **Binary Threshold** persists `foreground = Above | Below | In range | Outside range`, defaulting
+missing values in older workflows to Above. These use strict `>` / `<` against
+the authored cutoff; equality and NaN are background in both modes. IEEE
+infinities retain ordinary comparison behavior, unlike automatic-threshold
+finite-population filtering. The scalar operation preserves all axes; only an
+explicit encoded RGB/RGBA channel axis invokes the existing luma conversion.
+CPU, the qualified float32 CuPy region, and shared exported/batch execution use
+the same choice. Invalid directions fail visibly rather than defaulting.
+Range modes use finite `low_threshold <= high_threshold`, with a closed interval
+for In range and strict `< low OR > high` for Outside range. NaN stays background
+in both (Outside range is not logical inversion). The inactive single cutoff is
+ignored in range modes; inactive range limits do not alter Above/Below.
+Older nodes receive inactive range defaults 0.25/0.75 on restoration. Parameters
+and histogram guides are mode-dependent; edits cannot cross the paired limit.
+The float32 GPU implementation version 3 and memory policy v2 reserve one
+additional boolean comparison array for range modes. Boundary/policy identities
+are versioned so cached benchmark qualifications cannot stand in for the new modes.
 
 ImageJ Default Threshold (8-bit) is an explicit exception to the generic
 histogram contract below. It is an experimental source-aligned ImageJ 1.54p

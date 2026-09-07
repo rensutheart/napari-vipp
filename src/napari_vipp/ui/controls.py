@@ -35,6 +35,7 @@ from napari_vipp.ui.file_sources import (
     SourceLoadProgressUnit,
 )
 from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.reader_support import ReaderSupportControl
 from napari_vipp.ui.sliders import VippSlider
 
 
@@ -106,9 +107,7 @@ def _slider_safe_bounds(
         np.finfo(float).tiny,
     )
     if not logarithmic:
-        while decimals > 0 and extent * (10**decimals) > maximum_slider_units:
-            decimals -= 1
-        if extent > maximum_slider_units:
+        if extent * (10**decimals) > maximum_slider_units:
             # Absolute numeric levels outside QSlider's signed-int storage
             # cannot use the ordinary scaled mapping. The existing logarithmic
             # mapping uses a fixed 0..1000 slider while the spin box retains the
@@ -140,8 +139,16 @@ class _ResettableSpinBoxMixin:
         self._default_value = value
 
     def resetToDefault(self) -> None:  # noqa: N802
-        if self._default_value is not None:
+        if self._default_is_allowed():
             self.setValue(self._default_value)
+
+    def _default_is_allowed(self) -> bool:
+        value = self._default_value
+        return (
+            value is not None
+            and self.minimum() <= value <= self.maximum()
+            and (not getattr(self, "odd_only", False) or int(value) % 2 == 1)
+        )
 
     def _create_context_menu(self) -> tuple[QMenu, QAction]:
         menu = self.lineEdit().createStandardContextMenu()
@@ -149,7 +156,7 @@ class _ResettableSpinBoxMixin:
         menu.addSeparator()
         reset_action = menu.addAction("Reset to default")
         reset_action.setEnabled(
-            self._default_value is not None and self.value() != self._default_value
+            self._default_is_allowed() and self.value() != self._default_value
         )
         reset_action.triggered.connect(self.resetToDefault)
         return menu, reset_action
@@ -165,6 +172,29 @@ class _ResettableSpinBoxMixin:
 
 class ResettableSpinBox(_ResettableSpinBoxMixin, QSpinBox):
     """Integer parameter entry with a default-reset context action."""
+
+    odd_only = False
+
+    def validate(self, text: str, position: int):
+        state, text, position = super().validate(text, position)
+        if self.odd_only and state == QValidator.Acceptable:
+            if self.valueFromText(text) % 2 == 0:
+                return QValidator.Intermediate, text, position
+        return state, text, position
+
+    def setValue(self, value):  # noqa: N802
+        if not self.odd_only or int(value) % 2:
+            super().setValue(value)
+
+    def stepBy(self, steps):  # noqa: N802
+        if not steps:
+            return
+        if self.odd_only and self.value() % 2 == 0:
+            # A loaded legacy value remains visible, but the first arrow edit
+            # must leave it for a valid value, in the requested direction.
+            self.setValue(self.value() + (1 if steps > 0 else -1))
+            return
+        super().stepBy(steps)
 
 
 class FlexibleDoubleSpinBox(_ResettableSpinBoxMixin, QDoubleSpinBox):
@@ -235,10 +265,13 @@ class ParameterControl(QWidget):
         self.slider.setMinimumWidth(80)
         if self._is_integer:
             self.value_box = ResettableSpinBox()
+            self.value_box.odd_only = getattr(spec, "odd_only", False)
         else:
             self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
         self.value_box.setDefaultValue(spec.default)
+        if getattr(spec, "odd_only", False):
+            self.value_box.setToolTip("Odd whole numbers only (for example 3, 5, 7).")
         _configure_numeric_spin_box(self.value_box)
         self.value_box.setMinimumWidth(74)
         slider_height = max(int(self.slider.sizeHint().height()), 14)
@@ -286,16 +319,25 @@ class ParameterControl(QWidget):
 
         with QSignalBlocker(self.slider), QSignalBlocker(self.value_box):
             if self._is_integer:
+                if getattr(self.spec, "odd_only", False):
+                    entry_minimum = int(entry_minimum) + (int(entry_minimum) % 2 == 0)
+                    entry_maximum = int(entry_maximum) - (int(entry_maximum) % 2 == 0)
                 self.value_box.setRange(int(entry_minimum), int(entry_maximum))
                 self.value_box.setSingleStep(max(int(bounds.step), 1))
                 if bounds.logarithmic:
                     self.slider.setRange(0, 1000)
                     self.slider.setSingleStep(1)
                 else:
-                    self.slider.setRange(int(bounds.minimum), int(bounds.maximum))
-                    self.slider.setSingleStep(max(int(bounds.step), 1))
+                    self.slider.setRange(
+                        self._to_slider(bounds.minimum), self._to_slider(bounds.maximum)
+                    )
+                    self.slider.setSingleStep(
+                        1 if getattr(self.spec, "odd_only", False)
+                        else max(int(bounds.step), 1)
+                    )
                 self.slider.setValue(self._bounded_slider_value(current))
-                self.value_box.setValue(int(current))
+                # Loading a workflow is not permission to repair its values.
+                QSpinBox.setValue(self.value_box, int(current))
             else:
                 self.value_box.setDecimals(bounds.decimals)
                 self.value_box.setRange(float(entry_minimum), float(entry_maximum))
@@ -357,6 +399,8 @@ class ParameterControl(QWidget):
             fraction = np.log1p(offset) / np.log1p(span)
             return int(round(fraction * 1000))
         if self._is_integer:
+            if getattr(self.spec, "odd_only", False):
+                return (int(round(float(value))) - 1) // 2
             return int(round(float(value)))
         return int(round(float(value) * self._scale))
 
@@ -374,8 +418,19 @@ class ParameterControl(QWidget):
                 mapped = minimum + np.expm1(
                     fraction * np.log1p(max(span, 0.0))
                 )
+            if self._is_integer and getattr(self.spec, "odd_only", False):
+                return self._odd_slider_value(mapped)
             return int(round(mapped)) if self._is_integer else mapped
+        if self._is_integer and getattr(self.spec, "odd_only", False):
+            return 2 * int(value) + 1
         return int(value) if self._is_integer else value / self._scale
+
+    def _odd_slider_value(self, value) -> int:
+        minimum = int(np.ceil(self._bounds.minimum))
+        minimum += minimum % 2 == 0
+        maximum = int(np.floor(self._bounds.maximum))
+        maximum -= maximum % 2 == 0
+        return min(max(2 * int(round((value - 1) / 2)) + 1, minimum), maximum)
 
     def _clamped_value(self, value, minimum, maximum):
         if value is None:
@@ -456,7 +511,7 @@ class ParameterControl(QWidget):
                 <= float(self._bounds.maximum)
             )
         if self._is_integer:
-            return self.slider.minimum() <= int(value) <= self.slider.maximum()
+            return self._bounds.minimum <= int(value) <= self._bounds.maximum
         slider_value = self._to_slider(value)
         return self.slider.minimum() <= slider_value <= self.slider.maximum()
 
@@ -472,6 +527,7 @@ class NumericEntryControl(QWidget):
         self._is_integer = spec.kind == "int"
         if self._is_integer:
             self.value_box = ResettableSpinBox()
+            self.value_box.odd_only = getattr(spec, "odd_only", False)
         else:
             self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
@@ -503,11 +559,14 @@ class NumericEntryControl(QWidget):
         )
         current = minimum if value is None else value
         if self._is_integer:
+            if getattr(self.spec, "odd_only", False):
+                minimum = int(minimum) + (int(minimum) % 2 == 0)
+                maximum = int(maximum) - (int(maximum) % 2 == 0)
             current = int(np.clip(int(current), int(minimum), int(maximum)))
             with QSignalBlocker(self.value_box):
                 self.value_box.setRange(int(minimum), int(maximum))
                 self.value_box.setSingleStep(max(int(bounds.step), 1))
-                self.value_box.setValue(current)
+                QSpinBox.setValue(self.value_box, current)
         else:
             current = float(np.clip(float(current), float(minimum), float(maximum)))
             with QSignalBlocker(self.value_box):
@@ -579,8 +638,7 @@ class ChoiceControl(QWidget):
         current = self.spec.default if value is None else str(value)
         with QSignalBlocker(self.combo):
             self._set_combo_items(self.spec.choices, self.spec.choice_labels)
-            index = self.combo.findData(current)
-            self.combo.setCurrentIndex(max(index, 0))
+            self._select_choice(current)
         if emit:
             self.valueChanged.emit(self.value())
 
@@ -594,12 +652,22 @@ class ChoiceControl(QWidget):
         current = self.spec.default if value is None else value
         current = str(current)
         with QSignalBlocker(self.combo):
-            index = self.combo.findData(current)
-            if index < 0:
-                index = 0
-            self.combo.setCurrentIndex(index)
+            self._select_choice(current)
         if emit:
             self.valueChanged.emit(self.value())
+
+    def _select_choice(self, current) -> None:
+        index = self.combo.findData(current)
+        if index < 0 and self.spec.dynamic_choice_kind == "output_format":
+            # Keep incompatible saved formats visible as a prompt, not as an
+            # offered format or a silently substituted default.
+            self.combo.setPlaceholderText(
+                f"Choose compatible format (saved: {current})"
+            )
+            self.combo.setCurrentIndex(-1)
+        else:
+            self.combo.setPlaceholderText("")
+            self.combo.setCurrentIndex(max(index, 0))
 
 
 class TextControl(QWidget):
@@ -913,6 +981,7 @@ class ImageSourceControl(QWidget):
     previewReloadRequested = Signal()
     sourceCropRepairRequested = Signal()
     sourceCropRepairDismissed = Signal()
+    sourceReaderRetryRequested = Signal()
 
     def __init__(
         self,
@@ -955,6 +1024,8 @@ class ImageSourceControl(QWidget):
         self.source_load_status.cancelRequested.connect(
             self.sourceLoadCancelRequested.emit
         )
+        self.reader_support = ReaderSupportControl()
+        self.reader_support.retryRequested.connect(self.sourceReaderRetryRequested.emit)
         self._memory_repair_presentation = ImageSourceMemoryRepairPresentation()
         self.memory_repair_panel = QWidget()
         memory_repair_layout = QVBoxLayout(self.memory_repair_panel)
@@ -1101,6 +1172,8 @@ class ImageSourceControl(QWidget):
         self.form_layout.addRow(self._source_representation_home)
         self.form_layout.addRow(self.memory_repair_panel)
         self.form_layout.addRow(self.source_load_status)
+        self.form_layout.addRow(self.reader_support)
+        self.reader_support.layoutChanged.connect(self._sync_reader_support_row)
 
         self.set_options(
             layer_names,
@@ -1445,6 +1518,8 @@ class ImageSourceControl(QWidget):
         """Begin progress for a new source-load generation."""
 
         accepted = self.source_load_status.begin(run_id, message)
+        if accepted:
+            self.reader_support.set_source(self.path_edit.text(), "")
         self._sync_rows()
         return accepted
 
@@ -1469,6 +1544,8 @@ class ImageSourceControl(QWidget):
             cancelled=cancelled,
             error=error,
         )
+        if accepted and not cancelled:
+            self.reader_support.set_source(self.path_edit.text(), error)
         self._sync_rows()
         return accepted
 
@@ -1619,9 +1696,21 @@ class ImageSourceControl(QWidget):
         choice = str(self.viewer_display_combo.currentData() or "analysis")
         self.viewerDisplayChanged.emit(choice)
 
+    def _sync_reader_support_row(self) -> None:
+        self._set_form_row_visible(
+            self.reader_support,
+            self.reader_support.content_host is None
+            or (
+                self.mode_combo.currentText() == "file path"
+                and not self.reader_support.failure.isHidden()
+            ),
+        )
+
     def _sync_rows(self) -> None:
         mode = self.mode_combo.currentText()
         file_mode = mode == "file path"
+        self.reader_support.set_source(self.path_edit.text())
+        self._sync_reader_support_row()
         self._set_form_row_visible(self.layer_row, mode == "napari layer")
         self._set_form_row_visible(self.file_row, file_mode)
         self._set_form_row_visible(

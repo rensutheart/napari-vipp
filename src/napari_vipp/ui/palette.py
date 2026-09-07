@@ -35,6 +35,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp._graph import OPERATION_MIME
+from napari_vipp.core.operation_search import operation_search_aliases
 from napari_vipp.core.pipeline import OperationSpec
 from napari_vipp.ui.iconography import (
     category_icon,
@@ -45,6 +46,7 @@ from napari_vipp.ui.iconography import (
 )
 from napari_vipp.ui.panel_toggle import SidePanelToggleButton
 from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text
+from napari_vipp.ui.search_fields import SearchLineEdit
 
 OPERATION_ROLE = Qt.UserRole
 SEARCH_TEXT_ROLE = Qt.UserRole + 1
@@ -367,7 +369,11 @@ class NodePalette(QTreeWidget):
             item = parent.child(index)
             if item.data(0, OPERATION_ROLE):
                 haystack = _normalize_search_text(str(item.data(0, SEARCH_TEXT_ROLE)))
-                visible = not query or _fuzzy_match(query, haystack)
+                visible = not query or _fuzzy_match(
+                    query,
+                    haystack,
+                    aliases=operation_search_aliases(str(item.data(0, OPERATION_ROLE))),
+                )
                 item.setHidden(not visible)
                 parent_visible = parent_visible or visible
                 visible_count += int(visible)
@@ -649,7 +655,7 @@ class NodeLibraryPanel(QWidget):
         )
         header.addWidget(self.collapse_button)
         expanded_layout.addLayout(header)
-        self.search_edit = QLineEdit()
+        self.search_edit = SearchLineEdit()
         self.search_edit.setPlaceholderText("Find a node to add…")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setAccessibleName("Search workflow nodes")

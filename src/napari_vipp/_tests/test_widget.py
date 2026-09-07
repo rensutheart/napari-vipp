@@ -6132,6 +6132,7 @@ def _colored_tczyx_viewer():
 def test_colored_tczyx_inspect_napari_time_axis_updates_vipp_time(qtbot):
     viewer = _colored_tczyx_viewer()
     widget = VippWidget(viewer)
+    widget._source_channel_displays["input"] = "layers"
     widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
     qtbot.addWidget(widget)
     assert widget.follow_dims_checkbox.isChecked()
@@ -6170,6 +6171,7 @@ def test_colored_tczyx_inspect_napari_time_axis_updates_vipp_time(qtbot):
 def test_tczyx_crop_surface_ignores_hidden_lower_rank_inspect_mapping(qtbot):
     viewer = _colored_tczyx_viewer()
     widget = VippWidget(viewer)
+    widget._source_channel_displays["input"] = "layers"
     widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
     qtbot.addWidget(widget)
     widget.run_pipeline(force_sync=True)
@@ -14238,8 +14240,9 @@ def test_hysteresis_threshold_shows_input_histogram_markers(qtbot):
     widget._connect_nodes("input", node.id)
     widget.graph_view.select_node(node.id)
 
-    widget._parameter_widgets["low_threshold"].value_box.setValue(64.0)
+    # Widen the high limit first: the low control cannot cross its peer.
     widget._parameter_widgets["high_threshold"].value_box.setValue(192.0)
+    widget._parameter_widgets["low_threshold"].value_box.setValue(64.0)
 
     assert not widget.rescale_input_histogram_group.isHidden()
     assert [
@@ -15804,6 +15807,91 @@ def test_graph_search_matches_title_operation_tunnel_and_output_tag():
     assert [(match.kind, match.tunnel_name) for match in tunnel_matches] == [
         ("tunnel", "Raw Reference")
     ]
+
+
+def test_graph_search_ctrl_f_focuses_search_but_respects_host_actions(qtbot):
+    host = QMainWindow()
+    viewer_surface = QPushButton("napari viewer surface", host)
+    host.setCentralWidget(viewer_surface)
+    widget = VippWidget(_Viewer())
+    dock = QDockWidget("VIPP Workflow", host)
+    dock.setWidget(widget)
+    host.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    qtbot.addWidget(host)
+    host.resize(1200, 760)
+    host.show()
+    host.activateWindow()
+    widget.graph_search_edit.setText("otsu")
+    viewer_surface.setFocus()
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is viewer_surface)
+    selected_before = widget._selected_node_id
+
+    qtbot.keyClick(viewer_surface, Qt.Key_F, Qt.ControlModifier)
+
+    assert QApplication.focusWidget() is widget.graph_search_edit
+    assert widget.graph_search_edit.selectedText() == "otsu"
+    assert widget._selected_node_id == selected_before
+    qtbot.keyClicks(widget.graph_search_edit, "gaussian")
+    assert widget.graph_search_edit.text() == "gaussian"
+
+    # A shortcut added after VIPP opened immediately takes priority.
+    action = QAction("napari/plugin Find", host)
+    action.setShortcut(QKeySequence.Find)
+    host.addAction(action)
+    calls = []
+    action.triggered.connect(lambda: calls.append(True))
+    viewer_surface.setFocus()
+    qtbot.keyClick(viewer_surface, Qt.Key_F, Qt.ControlModifier)
+    assert calls == [True]
+    assert QApplication.focusWidget() is viewer_surface
+    action.setShortcut(QKeySequence())
+    qtbot.keyClick(viewer_surface, Qt.Key_F, Qt.ControlModifier)
+    assert QApplication.focusWidget() is widget.graph_search_edit
+
+
+def test_graph_search_ctrl_f_preserves_napari_keymap(qtbot):
+    viewer = _Viewer()
+    viewer.keymap = {"Control-F": lambda: None}
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.show()
+    widget.activateWindow()
+    widget.graph_view.setFocus()
+    qtbot.waitUntil(lambda: QApplication.focusWidget() is widget.graph_view)
+    qtbot.keyClick(widget.graph_view, Qt.Key_F, Qt.ControlModifier)
+    assert QApplication.focusWidget() is widget.graph_view
+
+
+@pytest.mark.parametrize("font_size", (10, 14))
+def test_graph_search_field_expands_and_shrinks_with_toolbar(
+    qtbot, tmp_path, font_size,
+):
+    from napari._qt.qt_resources import get_stylesheet
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    font = widget.font()
+    font.setFamily("Segoe UI")
+    font.setPointSize(font_size)
+    widget.setFont(font)
+    widget.setStyleSheet(
+        get_stylesheet("dark", extra_variables={"font_size": f"{font_size}pt"})
+    )
+    _show_toolbar_at_width(widget, qtbot, 1600)
+    wide = widget.graph_search_edit.width()
+    assert 260 < wide <= 400
+    assert widget.graph_search_edit.search_action.isEnabled()
+    assert widget.palette_search.search_action.isEnabled()
+    assert widget.context_toolbar_group.grab().save(str(tmp_path / "search-wide.png"))
+    widget.palette_panel.set_compact(False)
+    QApplication.processEvents()
+    assert widget.palette_panel.grab().save(str(tmp_path / "node-search.png"))
+
+    _show_toolbar_at_width(widget, qtbot, 640)
+    assert 140 <= widget.graph_search_edit.width() < wide
+    context = widget.context_toolbar_group
+    assert context.minimumSizeHint().width() <= context.width()
+    assert context.grab().save(str(tmp_path / "search-narrow.png"))
 
 
 def test_graph_search_highlights_and_focuses_node_matches(qtbot):
@@ -22985,13 +23073,13 @@ def test_toolbar_file_actions_remain_visible_at_every_width(
             1400,
             "wide",
             "Batch workflow",
-            "Preview",
+            "Display settings",
             "Calculate all",
             "Auto Arrange",
             ("New", "Open", "Save"),
         ),
-        (1000, "medium", "Batch", "Preview", "Calculate", "Arrange", ("", "", "")),
-        (640, "narrow", "", "", "", "", ("", "", "")),
+        (1000, "medium", "Batch", "Display", "Calculate", "Arrange", ("", "", "")),
+        (640, "narrow", "", "Display", "", "", ("", "", "")),
     ),
 )
 def test_toolbar_labels_follow_responsive_mode(
@@ -23252,45 +23340,207 @@ def test_toolbar_preview_menu_owns_presentation_controls(qtbot):
     widget._populate_preview_display_menu()
     actions = widget.preview_display_menu.actions()
 
-    assert [action.text() for action in actions] == ["Preview display settings"]
+    assert [action.text() for action in actions] == ["Graph display settings"]
     assert widget._preview_menu_action is actions[0]
     panel = actions[0].defaultWidget()
     assert panel is widget._preview_menu_panel
     assert panel.objectName() == "VippPreviewDisplayPanel"
     assert panel.minimumWidth() >= 360
     headings = panel.findChildren(QLabel, "VippPreviewDisplayHeading")
-    assert [heading.text() for heading in headings] == ["Preview display settings"]
+    assert [heading.text() for heading in headings] == ["Graph display settings"]
     assert headings[0].isEnabled()
     notes = panel.findChildren(QLabel, "VippPreviewDisplayNote")
     assert [note.text() for note in notes] == [
-        "Presentation only · analysis pixels are unchanged"
+        "Applies immediately.\n"
+        "Display only — image data and analysis results are unchanged."
     ]
     colors = theme_colors(QWidget.palette(widget))
     assert colors.text.name() in panel.styleSheet()
     assert colors.muted_text.name() in panel.styleSheet()
     assert colors.border.name() in widget.preview_display_menu.styleSheet()
     assert set(widget._preview_menu_combos) == {
-        "Mode",
-        "Contrast",
-        "Range",
-        "Colormap",
-        "Detail",
-        "Port labels",
+        "Thumbnail view",
+        "Contrast method",
+        "Contrast based on",
+        "Colour map",
+        "Thumbnail resolution",
+        "Input/output labels",
     }
     sources = {
-        "Mode": widget.preview_mode_combo,
-        "Contrast": widget.thumbnail_contrast_combo,
-        "Range": widget.thumbnail_scope_combo,
-        "Colormap": widget.thumbnail_colormap_combo,
-        "Detail": widget.thumbnail_resolution_combo,
-        "Port labels": widget.port_label_mode_combo,
+        "Thumbnail view": widget.preview_mode_combo,
+        "Contrast method": widget.thumbnail_contrast_combo,
+        "Contrast based on": widget.thumbnail_scope_combo,
+        "Colour map": widget.thumbnail_colormap_combo,
+        "Thumbnail resolution": widget.thumbnail_resolution_combo,
+        "Input/output labels": widget.port_label_mode_combo,
     }
     for label, source in sources.items():
         picker = widget._preview_menu_combos[label]
         assert isinstance(picker, QComboBox)
-        assert picker.currentText() == source.currentText()
+        if source is not widget.thumbnail_scope_combo:
+            assert picker.currentIndex() == source.currentIndex()
         assert picker.count() == source.count()
         assert picker.toolTip() == source.toolTip()
+
+
+@pytest.mark.parametrize(
+    ("axes", "shape", "has_stack"),
+    (
+        ("YX", (8, 12), False),
+        ("CYX", (4, 8, 12), False),
+        ("YXC", (8, 12, 3), False),
+        ("ZYX", (1, 8, 12), False),
+        ("ZYX", (3, 8, 12), True),
+        ("TYX", (3, 8, 12), True),
+        ("TCZYX", (2, 3, 4, 8, 12), True),
+    ),
+)
+def test_display_menu_stack_availability_uses_axes_without_reading_pixels(
+    qtbot, monkeypatch, axes, shape, has_stack,
+):
+    from napari_vipp.core.metadata import image_state_from_array
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline = PrototypePipeline()
+    monkeypatch.setattr(widget, "_update_thumbnails", lambda: None)
+    node = widget.pipeline.add_node("input")
+    state = image_state_from_array(np.zeros(shape), layer_metadata={"axes": axes})
+
+    class ShapeOnly:
+        def __array__(self, *_args, **_kwargs):
+            raise AssertionError("Opening display settings must not read image pixels")
+
+    data = ShapeOnly()
+    data.shape = shape
+    monkeypatch.setattr(
+        widget, "_node_thumbnail_display_payload", lambda *_args: (data, state, 0)
+    )
+    widget.thumbnail_scope_combo.setCurrentText("Stack")
+    before = serialize_workflow(widget.pipeline)
+    widget._populate_preview_display_menu()
+    scope = widget._preview_menu_combos["Contrast based on"]
+    view = widget._preview_menu_combos["Thumbnail view"]
+    assert scope.model().item(0).isEnabled() is has_stack
+    assert view.itemText(0) == ("Current slice" if has_stack else "Current image")
+    assert scope.currentText() == ("Entire stack" if has_stack else "Current image")
+    assert widget.thumbnail_scope_combo.currentText() == "Stack"
+    assert serialize_workflow(widget.pipeline) == before
+    assert node.id in widget.pipeline.nodes
+
+
+def test_display_menu_projection_and_mixed_graph_keep_canonical_preferences(
+    qtbot, monkeypatch,
+):
+    from napari_vipp.core.metadata import image_state_from_array
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline = PrototypePipeline()
+    image_node = widget.pipeline.add_node("input")
+    stack_node = widget.pipeline.add_node("input")
+    image = np.zeros((8, 12))
+    stack = np.zeros((4, 8, 12))
+    payloads = {
+        image_node.id: (image, image_state_from_array(image), 0),
+        stack_node.id: (
+            stack, image_state_from_array(stack, layer_metadata={"axes": "ZYX"}), 0,
+        ),
+    }
+    monkeypatch.setattr(
+        widget, "_node_thumbnail_display_payload",
+        lambda node_id, *_args: payloads.get(node_id, (None, None, 0)),
+    )
+    monkeypatch.setattr(widget, "_update_thumbnails", lambda: None)
+    widget._selected_node_id = image_node.id
+    widget._populate_preview_display_menu()
+    scope = widget._preview_menu_combos["Contrast based on"]
+    view = widget._preview_menu_combos["Thumbnail view"]
+    assert scope.model().item(0).isEnabled()
+    view.setCurrentText("Maximum-intensity projection (MIP)")
+    assert widget.preview_mode_combo.currentText() == "MIP"
+    assert scope.itemText(1) == "Current projection"
+    scope.setCurrentText("Current projection")
+    assert widget.thumbnail_scope_combo.currentText() == "Slice"
+    view.setCurrentText("Hidden")
+    assert widget.preview_mode_combo.currentText() == "Off"
+
+    widget.thumbnail_scope_combo.setCurrentText("Stack")
+    widget._preview_disabled_node_ids.add(stack_node.id)
+    widget._sync_preview_display_controls()
+    assert not scope.model().item(0).isEnabled()
+    assert scope.currentText() == "Current image"
+    assert widget.thumbnail_scope_combo.currentText() == "Stack"
+    widget._preview_disabled_node_ids.clear()
+    widget._sync_preview_display_controls()
+    assert scope.model().item(0).isEnabled()
+    assert scope.currentText() == "Entire stack"
+
+
+@pytest.mark.parametrize("theme", ("dark", "light"))
+@pytest.mark.parametrize("font_size", (10, 12))
+def test_display_menu_dropdowns_share_width_after_styling(
+    qtbot, monkeypatch, tmp_path, theme, font_size,
+):
+    from napari._qt.qt_resources import get_stylesheet
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    font = widget.font()
+    font.setFamily("Segoe UI")
+    font.setPointSize(font_size)
+    widget.setFont(font)
+    widget.setStyleSheet(
+        get_stylesheet(theme, extra_variables={"font_size": f"{font_size}pt"})
+    )
+    monkeypatch.setattr(widget, "_graph_display_has_stack", lambda: True)
+    menu = widget.preview_display_menu
+    menu.popup(QPoint(20, 20))
+    qtbot.waitUntil(menu.isVisible)
+    # Host styling is polished after construction. The live wording refresh
+    # must not let the long MIP option outgrow the shared field column.
+    widget._sync_preview_display_controls()
+    QApplication.processEvents()
+    pickers = list(widget._preview_menu_combos.values())
+    assert len({picker.width() for picker in pickers}) == 1
+    assert len({picker.geometry().right() for picker in pickers}) == 1
+    panel = widget._preview_menu_panel
+    for picker in pickers:
+        assert panel.contentsRect().contains(picker.geometry())
+        assert menu.rect().contains(picker.mapTo(menu, picker.rect().bottomRight()))
+    # The controls also remain aligned if their containing panel has less room.
+    panel.resize(panel.minimumSizeHint().width(), panel.height())
+    panel.layout().activate()
+    assert len({picker.width() for picker in pickers}) == 1
+    assert menu.grab().save(str(tmp_path / "display-settings-aligned.png"))
+    menu.hide()
+
+
+def test_display_menu_updates_in_place_and_stops_polling_when_closed(
+    qtbot, monkeypatch, tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    available = [True]
+    monkeypatch.setattr(widget, "_graph_display_has_stack", lambda: available[0])
+    widget.preview_display_menu.popup(QPoint(20, 20))
+    qtbot.waitUntil(widget.preview_display_menu.isVisible)
+    view = widget._preview_menu_combos["Thumbnail view"]
+    assert view.itemText(0) == "Current slice"
+    assert widget._preview_menu_sync_timer.isActive()
+    available[0] = False
+    qtbot.waitUntil(lambda: view.itemText(0) == "Current image")
+    for picker in widget._preview_menu_combos.values():
+        longest = max(
+            picker.fontMetrics().horizontalAdvance(picker.itemText(i))
+            for i in range(picker.count())
+        )
+        assert picker.width() >= longest + 48
+    assert widget.preview_display_menu.grab().save(
+        str(tmp_path / "graph-display-settings.png")
+    )
+    widget.preview_display_menu.hide()
+    assert not widget._preview_menu_sync_timer.isActive()
 
 
 @pytest.mark.parametrize(
@@ -23835,7 +24085,7 @@ def test_toolbar_command_icons_have_breathing_room_and_preview_chevron(qtbot):
         assert button.property("text") == button.text()
 
     preview = widget.preview_menu_button
-    assert preview.text() == "Preview"
+    assert preview.text() == "Display settings"
     assert "menu-indicator { image: none" in preview.styleSheet()
     assert "padding-right: 22px" in preview.styleSheet()
     assert preview.property("chevronVisible") is True
@@ -23884,7 +24134,7 @@ def test_toolbar_command_icons_have_breathing_room_and_preview_chevron(qtbot):
     )
 
     _show_toolbar_at_width(widget, qtbot, 900)
-    assert preview.text() == "Preview"
+    assert preview.text() == "Display"
     assert preview.property("chevronVisible") is True
     assert not preview._chevron_indicator.isHidden()
     assert run_activity.text() == "Run activity"
@@ -23892,9 +24142,9 @@ def test_toolbar_command_icons_have_breathing_room_and_preview_chevron(qtbot):
     assert not run_activity._chevron_indicator.isHidden()
 
     _show_toolbar_at_width(widget, qtbot, 640)
-    assert preview.text() == ""
-    assert preview.property("chevronVisible") is False
-    assert preview._chevron_indicator.isHidden()
+    assert preview.text() == "Display"
+    assert preview.property("chevronVisible") is True
+    assert not preview._chevron_indicator.isHidden()
     assert run_activity.text() == ""
     assert run_activity.property("chevronVisible") is False
     assert run_activity._chevron_indicator.isHidden()
@@ -23913,7 +24163,7 @@ def test_toolbar_compaction_remeasures_nested_groups_after_layout_changes(qtbot)
 
     assert widget.new_workflow_button.text() == "New"
     assert widget.batch_button.text() == "Batch workflow"
-    assert widget.preview_menu_button.text() == "Preview"
+    assert widget.preview_menu_button.text() == "Display settings"
     assert widget.calculate_all_button.text() == "Calculate all"
     assert not widget.compute_toolbar_group.isHidden()
     assert (
@@ -23999,10 +24249,19 @@ def test_toolbar_settings_menu_consolidates_actions_not_preview_controls(qtbot):
     assert widget.save_thumbnail_visibility_checkbox.isChecked()
 
 
-def test_settings_menu_headings_are_bold_normal_color_labels(qtbot):
+@pytest.mark.parametrize("font_size", (10, 14))
+def test_settings_menu_headings_are_bold_normal_color_labels(
+    qtbot, tmp_path, font_size,
+):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
+    font = widget.settings_menu.font()
+    font.setFamily("Segoe UI")
+    font.setPointSize(font_size)
+    widget.settings_menu.setFont(font)
     widget._populate_settings_toolbar_menu()
+    widget.settings_menu.popup(QPoint(20, 20))
+    qtbot.waitUntil(widget.settings_menu.isVisible)
 
     headings = {
         action.text(): action
@@ -24019,7 +24278,15 @@ def test_settings_menu_headings_are_bold_normal_color_labels(qtbot):
         assert not action.isEnabled()
         assert label.isEnabled()
         assert label.font().bold()
+        assert label.alignment() == Qt.AlignCenter
+        margins = label.contentsMargins()
+        assert margins.left() == margins.right()
+        assert margins.top() > margins.bottom() >= 4
+        assert label.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+        assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
         assert label.palette().color(QPalette.Active, QPalette.WindowText) == menu_color
+    assert widget.settings_menu.grab().save(str(tmp_path / "settings-menu.png"))
+    widget.settings_menu.hide()
 
 
 def test_preview_menu_controls_port_label_mode(qtbot):
@@ -24030,21 +24297,21 @@ def test_preview_menu_controls_port_label_mode(qtbot):
     assert widget.port_label_mode_combo.currentText() == "Ambiguous only"
     assert widget.graph_view.port_label_mode == PortLabelMode.AMBIGUOUS_ONLY
     widget._populate_preview_display_menu()
-    picker = widget._preview_menu_combos["Port labels"]
+    picker = widget._preview_menu_combos["Input/output labels"]
     assert [picker.itemText(index) for index in range(picker.count())] == [
-        "Ambiguous only",
-        "Show all",
-        "Hide all",
+        "When needed",
+        "Always",
+        "Never",
     ]
 
-    picker.setCurrentText("Show all")
+    picker.setCurrentText("Always")
 
     assert widget.port_label_mode_combo.currentText() == "Show all"
     assert widget.graph_view.port_label_mode == PortLabelMode.SHOW_ALL
-    assert widget.status_label.text().startswith("Port labels set to Show all")
+    assert widget.status_label.text().startswith("Input/output labels set to Always")
 
     widget._populate_preview_display_menu()
-    assert widget._preview_menu_combos["Port labels"].currentText() == "Show all"
+    assert widget._preview_menu_combos["Input/output labels"].currentText() == "Always"
 
 
 def test_palette_registry_nodes_are_constructible():

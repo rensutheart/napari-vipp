@@ -59,7 +59,7 @@
     {
       "operation_id": "binary_threshold",
       "implementation_id": "cupy-binary-threshold-f32-exact-v1",
-      "implementation_version": "1",
+      "implementation_version": "3",
       "runtime_id": "cuda-cupy",
       "library_id": "cupy"
     },
@@ -432,12 +432,13 @@
       ],
       "owner_paths": [
         "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py",
+        "src/napari_vipp/_tests/test_binary_threshold_range.py",
         "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py",
         "src/napari_vipp/_tests/test_gpu_execution_integration.py"
       ],
       "profile_commands": {
-        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment"],
-        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment"]
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_binary_threshold_range.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_binary_threshold_provider.py", "src/napari_vipp/_tests/test_binary_threshold_range.py", "src/napari_vipp/_tests/test_gpu_extract_channel_provider.py", "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_segmentation_cleanup_corridor_is_one_cuda_segment"]
       },
       "artifact": null,
       "artifact_schema": null,

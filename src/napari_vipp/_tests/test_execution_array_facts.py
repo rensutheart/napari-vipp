@@ -1959,7 +1959,10 @@ def test_binary_threshold_resident_metadata_is_shape_preserving_bool():
     assert resident_state.dtype == "bool"
     assert resident_state.axes == state.axes
     assert resident_state.kind == "binary mask"
-    assert resident_state.history[-1] == "Binary Threshold"
+    assert resident_state.history[-1] == (
+        "Binary Threshold: Foreground Above, strict cutoff 0.5; "
+        "equal values and NaN are background"
+    )
     with pytest.raises(RuntimeError, match="shape-preserving bool-mask contract"):
         execution_module._predict_device_node_states(
             pipeline,
@@ -2802,7 +2805,9 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
             operation.id
             for operation in NODE_LIBRARY
             if operation.has_input
-            and operation.output_type != "table"
+            # Tables and surfaces are domain objects, not image arrays whose
+            # exact shape/dtype can be projected for an accelerator consumer.
+            and operation.output_type not in {"table", "mesh"}
             and not any(
                 implementation.runtime_id != "cpu-numpy"
                 for implementation in registry.implementations_for_operation(

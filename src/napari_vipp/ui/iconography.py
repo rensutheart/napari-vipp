@@ -27,6 +27,7 @@ _CATEGORY_ICON_KINDS = {
     "Projection": "layers",
     "Segmentation": "regions",
     "Morphology": "contours",
+    "3D Meshes": "mesh",
     "Label Operations": "tag",
     "Measurements": "ruler",
     "Colocalization & Spatial Analysis": "overlap",
@@ -278,6 +279,13 @@ def _draw_icon_pixmap(kind: str, color: QColor, size: int) -> QPixmap:
 
 def _draw_glyph(painter: QPainter, kind: str, color: QColor) -> None:
     path = QPainterPath()
+    if kind == "mesh":
+        corners = [QPointF(10, 2), QPointF(17, 6), QPointF(17, 14),
+                   QPointF(10, 18), QPointF(3, 14), QPointF(3, 6)]
+        painter.drawPolygon(QPolygonF(corners))
+        for point in corners:
+            painter.drawLine(QPointF(10, 10), point)
+        return
     if kind in {"image", "image-source"}:
         painter.drawRoundedRect(QRectF(2.5, 3.5, 15, 13), 1.5, 1.5)
         painter.drawEllipse(QPointF(6.3, 7.2), 1.3, 1.3)

@@ -30,6 +30,7 @@ registry):
 - `summary-table`
 - `derived-morphology`
 - `mesh-morphology`
+- `mesh-objects`
 - `skeleton-qc`
 - `advanced-skeleton`
 - `racc-colocalization`
@@ -64,6 +65,8 @@ example...**. Its actively maintained source also remains under
 | `synthetic-measurement-summary.json` | `VIPP synthetic measurement summary` | Grouped measurement summaries with known timepoint object counts and areas. |
 | `synthetic-derived-object-morphology.json` | `VIPP synthetic object morphology` | Derived 2D morphology, circularity, perimeter/area ratio, Hu moments, and checklist-based column selection. |
 | `synthetic-3d-mesh-morphology.json` | `VIPP synthetic 3D mesh morphology` | True-3D mesh morphology on anisotropic objects, including surface area, mesh volume, convex hull metrics, sphericity, and tiny-object status reporting. |
+| `synthetic-mesh-objects.json` | `VIPP synthetic 3D mesh morphology` | Five calibrated objects: colour by volume, filter into two disjoint groups, recombine without union, then smooth, simplify and measure. Verify retained IDs/colours and 3MF export. Calculate all publishes no outputs. Open as `mesh-objects`; see the [unreleased mesh guide](https://rensutheart.github.io/vipp-mkdocs/nightly/workflows/mask-to-mesh/). |
+| `synthetic-mesh-refinement-tuned.json` | `VIPP synthetic 3D mesh morphology` | Captured interactive variant: split a single mesh into five objects, colour by triangle count with Turbo, filter and combine, smooth at 2 iterations/strength 1, then simplify at 10%/aggressiveness 4. Retains layout and inspector profiles; no automatic file output. Open as `mesh-refinement-tuned`. |
 | `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path using a `Skeleton mask` tunnel: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
 | `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test using a `Skeleton mask` tunnel for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
 | `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path using named red/green channel tunnels: ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
@@ -72,6 +75,15 @@ example...**. Its actively maintained source also remains under
 | `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with one shared, visible `float32` Preserve conversion feeding matched 25-iteration RL/RL-TV branches, a matched ZYX PSF, the authored `1e-12` filter epsilon, and conservative `0.002` TV regularization. The conversion does not rescale intensity. GPU agreement is a backend check, not proof that the PSF, iteration count, or restored structures are scientifically valid. |
 
 ## Validation Expectations
+
+`synthetic-mesh-refinement-tuned.json` is the manually authored **Mesh Objects —
+Tuned Refinement** variant (`mesh-refinement-tuned`, under **3D Meshes**). It
+retains the interactive node parameters, positions and inspector profiles:
+single-object extraction followed by splitting, Turbo triangle-count colours,
+two smoothing iterations at strength 1, and a 10% simplification target at
+aggressiveness 4. Its regression tests check the saved settings, five object IDs,
+calibration and absence of automatic output files. Do not regenerate this snapshot
+with `generate_mesh_objects_workflow.py`, which owns only the original example.
 
 The repository test suite loads and runs every workflow above. When adding a new
 example workflow, also add:

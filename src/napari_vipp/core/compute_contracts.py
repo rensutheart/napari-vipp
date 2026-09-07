@@ -27,6 +27,7 @@ class ValueKind(StrEnum):
     LABELS = "labels"
     MASK = "mask"
     TABLE = "table"
+    MESH = "mesh"
     SCALAR = "scalar"
     ANY = "any"
 

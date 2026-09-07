@@ -216,10 +216,12 @@ EXPECTED_IMPLEMENTATIONS = {
     "remove_binary_outliers": "cupy-remove-binary-outliers-v1",
     "measure_objects": "cupy-measure-objects-basic-v1",
     "measure_objects_intensity": "cupy-measure-objects-intensity-basic-v1",
-    "measure_3d_mesh_morphology": (
-        "cupy-measure-3d-mesh-morphology-hybrid-v1"
-    ),
+    "measure_3d_mesh_morphology": ("cupy-measure-3d-mesh-morphology-hybrid-v1"),
     "analyze_skeleton": "cupyx-analyze-skeleton-v1",
+}
+EXPECTED_IMPLEMENTATION_VERSIONS = {
+    operation_id: "3" if operation_id == "binary_threshold" else "1"
+    for operation_id in EXPECTED_IMPLEMENTATIONS
 }
 
 _MASK_INPUT_TARGETS = frozenset(
@@ -405,12 +407,35 @@ def sweep_catalog() -> tuple[SweepCase, ...]:
             "float32",
             "YX",
             20_260_807,
-            (("threshold", 0.25),),
+            (
+                ("threshold", 0.25),
+                ("foreground", "Above"),
+                ("low_threshold", 0.25),
+                ("high_threshold", 0.75),
+            ),
             (
                 _numeric_lane(
                     "threshold",
                     "threshold",
                     (0.15, 0.25, 0.4, 0.65, 0.25, 0.4),
+                ),
+                SweepLane(
+                    "foreground",
+                    "categorical_parameter",
+                    "foreground",
+                    (
+                        "Above",
+                        "Below",
+                        "In range",
+                        "Outside range",
+                        "Below",
+                        "In range",
+                        "Outside range",
+                        "Above",
+                    ),
+                    "Revisit all four v3 branches with fixed ordered range "
+                    "cutoffs; range numerical boundaries and workspace are "
+                    "qualified by benchmark_gpu_segmentation_bridge.py.",
                 ),
             ),
         ),
@@ -794,7 +819,10 @@ def validate_catalog(
             raise SweepConfigurationError(
                 f"{declaration.key} is not a CUDA/CuPy declaration."
             )
-        if declaration.implementation_version != "1":
+        if (
+            declaration.implementation_version
+            != (EXPECTED_IMPLEMENTATION_VERSIONS[declaration.operation_id])
+        ):
             raise SweepConfigurationError(
                 f"{declaration.key} has an unreviewed implementation version."
             )
