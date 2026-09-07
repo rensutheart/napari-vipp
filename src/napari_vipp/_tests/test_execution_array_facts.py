@@ -1959,7 +1959,10 @@ def test_binary_threshold_resident_metadata_is_shape_preserving_bool():
     assert resident_state.dtype == "bool"
     assert resident_state.axes == state.axes
     assert resident_state.kind == "binary mask"
-    assert resident_state.history[-1] == "Binary Threshold"
+    assert resident_state.history[-1] == (
+        "Binary Threshold: Foreground Above, strict cutoff 0.5; "
+        "equal values and NaN are background"
+    )
     with pytest.raises(RuntimeError, match="shape-preserving bool-mask contract"):
         execution_module._predict_device_node_states(
             pipeline,

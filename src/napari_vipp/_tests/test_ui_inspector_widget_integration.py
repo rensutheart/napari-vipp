@@ -837,14 +837,18 @@ def test_reader_support_is_a_separate_scrollable_system_section(
         for label in info.rows.values():
             assert label.height() >= label.heightForWidth(label.width())
             assert info.content.rect().contains(label.geometry())
-        # The real napari stylesheet must select readable bright dark-theme
-        # colours, not the dark foregrounds intended for light backgrounds.
+        # Match the intended status colours under the real napari stylesheet:
+        # the missing-reader warning uses readable yellow foreground text,
+        # while loaded/failed states use bright accents on dark backgrounds.
         from napari_vipp.ui.palette_roles import theme_colors
         tones = theme_colors(info.palette())
         for key, tone in (
             ("tiff", tones.success), ("czi", tones.warning), ("lif", tones.error),
         ):
-            color = tone.accent if theme == "dark" else tone.foreground
+            color = (
+                tone.accent if theme == "dark" and key != "czi"
+                else tone.foreground
+            )
             assert f'color: {color.name()}' in info.rows[key].text()
         panel.ensureWidgetVisible(info.help)
         def help_is_reachable():
