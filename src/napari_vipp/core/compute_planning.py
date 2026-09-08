@@ -136,6 +136,7 @@ class _Candidate:
     memory_estimate: MemoryEstimate
     evidence: PerformanceEvidence | None
     exact_workload_qualification: ExactWorkloadCandidateQualification | None = None
+    parity_warnings: tuple[str, ...] = ()
 
 
 def plan_compute_decisions(
@@ -780,6 +781,7 @@ def _admit_candidates(
                 memory,
                 candidate_evidence,
                 qualification,
+                support.parity_warnings,
             )
         )
     return tuple(candidates), tuple(rejections)
@@ -1083,6 +1085,7 @@ def _selected_decision(
         ),
         memory_estimate=candidate.memory_estimate,
         implementation_version=candidate.spec.implementation_version,
+        parity_warnings=candidate.parity_warnings,
     )
 
 

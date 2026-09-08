@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 
 EXECUTION_PROVENANCE_TYPE = "napari-vipp-compute-execution"
-EXECUTION_PROVENANCE_VERSION = 1
+EXECUTION_PROVENANCE_VERSION = 2
 
 
 def serialize_execution_provenance(
@@ -137,6 +137,7 @@ def serialize_execution_provenance(
             "decision_kind": decision.decision_kind.value,
             "reason": decision.reason.value,
             "reason_text": decision.reason_text,
+            "parity_warnings": list(decision.parity_warnings),
             "fallback_used": decision.fallback_used,
             "fallback_reason": decision.fallback_reason.value,
             "benchmark_record_digest": decision.benchmark_record_digest,

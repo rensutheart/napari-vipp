@@ -5543,6 +5543,8 @@ def _local_actual_cpu_fallback_decision(
         reason=DecisionReason.OUT_OF_MEMORY_FALLBACK,
         reason_text=reason_text,
         fallback_reason=fallback_reason,
+        implementation_version="1",
+        parity_warnings=(),
     )
 
 

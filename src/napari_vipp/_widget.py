@@ -2981,6 +2981,13 @@ class VippWidget(QWidget):
         )
         self.node_compute_note.setWordWrap(True)
         self.node_compute_note.setStyleSheet("font-size: 10px;")
+        self.compute_parity_notice = QLabel("")
+        self.compute_parity_notice.setAccessibleName(
+            "Selected node GPU numerical difference advisory"
+        )
+        self.compute_parity_notice.setWordWrap(True)
+        self.compute_parity_notice.setTextFormat(Qt.RichText)
+        self.compute_parity_notice.setHidden(True)
         self.compute_repair_panel = QFrame()
         self.compute_repair_panel.setObjectName("ComputeRepairPanel")
         self.compute_repair_panel.setStyleSheet("")
@@ -3945,6 +3952,12 @@ class VippWidget(QWidget):
             )
             self.node_compute_note.setStyleSheet(
                 f"color: {muted}; font-size: 10px;"
+            )
+            self.compute_parity_notice.setStyleSheet(
+                f"color: {color(colors.warning.foreground)};"
+                f"background-color: {color(colors.warning.surface)};"
+                f"border: 1px solid {color(colors.warning.border)};"
+                "border-radius: 4px; padding: 7px;"
             )
             self.selected_category_label.setStyleSheet(
                 f"color: {muted}; font-size: 10px;"
@@ -6339,6 +6352,7 @@ class VippWidget(QWidget):
         compute_section_layout.addWidget(self.execution_group)
         compute_section_layout.addWidget(self.compute_repair_panel)
         compute_section_layout.addWidget(self.compute_group)
+        compute_section_layout.addWidget(self.compute_parity_notice)
 
         batch_effective_layout = QVBoxLayout(self.batch_effective_parameter_group)
         batch_effective_layout.setContentsMargins(8, 8, 8, 8)
@@ -7709,6 +7723,7 @@ class VippWidget(QWidget):
         )
 
     def _sync_node_compute_control(self) -> None:
+        self._sync_compute_parity_notice()
         self._sync_selected_compute_repair()
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
@@ -8277,6 +8292,31 @@ class VippWidget(QWidget):
             )
             return None
         return node
+
+    def _sync_compute_parity_notice(self) -> None:
+        node_id = self._selected_node_id
+        decision = self._accepted_compute_decisions.get(node_id)
+        warnings = (
+            decision.parity_warnings
+            if decision is not None
+            and decision.runtime_id == "cuda-cupy"
+            and not decision.fallback_used
+            else ()
+        )
+        if not warnings:
+            self.compute_parity_notice.clear()
+            self.compute_parity_notice.setHidden(True)
+            return
+        result_label = (
+            "Previous GPU result"
+            if node_id in self._stale_compute_badge_node_ids
+            else "GPU result"
+        )
+        details = "<br><br>".join(html.escape(message) for message in warnings)
+        self.compute_parity_notice.setText(
+            f"<b>{result_label}: numerical differences</b><br>{details}"
+        )
+        self.compute_parity_notice.setVisible(True)
 
     def _can_benchmark_selected_node(self) -> tuple[bool, str]:
         if self._compute_runtime_quarantined_reason:
@@ -9506,6 +9546,8 @@ class VippWidget(QWidget):
             self.graph_view.clear_node_optimization_hints()
         if hasattr(self, "compute_status_label"):
             self._sync_compute_toolbar_summary()
+        if hasattr(self, "compute_parity_notice"):
+            self._sync_compute_parity_notice()
 
     def _mark_compute_badges_stale(self, node_ids: Iterable[str]) -> None:
         stale_node_ids = set(node_ids)
@@ -21581,6 +21623,8 @@ class VippWidget(QWidget):
             self.table_group.show()
 
     def _clear_empty_inspector(self) -> None:
+        self.compute_parity_notice.clear()
+        self.compute_parity_notice.setHidden(True)
         self._primed_diagnostic_node_id = ""
         self._primed_diagnostic_sections = frozenset()
         self._current_input_histogram_key = None

@@ -452,15 +452,15 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         port.boundary_policy_id == expected_tv_boundary
         for port in (*richardson_lucy_tv.input_ports, *richardson_lucy_tv.output_ports)
     )
-    assert "iterations-at-most-100-v2" in richardson_lucy.limitations
+    assert "ui-valid-rl-parameters-v3" in richardson_lucy.limitations
     assert richardson_lucy.parity_policy_id == "rl-scientific-equivalence-v2"
     assert richardson_lucy_tv.parity_policy_id == (
         "rl-tv-scientific-equivalence-v2"
     )
-    assert "lambda-zero-iterations-at-most-100-v2" in (
+    assert "ui-valid-rl-tv-parameters-v3" in (
         richardson_lucy_tv.limitations
     )
-    assert "positive-tv-iterations-10-or-25-v1" in richardson_lucy_tv.limitations
+    assert "cpu-gpu-parity-advisory-v3" in richardson_lucy_tv.limitations
     measurements = tuple(
         spec
         for spec in accelerator_specs

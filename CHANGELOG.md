@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Broader Richardson-Lucy GPU execution
+
+- Allow ordinary Richardson-Lucy GPU execution for 1–500 iterations and filter
+  epsilon 0–1, and RL-TV for 1–100 iterations, regularization 0–0.1, filter
+  epsilon 0–0.001, TV epsilon 1e-12–0.01 and denominator floor 1e-6–1.
+  Even-sized/larger PSFs and authored normalization, clipping and scale options
+  also remain eligible. No CPU comparison is required before running these
+  settings. Finite float32 inputs, valid axes, positive PSF mass, environment,
+  memory and cancellation requirements remain enforced.
+- Show non-blocking numerical-difference advisories in the selected node's
+  Compute section and retain them in execution provenance version 2. Advisories
+  describe uncertainty, never CPU equivalence; CPU fallback clears GPU result
+  advisories. Benchmark/optimizer comparison criteria remain separate from
+  permission to execute on GPU.
+
 ## 0.15.0a2 - 2026-09-08
 
 ### Compatibility fixes

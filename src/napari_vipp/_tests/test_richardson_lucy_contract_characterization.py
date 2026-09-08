@@ -13,10 +13,10 @@ from napari_vipp.core.richardson_lucy_compute import (
 
 _SPEC_DIGESTS = {
     "richardson_lucy_deconvolution": (
-        "d0aba48adc7d78e3265fe5c4f26c38e2c611509b15150721098322e8ee27eaa7"
+        "94ccff70566bf90602b9e327b01a4c11e23b546fc8565c6d240eef407118af71"
     ),
     "richardson_lucy_tv_deconvolution": (
-        "f34beed306849b9c049a3a0933a051356053edbd9cd9453ceaf8b7192d3920b1"
+        "9b33ca320241e1e95036423c3dd004b912c90cdc2d82883d9a2038e87e13a430"
     ),
 }
 

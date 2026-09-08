@@ -1011,3 +1011,45 @@ def test_nested_progress_covers_node_boundaries_and_resets_per_item(tmp_path):
             and update.message == "Node completed."
             for update in item_updates
         )
+
+
+def test_execution_provenance_preserves_node_local_parity_advisories():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    pipeline.run(
+        np.ones((5, 5), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+    request = ComputeRequest(mode=ComputeMode.AUTO)
+    advisory = "Validate representative data if exact parity matters."
+    decision = NodeExecutionDecision(
+        node_id=gaussian.id,
+        operation_id="gaussian_blur",
+        requested_preference=request.preference_for(gaussian.id),
+        runtime_id="cuda-cupy",
+        implementation_library_id="cupyx",
+        implementation_id="gaussian-cupy-test-v1",
+        decision_kind=DecisionKind.SELECTED,
+        reason=DecisionReason.SELECTED_IMPLEMENTATION,
+        reason_text="The GPU implementation was selected.",
+        parity_warnings=(advisory,),
+    )
+    report = ExecutionReport(
+        request=request,
+        environment=ComputeEnvironment(),
+        actual_decisions=(decision,),
+    )
+
+    payload = serialize_execution_provenance(
+        request,
+        pipeline,
+        report,
+        completed_node_ids=(gaussian.id,),
+    )
+
+    assert payload["nodes"][0]["parity_warnings"] == [advisory]
+    assert payload["warnings"] == []
+    assert payload["version"] == 2

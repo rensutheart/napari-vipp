@@ -79,6 +79,7 @@ override the current planning documents above.
 - [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md)
 - [GPU Phase 2B Richardson-Lucy implementation record](gpu-phase2b-rl-implementation-report.md)
 - [GPU Phase 2C Richardson-Lucy TV implementation record](gpu-phase2c-rl-tv-implementation-report.md)
+- [Richardson-Lucy GPU execution with numerical advisories](rl-gpu-warning-policy.md)
 - [GPU Phase 3A Canny and Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md)
 - [GPU Phase 4 Sigma Filter implementation record](gpu-phase4-sigma-filter-implementation-report.md)
 - [GPU Phase 5 Connected Components implementation record](gpu-phase5-connected-components-implementation-report.md)

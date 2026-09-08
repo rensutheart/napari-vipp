@@ -3571,7 +3571,7 @@ def test_real_headless_rl_two_source_pipeline_cleans_fft_plans_and_reuses_runtim
             assert provenance.runtime_id == "cuda-cupy"
             assert provenance.implementation_library_id == "cupyx"
             assert provenance.implementation_id == "rl-cupy-f32-v1"
-            assert provenance.implementation_version == "1"
+            assert provenance.implementation_version == "2"
 
             _assert_private_cuda_scope_clean(
                 runtime,

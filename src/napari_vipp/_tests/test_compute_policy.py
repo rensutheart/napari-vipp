@@ -964,7 +964,7 @@ def test_richardson_lucy_requires_explicit_finite_float32_image_and_psf():
     assert "Convert Dtype" in integer_image.reason_text
 
 
-def test_richardson_lucy_rejects_invalid_psf_geometry_and_empty_mass():
+def test_richardson_lucy_warns_for_large_psf_and_rejects_empty_mass():
     spec = _builtin_spec("richardson_lucy_deconvolution")
     oversized = evaluate_candidate_support(
         spec,
@@ -982,8 +982,8 @@ def test_richardson_lucy_rejects_invalid_psf_geometry_and_empty_mass():
         array_facts=(image_facts, replace(psf_facts, maximum=0.0)),
     )
 
-    assert not oversized.supported
-    assert "PSF extent" in oversized.reason_text
+    assert oversized.supported
+    assert "PSF is larger" in oversized.parity_warnings[0]
     assert not empty_psf.supported
     assert "positive mass" in empty_psf.reason_text
 
@@ -1004,7 +1004,7 @@ def test_richardson_lucy_admits_checkpoint_backed_epsilon_envelope(epsilon):
 
 
 @pytest.mark.parametrize("epsilon", (0.0, 1e-5))
-def test_richardson_lucy_outside_epsilon_envelope_requires_exact_workload_test(
+def test_richardson_lucy_outside_epsilon_envelope_runs_with_advisory(
     epsilon,
 ):
     spec = _builtin_spec("richardson_lucy_deconvolution")
@@ -1025,13 +1025,12 @@ def test_richardson_lucy_outside_epsilon_envelope_requires_exact_workload_test(
         array_facts=_rl_facts(),
     )
 
-    assert not normal.supported
-    assert normal.fallback_allowed
-    assert normal.exact_workload_test_allowed
-    assert "1e-12 through 1e-06" in normal.reason_text
+    assert normal.supported
+    assert normal.parity_warnings
+    assert "No CPU comparison is required" in normal.parity_warnings[-1]
+    assert not normal.exact_workload_test_allowed
     assert exact.supported
-    assert exact.exact_workload_test_allowed
-    assert "exact CPU/GPU" in exact.reason_text
+    assert exact.parity_warnings == normal.parity_warnings
 
 
 @pytest.mark.parametrize("iterations", (26, 50, 100))
@@ -1047,7 +1046,7 @@ def test_richardson_lucy_admits_broader_iteration_envelope(iterations):
     assert decision.supported
 
 
-def test_richardson_lucy_above_iteration_envelope_requires_exact_workload_test():
+def test_richardson_lucy_above_iteration_envelope_runs_with_advisory():
     spec = _builtin_spec("richardson_lucy_deconvolution")
     workload = _rl_workload(iterations=101)
     normal = evaluate_candidate_support(
@@ -1065,15 +1064,15 @@ def test_richardson_lucy_above_iteration_envelope_requires_exact_workload_test()
         array_facts=_rl_facts(),
     )
 
-    assert not normal.supported
-    assert normal.fallback_allowed
-    assert normal.exact_workload_test_allowed
-    assert "1 through 100" in normal.reason_text
+    assert normal.supported
+    assert normal.parity_warnings
+    assert "No CPU comparison is required" in normal.parity_warnings[-1]
+    assert not normal.exact_workload_test_allowed
     assert exact.supported
-    assert exact.exact_workload_test_allowed
+    assert exact.parity_warnings == normal.parity_warnings
 
 
-def test_richardson_lucy_soft_iteration_boundary_cannot_bypass_safety_flags():
+def test_richardson_lucy_broad_iterations_preserve_authored_options():
     spec = _builtin_spec("richardson_lucy_deconvolution")
     base = _rl_workload(iterations=101)
     workload = replace(
@@ -1099,14 +1098,15 @@ def test_richardson_lucy_soft_iteration_boundary_cannot_bypass_safety_flags():
         array_facts=_rl_facts(),
     )
 
-    assert not normal.supported
+    assert normal.supported
+    assert normal.parity_warnings
+    assert "No CPU comparison is required" in normal.parity_warnings[-1]
     assert not normal.exact_workload_test_allowed
-    assert "preserve_input_scale" in normal.reason_text
-    assert not exact.supported
-    assert not exact.exact_workload_test_allowed
+    assert exact.supported
+    assert exact.parity_warnings == normal.parity_warnings
 
 
-def test_richardson_lucy_rejects_even_psf_and_nondefault_safety_options():
+def test_richardson_lucy_warns_for_even_psf_and_nondefault_options():
     spec = _builtin_spec("richardson_lucy_deconvolution")
     even_psf = evaluate_candidate_support(
         spec,
@@ -1129,14 +1129,14 @@ def test_richardson_lucy_rejects_even_psf_and_nondefault_safety_options():
         array_facts=_rl_facts(),
     )
 
-    assert not even_psf.supported
+    assert even_psf.supported
     assert even_psf.fallback_allowed
     assert not even_psf.exact_workload_test_allowed
-    assert "odd PSF extents" in even_psf.reason_text
-    assert not unsafe_options.supported
+    assert "Even-sized PSFs" in even_psf.parity_warnings[0]
+    assert unsafe_options.supported
     assert unsafe_options.fallback_allowed
     assert not unsafe_options.exact_workload_test_allowed
-    assert "preserve_input_scale" in unsafe_options.reason_text
+    assert unsafe_options.parity_warnings
 
     even_exact = evaluate_candidate_exact_workload_test_support(
         spec,
@@ -1145,7 +1145,7 @@ def test_richardson_lucy_rejects_even_psf_and_nondefault_safety_options():
         allow_experimental=True,
         array_facts=_rl_facts(psf_shape=(8, 9)),
     )
-    assert not even_exact.supported
+    assert even_exact.supported
 
 
 def test_richardson_lucy_projects_fixed_float32_output_and_conservative_memory():
@@ -1250,7 +1250,7 @@ def test_richardson_lucy_tv_admits_only_the_finite_float32_default_profile():
     assert "Convert Dtype" in integer_image.reason_text
 
 
-def test_richardson_lucy_tv_positive_profile_admits_only_measured_iterations():
+def test_richardson_lucy_tv_warns_outside_measured_iterations():
     spec = _builtin_spec("richardson_lucy_tv_deconvolution")
 
     for iterations in (10, 25):
@@ -1271,10 +1271,9 @@ def test_richardson_lucy_tv_positive_profile_admits_only_measured_iterations():
             allow_experimental=True,
             array_facts=_rl_facts(),
         )
-        assert not decision.supported
-        assert decision.fallback_allowed
-        assert decision.exact_workload_test_allowed
-        assert "10, 25 iterations" in decision.reason_text
+        assert decision.supported
+        assert decision.parity_warnings
+        assert not decision.exact_workload_test_allowed
 
 
 @pytest.mark.parametrize(
@@ -1286,7 +1285,7 @@ def test_richardson_lucy_tv_positive_profile_admits_only_measured_iterations():
         ("denominator_floor", 0.15, "denominator floor"),
     ),
 )
-def test_richardson_lucy_tv_rejects_parameters_outside_initial_profile(
+def test_richardson_lucy_tv_warns_for_parameters_outside_initial_profile(
     name,
     value,
     text,
@@ -1309,13 +1308,12 @@ def test_richardson_lucy_tv_rejects_parameters_outside_initial_profile(
         array_facts=_rl_facts(),
     )
 
-    assert not decision.supported
-    assert decision.fallback_allowed
-    assert decision.exact_workload_test_allowed
-    assert text in decision.reason_text
+    assert decision.supported
+    assert decision.parity_warnings
+    assert not decision.exact_workload_test_allowed
 
 
-def test_richardson_lucy_tv_rejects_singleton_gradient_axis_and_long_runs():
+def test_richardson_lucy_tv_rejects_singleton_gradient_axis_but_allows_long_runs():
     spec = _builtin_spec("richardson_lucy_tv_deconvolution")
     singleton = _rl_tv_workload(image_shape=(3, 1, 64), psf_shape=(1, 9))
     singleton_decision = evaluate_candidate_support(
@@ -1336,10 +1334,9 @@ def test_richardson_lucy_tv_rejects_singleton_gradient_axis_and_long_runs():
     assert not singleton_decision.supported
     assert not singleton_decision.fallback_allowed
     assert "at least two samples" in singleton_decision.reason_text
-    assert not long_run.supported
-    assert long_run.fallback_allowed
-    assert long_run.exact_workload_test_allowed
-    assert "1 through 25" in long_run.reason_text
+    assert long_run.supported
+    assert long_run.parity_warnings
+    assert not long_run.exact_workload_test_allowed
 
 
 def test_richardson_lucy_tv_soft_iteration_boundary_cannot_bypass_geometry():

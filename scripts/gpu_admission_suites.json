@@ -73,14 +73,14 @@
     {
       "operation_id": "richardson_lucy_deconvolution",
       "implementation_id": "rl-cupy-f32-v1",
-      "implementation_version": "1",
+      "implementation_version": "2",
       "runtime_id": "cuda-cupy",
       "library_id": "cupyx"
     },
     {
       "operation_id": "richardson_lucy_tv_deconvolution",
       "implementation_id": "rl-tv-cupy-f32-v1",
-      "implementation_version": "1",
+      "implementation_version": "2",
       "runtime_id": "cuda-cupy",
       "library_id": "cupyx"
     },
@@ -315,6 +315,23 @@
           "src/napari_vipp/_tests/test_gpu_rl_tv.py::test_real_gpu_progress_is_synchronized_and_cancellable"
         ],
         "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_gpu_rl_tv.py"]
+      },
+      "artifact": null,
+      "artifact_schema": null,
+      "artifact_schema_version": null
+    },
+    {
+      "id": "rl-advisory-execution",
+      "kind": "pytest",
+      "implementations": [
+        "richardson_lucy_deconvolution::rl-cupy-f32-v1",
+        "richardson_lucy_tv_deconvolution::rl-tv-cupy-f32-v1"
+      ],
+      "facets": ["adversarial_workloads", "input_integrity", "provenance"],
+      "owner_paths": ["src/napari_vipp/_tests/test_rl_gpu_warning_policy.py"],
+      "profile_commands": {
+        "quick": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_rl_gpu_warning_policy.py"],
+        "full": ["{python}", "-m", "pytest", "-q", "src/napari_vipp/_tests/test_rl_gpu_warning_policy.py"]
       },
       "artifact": null,
       "artifact_schema": null,

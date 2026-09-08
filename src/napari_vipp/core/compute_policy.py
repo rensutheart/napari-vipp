@@ -42,6 +42,7 @@ from napari_vipp.core.richardson_lucy_compute import (
     estimate_richardson_lucy_memory,
     evaluate_richardson_lucy_region,
     evaluate_richardson_lucy_tv_region,
+    richardson_lucy_parity_warnings,
 )
 from napari_vipp.core.threshold_range import validate_threshold_range
 
@@ -280,6 +281,7 @@ class SupportDecision:
     requires_complete_facts: bool = False
     fallback_allowed: bool = True
     exact_workload_test_allowed: bool = False
+    parity_warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         reason = (
@@ -299,6 +301,19 @@ class SupportDecision:
         if not isinstance(self.exact_workload_test_allowed, bool):
             raise TypeError("exact_workload_test_allowed must be a boolean.")
         object.__setattr__(self, "reason", reason)
+        if isinstance(self.parity_warnings, str):
+            raise TypeError("parity_warnings must be a sequence of messages.")
+        object.__setattr__(
+            self,
+            "parity_warnings",
+            tuple(
+                dict.fromkeys(
+                    str(message).strip()
+                    for message in self.parity_warnings
+                    if str(message).strip()
+                )
+            ),
+        )
         object.__setattr__(self, "reason_text", reason_text)
 
 
@@ -567,7 +582,7 @@ def evaluate_candidate_workload_support(
         # Find fastest may lift only this stored soft decision after every hard
         # contract has passed for the exact inputs.
         soft_operation_decision = operation_decision
-    elif operation_decision is not None:
+    elif operation_decision is not None and not operation_decision.supported:
         return operation_decision
     for dtype, port in zip(workload.input_dtypes, spec.input_ports, strict=True):
         normalized_dtype = _dtype_name(dtype)
@@ -617,7 +632,10 @@ def evaluate_candidate_workload_support(
     return SupportDecision(
         True,
         DecisionReason.SELECTED_IMPLEMENTATION,
-        "The candidate is inside its declared scientific and environment region.",
+        "The candidate meets its declared execution and environment requirements.",
+        parity_warnings=(
+            operation_decision.parity_warnings if operation_decision is not None else ()
+        ),
     )
 
 
@@ -1704,8 +1722,14 @@ def _richardson_lucy_region_policy(
     workload: WorkloadDescriptor,
     array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
-    return _adapt_richardson_lucy_region_rejection(
-        evaluate_richardson_lucy_region(workload, array_facts)
+    rejection = evaluate_richardson_lucy_region(workload, array_facts)
+    if rejection is not None:
+        return _adapt_richardson_lucy_region_rejection(rejection)
+    return SupportDecision(
+        True,
+        DecisionReason.SELECTED_IMPLEMENTATION,
+        "GPU execution is available for these authored settings.",
+        parity_warnings=richardson_lucy_parity_warnings(workload),
     )
 
 
@@ -1713,8 +1737,14 @@ def _richardson_lucy_tv_region_policy(
     workload: WorkloadDescriptor,
     array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
-    return _adapt_richardson_lucy_region_rejection(
-        evaluate_richardson_lucy_tv_region(workload, array_facts)
+    rejection = evaluate_richardson_lucy_tv_region(workload, array_facts)
+    if rejection is not None:
+        return _adapt_richardson_lucy_region_rejection(rejection)
+    return SupportDecision(
+        True,
+        DecisionReason.SELECTED_IMPLEMENTATION,
+        "GPU execution is available for these authored settings.",
+        parity_warnings=richardson_lucy_parity_warnings(workload),
     )
 
 
@@ -2428,8 +2458,8 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "convert-dtype-f32-preserve-parameters-v1": _convert_dtype_region_policy,
         "binary-threshold-f32-scalar-parameters-v3": (_binary_threshold_region_policy),
         "extract-channel-semantic-axis-parameters-v1": (_extract_channel_region_policy),
-        "rl-parameters-v2": _richardson_lucy_region_policy,
-        "rl-tv-parameters-v2": _richardson_lucy_tv_region_policy,
+        "rl-parameters-v3": _richardson_lucy_region_policy,
+        "rl-tv-parameters-v3": _richardson_lucy_tv_region_policy,
         "canny-parameters-v1": _canny_region_policy,
         "otsu-parameters-v1": _otsu_region_policy,
         "fill-holes-all-parameters-v1": _fill_holes_region_policy,

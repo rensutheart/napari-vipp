@@ -27,9 +27,9 @@ from napari_vipp.core.compute_contracts import (
 RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON = 1e-12
 RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON = 1e-6
 RICHARDSON_LUCY_FILTER_EPSILON = RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON
-RICHARDSON_LUCY_MAXIMUM_ITERATIONS = 100
+RICHARDSON_LUCY_MAXIMUM_ITERATIONS = 500
 RICHARDSON_LUCY_TV_FILTER_EPSILON = 1e-12
-RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS = 25
+RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS = 100
 RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS = frozenset({10, 25})
 RICHARDSON_LUCY_TV_REGULARIZATION = 0.002
 RICHARDSON_LUCY_TV_EPSILON = 1e-6
@@ -43,8 +43,8 @@ RICHARDSON_LUCY_MEMORY_MODEL_IDS = frozenset(
 )
 RICHARDSON_LUCY_POLICY_IDS = MappingProxyType(
     {
-        "parameter": frozenset({"rl-parameters-v2", "rl-tv-parameters-v2"}),
-        "workload": frozenset({"rl-finite-f32-v2", "rl-tv-finite-f32-v2"}),
+        "parameter": frozenset({"rl-parameters-v3", "rl-tv-parameters-v3"}),
+        "workload": frozenset({"rl-finite-f32-v3", "rl-tv-finite-f32-v3"}),
         "parity": frozenset(
             {
                 "rl-scientific-equivalence-v2",
@@ -146,7 +146,7 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
     return OperationComputeSpec(
         operation_id="richardson_lucy_deconvolution",
         implementation_id="rl-cupy-f32-v1",
-        implementation_version="1",
+        implementation_version="2",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cupyx",
@@ -158,8 +158,8 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         ),
         input_ports=(image_input, psf_input),
         output_ports=(image_output,),
-        parameter_policy_id="rl-parameters-v2",
-        workload_policy_id="rl-finite-f32-v2",
+        parameter_policy_id="rl-parameters-v3",
+        workload_policy_id="rl-finite-f32-v3",
         parity_policy_id="rl-scientific-equivalence-v2",
         memory_model_id="cupyx-richardson-lucy-fft-memory-v2",
         shape_policy_id="shape-preserving-v1",
@@ -173,10 +173,8 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         limitations=(
             "finite-only",
             "float32-only-v1",
-            "filter-epsilon-1e-12-through-1e-6-v2",
-            "iterations-at-most-100-v2",
-            "odd-psf-extents-v1",
-            "default-safe-options-v1",
+            "ui-valid-rl-parameters-v3",
+            "cpu-gpu-parity-advisory-v3",
         ),
     )
 
@@ -203,8 +201,8 @@ def _richardson_lucy_tv_spec(
         ),
         input_ports=tuple(tv_port(port) for port in ordinary.input_ports),
         output_ports=tuple(tv_port(port) for port in ordinary.output_ports),
-        parameter_policy_id="rl-tv-parameters-v2",
-        workload_policy_id="rl-tv-finite-f32-v2",
+        parameter_policy_id="rl-tv-parameters-v3",
+        workload_policy_id="rl-tv-finite-f32-v3",
         parity_policy_id="rl-tv-scientific-equivalence-v2",
         memory_model_id="cupyx-richardson-lucy-tv-fft-memory-v1",
         boundary_policy_id=boundary_policy_id,
@@ -212,11 +210,9 @@ def _richardson_lucy_tv_spec(
         limitations=(
             "finite-only",
             "float32-only-v1",
-            "validated-rl-tv-profiles-v2",
-            "lambda-zero-iterations-at-most-100-v2",
-            "positive-tv-iterations-10-or-25-v1",
-            "odd-psf-extents-v1",
-            "default-safe-options-v1",
+            "ui-valid-rl-tv-parameters-v3",
+            "positive-tv-gradient-axis-at-least-two-v1",
+            "cpu-gpu-parity-advisory-v3",
         ),
     )
 
@@ -262,8 +258,7 @@ def evaluate_richardson_lucy_region(
         array_facts,
         operation_name="Richardson-Lucy",
         maximum_iterations=RICHARDSON_LUCY_MAXIMUM_ITERATIONS,
-        minimum_filter_epsilon=RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON,
-        maximum_filter_epsilon=RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON,
+        maximum_filter_epsilon=1.0,
     )
 
 
@@ -275,9 +270,9 @@ def evaluate_richardson_lucy_tv_region(
     regularization = _finite_number(
         parameters.get("tv_regularization", RICHARDSON_LUCY_TV_REGULARIZATION)
     )
-    if regularization is None or regularization < 0:
+    if regularization is None or not 0.0 <= regularization <= 0.1:
         return _reject(
-            "Richardson-Lucy TV regularization must be finite and non-negative.",
+            "Richardson-Lucy TV regularization must be finite and between 0 and 0.1.",
             fallback_allowed=False,
         )
     lambda_zero = regularization == 0.0
@@ -285,55 +280,31 @@ def evaluate_richardson_lucy_tv_region(
         workload,
         array_facts,
         operation_name="Richardson-Lucy TV",
-        maximum_iterations=(
-            RICHARDSON_LUCY_MAXIMUM_ITERATIONS
-            if lambda_zero
-            else RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS
-        ),
-        minimum_filter_epsilon=(
-            RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON
-            if lambda_zero
-            else RICHARDSON_LUCY_TV_FILTER_EPSILON
-        ),
-        maximum_filter_epsilon=(
-            RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON
-            if lambda_zero
-            else RICHARDSON_LUCY_TV_FILTER_EPSILON
-        ),
+        maximum_iterations=RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS,
+        maximum_filter_epsilon=1e-3,
     )
-    if common is not None and not common.exact_workload_test_allowed:
+    if common is not None:
         return common
-    soft_rejections = [] if common is None else [common]
 
-    for parameter_name, default, display_name in (
-        ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, "TV epsilon"),
+    for parameter_name, default, minimum, maximum, display_name in (
+        ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, 1e-12, 1e-2, "TV epsilon"),
         (
             "denominator_floor",
             RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR,
+            1e-6,
+            1.0,
             "denominator floor",
         ),
     ):
-        if _finite_number(parameters.get(parameter_name, default)) is None:
+        value = _finite_number(parameters.get(parameter_name, default))
+        if value is None or not minimum <= value <= maximum:
             return _reject(
-                f"Richardson-Lucy TV {display_name} must be finite.",
+                f"Richardson-Lucy TV {display_name} must be finite and between "
+                f"{minimum:g} and {maximum:g}.",
                 fallback_allowed=False,
             )
     if lambda_zero:
-        return _combined_soft_rejection(soft_rejections)
-
-    iterations = parameters.get("iterations", 25)
-    if iterations not in RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS:
-        reviewed = ", ".join(
-            str(value) for value in sorted(RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS)
-        )
-        soft_rejections.append(
-            _reject(
-                "The initial positive-TV GPU region is validated only for "
-                f"{reviewed} iterations. This authored iteration count remains "
-                "on CPU until exact-workload scientific equivalence is tested.",
-                exact_workload_test_allowed=True,
-            )
-        )
+        return None
 
     image_shape = workload.input_shapes[0]
     spatial_ndim = workload.resolved_spatial_ndim
@@ -345,43 +316,7 @@ def evaluate_richardson_lucy_tv_region(
             "spatial axis for its central-gradient stencil.",
             fallback_allowed=False,
         )
-    if regularization != RICHARDSON_LUCY_TV_REGULARIZATION:
-        soft_rejections.append(
-            _reject(
-                "The initial positive-TV GPU region is validated only for the "
-                "shipped TV regularization value "
-                f"{RICHARDSON_LUCY_TV_REGULARIZATION:g}. This authored value "
-                "remains on CPU until exact-workload scientific equivalence is "
-                "tested.",
-                exact_workload_test_allowed=True,
-            )
-        )
-    admitted_values = (
-        ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, "TV epsilon"),
-        (
-            "denominator_floor",
-            RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR,
-            "denominator floor",
-        ),
-    )
-    for parameter_name, default, display_name in admitted_values:
-        value = _finite_number(parameters.get(parameter_name, default))
-        if value is None:
-            return _reject(
-                f"Richardson-Lucy TV {display_name} must be finite.",
-                fallback_allowed=False,
-            )
-        if value != default:
-            soft_rejections.append(
-                _reject(
-                    "The initial Richardson-Lucy TV GPU region is validated only "
-                    f"for the shipped {display_name} value {default:g}. This "
-                    "authored value remains on CPU until exact-workload scientific "
-                    "equivalence is tested.",
-                    exact_workload_test_allowed=True,
-                )
-            )
-    return _combined_soft_rejection(soft_rejections)
+    return None
 
 
 def _deconvolution_region_policy(
@@ -390,7 +325,6 @@ def _deconvolution_region_policy(
     *,
     operation_name: str,
     maximum_iterations: int,
-    minimum_filter_epsilon: float,
     maximum_filter_epsilon: float,
 ) -> RegionRejection | None:
     if len(workload.input_shapes) != 2 or len(workload.input_dtypes) != 2:
@@ -420,20 +354,6 @@ def _deconvolution_region_policy(
             f"{operation_name} inputs must not contain empty dimensions.",
             fallback_allowed=False,
         )
-    if any(
-        kernel > image
-        for kernel, image in zip(psf_shape, image_shape[-spatial_ndim:], strict=True)
-    ):
-        return _reject(
-            "The initial GPU region requires each PSF extent to fit inside its "
-            "corresponding spatial image extent."
-        )
-    if any(size % 2 == 0 for size in psf_shape):
-        return _reject(
-            f"The initial {operation_name} GPU region requires odd PSF extents. "
-            "Prepare / Validate PSF uses Force odd shape by default."
-        )
-
     parameters = dict(workload.parameters)
     mode = str(parameters.get("spatial_mode", "Auto from axes")).strip().casefold()
     declared_rank = {
@@ -454,16 +374,10 @@ def _deconvolution_region_policy(
             f"{operation_name} iterations must be an integer.",
             fallback_allowed=False,
         )
-    soft_rejections: list[RegionRejection] = []
     if not 1 <= iterations <= maximum_iterations:
-        soft_rejections.append(
-            _reject(
-                f"{operation_name} GPU execution is broadly prequalified for 1 "
-                f"through {maximum_iterations} iterations. This authored count "
-                "can still be benchmarked on its exact image and PSF before GPU "
-                "use.",
-                exact_workload_test_allowed=True,
-            )
+        return _reject(
+            f"{operation_name} iterations must be between 1 and {maximum_iterations}.",
+            fallback_allowed=False,
         )
     safety_flags = (
         "normalize_psf",
@@ -477,37 +391,12 @@ def _deconvolution_region_policy(
                 f"{operation_name} parameter {name!r} must be boolean.",
                 fallback_allowed=False,
             )
-    nondefault_safety_flags = tuple(
-        name for name in safety_flags if parameters.get(name, True) is not True
-    )
-    if nondefault_safety_flags:
-        return _reject(
-            f"The initial {operation_name} GPU region requires the default-safe "
-            "normalization, clipping, and scale-preservation options. CPU is "
-            "used when these authored options are disabled: "
-            + ", ".join(nondefault_safety_flags)
-            + "."
-        )
     filter_epsilon = _finite_number(parameters.get("filter_epsilon", 1e-12))
-    if filter_epsilon is None or filter_epsilon < 0:
+    if filter_epsilon is None or not 0.0 <= filter_epsilon <= maximum_filter_epsilon:
         return _reject(
-            f"{operation_name} filter epsilon must be finite and non-negative.",
+            f"{operation_name} filter epsilon must be finite and between 0 and "
+            f"{maximum_filter_epsilon:g}.",
             fallback_allowed=False,
-        )
-    if not minimum_filter_epsilon <= filter_epsilon <= maximum_filter_epsilon:
-        interval = (
-            f"exactly {minimum_filter_epsilon:g}"
-            if minimum_filter_epsilon == maximum_filter_epsilon
-            else f"{minimum_filter_epsilon:g} through {maximum_filter_epsilon:g}"
-        )
-        soft_rejections.append(
-            _reject(
-                f"{operation_name} GPU execution is broadly prequalified for "
-                f"filter epsilon {interval}. This authored value can still be "
-                "benchmarked against CPU on the exact image and PSF before GPU "
-                "use.",
-                exact_workload_test_allowed=True,
-            )
         )
     if len(array_facts) == 2:
         psf_facts = array_facts[1]
@@ -523,24 +412,72 @@ def _deconvolution_region_policy(
                 "The finite PSF has no positive mass above the validation floor.",
                 fallback_allowed=False,
             )
-    return _combined_soft_rejection(soft_rejections)
+    return None
 
 
-def _combined_soft_rejection(
-    rejections: list[RegionRejection],
-) -> RegionRejection | None:
-    """Return accumulated soft boundaries only after all hard gates pass."""
+def richardson_lucy_parity_warnings(
+    workload: WorkloadDescriptor,
+) -> tuple[str, ...]:
+    """Describe numerical uncertainty without rejecting executable workloads.
 
-    if not rejections:
-        return None
-    if any(not item.exact_workload_test_allowed for item in rejections):
-        raise ValueError("Only soft exact-workload rejections may be combined.")
-    reasons = tuple(dict.fromkeys(item.reason_text for item in rejections))
-    return RegionRejection(
-        " ".join(reasons),
-        fallback_allowed=all(item.fallback_allowed for item in rejections),
-        exact_workload_test_allowed=True,
+    The former v2 prequalification envelope determines when to show an
+    advisory. This does not claim CPU equivalence for the broader v3 region.
+    """
+    parameters = dict(workload.parameters)
+    warnings: list[str] = []
+    image_shape, psf_shape = workload.input_shapes
+    if any(extent % 2 == 0 for extent in psf_shape):
+        warnings.append(
+            "Even-sized PSFs can give different convolution centering on CPU "
+            "and GPU. GPU execution remains enabled."
+        )
+    if any(
+        kernel > image
+        for kernel, image in zip(psf_shape, image_shape[-len(psf_shape) :], strict=True)
+    ):
+        warnings.append(
+            "The PSF is larger than the image on at least one axis. CPU/GPU "
+            "agreement is not prequalified for this geometry."
+        )
+    default_options = all(
+        parameters.get(option, True) is True
+        for option in (
+            "normalize_psf",
+            "clip_negative_input",
+            "clip_output_negative",
+            "preserve_input_scale",
+        )
     )
+    iterations = parameters.get("iterations", 25)
+    epsilon = _finite_number(parameters.get("filter_epsilon", 1e-12))
+    reviewed = (
+        iterations <= 100
+        and epsilon is not None
+        and RICHARDSON_LUCY_MINIMUM_FILTER_EPSILON
+        <= epsilon
+        <= RICHARDSON_LUCY_MAXIMUM_FILTER_EPSILON
+        and default_options
+    )
+    if workload.operation_id == "richardson_lucy_tv_deconvolution":
+        regularization = _finite_number(
+            parameters.get("tv_regularization", RICHARDSON_LUCY_TV_REGULARIZATION)
+        )
+        if regularization != 0:
+            reviewed = (
+                default_options
+                and iterations in RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS
+                and regularization == RICHARDSON_LUCY_TV_REGULARIZATION
+                and epsilon == RICHARDSON_LUCY_TV_FILTER_EPSILON
+                and _finite_number(parameters.get("tv_epsilon", 1e-6)) == 1e-6
+                and _finite_number(parameters.get("denominator_floor", 0.05)) == 0.05
+            )
+    if not reviewed:
+        warnings.append(
+            "These settings extend beyond the prequalified CPU/GPU comparison "
+            "range. GPU execution remains enabled; reconstruction values may "
+            "differ. No CPU comparison is required to run this node."
+        )
+    return tuple(warnings)
 
 
 def estimate_richardson_lucy_memory(
@@ -731,4 +668,5 @@ __all__ = [
     "evaluate_richardson_lucy_region",
     "evaluate_richardson_lucy_tv_region",
     "richardson_lucy_compute_specs",
+    "richardson_lucy_parity_warnings",
 ]

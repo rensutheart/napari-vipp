@@ -42,7 +42,6 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     stable_preference_for_benchmark_winner,
 )
 from napari_vipp.core.compute_planning import (
-    ComputePreflightError,
     plan_compute_decisions,
     probe_compute_environment,
 )
@@ -1145,7 +1144,7 @@ def test_static_ineligibility_rejects_before_runtime_probe(tmp_path, monkeypatch
     assert JsonBenchmarkStore(tmp_path / "benchmarks.json").records() == ()
 
 
-def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
+def test_broad_rl_settings_benchmark_and_execute_without_exact_workload_opt_in(
     tmp_path,
     monkeypatch,
 ):
@@ -1159,40 +1158,24 @@ def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
     pipeline, image_source, psf_source, node_id = _rl_pipeline(image, psf)
     pipeline.set_param(node_id, "filter_epsilon", 1e-5)
 
-    with pytest.raises(NodeBenchmarkUnavailable):
-        coordinator.prepare(
-            pipeline,
-            node_id,
-            environment=_environment(),
-            allow_experimental=True,
-        )
-
     plan = coordinator.prepare(
         pipeline,
         node_id,
         environment=_environment(),
         allow_experimental=True,
-        allow_exact_workload_test=True,
     )
 
     assert plan.admitted_specs == (specification,)
     assert plan.eligibility[0].supported
-    assert plan.eligibility[0].exact_workload_test_allowed
-    assert plan.exact_workload_test_implementation_ids == {
-        specification.implementation_id
-    }
+    assert not plan.eligibility[0].exact_workload_test_allowed
+    assert not plan.exact_workload_test_implementation_ids
 
     benchmark_result = coordinator.run(plan)
     scope_digest = "exact-optimizer-snapshot-digest"
     qualifications = benchmark_result.exact_workload_qualifications(
         qualification_scope_digest=scope_digest,
     )
-    assert len(qualifications) == 1
-    qualification = next(iter(qualifications))
-    assert qualification.candidate_key == (
-        node_id,
-        specification.implementation_id,
-    )
+    assert qualifications == frozenset()
 
     workload = plan.registered.request.workload
     facts = tuple(
@@ -1219,17 +1202,6 @@ def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
         allow_experimental=True,
     )
 
-    # Merely opting into the benchmark cannot weaken normal planning.  The
-    # exact parity result must be presented in its active optimizer scope.
-    with pytest.raises(ComputePreflightError):
-        plan_compute_decisions(
-            request,
-            (workload,),
-            registry=coordinator.registry,
-            environment=plan.environment,
-            array_facts={node_id: facts},
-        )
-
     changed_workload = replace(
         workload,
         parameters=tuple(
@@ -1237,16 +1209,19 @@ def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
             for name, value in workload.parameters
         ),
     )
-    with pytest.raises(ComputePreflightError):
-        plan_compute_decisions(
+    # A direct GPU request remains executable across broader settings without
+    # presenting a CPU comparison or qualification token to the planner.
+    for authored_workload in (workload, changed_workload):
+        direct = plan_compute_decisions(
             request,
-            (changed_workload,),
+            (authored_workload,),
             registry=coordinator.registry,
             environment=plan.environment,
             array_facts={node_id: facts},
-            exact_workload_qualifications=qualifications,
-            exact_workload_qualification_scope_digest=scope_digest,
         )
+        assert direct.decisions[0].implementation_id == specification.implementation_id
+        assert direct.decisions[0].parity_warnings
+        assert not direct.decisions[0].benchmark_record_digest
 
     planned = plan_compute_decisions(
         request,
@@ -1260,7 +1235,8 @@ def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
     decision = planned.decisions[0]
     assert decision.implementation_id == specification.implementation_id
     assert decision.decision_kind is DecisionKind.SELECTED
-    assert decision.benchmark_record_digest == qualification.benchmark_record_digest
+    assert not decision.benchmark_record_digest
+    assert decision.parity_warnings
 
     observed_qualifications = []
 
@@ -1327,7 +1303,8 @@ def test_exact_workload_opt_in_admits_soft_rl_parameter_region(
     assert node_id in actual_decisions, tuple(actual_decisions)
     actual = actual_decisions[node_id]
     assert actual.implementation_id == specification.implementation_id
-    assert actual.benchmark_record_digest == qualification.benchmark_record_digest
+    assert not actual.benchmark_record_digest
+    assert actual.parity_warnings
 
 
 def test_coordinator_import_does_not_import_optional_gpu_packages():

@@ -483,12 +483,25 @@ def test_synthetic_round_trip_validation_and_markdown_are_cuda_safe(
     assert "evidence is current" in completed.stdout
 
 
-def test_checked_in_full_artifact_is_current_and_complete(evidence_script) -> None:
-    assert evidence_script.validate_existing(ARTIFACT_PATH) == ARTIFACT_PATH.resolve()
+def test_checked_in_full_artifact_remains_historical_and_complete(
+    evidence_script,
+) -> None:
+    # RL advisory admission changed the shared policy source. Preserve the
+    # measured artifact and reject a claim that it qualifies the current source.
+    with pytest.raises(evidence_script.EvidenceError, match="fingerprints are stale"):
+        evidence_script.validate_existing(ARTIFACT_PATH)
     raw = ARTIFACT_PATH.read_text(encoding="utf-8")
     document = json.loads(raw)
 
     assert raw == evidence_script._canonical_json(document)
+    assert document["operation_contracts"] == evidence_script._operation_contracts()
+    evidence_script._validate_admission(document["admission"])
+    evidence_script._validate_rejections(document["rejections"])
+    evidence_script._validate_lifecycle(document["lifecycle"])
+    evidence_script._validate_performance(document["performance"], document["profile"])
+    assert ARTIFACT_PATH.with_suffix(".md").read_text(encoding="utf-8") == (
+        evidence_script._render_markdown(document)
+    )
     assert document["profile"] == "full"
     assert document["admission"]["case_count"] == 11
     assert document["rejections"]["case_count"] == 11

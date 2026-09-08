@@ -2769,11 +2769,15 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
         "gaussian_blur",
         NodeComputePreference(),
         "cuda-cupy",
-        "cupy",
-        "cupy-gaussian-blur-v1",
+        "cupyx",
+        "cupyx-gaussian-blur-v1",
         DecisionKind.SELECTED,
         DecisionReason.SELECTED_IMPLEMENTATION,
         "Validated CuPy implementation selected.",
+        parity_warnings=(
+            "CPU/GPU numerical parity has not been fully validated for these "
+            "parameters.",
+        ),
     )
     cpu_decision = NodeExecutionDecision(
         "threshold",
@@ -2788,7 +2792,7 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     )
     gpu_environment = ComputeEnvironment(
         runtime_ids=("cpu-numpy", "cuda-cupy"),
-        implementation_libraries=("cpu", "cupy"),
+        implementation_libraries=("cpu", "cupyx"),
         device_id="cuda:0",
         device_name="Test GPU",
         device_class="nvidia-cuda",
@@ -2807,13 +2811,26 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
         actual_decisions=(decision, cpu_decision),
     )
 
+    widget.graph_view.select_node("gaussian")
     widget._accept_execution_report(report)
 
     badge = widget.graph_view._cards["gaussian"].compute_badge
     assert badge.text() == "GPU · CuPy"
     assert "Test GPU" in badge.toolTip()
+    assert "parity" not in badge.toolTip().casefold()
     assert widget.compute_status_label.text() == "Auto · 1 GPU / 1 CPU"
     assert "Test GPU" in widget.compute_status_label.toolTip()
+    assert "parity" not in widget.compute_status_label.toolTip().casefold()
+    assert not widget.compute_parity_notice.isHidden()
+    assert "not been fully validated" in widget.compute_parity_notice.text()
+
+    widget._mark_compute_badges_stale({"gaussian"})
+
+    assert "Previous GPU result" in widget.compute_parity_notice.text()
+
+    widget.graph_view.select_node("threshold")
+
+    assert widget.compute_parity_notice.isHidden()
 
     widget._record_synchronous_cpu_decisions({"threshold"}, request)
 
@@ -2849,6 +2866,11 @@ def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     )
     gaussian_tooltip = widget.graph_view._cards["gaussian"].compute_badge.toolTip()
     assert "Host CPU" not in gaussian_tooltip
+
+    widget._reset_compute_decisions()
+
+    assert widget.compute_parity_notice.isHidden()
+    assert not widget.compute_parity_notice.text()
 
 
 def test_cpu_badge_distinguishes_result_backend_from_gpu_capability(qtbot):

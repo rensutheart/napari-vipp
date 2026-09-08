@@ -1127,3 +1127,75 @@ def test_preprobed_environment_reason_remains_a_visible_planning_warning():
     )
 
     assert result.warnings == (environment.probe_reason,)
+
+
+def _rl_workload_and_facts(*, iterations=500, filter_epsilon=1.0):
+    image_shape = (9, 48, 56)
+    psf_shape = (5, 9, 9)
+    workload = WorkloadDescriptor(
+        "node",
+        "richardson_lucy_deconvolution",
+        (image_shape, psf_shape),
+        ("float32", "float32"),
+        parameters=(
+            ("spatial_mode", "3D ZYX"),
+            ("iterations", iterations),
+            ("normalize_psf", True),
+            ("clip_negative_input", True),
+            ("clip_output_negative", True),
+            ("preserve_input_scale", True),
+            ("filter_epsilon", filter_epsilon),
+        ),
+        resolved_spatial_ndim=3,
+    )
+    facts = tuple(
+        ArrayFacts(
+            shape,
+            "float32",
+            int(np.prod(shape)),
+            f"rl-{index}",
+            completeness=FactCompleteness.COMPLETE,
+            finite_count=int(np.prod(shape)),
+            maximum=1.0,
+        )
+        for index, shape in enumerate((image_shape, psf_shape))
+    )
+    return workload, facts
+
+
+@pytest.mark.parametrize("mode", ("auto", "prefer_gpu", "custom"))
+def test_auto_selects_broad_rl_gpu_region_and_preserves_node_local_warning(mode):
+    from napari_vipp.core.execution import _local_actual_cpu_fallback_decision
+
+    workload, facts = _rl_workload_and_facts()
+
+    result = plan_compute_decisions(
+        ComputeRequest(
+            mode=mode,
+            node_preferences={"node": "implementation:rl-cupy-f32-v1"},
+        ),
+        (workload,),
+        environment=_environment(),
+        array_facts={"node": facts},
+    )
+
+    decision = result.decisions[0]
+    assert decision.runtime_id == "cuda-cupy"
+    assert decision.implementation_library_id == "cupyx"
+    assert decision.implementation_version == "2"
+    assert decision.parity_warnings
+    assert "No CPU comparison is required" in decision.parity_warnings[-1]
+    assert result.warnings == ()
+
+    for fallback_decision in (
+        actual_cpu_fallback_decision,
+        _local_actual_cpu_fallback_decision,
+    ):
+        fallback = fallback_decision(
+            decision,
+            FallbackReason.OUT_OF_MEMORY,
+            reason_text="Synthetic fallback.",
+        )
+        assert fallback.runtime_id == "cpu-numpy"
+        assert fallback.implementation_version == "1"
+        assert fallback.parity_warnings == ()

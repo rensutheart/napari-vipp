@@ -1059,6 +1059,7 @@ class NodeExecutionDecision:
     performance_evidence_kind: str = ""
     performance_evidence_digest: str = ""
     implementation_version: str = ""
+    parity_warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         reason = (
@@ -1099,6 +1100,19 @@ class NodeExecutionDecision:
             raise ValueError(
                 "performance evidence kind and digest must be supplied together."
             )
+        if isinstance(self.parity_warnings, str):
+            raise TypeError("parity_warnings must be a sequence of messages.")
+        object.__setattr__(
+            self,
+            "parity_warnings",
+            tuple(
+                dict.fromkeys(
+                    str(message).strip()
+                    for message in self.parity_warnings
+                    if str(message).strip()
+                )
+            ),
+        )
         object.__setattr__(self, "fallback_reason", fallback_reason)
 
     @property
