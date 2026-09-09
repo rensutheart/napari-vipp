@@ -7,6 +7,10 @@
 Target: **0.15.0a3 candidate**. These changes are not yet a published release;
 qualification and local installed-application confirmation remain separate.
 
+- Keep the macOS installer’s bundled YAML dependency within conda’s declared compatible range, preventing an installed-environment `pip check` failure. Both native architecture checks remain required after rebuilding.
+
+- Restore complete palette coverage in **Exhaustive Inspector Showcase** by adding label-boundary QC, and keep its packaged, standard and manual workflow copies synchronized when regenerating the example.
+
 - Compact the Batch reproduction banner by placing its actions to the right of the status text, without a separate full-width button row.
 
 - Show **Run complete · Original inputs verified** in green after a fully successful reproduction with matching VIPP versions. The banner describes the completed run, not permission for another: a new run still needs **Check batch**, and changing folders or settings clears the completed-run badge. Cancelled, partial, failed, or version-exception runs do not receive the green completion state.

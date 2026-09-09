@@ -6,14 +6,37 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 
+import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import QApplication, QWidget
 
 from napari_vipp.installer.engine import _SHORTCUT_SCRIPT
 from napari_vipp.ui.desktop_branding import apply_desktop_branding
 from scripts.generate_desktop_icon import ICON_SIZES, render_icon
+
+
+def _assert_same_icon_raster(actual, expected):
+    assert actual.mode == expected.mode == "RGBA"
+    assert actual.size == expected.size
+    # Qt 6.10/6.11 can unpremultiply an antialiased edge to different straight
+    # RGB values (e.g. red 17/18 at alpha 102) from the same 8-bit raster. ICO/PNG
+    # encoding is lossless. Permit only the observed one-level edge rounding,
+    # and only if the premultiplied raster remains exactly identical. Alpha,
+    # opaque colors and transparent pixels still have to match byte-for-byte.
+    actual_pixels, expected_pixels = np.asarray(actual), np.asarray(expected)
+    alpha = actual_pixels[..., 3]
+    np.testing.assert_array_equal(alpha, expected_pixels[..., 3])
+    edge = (alpha > 0) & (alpha < 255)
+    np.testing.assert_array_equal(actual_pixels[~edge], expected_pixels[~edge])
+    edge_difference = np.abs(
+        actual_pixels[edge, :3].astype(np.int16)
+        - expected_pixels[edge, :3].astype(np.int16)
+    )
+    assert edge_difference.max(initial=0) <= 1
+    difference = ImageChops.difference(actual.convert("RGBa"), expected.convert("RGBa"))
+    assert difference.getextrema() == ((0, 0),) * 4
 
 
 def test_windows_icon_contains_all_sizes_and_matches_reviewed_svg(tmp_path):
@@ -24,11 +47,65 @@ def test_windows_icon_contains_all_sizes_and_matches_reviewed_svg(tmp_path):
         Image.open(branding / "vipp-mark.ico") as actual,
         Image.open(generated) as expected,
     ):
-        assert actual.ico.sizes() == {(size, size) for size in ICON_SIZES}
+        assert (
+            actual.ico.sizes()
+            == expected.ico.sizes()
+            == {(size, size) for size in ICON_SIZES}
+        )
         for size in actual.ico.sizes():
             image = actual.ico.getimage(size)
-            assert image.tobytes() == expected.ico.getimage(size).tobytes()
+            _assert_same_icon_raster(image, expected.ico.getimage(size))
             assert image.getextrema()[-1] == (0, 255)
+
+
+@pytest.mark.parametrize(
+    "actual,expected",
+    [
+        ((17, 25, 40, 102), (18, 25, 40, 102)),  # Linux Qt 6.11 edge
+        ((0, 42, 42, 6), (0, 43, 43, 6)),  # macOS Qt 6.11 edge
+    ],
+)
+def test_icon_comparison_accepts_equivalent_unpremultiplication(actual, expected):
+    assert actual != expected
+    _assert_same_icon_raster(
+        Image.new("RGBA", (1, 1), actual), Image.new("RGBA", (1, 1), expected)
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "alpha",
+        "opaque-color",
+        "edge-color",
+        "hidden-color",
+        "edge-rounding",
+        "geometry",
+    ],
+)
+def test_icon_comparison_rejects_changed_artwork(change):
+    expected = Image.new("RGBA", (3, 3), (0, 0, 0, 0))
+    expected.putpixel((1, 1), (17, 24, 39, 255))
+    expected.putpixel((0, 1), (17, 25, 40, 102))
+    actual = expected.copy()
+    if change == "alpha":
+        actual.putpixel((0, 1), (17, 25, 40, 101))
+    elif change == "opaque-color":
+        actual.putpixel((1, 1), (18, 24, 39, 255))
+    elif change == "edge-color":
+        # A one-level RGB change is not allowed if premultiplication differs.
+        expected.putpixel((0, 1), (18, 25, 40, 102))
+        actual.putpixel((0, 1), (19, 25, 40, 102))
+    elif change == "hidden-color":
+        actual.putpixel((0, 0), (1, 0, 0, 0))
+    elif change == "edge-rounding":
+        # Equal premultiplied pixels alone must not admit arbitrary RGB drift.
+        expected.putpixel((0, 1), (0, 42, 42, 6))
+        actual.putpixel((0, 1), (0, 44, 42, 6))
+    else:
+        actual = ImageChops.offset(actual, 1, 0)
+    with pytest.raises(AssertionError):
+        _assert_same_icon_raster(actual, expected)
 
 
 def test_desktop_branding_sets_window_icon_without_changing_host_metadata(qtbot):

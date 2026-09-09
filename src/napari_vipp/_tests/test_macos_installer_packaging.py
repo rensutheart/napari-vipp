@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 
 from scripts import package_macos_installer as packager
 
@@ -294,6 +295,51 @@ def test_constructor_template_is_current_user_cpu_only_development_config():
     assert "algorithm: sha256" in construct
     assert "signing_identity_name" not in construct
     assert "notarization_identity_name" not in construct
+
+
+@pytest.mark.parametrize("architecture", ["arm64", "x86_64"])
+def test_constructor_yaml_runtime_constraint_matches_conda_metadata(
+    tmp_path, architecture
+):
+    output = tmp_path / "construct.yaml"
+    packager._render_template(
+        REPO_ROOT / "packaging/macos/construct.yaml.in",
+        output,
+        {
+            "__VIPP_VERSION__": PROJECT_VERSION,
+            "__VIPP_INSTALLER_FILENAME__": (
+                f"VIPP-{PROJECT_VERSION}-macOS-{architecture}-DEVELOPMENT.pkg"
+            ),
+            "__VIPP_LOCAL_CHANNEL_URI__": (tmp_path / "channel").as_uri(),
+        },
+    )
+    specs = output.read_text(encoding="utf-8").split("specs:\n", 1)[1]
+    specs = specs.split("\nvirtual_specs:", 1)[0]
+    yaml_specs = [
+        line.removeprefix("  - ")
+        for line in specs.splitlines()
+        if line.startswith("  - ruamel.yaml")
+    ]
+    # conda 26.7.2 declares this range in its upstream Python METADATA.
+    # The prior constructor solve admitted 0.19.1, then installed pip check failed.
+    assert yaml_specs == ["ruamel.yaml>=0.11.14,<0.19"]
+    requirement = Requirement(yaml_specs[0])
+    for version in ("0.11.14", "0.18.17"):
+        assert requirement.specifier.contains(version)
+    for version in ("0.11.13", "0.19.0", "0.19.1"):
+        assert not requirement.specifier.contains(version)
+
+
+@pytest.mark.parametrize(
+    "workflow", ["macos-installer.yml", "unsigned-installers-release.yml"]
+)
+def test_native_installer_workflows_keep_strict_installed_dependency_check(workflow):
+    text = (REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+    check_lines = [line.strip() for line in text.splitlines() if "-m pip check" in line]
+    assert check_lines == ['"$prefix/bin/python" -m pip check']
+    assert text.index(check_lines[0]) < text.index(
+        '"$prefix/bin/python" scripts/smoke_mesh_install.py --require-installed'
+    )
 
 
 def test_builder_environment_pins_wheel_build_toolchain():

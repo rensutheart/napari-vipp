@@ -19,12 +19,12 @@ changed:
   gpu_scientific_shared_execution: true
   windows_installer_runtime: true
   macos_installer_runtime: true
-  dependencies_toolchain: false
+  dependencies_toolchain: true
   packaging_release: true
   documentation: true
 carried_forward:
   unchanged_source_reader_corpus: v0.15.0a2
-  unchanged_dependency_payload: v0.15.0a2
+  unchanged_windows_dependency_payload: v0.15.0a2
 ```
 
 - Batch manifest schema 6 adds sealed recovery snapshots, run lineage and
@@ -58,6 +58,11 @@ carried_forward:
   confirmation and affected native Apple Silicon/Intel checks remain pending,
   with exact-main distributions and exact-tag installer integrity required
   before any eventual publication.
+- Native macOS smoke run 34335358823 installed both candidate PKGs, then failed
+  `pip check`: conda 26.7.2 requires `ruamel.yaml>=0.11.14,<0.19`, while the
+  unconstrained solve selected 0.19.1. The constructor runtime now carries that
+  compatibility constraint. Both architectures require rebuilt-package
+  dependency and launch checks; the failed run is not startup qualification.
 - On 2026-09-09 the user reported end-to-end acceptance item 3 complete. This is
   a user attestation for the exercised workflow, not independently retained
   output comparisons, biological validation or cross-machine reproducibility.
