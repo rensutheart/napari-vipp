@@ -102,6 +102,8 @@ class _ResultItem:
 
     @property
     def display_status(self):
+        if self.status == "reused" or getattr(self.record, "resumed_from_run_id", ""):
+            return "Verified reuse"
         return (
             self.planned_status
             if self.status == "not run" and self.record is None
@@ -121,6 +123,8 @@ class BatchResultsPanel(QWidget):
     itemRequested = Signal(int)
     checkBatchRequested = Signal()
     policyChanged = Signal(str)
+    resumeRequested = Signal()
+    packageAvailabilityChanged = Signal()
     PAGE_SIZE = 100
 
     def __init__(self, parent=None) -> None:
@@ -129,6 +133,7 @@ class BatchResultsPanel(QWidget):
         self._index_positions: dict[int, int] = {}
         self._page = 0
         self._running = False
+        self._item_review_available = True
         self._preparation_started = None
         self._run_started: float | None = None
         self._output_dir: Path | None = None
@@ -178,7 +183,8 @@ class BatchResultsPanel(QWidget):
         layout.addWidget(self.review_group)
 
         self.run_report = BatchRunReport()
-        self.run_report.manifest_button.clicked.connect(self._reveal_manifest)
+        self.export_package_button = self.run_report.export_package_button
+        self.export_package_button.clicked.connect(self._export_package)
         layout.addWidget(self.run_report)
 
         self.elapsed_label = self._label("Elapsed —")
@@ -293,6 +299,7 @@ class BatchResultsPanel(QWidget):
         artifact_layout = QVBoxLayout(self.artifact_toolbar)
         artifact_layout.setContentsMargins(0, 4, 0, 4)
         artifact_actions = QHBoxLayout()
+        artifact_actions.setSpacing(6)
         artifact_layout.addLayout(artifact_actions)
         self.output_folder_button = ToolbarCommandButton("Output folder")
         self.output_folder_button.clicked.connect(self._open_output_folder)
@@ -306,6 +313,21 @@ class BatchResultsPanel(QWidget):
             "results. Use Check batch in Setup to validate inputs and settings."
         )
         self.refresh_files_button.clicked.connect(self.refresh_files)
+        self.resume_button = ToolbarCommandButton("Resume saved run…")
+        self.resume_button.setToolTip(
+            "Continue a saved run after verifying its inputs, settings and "
+            "completed output contents. This is not Skip existing."
+        )
+        self.resume_button.clicked.connect(self.resumeRequested.emit)
+        artifact_actions.addWidget(self.resume_button)
+        self.artifact_separator = QFrame()
+        self.artifact_separator.setObjectName("BatchResultActionSeparator")
+        self.artifact_separator.setFrameShape(QFrame.VLine)
+        self.artifact_separator.setFrameShadow(QFrame.Plain)
+        self.artifact_separator.setFixedWidth(1)
+        artifact_actions.addSpacing(4)
+        artifact_actions.addWidget(self.artifact_separator, 0, Qt.AlignVCenter)
+        artifact_actions.addSpacing(4)
         for button in (
             self.output_folder_button,
             self.refresh_files_button,
@@ -320,6 +342,7 @@ class BatchResultsPanel(QWidget):
             (self.reveal_button, "open"),
             (self.output_folder_button, "open"),
             (self.refresh_files_button, "refresh"),
+            (self.resume_button, "recheck_all"),
             (self.check_batch_button, "checklist"),
         )
         self.file_action_label = self._label("")
@@ -367,6 +390,11 @@ class BatchResultsPanel(QWidget):
     def set_plan(self, preview: BatchPreviewResult | None) -> None:
         """Replace a plan when explicitly checked; clear the previous run view."""
 
+        self._item_review_available = True
+        self.review_item_button.show()
+        self.items_hint.setText(
+            "Select a row for outputs · click its name to review the item."
+        )
         self._timer.stop()
         self._running = False
         self._run_started = None
@@ -631,7 +659,7 @@ class BatchResultsPanel(QWidget):
             item.elapsed = max(0, time.monotonic() - item.started)
             item.timing_source = "Elapsed captured from this item's progress callbacks."
         done = sum(
-            entry.status in {"completed", "partial", "failed", "skipped"}
+            entry.status in {"completed", "partial", "failed", "skipped", "reused"}
             for entry in self._items
         )
         self.run_progress_bar.setRange(0, max(1, total))
@@ -733,6 +761,11 @@ class BatchResultsPanel(QWidget):
             if elapsed is not None:
                 item.elapsed = elapsed
                 item.timing_source = "Elapsed from the run report's item timestamps."
+            if getattr(record, "resumed_from_run_id", ""):
+                item.elapsed = None
+                item.timing_source = (
+                    "Verified previous result; not recalculated this run."
+                )
         output_dir = getattr(manifest, "output_dir", "")
         if output_dir:
             self._output_dir = Path(output_dir)
@@ -768,6 +801,14 @@ class BatchResultsPanel(QWidget):
         outcome = f"{counts} · {saved_count:,} outputs saved"
         if total_outputs:
             outcome = f"{counts} · {saved_count:,} of {total_outputs:,} outputs saved"
+        reused = sum(
+            bool(getattr(record, "resumed_from_run_id", "")) for record in records
+        )
+        if reused:
+            outcome = (
+                f"{counts} · {reused:,} items verified and reused · "
+                f"{saved_count:,} outputs saved this run"
+            )
         issues = int(summary.get("partial", 0)) + int(summary.get("failed", 0))
         compute = getattr(manifest, "compute", {})
         cleanup_failed = not bool(compute.get("runtime_cleanup_succeeded", True))
@@ -963,6 +1004,14 @@ class BatchResultsPanel(QWidget):
         for button, kind in getattr(self, "_command_icons", ()):
             button.setIcon(toolbar_icon(kind, self.palette()))
             button.setIconSize(QSize(18, 18))
+        if hasattr(self, "artifact_separator"):
+            self.artifact_separator.setFixedHeight(
+                max(18, self.resume_button.sizeHint().height() - 6)
+            )
+            self.artifact_separator.setStyleSheet(
+                "QFrame#BatchResultActionSeparator { border: none; "
+                f"background: {custom_paint_colors(self.palette()).border.name()}; }}"
+            )
         tone = getattr(colors, self._tone)
         self.summary_banner.setStyleSheet(
             "QFrame#BatchResultsSummaryBanner {"
@@ -1013,6 +1062,8 @@ class BatchResultsPanel(QWidget):
                     _status(output.status) == "completed" for output in item.outputs
                 )
                 outputs = f"{saved} / {len(item.outputs)} saved"
+                if getattr(item.record, "resumed_from_run_id", ""):
+                    outputs = f"{saved} / {len(item.outputs)} verified"
             else:
                 outputs = item.planned_outputs or f"{len(item.paths)} planned"
             values = (
@@ -1025,7 +1076,7 @@ class BatchResultsPanel(QWidget):
                 cell = QTableWidgetItem(value)
                 cell.setData(Qt.UserRole, start + row)
                 cell.setToolTip(item.timing_source if column == 3 else value)
-                if column == 0:
+                if column == 0 and self._item_review_available:
                     # A new item's font() defaults to the application font,
                     # not the table's resolved font under napari's stylesheet.
                     font = QFont(self.items_table.font())
@@ -1041,6 +1092,7 @@ class BatchResultsPanel(QWidget):
                         cell.setToolTip(item.file_choice)
                     tone = {
                         "completed": colors.success,
+                        "reused": colors.success,
                         "partial": colors.warning,
                         "cancelled": colors.warning,
                         "failed": colors.error,
@@ -1072,22 +1124,36 @@ class BatchResultsPanel(QWidget):
         self._sync_artifact_buttons()
 
     def _item_clicked(self, row: int, column: int) -> None:
-        if column == 0:
+        if column == 0 and self._item_review_available:
             position = self._page * self.PAGE_SIZE + row
             if 0 <= position < len(self._items):
                 self.itemRequested.emit(position)
 
     def _request_selected_item(self) -> None:
+        if not self._item_review_available:
+            return
         position = self._selected_position()
         if position is not None:
             self.itemRequested.emit(position)
+
+    def set_item_review_available(self, available: bool) -> None:
+        """Archived items must not navigate into a different open workflow."""
+        self._item_review_available = bool(available)
+        self.review_item_button.setVisible(bool(available))
+        self.items_hint.setText(
+            "Select a row for outputs · click its name to review the item."
+            if available else "Select a row to inspect this saved run's outputs."
+        )
+        self._render_page()
 
     def _show_selected_files(self) -> None:
         position = self._selected_position()
         self._selected_paths = []
         self.output_table.setRowCount(0)
         self.item_error_label.hide()
-        self.review_item_button.setEnabled(position is not None)
+        self.review_item_button.setEnabled(
+            position is not None and self._item_review_available
+        )
         if position is None:
             self.selected_item_label.setText("Select an item to inspect its files.")
             self.selected_item_meta.clear()
@@ -1142,9 +1208,9 @@ class BatchResultsPanel(QWidget):
             status_item.setToolTip(detail)
             if status.startswith("Failed"):
                 status_item.setForeground(QBrush(colors.error.foreground))
-            elif status == "Saved":
+            elif status in {"Saved", "Verified reuse"}:
                 status_item.setForeground(QBrush(colors.success.foreground))
-            elif status.startswith("Saved ·"):
+            elif status.startswith(("Saved ·", "Verified reuse ·")):
                 status_item.setForeground(QBrush(colors.warning.foreground))
             self.output_table.setItem(row, 1, status_item)
         if item.paths:
@@ -1167,6 +1233,14 @@ class BatchResultsPanel(QWidget):
             status = _status(output.status)
             message = str(getattr(output, "error_message", ""))
             if status == "completed":
+                if getattr(item.record, "resumed_from_run_id", ""):
+                    return (
+                        "Verified reuse" if exists else "Verified reuse · file missing",
+                        "Contents verified against the previous completed run; "
+                        "not rewritten in this run. "
+                        f"Current path: {'exists' if exists else 'missing'}. "
+                        "Refresh file status checks presence, not contents.",
+                    )
                 text = "Saved" if exists else "Saved · file missing"
             elif status == "failed":
                 text = (
@@ -1246,19 +1320,50 @@ class BatchResultsPanel(QWidget):
     def _sync_artifact_buttons(self) -> None:
         folder_exists = self._output_dir is not None and self._output_dir.is_dir()
         report_exists = self._report_path is not None and self._report_path.is_file()
+        export_enabled = report_exists and not self._running
+        export_tooltip = (
+            "Review a readable report and a portable copy of this run's "
+            "archived settings and records. Images and result files are excluded."
+            if export_enabled
+            else "Wait for the run to finish before exporting its package."
+            if self._running
+            else "The saved run record is unavailable on disk, so a package cannot "
+            "be exported. The on-screen run summary is still available."
+        )
+        export_changed = (
+            self.export_package_button.isEnabled() != export_enabled
+            or self.export_package_button.toolTip() != export_tooltip
+        )
+        self.export_package_button.setEnabled(export_enabled)
+        self.export_package_button.setToolTip(export_tooltip)
         self.output_folder_button.setEnabled(folder_exists)
         self.output_folder_button.setToolTip(
             str(self._output_dir)
             if folder_exists
             else "The output folder has not been created or is unavailable."
         )
-        self.run_report.manifest_button.setEnabled(report_exists)
-        self.run_report.manifest_button.setToolTip(
-            f"{file_reveal_label()}: {self._report_path}"
-            if report_exists
-            else "The technical manifest JSON is unavailable on disk. "
-            "The run summary above is still available."
+        if export_changed:
+            self.packageAvailabilityChanged.emit()
+
+    def _export_package(self) -> None:
+        self._sync_artifact_buttons()
+        if not self.export_package_button.isEnabled():
+            return
+        from .reproducibility import ReproducibilityDialog
+
+        dialog = ReproducibilityDialog(
+            self, manifest_path=self._report_path, title="VIPP batch analysis"
         )
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.exported.connect(self._package_exported)
+        dialog.show()
+        dialog.prepare_report()
+
+    def _package_exported(self, path: str) -> None:
+        self.file_action_label.setText(
+            f"Reproducibility package saved: {Path(path).name}"
+        )
+        self.file_action_label.show()
 
     def _open_output_folder(self) -> None:
         if self._output_dir is not None:
@@ -1270,10 +1375,6 @@ class BatchResultsPanel(QWidget):
     @property
     def has_run_report(self) -> bool:
         return self._has_result
-
-    def _reveal_manifest(self) -> None:
-        if self._report_path is not None:
-            self._reveal_path(self._report_path)
 
     def refresh_files(self) -> None:
         """Refresh only existence evidence; never alter the run's saved records."""

@@ -9,6 +9,7 @@ from qtpy.QtWidgets import QPushButton
 
 from napari_vipp._tests.test_batch_results import _preview, _record, _result
 from napari_vipp._tests.test_batch_table_theme import _palette
+from napari_vipp._tests.test_reproducibility_entrypoints import _dialog_spy
 from napari_vipp._tests.test_ui_batch import _actions
 from napari_vipp.core.batch import BatchStatus
 from napari_vipp.ui.batch import CollectionBatchDialog
@@ -42,7 +43,7 @@ def test_report_explains_all_skipped_without_claiming_new_results(qtbot, tmp_pat
     assert report.fields["Saved to"].text() == str(plan.config.output_dir)
     assert report.issues_label.isHidden()
     assert panel.has_run_report  # No JSON file required.
-    assert not report.manifest_button.isEnabled()
+    assert not report.export_package_button.isEnabled()
     assert report.details_toggle.isHidden()
 
 
@@ -101,12 +102,19 @@ def test_report_handles_missing_timing(qtbot, tmp_path):
 
 
 @pytest.mark.parametrize("dark", [True, False])
-def test_finished_primary_scrolls_to_report_and_new_run_is_explicit(
-    qtbot, tmp_path, dark
+def test_finished_primary_exports_and_new_run_is_explicit(
+    qtbot, tmp_path, dark, monkeypatch
 ):
     from napari.qt import get_stylesheet
 
     plan = _preview(tmp_path, 14)
+    exported = _dialog_spy(monkeypatch)
+    result = _result(plan, tuple(_kept(item) for item in plan.items))
+    result.manifest_path.parent.mkdir()
+    result.manifest_path.touch()
+    archived = result.manifest_path.with_name("archived-run.json")
+    archived.touch()
+    result = replace(result, manifest_archive_path=archived)
     checked, previewed, run = [], [], []
     actions = replace(
         _actions(plan, previewed), check_batch=lambda *_: checked.append(True)
@@ -121,9 +129,9 @@ def test_finished_primary_scrolls_to_report_and_new_run_is_explicit(
     dialog.apply_preview_result(plan, preview_representative=False)
     dialog.runRequested.connect(run.append)
     dialog.begin_run(14)
-    dialog.finish_run(_result(plan, tuple(_kept(item) for item in plan.items)))
+    dialog.finish_run(result)
     qtbot.wait(20)
-    assert dialog.next_button.text() == "View run report"
+    assert dialog.next_button.text() == "Export package…"
     assert dialog.next_button.isEnabled()
     assert not dialog.run_button.isEnabled() and dialog.run_button.isHidden()
     assert dialog._preview_result is None
@@ -137,6 +145,7 @@ def test_finished_primary_scrolls_to_report_and_new_run_is_explicit(
     assert [
         button.text() for button in panel.artifact_toolbar.findChildren(QPushButton)
     ] == [
+        "Resume saved run…",
         "Output folder",
         "Refresh file status",
     ]
@@ -145,11 +154,23 @@ def test_finished_primary_scrolls_to_report_and_new_run_is_explicit(
     )
     dialog.next_button.click()
     qtbot.wait(20)
-    top = panel.run_report.mapTo(dialog.run_scroll.viewport(), QPoint()).y()
-    assert 0 <= top <= 20
-    dialog.tabs.setCurrentIndex(1)
-    dialog.next_button.click()
-    assert dialog.tabs.currentIndex() == 3
+    assert exported[0].arguments["manifest_path"] == archived
+    assert "workflow" not in exported[0].arguments
+    assert exported[0].prepared
+    exported[0].close()
+    panel.run_report.export_package_button.click()
+    assert exported[1].arguments == exported[0].arguments
+    assert exported[1].prepared
+    exported[1].close()
+    for section in (1, 2):
+        dialog.tabs.setCurrentIndex(section)
+        assert dialog.next_button.text() == "View run report"
+        dialog.next_button.click()
+        qtbot.wait(20)
+        assert dialog.tabs.currentIndex() == 3
+        top = panel.run_report.mapTo(dialog.run_scroll.viewport(), QPoint()).y()
+        assert 0 <= top <= 20
+    assert len(exported) == 2
     assert checked == [] and previewed == [] and run == []
     dialog.tabs.setCurrentIndex(0)
     assert dialog.next_button.text() == "Check batch"
@@ -214,7 +235,7 @@ def test_long_reason_is_readable_without_a_tooltip_or_json(qtbot, tmp_path):
     assert "Final explanation." not in report.issues_label.text()
     report.details_toggle.click()
     assert reason in report.issues_label.text()
-    assert not report.manifest_button.isEnabled()
+    assert not report.export_package_button.isEnabled()
 
 
 def test_missing_failure_reason_is_not_invented(qtbot, tmp_path):

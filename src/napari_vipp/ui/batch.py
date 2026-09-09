@@ -49,6 +49,7 @@ from napari_vipp.core.batch_execution import (
 )
 from napari_vipp.core.batch_parameters import BatchSourceParameterOverrides
 from napari_vipp.core.compute import ComputeRequest
+from napari_vipp.core.reproduction import ReproductionCheck
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_interpretation import AxisInterpretationControl
 from napari_vipp.ui.batch_overrides import (
@@ -117,6 +118,7 @@ class BatchPreviewResult:
     explicit_outputs: bool
     items: tuple[BatchItemPlan, ...]
     config: BatchConfig
+    reproduction: ReproductionCheck | None = None
 
     def __iter__(self):
         return iter(self.rows)
@@ -164,6 +166,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
     previewInvalidated = Signal()
     parameterOverridesChanged = Signal(object)
     nodeExecutionOverridesChanged = Signal(object)
+    reproductionChanged = Signal(object)
 
     def __init__(
         self,
@@ -185,6 +188,8 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         self._compute_toolbar_fingerprint_at_load = ""
         self._demo: SyntheticBatchDemo | None = None
         self._preview_result: BatchPreviewResult | None = None
+        self._reproduction_request = None
+        self._reproduction_context = False
         self._preview_table_rows: dict[int, int] = {}
         self._pending_parameter_overrides: tuple[
             BatchSourceParameterOverrides, ...
@@ -192,6 +197,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         self._run_control_enabled_states: dict[QWidget, bool] | None = None
         self._run_in_progress = False
         self._run_preparing = False
+        self._resume_source_path: Path | None = None
         self._representative_pending = False
         self._item_file_policies = ()
         self._activity_run_total = 0
@@ -988,6 +994,8 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
             values["node_execution_overrides"] = execution_overrides
         if self._item_file_policies:
             values["item_file_policies"] = self._item_file_policies
+        if self._reproduction_request is not None:
+            values["reproduction"] = self._reproduction_request
         return values
 
     def node_execution_overrides(
@@ -1079,6 +1087,9 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         """Request execution without accepting or hiding this workspace."""
         if self._run_in_progress or getattr(self, "_run_preparing", False):
             return
+        if self._reproduction_block_reason():
+            self._sync_workspace()
+            return
         self.begin_run_preflight()
         self.runRequested.emit(self.values())
 
@@ -1097,6 +1108,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         self.batch_activity_strip.repaint()
 
     def begin_background_run_preparation(self) -> None:
+        self._completed_reproduction = None
         self._run_preparing = True
         self._checking_plan = True
         self.results_panel.begin_preparation(
@@ -1127,6 +1139,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         """Discard a plan as soon as any setting that produced it changes."""
         if self._run_in_progress:
             return
+        self._completed_reproduction = None
         self._hide_source_detection_progress()
         self.clear_demo_context()
         self._loaded_config_path = None
@@ -1260,7 +1273,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         self._preview_result = None
         self.preview_item_button.setEnabled(False)
         self.preview_status.setText(
-            "Historical run results. View run report summarizes the finished batch. "
+            "Historical run results. The run report summarizes the finished batch. "
             "To process again, return to Setup, review the settings, then choose "
             "Check batch. Nothing runs until you confirm Run."
         )
@@ -1304,6 +1317,9 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
 
     def _preview_selected_item(self) -> bool:
         """Load the selected full-plan position into the representative graph."""
+        if self._reproduction_block_reason():
+            self.graph_preview_status.setText(self._reproduction_block_reason())
+            return False
         if self._checking_plan or self._representative_pending:
             return False
         if self._run_in_progress:
@@ -1493,6 +1509,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         technical_detail: str = "",
     ) -> None:
         """Show one actionable issue while retaining detail in a tooltip."""
+        self._completed_reproduction = None
         self._checking_plan = False
         self._finish_check_progress_failure()
         self._hide_source_detection_progress()
@@ -1669,6 +1686,14 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         self._checking_plan = False
         self._hide_source_detection_progress()
         self.preview_button.setEnabled(self._actions is not None)
+        if self._reproduction_block_reason():
+            self.preview_status.setText(self._reproduction_block_reason())
+            self.show_workspace_activity(
+                "Needs attention · original-input checks are incomplete.",
+                state="warning",
+            )
+            self._sync_workspace()
+            return
         if int(override_count) > 0:
             entries = "entry" if int(override_count) == 1 else "entries"
             message = (
@@ -1842,6 +1867,20 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
                 state="warning",
             )
         self._workspace_plan_applied(result)
+        if self._reproduction_block_reason():
+            self.preview_status.setText(self._reproduction_block_reason())
+            self.results_panel.invalidate_plan(self._reproduction_block_reason())
+            self.graph_preview_status.setText(
+                "Original-input checks are incomplete. No representative "
+                "image was calculated. Resolve the differences and Check batch again."
+            )
+            self.show_workspace_activity(
+                "Needs attention · original-input checks block this run.",
+                state="warning",
+            )
+            self.tabs.setCurrentIndex(1)
+            self._sync_workspace()
+            return
         if result.items:
             self.select_preview_item(self._current_item)
             if (
@@ -1868,6 +1907,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
 
     def begin_run(self, total: int) -> None:
         """Enter retained, determinate item-level batch progress mode."""
+        self._completed_reproduction = None
         self._hide_source_detection_progress()
         total = max(int(total), 0)
         self._activity_run_total = total
@@ -1908,6 +1948,8 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
 
     def _reset_run_display(self) -> None:
         """Clear an earlier result when a fresh batch plan becomes current."""
+        self._completed_reproduction = None
+        self._resume_source_path = None
         self._activity_run_total = 0
         self._activity_run_index = 0
         self._activity_run_completed = 0
@@ -1934,6 +1976,8 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         index = max(int(index), 1)
         total = max(int(total), 0)
         normalized_status = str(status).strip().lower() or "running"
+        if self._resume_source_path is not None:
+            self.cancel_run_button.setText("Cancel run")
         self._item_run_states[index] = normalized_status.replace("_", " ").title()
         completed = index - 1 if normalized_status == "running" else index
         completed = max(min(completed, total), 0)
@@ -1954,7 +1998,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
             f"Item {index} of {total}: {batch_id} ({normalized_status})."
         )
         table_row = self._preview_table_rows.get(index)
-        if table_row is not None:
+        if table_row is not None and self._resume_source_path is None:
             self._set_table_run_status(
                 table_row,
                 normalized_status.replace("_", " ").title(),
@@ -2047,6 +2091,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         defer_control_restore: bool = False,
     ) -> None:
         """Retain the final manifest summary and reconcile every visible row."""
+        self._record_completed_reproduction(result)
         manifest_items = tuple(result.manifest.items)
         for item in manifest_items:
             self._item_run_states[int(item.index)] = (
@@ -2134,6 +2179,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         defer_control_restore: bool = False,
     ) -> None:
         """Retain a terminal execution error and restore setup controls."""
+        self._completed_reproduction = None
         self.run_group.show()
         self.run_progress_label.setText("Batch failed before it could finish.")
         self.run_result_label.setText(str(message))
@@ -2177,6 +2223,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         technical_detail: str = "",
     ) -> None:
         """Show one deterministic setup issue without runtime-failure noise."""
+        self._completed_reproduction = None
         self._preview_result = None
         concise = str(message).strip() or "The batch needs one setting changed."
         self.show_workspace_activity(
@@ -2264,6 +2311,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
             self.load_overrides_button,
             self.recheck_item_button,
             self.more_button,
+            self.results_panel.resume_button,
         ]
         return tuple(dict.fromkeys(controls))
 
@@ -2304,6 +2352,8 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
             return
 
     def _load_config(self) -> None:
+        from napari_vipp.ui.reproduction import ReproductionOpenCancelled
+
         if self._actions is None:
             self.preview_status.setText(
                 "Loading a batch config is available from the VIPP widget."
@@ -2317,10 +2367,12 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         )
         if not path:
             return
-        self.clear_demo_context()
         try:
             config = self._actions.load_config(path)
+            self.clear_demo_context()
             self._apply_config(config)
+        except ReproductionOpenCancelled:
+            return
         except Exception as exc:
             self.preview_status.setText(f"Could not load batch config: {exc}")
             return
@@ -2364,7 +2416,10 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         self._sync_workspace()
 
     def _apply_config(self, config: BatchConfig) -> None:
+        self._completed_reproduction = None
         self._hide_source_detection_progress()
+        self._reproduction_request = config.reproduction
+        self._reproduction_context = config.reproduction is not None
         self._loaded_compute_request = config.compute_request
         self._item_file_policies = config.item_file_policies
         self._pending_parameter_overrides = tuple(config.parameter_overrides)

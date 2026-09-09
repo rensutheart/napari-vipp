@@ -338,13 +338,14 @@ def test_synthetic_batch_validator_binds_result_to_bundle_files(tmp_path):
         validate_synthetic_batch_demo(config_demo, result=config_result)
 
 
-def test_synthetic_batch_validator_reconciles_sidecars_exactly(tmp_path):
+@pytest.mark.parametrize("field", ("batch_id", "run_id", "integrity_sha256"))
+def test_synthetic_batch_validator_reconciles_sidecars_exactly(tmp_path, field):
     demo = create_synthetic_batch_demo(tmp_path / "bundle")
     result = run_and_validate_synthetic_batch_demo(demo).result
     sidecar_dir = demo.output_dir / result.manifest.item_records_dir
     sidecar_path = sorted(sidecar_dir.glob("*.json"))[1]
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    sidecar["batch_id"] = "tampered"
+    sidecar[field] = "tampered"
     sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
 
     with pytest.raises(ValueError, match="sidecars differ"):

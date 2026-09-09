@@ -1287,6 +1287,7 @@ def test_open_vipp_uses_documents_not_the_replaceable_environment(
     backend.open_vipp(launcher)
 
     assert len(calls) == 1
+    assert calls[0][0] == (str(launcher), "--desktop")
     assert Path(calls[0][1]["cwd"]) == tmp_path / "Documents"
     assert Path(calls[0][1]["cwd"]) != launcher.parent.parent
     if os.name == "nt":

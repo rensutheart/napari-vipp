@@ -116,7 +116,7 @@ def test_directory_changes_update_existence_without_rewriting_run_outcome(
     assert panel.summary_label.text() == before
     result.manifest_path.unlink()
     qtbot.waitUntil(
-        lambda: not panel.run_report.manifest_button.isEnabled(), timeout=3000
+        lambda: not panel.run_report.export_package_button.isEnabled(), timeout=3000
     )
     assert panel.has_run_report
     panel.hide()

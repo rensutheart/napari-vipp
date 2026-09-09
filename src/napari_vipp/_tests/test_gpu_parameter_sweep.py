@@ -12,6 +12,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "sweep_gpu_parameters.py"
 MANIFEST_PATH = PROJECT_ROOT / "scripts" / "gpu_admission_suites.json"
+RL_OPERATIONS = (
+    "richardson_lucy_deconvolution",
+    "richardson_lucy_tv_deconvolution",
+)
 
 
 def _load_module():
@@ -94,6 +98,54 @@ def test_threshold_foreground_lane_visits_and_revisits_each_v3_branch(sweep_modu
         np.testing.assert_array_equal(result, mask)
 
 
+@pytest.mark.parametrize("operation_id", RL_OPERATIONS)
+def test_rl_catalog_reviews_v2_execution_without_changing_parity_policy(
+    sweep_module,
+    operation_id,
+):
+    from napari_vipp.core.compute_specs import compute_specs_for
+
+    declaration = next(
+        item
+        for item in sweep_module.load_admission_manifest(MANIFEST_PATH)
+        if item.operation_id == operation_id
+    )
+    (spec,) = compute_specs_for(
+        operation_id,
+        include_cpu=False,
+        allow_experimental=False,
+    )
+
+    assert declaration.implementation_id == spec.implementation_id
+    assert declaration.implementation_version == spec.implementation_version == "2"
+    assert sweep_module.EXPECTED_IMPLEMENTATION_VERSIONS[operation_id] == "2"
+    policy_prefix = "rl-tv" if operation_id == RL_OPERATIONS[1] else "rl"
+    assert spec.parameter_policy_id == f"{policy_prefix}-parameters-v3"
+    assert spec.workload_policy_id == f"{policy_prefix}-finite-f32-v3"
+    assert spec.parity_policy_id == f"{policy_prefix}-scientific-equivalence-v2"
+
+
+@pytest.mark.parametrize("operation_id", RL_OPERATIONS)
+@pytest.mark.parametrize("version", ("1", "3", "future"))
+def test_rl_catalog_rejects_stale_or_unreviewed_implementation_versions(
+    sweep_module,
+    operation_id,
+    version,
+):
+    declarations = tuple(
+        replace(item, implementation_version=version)
+        if item.operation_id == operation_id
+        else item
+        for item in sweep_module.load_admission_manifest(MANIFEST_PATH)
+    )
+
+    with pytest.raises(
+        sweep_module.SweepConfigurationError,
+        match=f"{operation_id}::.*unreviewed implementation version",
+    ):
+        sweep_module.validate_catalog(sweep_module.sweep_catalog(), declarations)
+
+
 def test_catalog_has_bounded_explicit_treatment_for_all_21(sweep_module):
     cases = sweep_module.sweep_catalog()
     declarations = sweep_module.load_admission_manifest(MANIFEST_PATH)
@@ -106,10 +158,17 @@ def test_catalog_has_bounded_explicit_treatment_for_all_21(sweep_module):
     assert coverage["delegated_psf_sweep_count"] == 2
     assert coverage["delegated_scientific_contract_count"] == 2
     rows = {row["operation_id"]: row for row in coverage["rows"]}
-    assert rows["richardson_lucy_deconvolution"]["coverage_mode"] == (
-        "delegated-psf-sweep"
-    )
-    assert rows["richardson_lucy_tv_deconvolution"]["delegated_to"]
+    for operation_id in RL_OPERATIONS:
+        row = rows[operation_id]
+        assert row["implementation_version"] == "2"
+        assert row["coverage_mode"] == "delegated-psf-sweep"
+        assert not row["lanes"]
+        assert "benchmark_gpu_rl_parameter_sweep.py" in row["delegated_to"]
+        assert "test_rl_gpu_warning_policy.py" in row["delegated_to"]
+        assert "bounded diagnostic CPU/GPU comparisons" in row["classification"]
+        assert "does not execute an RL parameter sweep" in row["classification"]
+        assert "certify CPU equivalence" in row["classification"]
+        assert "or refresh historical measurements" in row["classification"]
     for operation_id in ("measure_objects", "measure_objects_intensity"):
         row = rows[operation_id]
         assert row["coverage_mode"] == "fixed-contract"
@@ -451,6 +510,7 @@ def test_provider_free_orchestrator_emits_json_safe_complete_evidence(sweep_modu
     cases = sweep_module.sweep_catalog()
 
     def runner(_case, _lane, _value, declaration):
+        assert _case.operation_id not in RL_OPERATIONS
         return sweep_module.StepObservation(
             elapsed_seconds=0.01,
             runtime_id=declaration.runtime_id,
@@ -491,6 +551,16 @@ def test_provider_free_orchestrator_emits_json_safe_complete_evidence(sweep_modu
     }
     assert len(document["cases"]) == 21
     by_operation = {case["operation_id"]: case for case in document["cases"]}
+    coverage_rows = {
+        row["operation_id"]: row for row in document["coverage"]["rows"]
+    }
+    for operation_id in RL_OPERATIONS:
+        row = by_operation[operation_id]
+        assert row["implementation_version"] == "2"
+        assert row["coverage_mode"] == "delegated-psf-sweep"
+        assert row["lanes"] == []
+        assert row["classification"] == coverage_rows[operation_id]["classification"]
+        assert row["delegated_to"] == coverage_rows[operation_id]["delegated_to"]
     assert by_operation["fill_holes"]["production_scaffold"] == {
         "operation_id": "binary_threshold",
         "parameters": {"threshold": 0.5},

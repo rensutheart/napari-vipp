@@ -89,3 +89,21 @@ release qualification. The directly affected historical-evidence, benchmark
 coordinator and admission-manifest regressions were corrected and passed their
 focused reruns. A final planner/batch rerun passed all 81 tests, including both
 CPU fallback paths clearing GPU warnings and restoring the CPU version.
+
+Windows, 2026-09-09: the interactive GPU sweep catalogue still pinned both RL
+implementation versions to 1, causing four provider-free catalogue tests to
+reject the current version-2 admission manifest. The catalogue now explicitly
+reviews version 2 for both operations while continuing to reject stale and
+unknown versions. Its delegated rows distinguish bounded diagnostic CPU/GPU
+comparisons from the broader v3 advisory-execution contracts; these rows do not
+execute RL sweeps, certify broader CPU equivalence, or refresh historical
+measurements. No provider, execution policy, comparison gate, or historical
+benchmark artifact was changed.
+
+All 27 sweep tests passed (the original 19 plus eight version/policy regressions).
+The related warning-policy, support-policy, planner, benchmark-coordinator,
+RL characterization, diagnostic PSF-harness, and admission-manifest tests passed
+211 low-cost tests across a combined run and a separate admission skip-integrity
+regression. Nine real-CUDA cases were deliberately not rerun. Targeted lint
+passed. This catalogue-only correction required no new CUDA execution and is
+not a full-suite or cross-platform release qualification.

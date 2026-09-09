@@ -2,7 +2,7 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-09-07
+Last reviewed: 2026-09-08
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -99,7 +99,7 @@ truth is `NODE_LIBRARY` in `src/napari_vipp/core/pipeline.py`.
 | Intensity and math | Linear scale/offset, gamma, Rescale Intensity, normalize, Clamp Intensity, weighted image calculation, add/subtract/ratio, Mask Image, logical operations, invert, dtype conversion. | Clarify old names where needed; avoid growing a generic image-calculator surface until reproducibility and safety rules are clear. |
 | Filtering, enhancement, and restoration foundation | Average/Gaussian/3D Gaussian/median/bilateral/non-local-means filtering, rolling-ball background, subtract background, DoG, unsharp mask, Sobel, Canny, Laplace, `Born-Wolf PSF`, `Prepare / Validate PSF`, baseline Richardson-Lucy, and Richardson-Lucy TV deconvolution. | Real microscopy/PSF validation, reflect-padded edge-policy follow-up, performance profiling for large 3D restoration, wavelet denoising, noise estimation, Laplacian-of-Gaussian/blob-oriented helpers, and clearer performance/progress guidance on expensive restoration steps. |
 | Thresholding and segmentation | Otsu, Triangle, Li, Yen, Isodata, Minimum, Binary, Hysteresis, Adaptive Mean/Gaussian, Sauvola, Niblack, Auto Watershed From Mask, distance transform, H-maxima markers, marker-controlled watershed, and expand labels. | Watershed validation and marker QC summaries, better defaults from microscopy examples, optional mask-port semantics where needed, and possible consolidation into selector nodes only if the palette becomes hard to scan. |
-| Binary morphology and label cleanup | Binary erosion/dilation/opening/closing/top-hat/black-hat/gradient, ImageJ-compatible Remove Outliers (Binary), fill holes, remove small objects, connected-component labels, clear border, filter by volume, filter by property, relabel sequential. | Find label boundaries, kept/removed object count reporting, direct calibrated-unit size filtering if the table-based path proves too indirect, grayscale morphology, convex hull per object, and object boundary/thickness maps. |
+| Binary morphology and label cleanup | Binary erosion/dilation/opening/closing/top-hat/black-hat/gradient, ImageJ-compatible Remove Outliers (Binary), fill holes, remove small objects, connected-component labels, clear border, filter by volume, filter by property, relabel sequential. Find Label Boundaries and exact kept/removed object-count feedback are implemented, unreleased after 0.15.0a2. | Direct calibrated-unit size filtering if the table-based path proves too indirect, grayscale morphology, convex hull per object, and calibrated object-thickness/distance maps. |
 | Tables and object measurements | First-class table outputs, object morphology, intensity measurements, calibrated physical variants, 3D mesh morphology, table merge, column selection, metadata annotation, grouped summaries, CSV/TSV output. The separate mask-to-surface/OBJ path is implemented, unreleased. | Per-label mesh export, specialist mesh repair/smoothing only if validated, richer intensity distribution columns if requested, and continued analytical validation. |
 | Skeleton and network analysis | Skeletonize, skeleton keypoints, graph overlay, component labels, branch labels, branch pruning, component analysis, branch tables, branch summaries, graph node/edge tables, and whole-network metrics. | Skeleton/network validation report, specialist mitochondrial network indices, and broader progress/cancellation coverage for dense networks. |
 | Colocalization and spatial association | Whole-image and ROI-masked Pearson/Manders/overlap/Costes metrics, colocalized-voxel RGB views, RACC-like index images, object colocalization metrics, label overlap, nearest-object distance, and event localization tables. | Validation figures/notebooks, RACC core/interop decision, and publication-facing example artifacts. |
@@ -136,8 +136,8 @@ clearly useful additions to existing workflows.
 
 | Node or feature | Suggested backend | Notes |
 | --- | --- | --- |
-| Find Label Boundaries | `skimage.segmentation.find_boundaries` | Useful for QC overlays, boundary masks, and measurement sanity checks. |
-| Kept/removed counts for label filters | Existing label-count paths | Inspector/status polish for `Filter Labels By Volume`, `Filter Labels By Property`, and related cleanup nodes. |
+| Find Label Boundaries | `skimage.segmentation.find_boundaries` | Implemented, unreleased after 0.15.0a2: same-grid Boolean QC boundary masks, inside/outside/both placement, explicit spatial scope and connectivity. Keeps upstream labels unchanged; not a mesh or raw-image edge detector. |
+| Kept/removed counts for label filters | `core/object_filter_counts.py` | Implemented, unreleased after 0.15.0a2: exact current input/output counts in the inspector's Filter result section for volume/property filters, Remove Small Objects and Clear Border Objects; stale/bypassed results do not claim counts. |
 | Marker QC summaries | Existing maxima/watershed outputs | Report marker count, empty markers, labels without markers, and split/merge hints for watershed workflows. |
 | Watershed validation workflow | Synthetic and microscopy-like phantoms | Not a new node, but a release-quality requirement for trusting the existing watershed family. |
 

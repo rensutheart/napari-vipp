@@ -31,7 +31,7 @@
       "id": "mask_to_3d_mesh_1",
       "operation_id": "mask_to_3d_mesh",
       "params": {
-        "object_mode": "Connected objects",
+        "object_mode": "Single object",
         "boundary": "Close at image border"
       }
     },
@@ -44,8 +44,9 @@
       "id": "color_mesh_objects_1",
       "operation_id": "color_mesh_objects",
       "params": {
-        "color_by": "mesh_volume_physical",
-        "color_map": "viridis"
+        "color_by": "triangle_count",
+        "color_map": "turbo",
+        "_vipp_auto_recalculate": true
       }
     },
     {
@@ -79,18 +80,20 @@
       "id": "smooth_mesh_1",
       "operation_id": "smooth_mesh",
       "params": {
-        "iterations": 3,
-        "strength": 0.3,
-        "preserve_boundary": true
+        "iterations": 2,
+        "strength": 1.0,
+        "preserve_boundary": true,
+        "_vipp_auto_recalculate": true
       }
     },
     {
       "id": "simplify_mesh_1",
       "operation_id": "simplify_mesh",
       "params": {
-        "target_percent": 65.0,
-        "aggressiveness": 7.0,
-        "preserve_boundary": true
+        "target_percent": 10.0,
+        "aggressiveness": 4.0,
+        "preserve_boundary": true,
+        "_vipp_auto_recalculate": true
       }
     },
     {
@@ -191,8 +194,8 @@
   "tunnels": [],
   "positions": {
     "input": [
-      0.0,
-      0.0
+      -9.0,
+      -2.0
     ],
     "binary_threshold_1": [
       350.0,
@@ -223,8 +226,8 @@
       120.0
     ],
     "smooth_mesh_1": [
-      2450.0,
-      120.0
+      2502.0,
+      123.0
     ],
     "simplify_mesh_1": [
       2800.0,
@@ -242,7 +245,7 @@
   "notes": [
     {
       "id": "mesh_start",
-      "text": "1. CALCULATE ALL, THEN INSPECT THE MESHES\nFive synthetic objects; explicit Z/Y/X, 2 x 0.5 x 0.5 micrometres. Connected objects retains foreground IDs, including cavity walls. Manual mesh nodes calculate only when requested.",
+      "text": "1. CALCULATE ALL, THEN INSPECT THE MESHES\nFive synthetic objects; explicit Z/Y/X, 2 x 0.5 x 0.5 micrometres. Extract as Single object, then Split Mesh Objects gives disconnected surfaces separate IDs. Colour, Smooth and Simplify have Auto Recalculate enabled in this saved workflow.",
       "position": [
         0.0,
         -250.0
@@ -251,7 +254,7 @@
     },
     {
       "id": "mesh_identity",
-      "text": "2. IDENTITIES, COLOURS AND TWO DISJOINT GROUPS\nSplit uses shared triangle edges; no implicit union. Colour uses current mesh volume. In range keeps four objects >= 10 um^3; Outside range keeps the tiny object. Combine reunites all five without duplicate objects, welding or lost colours.",
+      "text": "2. IDENTITIES, COLOURS AND TWO DISJOINT GROUPS\nSplit uses shared triangle edges; no implicit union. Colour uses Triangle count with Turbo. Volume filtering keeps four objects >= 10 um^3 in one branch and the tiny object in the other. Combine reunites all five without welding or lost colours.",
       "position": [
         1050.0,
         -250.0
@@ -260,7 +263,7 @@
     },
     {
       "id": "mesh_refine",
-      "text": "3. COMPARE ORIGINAL AND REFINED GEOMETRY\nSmoothing and simplification create new meshes; the upstream originals remain available. Inspect shape and updated measurements. Export a selected mesh as 3MF to preserve units, objects and colours. The Batch Output only declares an output: Calculate all saves nothing.",
+      "text": "3. COMPARE ORIGINAL AND REFINED GEOMETRY\nSaved settings: Smooth 2 iterations at strength 1; Simplify keeps a target of 10% at aggressiveness 4. Open boundaries stay fixed. These sample-specific settings can change shape and measurements; upstream originals remain available. The 3MF Batch Output only declares an output: Calculate all saves nothing.",
       "position": [
         2450.0,
         -250.0
@@ -280,8 +283,207 @@
   "metadata": {
     "vipp": {
       "inspector": {
-        "selected_node_id": "color_mesh_objects_1",
-        "right_panel_visible": true
+        "selected_node_id": "smooth_mesh_1",
+        "right_panel_visible": true,
+        "display_profiles": [
+          {
+            "node_id": "batch_output_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "binary_threshold_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "color_mesh_objects_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "combine_meshes_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "filter_mesh_objects_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "filter_mesh_objects_2",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "input",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint16": {}
+            }
+          },
+          {
+            "node_id": "mask_to_3d_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "simplify_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "smooth_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "split_mesh_objects_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          }
+        ]
+      },
+      "compute_optimizer": {
+        "locked_node_ids": []
       }
     }
   }

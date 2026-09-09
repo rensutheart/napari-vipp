@@ -59,14 +59,14 @@ example...**. Its actively maintained source also remains under
 | `general-node-bypass-acceptance.json` | `VIPP synthetic deconvolution image` plus `VIPP synthetic measured PSF` | Generalized bypass acceptance path with a unary Gaussian and a three-iteration RL-TV node. RL-TV forwards only its Image/intensity input at port 0 while its connected PSF is retained but scientifically ignored; the graph demonstrates terminal, source, and incompatible image-to-mask exclusions, while its notes explain multi-output and publication boundaries. Open it as `general-node-bypass`. |
 | `synthetic-batch-provenance.json` | Ready-to-run paired NumPy demo | End-to-end batch validation with three deterministic sorted-position pairs, explicit NPY/TIFF/TSV outputs, known overlap labels and measurements, portable config/runner files, and full manifest provenance. Select it through `Open example...`, click `Open batch demo...`, choose a working-copy location, use the representative slider or preview-table rows to inspect all three paired fields throughout the graph, then click `Run demo batch` and inspect retained progress and validation in the batch workspace. |
 | `otsu-red-channel-labels.json` | `VIPP synthetic multichannel volume` | Label-cleanup review path: split the red/TRITC-like channel, blur, Otsu threshold, fill holes, connected components, clear border objects, and volume filtering. |
+| `synthetic-separate-overlapping-objects.json` | `VIPP synthetic volume` | Authored cross-cutting workflow: separate the rounded object and curved band using intensity masks and XOR, reconstruct the band with OR and morphology, create and measure two meshes, then combine without union and colour by object ID. Six canvas notes explain the sample-specific choices. Save Image nodes are off; Calculate all writes no files. Open as `separate-overlapping-objects`. |
 | `synthetic-gpu-segmentation-bridge.json` | `VIPP synthetic GPU segmentation cleanup` | Portable, annotated Prefer-GPU path through Extract Channel, an exact float32 Preserve conversion, Gaussian Blur, a fixed threshold with a safe sample-specific margin, boolean Remove Small Objects and Fill Holes cleanup, and 3D Connected Components. The 22-voxel cutoff visibly removes one isolated 19-voxel speck, then Fill Holes restores 31 enclosed cavity voxels. Its notes distinguish GPU eligibility from a guarantee, explain host-first extraction versus a resident no-copy view, and limit the one-round-trip expectation to a single retained terminal output. Open it as `gpu-segmentation`; unsupported regions visibly fall back to CPU. |
 | `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image, carried through a `Red intensity` tunnel, into `Measure Objects + Intensity`. |
 | `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity via `Red intensity` tunnel, table merge, and metadata columns. |
 | `synthetic-measurement-summary.json` | `VIPP synthetic measurement summary` | Grouped measurement summaries with known timepoint object counts and areas. |
 | `synthetic-derived-object-morphology.json` | `VIPP synthetic object morphology` | Derived 2D morphology, circularity, perimeter/area ratio, Hu moments, and checklist-based column selection. |
 | `synthetic-3d-mesh-morphology.json` | `VIPP synthetic 3D mesh morphology` | True-3D mesh morphology on anisotropic objects, including surface area, mesh volume, convex hull metrics, sphericity, and tiny-object status reporting. |
-| `synthetic-mesh-objects.json` | `VIPP synthetic 3D mesh morphology` | Five calibrated objects: colour by volume, filter into two disjoint groups, recombine without union, then smooth, simplify and measure. Verify retained IDs/colours and 3MF export. Calculate all publishes no outputs. Open as `mesh-objects`; see the [unreleased mesh guide](https://rensutheart.github.io/vipp-mkdocs/nightly/workflows/mask-to-mesh/). |
-| `synthetic-mesh-refinement-tuned.json` | `VIPP synthetic 3D mesh morphology` | Captured interactive variant: split a single mesh into five objects, colour by triangle count with Turbo, filter and combine, smooth at 2 iterations/strength 1, then simplify at 10%/aggressiveness 4. Retains layout and inspector profiles; no automatic file output. Open as `mesh-refinement-tuned`. |
+| `synthetic-mesh-objects.json` | `VIPP synthetic 3D mesh morphology` | Saved interactive workflow: split a single mesh into five objects, colour by triangle count with Turbo, filter and combine, smooth at 2 iterations/strength 1, then simplify at 10%/aggressiveness 4. Retains layout and inspector profiles; no automatic file output. Open as `mesh-objects`; see the [mesh guide](https://rensutheart.github.io/vipp-mkdocs/nightly/workflows/mask-to-mesh/). |
 | `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path using a `Skeleton mask` tunnel: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
 | `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test using a `Skeleton mask` tunnel for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
 | `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path using named red/green channel tunnels: ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
@@ -76,14 +76,14 @@ example...**. Its actively maintained source also remains under
 
 ## Validation Expectations
 
-`synthetic-mesh-refinement-tuned.json` is the manually authored **Mesh Objects —
-Tuned Refinement** variant (`mesh-refinement-tuned`, under **3D Meshes**). It
+`synthetic-mesh-objects.json` is the manually authored **Mesh Objects, Colours &
+Refinement** example (`mesh-objects`, under **3D Meshes**). It
 retains the interactive node parameters, positions and inspector profiles:
 single-object extraction followed by splitting, Turbo triangle-count colours,
 two smoothing iterations at strength 1, and a 10% simplification target at
 aggressiveness 4. Its regression tests check the saved settings, five object IDs,
-calibration and absence of automatic output files. Do not regenerate this snapshot
-with `generate_mesh_objects_workflow.py`, which owns only the original example.
+calibration and absence of automatic output files. Preserve this snapshot rather
+than regenerating its parameters or layout; the previous generator was removed.
 
 The repository test suite loads and runs every workflow above. When adding a new
 example workflow, also add:

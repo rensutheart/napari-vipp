@@ -1846,14 +1846,17 @@ Collection batch UI:
   config retains intended declarations for pre-read skips or failures. Manifest
   schema 4 additionally records canonical SourceItem/source-revision evidence,
   requested/effective per-sample overrides, and effective workflow hashes. New
-  runs emit schema 4; earlier manifests remain historical
+  runs now emit schema 6 with verified-resume evidence; earlier manifests remain historical
   records rather than being rewritten. Output statuses are `pending`, `completed`,
   `skipped`, `cancelled`, and `failed`; item statuses additionally include
   `running` and `partial`. Published output records link to the item's canonical
   execution document with `execution_provenance_sha256`. After an interrupted
   process, the sidecars are the recovery checkpoints; the canonical
-  latest/archive manifests are finalized on normal runner exit rather than
-  reconciled automatically.
+  latest/archive manifests are finalized on normal runner exit. Explicit verified
+  resume reconciles run-bound sidecars after an interruption and writes a new
+  continuation archive, preserving the original records. Schema 6 adds complete
+  recovery snapshots, document checksums, exact output-content identities and
+  resume lineage. See the [recovery contract](verified-batch-resume.md).
 - For each item, the runner captures exact identities for all collection-bound
   and fixed file sources before reading. It fully writes every available output
   to a private same-directory staging path, including forcing lazy output bytes,

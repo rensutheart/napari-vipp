@@ -50,6 +50,14 @@ wheel, staging PKG, and local-package digests. Finalization also preserves
 architecture-qualified constructor information, licence inventory, explicit
 lockfile, package list, and a SHA-256 checksum file.
 
+The installed constructor specs constrain `ruamel.yaml>=0.11.14,<0.19` to
+match [conda 26.7.2's Python dependency metadata](https://github.com/conda/conda/blob/26.7.2/pyproject.toml#L40).
+The earlier unconstrained solve selected 0.19.1 on both architectures, which
+installed successfully but failed `pip check`. This is a runtime compatibility
+constraint, not a change to VIPP's scientific dependencies or a reason to skip
+the installed dependency check. Both native PKGs must pass that check and
+their subsequent launch checks after rebuilding.
+
 The alpha lockfile still records the build's temporary local channel URI for
 the two VIPP wrapper packages. Their exact hashes remain in the build/release
 manifests and their bytes are embedded in the offline PKG. A signed production

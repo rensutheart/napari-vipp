@@ -234,11 +234,12 @@ def test_reported_statuses_timing_and_file_existence_are_separate(qtbot, tmp_pat
 @pytest.mark.parametrize(
     "file_reveal_requests", ["win32", "darwin", "linux"], indirect=True
 )
-def test_exact_file_and_report_actions_do_not_open_real_windows(
+def test_exact_file_and_output_folder_actions_do_not_open_real_windows(
     qtbot,
     tmp_path,
     no_file_manager,
     file_reveal_requests,
+    monkeypatch,
 ):
     preview = _preview(tmp_path, 1)
     preview.config.output_dir.mkdir()
@@ -256,15 +257,21 @@ def test_exact_file_and_report_actions_do_not_open_real_windows(
     assert no_file_manager[-1] == _expected_reveal_arguments(path, platform_name)
     assert not panel.run_report.isHidden()
     assert len(no_file_manager) == 1
-    qtbot.mouseClick(panel.run_report.manifest_button, Qt.LeftButton)
-    assert requested_paths == [path, result.manifest_path]
-    assert no_file_manager[-1] == _expected_reveal_arguments(
-        result.manifest_path, platform_name
-    )
+    opened_folders = []
+
+    def open_folder(folder):
+        opened_folders.append(folder)
+        return file_reveal.RevealResult(True, False, "Opened output folder.")
+
+    monkeypatch.setattr(batch_results, "open_folder", open_folder)
+    qtbot.mouseClick(panel.output_folder_button, Qt.LeftButton)
+    assert opened_folders == [preview.config.output_dir]
+    assert requested_paths == [path]
+    assert not hasattr(panel.run_report, "manifest_button")
 
     path.unlink()
     panel.output_table.linkActivated.emit(0, 0)
-    assert len(no_file_manager) == 2
+    assert len(no_file_manager) == 1
     assert "missing" in panel.file_action_label.text()
     assert panel.output_table.item(0, 1).text() == "Saved · file missing"
     assert not panel.reveal_button.isEnabled()
@@ -317,7 +324,7 @@ def test_missing_timing_is_unknown_and_failed_existing_file_not_marked_saved(
     assert panel.output_table.item(0, 1).text() == "Failed · existing file remains"
     assert "0 of 1 outputs saved" in panel.summary_label.text()
     assert panel.has_run_report
-    assert not panel.run_report.manifest_button.isEnabled()
+    assert not panel.run_report.export_package_button.isEnabled()
 
 
 def test_historical_result_is_retained_on_invalidation(qtbot, tmp_path):
@@ -336,15 +343,15 @@ def test_historical_result_is_retained_on_invalidation(qtbot, tmp_path):
     assert not panel.has_run_report
 
 
-@pytest.mark.parametrize(
-    "file_reveal_requests", ["win32", "darwin", "linux"], indirect=True
-)
 def test_partial_item_uses_each_output_record_and_stable_run_report(
     qtbot,
     tmp_path,
     no_file_manager,
-    file_reveal_requests,
+    monkeypatch,
 ):
+    from napari_vipp._tests.test_reproducibility_entrypoints import _dialog_spy
+
+    exported = _dialog_spy(monkeypatch)
     preview = _preview(tmp_path, 1)
     preview.config.output_dir.mkdir()
     saved_path = preview.items[0].outputs[0].path
@@ -375,12 +382,10 @@ def test_partial_item_uses_each_output_record_and_stable_run_report(
     assert panel.output_table.item(1, 1).text() == "Failed · not created"
     assert "Write failed." in panel.output_table.item(1, 1).toolTip()
     assert "1 of 2 outputs saved" in panel.summary_label.text()
-    qtbot.mouseClick(panel.run_report.manifest_button, Qt.LeftButton)
-    platform_name, requested_paths = file_reveal_requests
-    assert requested_paths == [archive_path]
-    assert no_file_manager[-1] == _expected_reveal_arguments(
-        archive_path, platform_name
-    )
+    qtbot.mouseClick(panel.run_report.export_package_button, Qt.LeftButton)
+    assert exported[0].arguments["manifest_path"] == archive_path
+    assert exported[0].prepared
+    assert no_file_manager == []
 
 
 @pytest.mark.parametrize("dark", [False, True])

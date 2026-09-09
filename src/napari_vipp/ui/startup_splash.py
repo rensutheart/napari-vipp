@@ -5,8 +5,8 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
-from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QCloseEvent, QPixmap, QShowEvent
+from qtpy.QtCore import QPoint, Qt, Signal
+from qtpy.QtGui import QCloseEvent, QMouseEvent, QPixmap, QShowEvent
 from qtpy.QtWidgets import (
     QApplication,
     QFrame,
@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -62,12 +63,16 @@ class StartupSplash(QWidget):
         self.profile_spec = PROFILE_SPECS[self.profile]
         self.log_path = Path(log_path)
         self._allow_close = False
+        self._positioned = False
+        self._drag_offset: QPoint | None = None
         self._build_ui(version)
 
     def _build_ui(self, version: str) -> None:
         self.setObjectName("VippStandaloneSplash")
         self.setWindowTitle("Starting VIPP")
-        self.setWindowFlags(Qt.SplashScreen | Qt.WindowStaysOnTopHint)
+        # Keep normal taskbar/Dock and stacking behavior, without a title bar.
+        # Qt.SplashScreen itself can imply special stacking on some platforms.
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setFixedSize(640, 390)
         accent = self.profile_spec.accent
         self.setStyleSheet(
@@ -84,6 +89,12 @@ class StartupSplash(QWidget):
             "QPushButton { background: #172432; color: #E2E8F0; "
             "border: 1px solid #475569; border-radius: 5px; padding: 7px 14px; }"
             f"QPushButton:hover {{ border-color: {accent}; }}"
+            "QToolButton#VippSplashMinimize { background: transparent; "
+            "color: #A8B7C8; border: 1px solid transparent; border-radius: 5px; "
+            "font-size: 22px; padding: 0; }"
+            "QToolButton#VippSplashMinimize:hover { background: #172432; "
+            "color: #F8FAFC; }"
+            f"QToolButton#VippSplashMinimize:focus {{ border-color: {accent}; }}"
         )
 
         root = QVBoxLayout(self)
@@ -200,13 +211,61 @@ class StartupSplash(QWidget):
         self.note_label.setStyleSheet("color: #64748B; font-size: 9px;")
         root.addWidget(self.note_label)
 
+        # Decorative content is part of the drag surface; diagnostic text stays
+        # selectable and action buttons keep their ordinary mouse handling.
+        for label in self.findChildren(QLabel):
+            if label is not self.detail_label:
+                label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        badge.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.progress_bar.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        # Overlay the existing top margin, rather than adding a toolbar row.
+        self.minimize_button = QToolButton(self)
+        self.minimize_button.setObjectName("VippSplashMinimize")
+        self.minimize_button.setText("\N{MINUS SIGN}")
+        self.minimize_button.setAccessibleName("Minimize startup window")
+        self.minimize_button.setToolTip(
+            "Minimize — VIPP will keep starting in the background."
+        )
+        self.minimize_button.setFocusPolicy(Qt.StrongFocus)
+        self.minimize_button.setFixedSize(28, 28)
+        self.minimize_button.move(self.width() - 38, 10)
+        self.minimize_button.clicked.connect(self.showMinimized)
+
+    def _start_system_move(self) -> bool:
+        """Prefer the window manager's drag support (including Wayland)."""
+        handle = self.windowHandle()
+        start_move = getattr(handle, "startSystemMove", None)
+        return bool(start_move()) if callable(start_move) else False
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = None
+            if not self._start_system_move():
+                self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPos() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def update_snapshot(self, snapshot: StartupSnapshot) -> None:
         """Render one immutable launcher-state snapshot."""
         self.status_label.setText(snapshot.message)
         self.progress_bar.setValue(snapshot.progress_percent)
-        self.stage_label.setText(
-            f"Step {snapshot.step} of {snapshot.total_steps}"
-        )
+        self.stage_label.setText(f"Step {snapshot.step} of {snapshot.total_steps}")
         timed_out = snapshot.phase is StartupPhase.TIMED_OUT
         failed = snapshot.phase is StartupPhase.FAILED
         self.keep_waiting_button.setVisible(timed_out)
@@ -243,11 +302,14 @@ class StartupSplash(QWidget):
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
+        if self._positioned:
+            return
         screen = QApplication.primaryScreen()
         if screen is not None:
             frame = self.frameGeometry()
             frame.moveCenter(screen.availableGeometry().center())
             self.move(frame.topLeft())
+            self._positioned = True
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._allow_close:

@@ -102,6 +102,17 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "label objects, clear borders, and filter labels by volume.",
     ),
     ExampleWorkflowSpec(
+        "separate-overlapping-objects",
+        "Segmentation & Labels",
+        "Separate Overlapping Objects",
+        "synthetic-separate-overlapping-objects.json",
+        ("VIPP synthetic volume",),
+        "Separate a rounded object and curved band from one synthetic image: "
+        "compare threshold masks, use XOR and OR to reconstruct the curve, "
+        "then create, measure and colour two separate meshes. Follow six "
+        "canvas notes; saved sample-specific settings and layout are retained.",
+    ),
+    ExampleWorkflowSpec(
         "gpu-segmentation",
         "Segmentation & Labels",
         "Portable GPU Segmentation Bridge",
@@ -169,16 +180,6 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "3D Meshes",
         "Mesh Objects, Colours & Refinement",
         "synthetic-mesh-objects.json",
-        ("VIPP synthetic 3D mesh morphology",),
-        "Create five calibrated mesh objects, colour by volume, filter two "
-        "disjoint groups and combine them again. Compare original, smoothed "
-        "and simplified geometry; measure objects and declare a 3MF batch output.",
-    ),
-    ExampleWorkflowSpec(
-        "mesh-refinement-tuned",
-        "3D Meshes",
-        "Mesh Objects — Tuned Refinement",
-        "synthetic-mesh-refinement-tuned.json",
         ("VIPP synthetic 3D mesh morphology",),
         "Saved interactive workflow: split a single mesh into five objects, "
         "colour by triangle count with Turbo, filter and recombine. Compare "

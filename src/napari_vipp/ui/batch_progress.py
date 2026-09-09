@@ -114,6 +114,7 @@ class BatchProgressLabel(QLabel):
 def preparation_stage(event):
     """Describe real preparation work without counting it as processed items."""
     titles = {
+        "recovery_verification": "Verifying run inputs and recovery evidence",
         "reviewed": "Verifying additional source contents",
         "discovered": "Final source validation",
         "checking": "Final source validation",

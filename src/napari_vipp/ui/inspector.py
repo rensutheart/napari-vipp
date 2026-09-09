@@ -25,6 +25,11 @@ SOURCE_REPRESENTATION_SECTION = "source_representation"
 OUTPUT_SELECTOR_SECTION = "output_selector"
 COLOCALIZATION_SECTION = "colocalization"
 LABEL_DISTRIBUTION_SECTION = "label_distribution"
+FILTER_RESULT_SECTION = "filter_result"
+OBJECT_FILTER_OPERATION_IDS = frozenset({
+    "remove_small_objects", "clear_border_objects", "filter_labels_by_volume",
+    "filter_labels_by_property",
+})
 MASK_SUMMARY_SECTION = "mask_summary"
 TABLE_RESULTS_SECTION = "table_results"
 HISTOGRAMS_SECTION = "histograms"
@@ -321,6 +326,16 @@ def inspector_profile(
             distribution_kind = (
                 "runtime" if spec.output_type == "any" else "intensity"
             )
+
+    if operation_id in OBJECT_FILTER_OPERATION_IDS:
+        # Keep the input distribution beside its tuning parameters; the
+        # calculated kept/removed counts follow that decision surface.
+        result_index = (
+            primary.index(LABEL_DISTRIBUTION_SECTION) + 1
+            if LABEL_DISTRIBUTION_SECTION in primary
+            else len(primary)
+        )
+        primary.insert(result_index, FILTER_RESULT_SECTION)
 
     if is_source:
         action_kind = "source"

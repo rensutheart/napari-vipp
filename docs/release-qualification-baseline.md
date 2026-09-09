@@ -1,6 +1,94 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-08
+Last reviewed: 2026-09-09
+
+## 0.15.0a3 qualification declaration
+
+This iterative alpha covers the complete delta from public
+`v0.15.0a2`, including the earlier RL admission changes and the current
+batch/reproducibility work. The user authorized the release on 2026-09-09.
+This declaration separates behavioral evidence from the exact-final-main CI,
+immutable tag and artifact identities that must be verified before publication.
+
+```yaml
+tier: alpha
+status: release_qualification
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  source_reader_packaging: false
+  gpu_scientific_shared_execution: true
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_source_reader_corpus: v0.15.0a2
+  unchanged_windows_dependency_payload: v0.15.0a2
+```
+
+- Batch manifest schema 6 adds sealed recovery snapshots, run lineage and
+  whole-item verified reuse. Workflow and batch-config schema numbers remain
+  6. Earlier manifests are historical records, not sufficient resume evidence;
+  new reproduction references also require a runtime that understands them.
+  [Resume checks](verified-batch-resume.md) cover source/output identity,
+  effective settings, runtime, sidecars, destination locking and fresh-process
+  restart. Partial-item, relocated and cross-version recovery remain excluded.
+- [Reproducibility packages](reproducibility-package.md) use the selected recipe
+  or archived run, require review, exclude input/result data, and distinguish
+  portable redacted evidence from original recovery receipts. Original-input
+  verification, explicit version acknowledgement, source relinking, Run handoff,
+  reopening and completed-run presentation require core and UI regressions.
+  Matching inputs or VIPP versions do not establish output equivalence.
+- Scientific/UI scope includes Find Label Boundaries, exact background object
+  filter counts, workflow-file drops, the authored overlapping-objects example,
+  and consolidation of the mesh example. Existing a2 example evidence retains
+  its historical two-example scope; the candidate's packaged example inventory
+  and executions need current checks.
+- Broader RL/RL-TV GPU execution is distinct from CPU-parity qualification.
+  Numerical-difference advisories are retained in execution provenance version
+  2. The RL sweep catalogue must match the changed admission contract;
+  regression verification must include its four previously failing cases.
+  Changed shared-execution/provenance paths require current-source GPU evidence
+  review; a2 evidence does not automatically qualify these changes or broaden
+  independently demonstrated parity regions.
+- The 2026-09-09 [RTX 5090 canary](benchmarks/a3-gpu-canary-windows-rtx5090.md)
+  passed 119 selected tests with no failures, errors or skips: 19 real RL/RL-TV
+  provider cases, 30 advisory-contract checks, 12 shared-execution checks and
+  58 batch/resume/provenance checks. The report distinguishes real-device
+  execution from CPU/fake-runtime contracts and records the exact scientific
+  source fingerprint. It does not establish numerical parity over every
+  admitted parameter combination or recovery of unfinished GPU work.
+- Windows shortcut/icon assets, launcher identity, startup-window behavior and
+  macOS desktop launch configuration changed. Unchanged reader/dependency
+  evidence above does not qualify these launch paths. The approved frameless
+  splash passed 47 focused startup/launcher checks and native Windows
+  drag/minimize/restore review. This was a source preview, not a final installed
+  artifact. The final artifact must include this change, pass exact-main CI,
+  and refresh the affected installed/native launch checks.
+- Native macOS smoke run 34335358823 installed both candidate PKGs, then failed
+  `pip check`: conda 26.7.2 requires `ruamel.yaml>=0.11.14,<0.19`, while the
+  unconstrained solve selected 0.19.1. The constructor runtime now carries that
+  compatibility constraint. The replacement
+  [native smoke run 34342855514](https://github.com/rensutheart/napari-vipp/actions/runs/34342855514)
+  passed installed dependency, desktop launch and frozen reader-corpus checks
+  on both architectures at `88d7cdf`; the earlier failed run is superseded.
+  This covers the changed dependency/menu route, not the subsequent frameless
+  splash refinement. Exact-tag packages retain their own native launch checks.
+- Candidate `88d7cdf` passed the complete
+  [18-job CI matrix](https://github.com/rensutheart/napari-vipp/actions/runs/34342849638)
+  and [Windows frozen-EXE smoke](https://github.com/rensutheart/napari-vipp/actions/runs/34342852473).
+  That result is not substituted for final-main CI after the approved splash
+  refinement. Package metadata, all supported Python/OS lanes and both Qt
+  bindings remain checked through the normal CI path.
+- On 2026-09-09 the user reported end-to-end acceptance item 3 complete. This is
+  a user attestation for the exercised workflow, not independently retained
+  output comparisons, biological validation or cross-machine reproducibility.
+- Exact-final-main CI, full application checks, candidate artifact identities,
+  changed-domain release evidence and companion-manual checks/publication remain
+  separately recorded gates. A local installation or strict manual build does
+  not establish that a3 is public or that the stable manual has moved.
 
 ## 0.15.0a2 qualification declaration
 

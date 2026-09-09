@@ -465,6 +465,7 @@ from napari_vipp.ui.batch_workers import (
     CollectionBatchOperationProgress,
     CollectionBatchPreparationProgress,
     CollectionBatchProgress,
+    CollectionBatchResumeRequest,
     CollectionBatchRunRequest,
     CollectionBatchWorker,
     CollectionBatchWorkerOutcome,
@@ -629,11 +630,13 @@ from napari_vipp.ui.inspector import (
     BEHAVIOR_SECTION,
     COLOCALIZATION_SECTION,
     COMPUTE_SECTION,
+    FILTER_RESULT_SECTION,
     HISTOGRAMS_SECTION,
     HISTORY_SECTION,
     LABEL_DISTRIBUTION_SECTION,
     MASK_SUMMARY_SECTION,
     METADATA_SECTION,
+    OBJECT_FILTER_OPERATION_IDS,
     OUTPUT_SELECTOR_SECTION,
     PARAMETERS_SECTION,
     READER_SUPPORT_SECTION,
@@ -650,6 +653,7 @@ from napari_vipp.ui.mesh_histogram import (
     mesh_filter_decimals,
     mesh_filter_histogram,
 )
+from napari_vipp.ui.object_filter_feedback import ObjectFilterFeedbackSection
 from napari_vipp.ui.palette import NodeLibraryPanel
 from napari_vipp.ui.palette_roles import blend_colors, palette_is_dark, theme_colors
 from napari_vipp.ui.panel_toggle import SidePanelToggleButton
@@ -747,6 +751,7 @@ from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
 from napari_vipp.ui.workers import PipelineRunWorker as PipelineRunWorker
+from napari_vipp.ui.workflow_drop import WorkflowFileDropHandler
 from napari_vipp.ui.workflow_save_settings import (
     WORKFLOW_SAVE_POLICY_CHOICES,
     WorkflowSavePolicy,
@@ -3326,6 +3331,10 @@ class VippWidget(QWidget):
         self.mask_summary_label.setWordWrap(True)
         self.mask_summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.mask_summary_section.setHidden(True)
+        self.object_filter_feedback = ObjectFilterFeedbackSection()
+        self.object_filter_feedback.diagnostics.ready.connect(
+            self._on_object_filter_counts_ready
+        )
         self.label_volume_group = InspectorSection(
             "Label Volume Distribution",
             expanded=True,
@@ -3505,6 +3514,8 @@ class VippWidget(QWidget):
         self._build_layout()
         self._connect_signals()
         self._apply_theme_styles()
+        self._workflow_file_drop = WorkflowFileDropHandler(self)
+        self._workflow_file_drop.openRequested.connect(self._open_workflow_path)
         application = QApplication.instance()
         if application is not None:
             application.installEventFilter(self)
@@ -3812,6 +3823,7 @@ class VippWidget(QWidget):
             return
         self._closing = True
         self._mesh_measurement_diagnostics.close()
+        self.object_filter_feedback.diagnostics.close()
         self.version_label.shutdown()
         self._cancel_selected_inspector_refresh()
         self._cancel_selected_viewer_refresh()
@@ -3986,10 +3998,11 @@ class VippWidget(QWidget):
             self.version_label.refresh_theme(palette)
             for separator in (
                 self._toolbar_document_separator,
+                self._toolbar_batch_separator,
                 self._toolbar_preview_separator,
             ):
                 # Napari's toolbar stylesheet can suppress a native QFrame
-                # line. Paint the two approved group dividers explicitly while
+                # line. Paint the toolbar group dividers explicitly while
                 # retaining generous transparent space on either side.
                 separator.setStyleSheet(
                     "QFrame {"
@@ -4567,6 +4580,9 @@ class VippWidget(QWidget):
             self._workflow_save_in_progress = False
 
     def eventFilter(self, watched, event):  # noqa: N802
+        workflow_drop = getattr(self, "_workflow_file_drop", None)
+        if workflow_drop is not None and workflow_drop.handle_event(watched, event):
+            return True
         if (
             watched
             in {
@@ -4977,10 +4993,16 @@ class VippWidget(QWidget):
             return
 
         window = self._dock_main_window(dock)
-        if window is None:
+        if window is None or not window.isVisible():
             return
 
-        target_height = 380
+        # Use the available window, not a fixed strip on high-resolution screens.
+        # Reserve roughly one third for napari; Qt also honours its minimum size.
+        available_height = window.contentsRect().height()
+        for chrome in (window.menuWidget(), window.statusBar()):
+            if chrome is not None and chrome.isVisible():
+                available_height -= chrome.height()
+        target_height = max(1, round(available_height * 2 / 3))
         target_width = 760
         try:
             area = window.dockWidgetArea(dock)
@@ -5056,6 +5078,8 @@ class VippWidget(QWidget):
         workflow_tools_layout.setSpacing(4)
         workflow_tools_layout.addWidget(self.batch_button)
         workflow_tools_layout.addWidget(self.leave_batch_button)
+        self._toolbar_batch_separator = _toolbar_separator()
+        workflow_tools_layout.addWidget(self._toolbar_batch_separator)
         workflow_tools_layout.addWidget(self.preview_menu_button)
         self.workflow_toolbar_group.setSizePolicy(
             QSizePolicy.Maximum,
@@ -5361,6 +5385,7 @@ class VippWidget(QWidget):
             toggle.setAccessibleName(f"Toggle {text.lower()} sidebar")
 
         self._toolbar_document_separator.setVisible(True)
+        self._toolbar_batch_separator.setVisible(True)
         self._toolbar_preview_separator.setVisible(True)
         self.document_toolbar_group.setVisible(True)
         self.workflow_toolbar_group.setVisible(True)
@@ -5992,6 +6017,14 @@ class VippWidget(QWidget):
         export_python_action.triggered.connect(
             lambda _checked=False: self.export_button.click()
         )
+        export_package_action = menu.addAction("Export reproducibility package…")
+        export_package_action.setToolTip(
+            "Review and export the current workflow recipe with a readable "
+            "report. Raw images and result files are not included."
+        )
+        export_package_action.triggered.connect(
+            self._export_reproducibility_package_dialog
+        )
         export_ome_action = menu.addAction("Export OME dataset…")
         export_ome_action.triggered.connect(
             lambda _checked=False: self.export_ome_button.click()
@@ -6607,6 +6640,7 @@ class VippWidget(QWidget):
             OUTPUT_SELECTOR_SECTION: self.output_selector_section,
             COLOCALIZATION_SECTION: self.colocalization_scatter_group,
             LABEL_DISTRIBUTION_SECTION: self.label_volume_group,
+            FILTER_RESULT_SECTION: self.object_filter_feedback,
             TABLE_RESULTS_SECTION: self.table_group,
             HISTOGRAMS_SECTION: self.histograms_section,
             MASK_SUMMARY_SECTION: self.mask_summary_section,
@@ -14566,12 +14600,23 @@ class VippWidget(QWidget):
         )
         if not path:
             return
+        self._open_workflow_path(path)
+
+    def _open_workflow_path(self, path: str | Path) -> None:
+        """Shared user-facing Open/drop path with safe failure reporting."""
+        from .ui.reproduction import ReproductionOpenCancelled
+
+        if self._closing:
+            return
         recent_paths.remember_file_directory(
             recent_paths.WORKFLOW_DIRECTORY,
             path,
         )
         try:
             loaded = self.load_workflow_file(path)
+        except ReproductionOpenCancelled:
+            self.status_label.setText("Workflow open cancelled.")
+            return
         except Exception as exc:
             self._set_status(
                 f"Load failed: {exc}",
@@ -14662,6 +14707,11 @@ class VippWidget(QWidget):
                 self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
             return loaded
 
+        # Read and choose intent before creating a tab, discarding layers, or
+        # starting any source checks/calculation. Cancellation leaves the entire
+        # current workspace intact, and the chosen bytes are not reread later.
+        opening_workflow = load_workflow(Path(path).expanduser())
+        reproduction_opened = self._choose_workflow_reproduction(opening_workflow)
         current = self._workflow_tabs.current
         if current is None:
             raise RuntimeError("No active workflow tab is available.")
@@ -14700,6 +14750,8 @@ class VippWidget(QWidget):
                 path,
                 prefer_image_source=prefer_image_source,
                 preserve_batch_workspace=False,
+                opening_workflow=opening_workflow,
+                reproduction_opened=reproduction_opened,
             )
         except Exception:
             old_index = self._workflow_tabs.index_of(current.session_id)
@@ -14730,12 +14782,56 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         return loaded
 
+    def _choose_workflow_reproduction(self, workflow: dict) -> bool:
+        """Apply an explicit mode only to the detached document being opened."""
+        raw_config = workflow.get("batch_config")
+        if not isinstance(raw_config, dict) or "reproduction" not in raw_config:
+            return False
+        from .core.reproduction import ReproductionRequest
+
+        request = ReproductionRequest.from_dict(raw_config["reproduction"])
+        selected = self._choose_reproduction_request(request)
+        if selected is None:
+            raw_config.pop("reproduction", None)
+        else:
+            raw_config["reproduction"] = selected.to_dict()
+        return True
+
+    def _choose_reproduction_request(self, request):
+        from .core.reproduction import ReproductionRequest, current_vipp_version
+        from .ui.reproduction import (
+            ReproductionChoiceDialog,
+            ReproductionOpenCancelled,
+        )
+
+        current_version = current_vipp_version()
+        dialog = ReproductionChoiceDialog(
+            request.reference.recorded_vipp_version, current_version, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            raise ReproductionOpenCancelled()
+        if dialog.mode == "new-data":
+            return None
+        # Acknowledgement belongs to this open and exact pair of versions.
+        # Never automatically reuse an exception saved on another installation.
+        document = request.to_dict()
+        document["mode"] = "reproduce"
+        document.pop("version_override", None)
+        if dialog.version_override_accepted:
+            document["version_override"] = {
+                "recorded_vipp_version": request.reference.recorded_vipp_version,
+                "current_vipp_version": current_version,
+            }
+        return ReproductionRequest.from_dict(document)
+
     def _load_workflow_file_into_active_tab(
         self,
         path: str | Path,
         *,
         prefer_image_source: bool = False,
         preserve_batch_workspace: bool = False,
+        opening_workflow: dict | None = None,
+        reproduction_opened: bool = False,
     ) -> Path:
         """Replace only the active tab's graph and recompute it.
 
@@ -14752,7 +14848,9 @@ class VippWidget(QWidget):
         )
         before = self._current_history_snapshot()
         source = Path(path).expanduser()
-        workflow = load_workflow(source)
+        workflow = (
+            opening_workflow if opening_workflow is not None else load_workflow(source)
+        )
         self._discard_inspect_layers()
         self._inspect_display_profiles.clear()
         self._clear_thumbnail_statistics_presentations()
@@ -14839,7 +14937,8 @@ class VippWidget(QWidget):
         if isinstance(right_panel_visible, bool):
             self._set_right_panel_visible(right_panel_visible)
         self._invalidate_pipeline_cache()
-        self.run_pipeline()
+        if not reproduction_opened:
+            self.run_pipeline()
         self._push_undo_if_changed(before)
         raw_batch_config = workflow.get("batch_config")
         if raw_batch_config is not None:
@@ -14861,6 +14960,15 @@ class VippWidget(QWidget):
                 )
                 self.status_label.setText(self._last_workflow_load_detail)
             else:
+                if reproduction_opened:
+                    batch_dialog.set_reproduction_request(
+                        batch_config.reproduction, package_context=True
+                    )
+                    self._last_workflow_load_detail = (
+                        "Choose input folders and a new output folder, "
+                        "then Check batch."
+                    )
+                    return source
                 try:
                     self._start_attached_batch_workspace_preview(
                         batch_dialog,
@@ -14908,6 +15016,9 @@ class VippWidget(QWidget):
             validation_workflow,
             config,
             workflow_path=source,
+            # Restore settings even when a shared fixed reference has moved.
+            # Ordinary Check/Run still requires that source to be relinked.
+            allow_missing_fixed_sources=True,
         )
         return config
 
@@ -15174,6 +15285,28 @@ class VippWidget(QWidget):
                 return node_id
         return ""
 
+    def _export_reproducibility_package_dialog(self) -> None:
+        from .core.workflow import workflow_document_from_snapshot
+        from .ui.reproducibility import ReproducibilityDialog
+
+        self._commit_crop_draft(schedule_run=False)
+        dialog = ReproducibilityDialog(
+            self,
+            workflow=workflow_document_from_snapshot(
+                self._current_history_snapshot().workflow
+            ),
+            title="VIPP workflow recipe",
+        )
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.exported.connect(
+            lambda path: self._set_status(
+                f"Reproducibility package saved: {Path(path).name}",
+                severity=MessageSeverity.SUCCESS,
+            )
+        )
+        dialog.show()
+        dialog.prepare_report()
+
     def _export_python_dialog(self) -> None:
         self._commit_crop_draft(schedule_run=False)
         path, _filter = QFileDialog.getSaveFileName(
@@ -15316,6 +15449,11 @@ class VippWidget(QWidget):
                 )
             )
         )
+        dialog.reproductionChanged.connect(
+            lambda request, active=dialog: self._batch_reproduction_changed(
+                active, request
+            )
+        )
         if config_path is not None:
             try:
                 loaded_config = self._load_collection_batch_config(config_path)
@@ -15357,6 +15495,18 @@ class VippWidget(QWidget):
         dialog.activateWindow()
         self._sync_current_workflow_tab_state()
         return dialog
+
+    def _batch_reproduction_changed(self, dialog, request) -> None:
+        """Keep each retained tab's active batch intent in sync with its dialog."""
+        if dialog is not self._active_collection_batch_dialog:
+            return
+        if self._interactive_collection_batch_config is not None:
+            self._interactive_collection_batch_config = replace(
+                self._interactive_collection_batch_config, reproduction=request
+            )
+        self._cancel_attached_batch_workspace_preview(dialog)
+        self._mark_interactive_collection_batch_stale(dialog)
+        self._sync_current_workflow_tab_state()
 
     def _engage_collection_batch_workspace(
         self,
@@ -15529,6 +15679,16 @@ class VippWidget(QWidget):
                 progress_text="Waiting",
             )
             self._sync_compute_policy_editability()
+            return
+        resume_manifest_path = values.get("resume_manifest_path")
+        if resume_manifest_path is not None:
+            try:
+                self._start_collection_batch_worker(
+                    dialog, total=0, expected_items=(),
+                    resume_manifest_path=Path(resume_manifest_path),
+                )
+            except Exception as exc:
+                dialog.show_run_error(str(exc))
             return
         preview = dialog._preview_result
         if _fresh_preview is None:
@@ -15707,6 +15867,10 @@ class VippWidget(QWidget):
                 preflight_plan=BatchPlan(
                     preview.config, preview.items,
                     preview.config.resolve_path(preview.config.output_dir),
+                    # Carry the just-completed Run check, not the older
+                    # displayed review. Worker preparation requires this
+                    # evidence before saving any run artifacts.
+                    reproduction=preview.reproduction,
                 ),
                 **values,
             )
@@ -15890,6 +16054,7 @@ class VippWidget(QWidget):
         total: int,
         expected_items: tuple[BatchItemPlan, ...],
         preflight_plan: BatchPlan | None = None,
+        resume_manifest_path: Path | None = None,
         **values,
     ) -> None:
         """Freeze the active tab's batch request and start one headless worker."""
@@ -15913,20 +16078,30 @@ class VippWidget(QWidget):
 
         self._collection_batch_job_serial += 1
         job_id = self._collection_batch_job_serial
-        prepared = self._prepare_collection_batch_run(
-            job_id=job_id,
-            origin_session_id=session.session_id,
-            expected_items=expected_items,
-            preflight_plan=preflight_plan,
-            compute_request=self._compute_request_for_batch_dialog(dialog),
-            defer_io=True,
-            **values,
-        )
+        if resume_manifest_path is not None:
+            prepared = CollectionBatchResumeRequest(
+                job_id=job_id,
+                origin_session_id=session.session_id,
+                manifest_path=resume_manifest_path,
+                performance_history_path=default_pipeline_timing_history_path(),
+            )
+        else:
+            prepared = self._prepare_collection_batch_run(
+                job_id=job_id,
+                origin_session_id=session.session_id,
+                expected_items=expected_items,
+                preflight_plan=preflight_plan,
+                compute_request=self._compute_request_for_batch_dialog(dialog),
+                defer_io=True,
+                **values,
+            )
         context = _CollectionBatchJobContext(
             job_id=job_id,
             origin_session_id=session.session_id,
             dialog=dialog,
-            validation_config_path=dialog._loaded_config_path,
+            validation_config_path=(
+                dialog._loaded_config_path if resume_manifest_path is None else None
+            ),
             total=int(total),
         )
         worker = CollectionBatchWorker(prepared)
@@ -15943,7 +16118,12 @@ class VippWidget(QWidget):
         self._collection_batch_workers[job_id] = worker
         self._collection_batch_running = True
         self._sync_compute_policy_editability()
-        dialog.begin_run(total)
+        if resume_manifest_path is None:
+            dialog._resume_source_path = None
+            dialog.results_panel.set_item_review_available(True)
+            dialog.begin_run(total)
+        else:
+            dialog.begin_resume_run(resume_manifest_path)
         self.batch_navigator.set_navigation_enabled(False)
         self.batch_navigator.begin_batch_progress(
             total,
@@ -17599,6 +17779,7 @@ class VippWidget(QWidget):
         compute_request: ComputeRequest | None = None,
         defer_io: bool = False,
         preflight_plan: BatchPlan | None = None,
+        reproduction=None,
     ) -> PreparedCollectionBatchRun | CollectionBatchRunRequest:
         """Freeze GUI state; desktop runs defer reads/writes to their worker."""
         self._commit_crop_draft(schedule_run=False)
@@ -17625,6 +17806,7 @@ class VippWidget(QWidget):
             item_file_policies=item_file_policies,
             workflow=workflow,
             compute_request=compute_request,
+            reproduction=reproduction,
         )
         output_path = config.resolve_path(config.output_dir)
         config_path = output_path / BATCH_CONFIG_FILENAME
@@ -17659,6 +17841,7 @@ class VippWidget(QWidget):
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
         expected_items: tuple[BatchItemPlan, ...] | None = None,
+        reproduction=None,
     ) -> BatchRunResult:
         """Run a batch synchronously for the public API and focused tests."""
         self._commit_crop_draft(schedule_run=False)
@@ -17677,6 +17860,7 @@ class VippWidget(QWidget):
             node_execution_overrides=node_execution_overrides,
             item_file_policies=item_file_policies,
             expected_items=expected_items,
+            reproduction=reproduction,
             job_id=0,
             origin_session_id=(session.session_id if session is not None else ""),
         )
@@ -17816,6 +18000,7 @@ class VippWidget(QWidget):
         item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
         workflow: dict | None = None,
         compute_request: ComputeRequest | None = None,
+        reproduction=None,
     ) -> BatchConfig:
         return self._collection_batch_controller.build_config(
             input_dir=input_dir,
@@ -17832,6 +18017,7 @@ class VippWidget(QWidget):
             item_file_policies=item_file_policies,
             workflow=workflow,
             compute_request=compute_request,
+            reproduction=reproduction,
         )
 
     def _save_collection_batch_config(
@@ -17850,6 +18036,11 @@ class VippWidget(QWidget):
 
     def _load_collection_batch_config(self, path: str | Path) -> BatchConfig:
         config = self._collection_batch_controller.load_config(path)
+        if config.reproduction is not None:
+            config = replace(
+                config,
+                reproduction=self._choose_reproduction_request(config.reproduction),
+            )
         dialog = self._active_collection_batch_dialog
         if dialog is not None:
             dialog._loaded_compute_request = config.compute_request
@@ -17897,6 +18088,7 @@ class VippWidget(QWidget):
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
+        reproduction=None,
     ) -> BatchPreviewResult:
         self._commit_crop_draft(schedule_run=False)
         dialog = self._active_collection_batch_dialog
@@ -17916,6 +18108,7 @@ class VippWidget(QWidget):
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
             item_file_policies=item_file_policies,
+            reproduction=reproduction,
             compute_request=self._compute_request_for_batch_dialog(
                 self._active_collection_batch_dialog
             ),
@@ -21660,6 +21853,8 @@ class VippWidget(QWidget):
         self._render_history_rows(())
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
+        self.object_filter_feedback.hide()
+        self.object_filter_feedback.show_status("Select a filter to see object counts.")
         self.colocalization_scatter_group.setHidden(True)
         self.colocalization_scatter_popout_button.setEnabled(False)
         self.colocalization_scatter_summary.setText("Connect two channel inputs.")
@@ -21741,6 +21936,7 @@ class VippWidget(QWidget):
         self._sync_reader_support_ui(profile)
         self._sync_output_selector_ui(profile)
         self._sync_writer_status_ui(profile)
+        self._update_object_filter_feedback()
         self._sync_histogram_interaction_hint()
         self._sync_output_actions_ui(profile)
         self.header_calculate_button.setVisible(
@@ -21866,6 +22062,7 @@ class VippWidget(QWidget):
             LABEL_DISTRIBUTION_SECTION: (
                 not self.label_volume_group.isHidden()
             ),
+            FILTER_RESULT_SECTION: not self.object_filter_feedback.isHidden(),
             TABLE_RESULTS_SECTION: not self.table_group.isHidden(),
             HISTOGRAMS_SECTION: (
                 self.histograms_section.isBusy()
@@ -22896,6 +23093,8 @@ class VippWidget(QWidget):
         self._sync_table_result_attention()
         self._sync_result_table_dialog_attention()
         self._sync_isolated_tuning_ui()
+        if hasattr(self, "object_filter_feedback"):
+            self._update_object_filter_feedback()
 
         node_id = self._selected_node_id
         if node_id not in self.pipeline.nodes or not self.pipeline.is_manual_node(
@@ -25455,7 +25654,10 @@ class VippWidget(QWidget):
         control.set_memory_repair_presentation(
             self._source_memory_repair_presentation(node)
         )
-        self._apply_image_source_params(node_id, control.value())
+        # Rendering is presentation-only. Normalizing a saved path here can
+        # change its spelling (notably / to \\ on Windows) and invalidate an
+        # attached batch fingerprint before the user has changed anything.
+        self._sync_input_node_subtitle(node_id)
         control.valueChanged.connect(self._on_image_source_changed)
         control.pathCommitted.connect(
             lambda value: self._on_image_source_changed(
@@ -30720,6 +30922,7 @@ class VippWidget(QWidget):
         self._label_volume_cache.clear()
         self._property_filter_value_cache.clear()
         self._mesh_measurement_diagnostics.clear()
+        self.object_filter_feedback.diagnostics.clear()
 
     def _clear_colocalization_scatter_cache(self) -> None:
         """Invalidate cached and in-flight colocalization inspector results."""
@@ -38338,7 +38541,80 @@ class VippWidget(QWidget):
         try:
             self._update_histogram_impl()
         finally:
+            if hasattr(self, "object_filter_feedback"):
+                self._update_object_filter_feedback()
             self._sync_inspector_diagnostic_busy_state()
+
+    def _on_object_filter_counts_ready(self, _result) -> None:
+        # Selection, parameters and execution may have changed while counting.
+        # Re-read current state; never present a worker's stale input/output pair.
+        self._update_object_filter_feedback()
+
+    def _update_object_filter_feedback(self) -> None:
+        section = self.object_filter_feedback
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        visible = node is not None and node.operation_id in OBJECT_FILTER_OPERATION_IDS
+        section.setVisible(visible)
+        if not visible or self._closing:
+            section.show_status("Select a filter to see object counts.")
+            return
+        if self.pipeline.node_is_bypassed(node.id):
+            section.show_status("Bypassed · no filtering was applied.")
+            return
+        # A ready cached sibling can remain valid without being executed in the
+        # latest run, so completed_node_ids is not a cache-freshness criterion.
+        if (
+            self.pipeline.node_execution_states.get(node.id) != EXECUTION_READY
+            or node.id in self._pending_dirty_node_ids
+            or self._node_execution_ui_state(node.id)[0] != EXECUTION_READY
+            or self._background_node_result_override(node.id) is not None
+        ):
+            section.show_status(
+                "Awaiting calculation · counts will update with the result."
+            )
+            return
+        source = self.pipeline.input_data_by_port_for_node(node.id).get(0)
+        output = self.pipeline.outputs.get(node.id)
+        if not isinstance(source, np.ndarray) or not isinstance(output, np.ndarray):
+            section.show_status(
+                "Input or output is not cached. Keep the input cached and "
+                "recalculate to see object counts."
+            )
+            return
+        spatial_ndim = self._label_filter_spatial_ndim(node.id, source)
+        spatial_axes = tuple(range(source.ndim - spatial_ndim, source.ndim))
+        if node.operation_id == "filter_labels_by_property":
+            # Match this axis-aware operation's block layout, including CYX/ZCYX.
+            from napari_vipp.core.operations import _measurement_spatial_axes
+
+            state = self.pipeline.input_states_by_port_for_node(node.id).get(0)
+            if state is not None:
+                spatial_axes = _measurement_spatial_axes(
+                    source.ndim, spatial_ndim,
+                    tuple(str(axis.name).strip().lower() for axis in state.axes),
+                    tuple(str(axis.type).strip().lower() for axis in state.axes),
+                )
+        connectivity = (
+            "Full connectivity" if node.operation_id == "clear_border_objects"
+            else str(node.params.get("connectivity", "Face connected"))
+        )
+        kwargs = dict(
+            spatial_ndim=spatial_ndim, connectivity=connectivity,
+            spatial_axes=spatial_axes,
+        )
+        diagnostics = section.diagnostics
+        counts = diagnostics.cached(source, output, **kwargs)
+        error = diagnostics.error(source, output, **kwargs)
+        if counts is not None:
+            section.show_counts(
+                counts, spatial_ndim=spatial_ndim,
+                binary=source.dtype == bool, connectivity=connectivity,
+            )
+        elif error:
+            section.show_status("Object counts unavailable: " + error)
+        else:
+            section.show_status("Counting input and retained objects…", busy=True)
+            diagnostics.request(source, output, **kwargs)
 
     def _update_histogram_impl(self) -> None:
         self._update_label_volume_histogram()

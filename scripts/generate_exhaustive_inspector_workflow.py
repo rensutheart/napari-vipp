@@ -23,8 +23,14 @@ from napari_vipp.core.pipeline import (
 from napari_vipp.core.workflow import save_workflow
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_PATH = (
-    REPOSITORY_ROOT / "examples" / "manual" / "exhaustive-inspector-showcase.json"
+OUTPUT_PATHS = (
+    REPOSITORY_ROOT / "examples" / "manual" / "exhaustive-inspector-showcase.json",
+    REPOSITORY_ROOT / "examples" / "exhaustive-inspector-showcase.json",
+    REPOSITORY_ROOT
+    / "src"
+    / "napari_vipp"
+    / "examples"
+    / "exhaustive-inspector-showcase.json",
 )
 
 
@@ -763,6 +769,9 @@ def build_workflow() -> tuple[
     wire(clear_border, volume_filter)
     wire(volume_filter, relabel)
 
+    boundaries = place("find_label_boundaries", 3060, 6070)
+    wire(relabel, boundaries)
+
     object_table = place(
         "measure_objects",
         3060,
@@ -1234,6 +1243,7 @@ def build_workflow() -> tuple[
 
 def main() -> None:
     pipeline, positions, notes = build_workflow()
+    operation_count = len({node.operation_id for node in pipeline.nodes.values()})
     metadata = {
         "vipp": {
             "inspector": {
@@ -1242,18 +1252,19 @@ def main() -> None:
             }
         }
     }
-    target = save_workflow(
-        OUTPUT_PATH,
-        pipeline,
-        positions=positions,
-        notes=notes,
-        metadata=metadata,
-    )
-    print(
-        f"Wrote {target} with {len(pipeline.nodes)} nodes, "
-        f"{len(pipeline.connections)} connections, and "
-        f"{len({node.operation_id for node in pipeline.nodes.values()})} operations."
-    )
+    for output_path in OUTPUT_PATHS:
+        target = save_workflow(
+            output_path,
+            pipeline,
+            positions=positions,
+            notes=notes,
+            metadata=metadata,
+        )
+        print(
+            f"Wrote {target} with {len(pipeline.nodes)} nodes, "
+            f"{len(pipeline.connections)} connections, and "
+            f"{operation_count} operations."
+        )
 
 
 if __name__ == "__main__":

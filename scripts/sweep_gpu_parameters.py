@@ -220,8 +220,12 @@ EXPECTED_IMPLEMENTATIONS = {
     "analyze_skeleton": "cupyx-analyze-skeleton-v1",
 }
 EXPECTED_IMPLEMENTATION_VERSIONS = {
-    operation_id: "3" if operation_id == "binary_threshold" else "1"
-    for operation_id in EXPECTED_IMPLEMENTATIONS
+    **{operation_id: "1" for operation_id in EXPECTED_IMPLEMENTATIONS},
+    "binary_threshold": "3",
+    # RL v2 adopts the v3 advisory-execution contract, not broader CPU parity.
+    # Keep these reviewed versions pinned independently of the live manifest.
+    "richardson_lucy_deconvolution": "2",
+    "richardson_lucy_tv_deconvolution": "2",
 }
 
 _MASK_INPUT_TARGETS = frozenset(
@@ -316,8 +320,16 @@ def sweep_catalog() -> tuple[SweepCase, ...]:
         ("include_2d_shape_moments", False),
     )
     psf_delegation = (
-        "scripts/benchmark_gpu_rl_parameter_sweep.py; this catalog preserves "
-        "one coverage row and does not duplicate its multi-input FFT setup"
+        "scripts/benchmark_gpu_rl_parameter_sweep.py (bounded diagnostic "
+        "CPU/GPU comparisons); src/napari_vipp/_tests/test_rl_gpu_warning_policy.py "
+        "(v3 advisory-execution contracts)"
+    )
+    rl_coverage_limits = (
+        "Broader v3 GPU execution with advisories is tested separately from "
+        "the dedicated PSF harness's bounded diagnostic CPU/GPU comparisons. "
+        "This row does not execute an RL parameter sweep, certify CPU "
+        "equivalence across the broader settings, or refresh historical "
+        "measurements."
     )
     return (
         SweepCase(
@@ -458,8 +470,8 @@ def sweep_catalog() -> tuple[SweepCase, ...]:
             20_260_809,
             coverage_mode="delegated-psf-sweep",
             classification=(
-                "Multi-input RL execution and changing PSF dimensions are covered "
-                "by the dedicated PSF harness."
+                "Multi-input RL and changing PSF dimensions remain delegated. "
+                + rl_coverage_limits
             ),
             delegated_to=psf_delegation,
         ),
@@ -472,8 +484,8 @@ def sweep_catalog() -> tuple[SweepCase, ...]:
             20_260_810,
             coverage_mode="delegated-psf-sweep",
             classification=(
-                "Multi-input RL-TV execution and changing PSF dimensions are "
-                "covered by the dedicated PSF harness."
+                "Multi-input RL-TV and changing PSF dimensions remain delegated. "
+                + rl_coverage_limits
             ),
             delegated_to=psf_delegation,
         ),

@@ -101,6 +101,54 @@ Explicit rechecks update all subscribers, and application shutdown stops pending
 probes. Results are not persisted across application starts or stored in workflows;
 they describe reader loading, never source validity or scientific cache state.
 
+## Object-filter feedback
+
+`core/object_filter_counts.py` compares the actual input/output pair without
+sampling or modifying pixels. Positive label IDs are counted independently per
+processed spatial block; Boolean masks use the operation's connectivity (full
+connectivity for Clear Border). `ui/object_filter_diagnostics.py` owns a weak
+identity cache, one active worker and one replacement request. The inspector's
+**Filter result** section accepts only completed, ready, resident results and
+checks state again after worker completion. Pending edits, stale outputs,
+transient execution results and bypass do not claim a filtering result.
+See `test_object_filter_counts.py`, `test_object_filter_diagnostics.py` and
+`test_object_filter_feedback.py`. Public interpretation lives in the manual's
+segmentation and label-cleanup tutorial.
+
+## Label-boundary masks
+
+`find_label_boundaries` is a CPU operation in the existing Label Operations
+family, unreleased after 0.15.0a2. It accepts Boolean masks or non-negative
+integer labels and returns a new same-shape Boolean mask without changing the
+input, label IDs or spatial calibration. Floating-point images, negative labels
+and non-spatial/ambiguous axis interpretations must fail instead of being cast
+or guessed. `core/label_boundaries.py` owns the numerical contract and
+`core/operations.py` re-exports it. Exact equality-preserving ID remapping protects
+wide integers at the backend boundary without changing the original labels.
+Time/channel leading blocks remain independent under the shared spatial
+processing contract. The positional gate requires trailing YX/ZYX: interleaved
+layouts such as ZCYX need explicit Reorder Axes before volume processing, not
+hidden movement. Authored spatial modes retain the shared `Auto from axes`,
+`2D YX` and `3D ZYX` vocabulary and its contextual UI aliases.
+
+The reference is scikit-image's
+[`find_boundaries`](https://scikit-image.org/docs/stable/api/skimage.segmentation.html#skimage.segmentation.find_boundaries):
+Inside objects, Outside objects and Both sides map to `inner`, `outer` and
+`thick`, respectively, with fixed background `0`. Face/Full connectivity maps to
+`1`/the resolved spatial rank. Outside placement also marks interfaces between
+touching non-zero labels. There is no implicit background padding beyond the
+array: crop-border contact alone does not make a boundary. Width is grid-based,
+not a physical-distance shell; no subpixel mode, surface extraction or intensity
+edge detection is implied. Metadata changes the output kind to mask while
+preserving axes, scale, units and origin and recording authored settings.
+
+The public manual demonstrates a branch from labels to boundaries for QC while
+keeping original labels connected to object measurements: the Boolean output
+does not retain object IDs. Save, batch and generated Python use ordinary mask
+paths and the shared executor; this operation adds no dependency or GPU kernel.
+`test_label_boundaries.py` covers the kernel and
+`test_label_boundaries_integration.py` covers its graph/execution contract.
+
 ## Known Upstream Notices
 
 CuPy 14.1.1 emits `cupyx.jit.rawkernel is experimental. The interface can

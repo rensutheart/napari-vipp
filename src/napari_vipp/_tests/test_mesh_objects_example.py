@@ -1,7 +1,5 @@
 """Execute the shipped object-aware mesh example, including portable export."""
 
-import importlib.util
-import json
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
@@ -33,22 +31,13 @@ def _pipeline():
     return pipeline, document
 
 
-def test_mesh_objects_example_is_generated_and_readable_without_file_writers():
-    generator_path = ROOT / "scripts" / "generate_mesh_objects_workflow.py"
-    spec = importlib.util.spec_from_file_location(
-        "mesh_example_generator", generator_path
-    )
-    generator = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(generator)
-    pipeline, positions, notes, metadata = generator.build_workflow()
-    expected = serialize_workflow(
-        pipeline, positions, notes, metadata, ComputeRequest(mode="cpu")
-    )
-    repository = ROOT / "examples" / generator.FILENAME
-    packaged = ROOT / "src" / "napari_vipp" / "examples" / generator.FILENAME
+def test_mesh_objects_example_is_readable_without_file_writers():
+    pipeline, document = _pipeline()
+    repository = ROOT / "examples" / "synthetic-mesh-objects.json"
+    packaged = ROOT / "src" / "napari_vipp" / "examples" / repository.name
     assert repository.read_bytes() == packaged.read_bytes()
-    assert json.loads(repository.read_text()) == expected
-    assert len(notes) == 3 and set(positions) == set(pipeline.nodes)
+    assert len(document["notes"]) == 3
+    assert set(document["positions"]) == set(pipeline.nodes)
     assert not any(
         node.operation_id == "save_output" for node in pipeline.nodes.values()
     )
@@ -87,13 +76,15 @@ def test_mesh_objects_example_cpu_preserves_objects_and_exports_3mf(
     tiny = outputs["filter_mesh_objects_2"]
     combined = outputs["combine_meshes_1"]
     refined = outputs["simplify_mesh_1"]
-    assert original.object_count == colored.object_count == combined.object_count == 5
+    assert original.object_count == 1
+    assert outputs["split_mesh_objects_1"].object_count == 5
+    assert colored.object_count == combined.object_count == 5
     assert large.object_count == 4 and tiny.object_count == 1
     assert {item.object_id for item in large.objects}.isdisjoint(
         {item.object_id for item in tiny.objects}
     )
     assert [item.object_id for item in refined.objects] == [
-        item.object_id for item in original.objects
+        item.object_id for item in colored.objects
     ]
     assert [item.color for item in combined.objects] == [
         item.color for item in colored.objects

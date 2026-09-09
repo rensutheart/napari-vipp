@@ -30,9 +30,11 @@ from napari_vipp.installer.models import (
     ComputeTrack,
     DiscoverySnapshot,
     FilesystemSnapshot,
+    GpuDeviceSnapshot,
     HostSnapshot,
     InstallMode,
     InstallRequest,
+    NvidiaSnapshot,
     PythonSnapshot,
     ReleaseSpec,
     ShortcutScope,
@@ -164,6 +166,13 @@ def _plan(
     snapshot = DiscoverySnapshot(
         request_fingerprint=installation_request_fingerprint(request),
         host=HostSnapshot("win32", "Windows", "AMD64"),
+        nvidia=(
+            NvidiaSnapshot(
+                probe_succeeded=True,
+                driver_api_version=13030,
+                devices=(GpuDeviceSnapshot("Test CUDA GPU", (8, 6)),),
+            ) if track is ComputeTrack.CUDA13 else None
+        ),
         python=PythonSnapshot(
             requested_executable=request.python,
             executable=request.python,
@@ -264,6 +273,11 @@ class _FakeRunner:
             (Path(call[0]).parent / "vipp-cpu.exe").touch()
             (Path(call[0]).parent / "vipp-app.exe").touch()
             (Path(call[0]).parent / "vipp-prefer-gpu.exe").touch()
+            icon = Path(call[0]).parent.parent / (
+                "Lib/site-packages/napari_vipp/assets/branding/vipp-mark.ico"
+            )
+            icon.parent.mkdir(parents=True, exist_ok=True)
+            icon.write_bytes(b"test icon")
             return CommandResult(0)
         if call[0].casefold() == "powershell.exe":
             destination = Path(call[call.index("-Destination") + 1])
@@ -753,23 +767,30 @@ def test_failed_new_install_does_not_report_removed_parent_as_preserved(tmp_path
     )
 
 
-def test_cpu_shortcut_is_staged_after_acceptance_and_atomically_owned(tmp_path):
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+def test_shortcuts_are_branded_staged_after_acceptance_and_atomically_owned(
+    tmp_path, track
+):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
     desktop.mkdir()
     runner = _FakeRunner()
     engine = _engine(tmp_path, runner)
-    prepared = engine.prepare(_plan(target, _release(), shortcut_directory=desktop))
-    assert [shortcut.destination for shortcut in prepared.shortcuts] == [
-        desktop / "VIPP.lnk"
-    ]
+    prepared = engine.prepare(
+        _plan(target, _release(), shortcut_directory=desktop, track=track)
+    )
+    expected_names = (
+        ["VIPP.lnk"] if track is ComputeTrack.CPU else
+        ["VIPP Automatic.lnk", "VIPP CPU.lnk", "VIPP Prefer GPU.lnk"]
+    )
+    assert [item.destination.name for item in prepared.shortcuts] == expected_names
 
     result = engine.apply(
         prepared,
         engine.authorize(prepared, confirmed=True),
     )
 
-    shortcut = desktop / "VIPP.lnk"
+    shortcut = desktop / expected_names[0]
     assert result.succeeded
     assert shortcut.is_file()
     calls = runner.calls
@@ -792,12 +813,20 @@ def test_cpu_shortcut_is_staged_after_acceptance_and_atomically_owned(tmp_path):
     )
     ownership = inspect_ownership(target).record
     assert ownership is not None
-    assert len(ownership.shortcuts) == 1
+    assert len(ownership.shortcuts) == len(expected_names)
     assert ownership.shortcuts[0].path == shortcut
     assert (
         ownership.shortcuts[0].sha256
         == hashlib.sha256(shortcut.read_bytes()).hexdigest()
     )
+    for call in calls:
+        if call[0] == "powershell.exe":
+            icon = Path(call[call.index("-IconPath") + 1])
+            assert icon.is_file()
+            assert icon.is_relative_to(result.environment_root)
+            assert icon.name == "vipp-mark.ico"
+    assert '$shortcut.Arguments = "--desktop"' in engine_module._SHORTCUT_SCRIPT
+    assert '$shortcut.IconLocation = "$IconPath,0"' in engine_module._SHORTCUT_SCRIPT
 
 
 def test_foreign_shortcut_is_never_overwritten(tmp_path):

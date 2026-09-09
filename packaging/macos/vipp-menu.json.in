@@ -11,6 +11,7 @@
         "{{ PYTHON }}",
         "-m",
         "napari_vipp",
+        "--desktop",
         "--profile",
         "cpu"
       ],
@@ -25,6 +26,7 @@
             "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python",
             "-m",
             "napari_vipp",
+            "--desktop",
             "--profile",
             "cpu"
           ],

@@ -94,6 +94,7 @@ from napari_vipp.core.operations import (
     fill_holes,
     filter_labels_by_property,
     filter_labels_by_volume,
+    find_label_boundaries,
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
@@ -1608,6 +1609,7 @@ SPATIAL_OPERATIONS = {
     "euclidean_distance_transform",
     "expand_labels",
     "event_localization",
+    "find_label_boundaries",
     "fill_holes",
     "hysteresis_threshold",
     "h_maxima_markers",
@@ -1695,6 +1697,7 @@ _POSITIONAL_RESOLVED_SPATIAL_OPERATIONS = frozenset(
         "hysteresis_threshold",
         "fill_holes",
         "clear_border_objects",
+        "find_label_boundaries",
         "remove_small_objects",
         "label_connected_components",
         "euclidean_distance_transform",
@@ -4284,6 +4287,54 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         clear_border_objects,
         preserves_input_type=True,
+    ),
+    OperationSpec(
+        "find_label_boundaries",
+        "Find Label Boundaries",
+        LABEL_OPERATIONS_CATEGORY,
+        "mask_or_labels",
+        "mask",
+        (
+            ParameterSpec(
+                "boundary_placement",
+                "Boundary placement",
+                "choice",
+                "Inside objects",
+                0,
+                0,
+                1,
+                choices=("Inside objects", "Outside objects", "Both sides"),
+                tooltip=(
+                    "Inside marks object-side boundary pixels/voxels. Outside "
+                    "marks surrounding background and also the interfaces "
+                    "between touching labels. Both sides marks both sides of "
+                    "each label transition. Zero is background; no boundary "
+                    "is invented beyond the image edge."
+                ),
+            ),
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "connectivity",
+                "Connectivity",
+                "choice",
+                "Face connected",
+                0,
+                0,
+                1,
+                choices=("Face connected", "Full connectivity"),
+                tooltip=(
+                    "Face connected compares edge-sharing pixels in 2D or "
+                    "face-sharing voxels in 3D. Full connectivity also compares "
+                    "diagonal neighbours."
+                ),
+            ),
+        ),
+        find_label_boundaries,
+        stack_processing_note=(
+            "Outlines existing labels or a binary mask; does not detect edges "
+            "in raw intensity images. Outputs a separate boundary mask on the "
+            "original grid. Keep the original labels for object measurements."
+        ),
     ),
     OperationSpec(
         "filter_labels_by_volume",
@@ -11624,6 +11675,27 @@ def _validate_operation_axis_semantics(
     kwargs: dict[str, Any],
 ) -> None:
     image_state = state if isinstance(state, ImageState) else None
+    if (
+        node.operation_id == "find_label_boundaries"
+        and str(kwargs.get("spatial_mode", "Auto from axes")).strip().casefold()
+        == "auto from axes"
+        and image_state is not None
+        and len(image_state.axes) > 2
+        and any(
+            not axis.is_explicit or axis.type not in {"space", "time", "channel"}
+            for axis in image_state.axes
+        )
+    ):
+        raise AmbiguousAxisError(
+            f"{node.title} cannot resolve 'Auto from axes' for "
+            f"{image_state.axis_order}: every stack axis must have an explicit "
+            "spatial, time, or channel meaning. Review the axes at Image Source "
+            "(for example, declare Q as Z for depth), or deliberately select "
+            "2D YX / 3D ZYX processing.",
+            code="ambiguous_label_boundary_axes",
+            detected_axes=image_state.axis_order,
+            failing_node_id=node.id,
+        )
     if node.operation_id in _LUMA_CHANNEL_AXIS_OPERATION_IDS:
         _validate_luma_channel_axis_semantics(node, image_state, kwargs)
     if node.operation_id == "crop_stack":

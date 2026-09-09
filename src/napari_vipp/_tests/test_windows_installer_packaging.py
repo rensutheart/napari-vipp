@@ -448,8 +448,9 @@ def test_signing_hook_requires_real_certificate_timestamp_and_verification():
     assert "-SIGNING-STAGING.exe" in script
 
 
+@pytest.mark.parametrize("root_key", ["SystemRoot", "SYSTEMROOT", "systemroot"])
 def test_authenticode_probe_isolates_windows_powershell_modules(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, root_key
 ):
     captured = {}
 
@@ -469,7 +470,10 @@ def test_authenticode_probe_isolates_windows_powershell_modules(
         )
 
     monkeypatch.setattr(packager.subprocess, "run", run)
-    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    for key in tuple(os.environ):
+        if key.casefold() == "systemroot":
+            monkeypatch.delenv(key)
+    monkeypatch.setenv(root_key, r"C:\Windows")
     monkeypatch.setenv(
         "PSModulePath", r"C:\Program Files\PowerShell\7\Modules"
     )

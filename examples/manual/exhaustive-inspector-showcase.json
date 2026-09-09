@@ -773,6 +773,15 @@
       }
     },
     {
+      "id": "find_label_boundaries_1",
+      "operation_id": "find_label_boundaries",
+      "params": {
+        "boundary_placement": "Inside objects",
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected"
+      }
+    },
+    {
       "id": "measure_objects_1",
       "operation_id": "measure_objects",
       "params": {
@@ -1775,6 +1784,12 @@
     },
     {
       "source": "relabel_sequential_1",
+      "target": "find_label_boundaries_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "relabel_sequential_1",
       "target": "measure_objects_1",
       "target_port": 0,
       "source_port": 0
@@ -2554,6 +2569,10 @@
     "relabel_sequential_1": [
       2720.0,
       5750.0
+    ],
+    "find_label_boundaries_1": [
+      3060.0,
+      6070.0
     ],
     "measure_objects_1": [
       3060.0,

@@ -28,6 +28,7 @@ from napari_vipp.core.batch_parameters import BatchSourceParameterOverrides
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.metadata import AxisDeclaration
 from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.reproduction import ReproductionRequest
 from napari_vipp.core.workflow import deserialize_workflow
 
 
@@ -46,6 +47,7 @@ def build_collection_batch_config(
     parameter_overrides: Sequence[BatchSourceParameterOverrides] | None = None,
     node_execution_overrides: Sequence[BatchNodeExecutionOverride] | None = None,
     item_file_policies: Sequence[BatchItemFilePolicy] | None = None,
+    reproduction: ReproductionRequest | None = None,
 ) -> BatchConfig:
     """Translate one workflow and collection form into a validated config."""
     output_text = str(output_dir).strip()
@@ -94,6 +96,7 @@ def build_collection_batch_config(
         parameter_overrides=tuple(parameter_overrides or ()),
         node_execution_overrides=tuple(node_execution_overrides or ()),
         item_file_policies=tuple(item_file_policies or ()),
+        reproduction=reproduction,
     )
     validate_batch_config(
         workflow,

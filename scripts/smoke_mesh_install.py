@@ -30,7 +30,7 @@ def smoke_mesh_install(*, require_installed=False):
     if require_installed and repository in installed.parents:
         raise RuntimeError(f"Smoke imported the source checkout: {installed}")
     resource = files("napari_vipp").joinpath(
-        "examples", "synthetic-mesh-refinement-tuned.json"
+        "examples", "synthetic-mesh-objects.json"
     )
     with as_file(resource) as path:
         graph = load_workflow(path)
