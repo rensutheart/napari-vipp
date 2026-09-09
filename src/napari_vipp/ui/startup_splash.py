@@ -82,7 +82,7 @@ class StartupSplash(QWidget):
             "QFrame#VippProfileBadge { background: #111E2A; "
             f"border: 1px solid {accent}; border-radius: 11px; }}"
             f"QLabel#VippProfileText {{ color: {accent}; font-size: 10px; "
-            "font-weight: 700; }}"
+            "font-weight: 700; }"
             "QProgressBar { background: #172432; border: 1px solid #334155; "
             "border-radius: 6px; min-height: 12px; max-height: 12px; }"
             f"QProgressBar::chunk {{ background: {accent}; border-radius: 5px; }}"

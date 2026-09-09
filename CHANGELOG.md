@@ -4,6 +4,8 @@
 
 ## 0.15.0a3 - 2026-09-09
 
+- Fix a malformed splash-screen style rule so Qt applies the intended profile badge and minimize-button styling without a stylesheet parsing warning.
+
 - Prevent an intermittent splash-startup failure when a generated authentication token begins with a hyphen. Pass the token as an explicitly bound command-line value; keep the token validation and startup handshake unchanged.
 
 - Keep the macOS installer’s bundled YAML dependency within conda’s declared compatible range, preventing an installed-environment `pip check` failure. Both native architecture checks remain required after rebuilding.

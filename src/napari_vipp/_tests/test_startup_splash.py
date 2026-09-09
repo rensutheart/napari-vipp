@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from qtpy.QtCore import QEvent, QPoint, QPointF, Qt
-from qtpy.QtGui import QMouseEvent
-from qtpy.QtWidgets import QApplication
+from qtpy.QtGui import QMouseEvent, QPalette
+from qtpy.QtWidgets import QApplication, QLabel
 
 from napari_vipp.startup import LaunchProfile, StartupPhase, StartupSnapshot
 from napari_vipp.ui.startup_splash import StartupSplash
@@ -41,6 +41,36 @@ def test_splash_profiles_share_branding_but_show_distinct_badges(qtbot, tmp_path
     qtbot.addWidget(cpu_splash)
     assert "CPU path" in cpu_splash.note_label.text()
     assert "CUDA" not in cpu_splash.note_label.text()
+
+
+@pytest.mark.parametrize("profile", tuple(LaunchProfile))
+def test_splash_stylesheet_parses_and_styles_profile_and_minimize_button(
+    qtbot, qtlog, tmp_path, profile
+):
+    splash = StartupSplash(
+        profile=profile, version="test", log_path=tmp_path / "startup.log"
+    )
+    qtbot.addWidget(splash)
+    splash.show()
+    QApplication.processEvents()
+
+    stylesheet_errors = [
+        record.message
+        for record in qtlog.records
+        if "stylesheet" in record.message.casefold()
+        and "parse" in record.message.casefold()
+    ]
+    assert not stylesheet_errors, stylesheet_errors
+    badge = splash.findChild(QLabel, "VippProfileText")
+    assert badge is not None
+    assert badge.palette().color(QPalette.WindowText).name() == (
+        splash.profile_spec.accent.lower()
+    )
+    assert badge.font().bold()
+    assert badge.font().pixelSize() == 10
+    # A malformed rule earlier in the shared sheet can also discard the new
+    # minimize rule, even though the window still launches and minimizes.
+    assert splash.minimize_button.font().pixelSize() == 22
 
 
 def test_splash_timeout_and_failure_actions_are_explicit(qtbot, tmp_path):
