@@ -2,16 +2,17 @@
 
 Last reviewed: 2026-09-09
 
-## 0.15.0a3 candidate qualification declaration
+## 0.15.0a3 qualification declaration
 
-This unreleased alpha candidate covers the complete delta from public
+This iterative alpha covers the complete delta from public
 `v0.15.0a2`, including the earlier RL admission changes and the current
-batch/reproducibility work. This declaration is not a CI pass, an installer
-qualification record, or authorization to publish a tag or package.
+batch/reproducibility work. The user authorized the release on 2026-09-09.
+This declaration separates behavioral evidence from the exact-final-main CI,
+immutable tag and artifact identities that must be verified before publication.
 
 ```yaml
 tier: alpha
-status: candidate_unreleased
+status: release_qualification
 changed:
   core_ui: true
   workflow_schema_provenance: true
@@ -52,17 +53,35 @@ carried_forward:
   Changed shared-execution/provenance paths require current-source GPU evidence
   review; a2 evidence does not automatically qualify these changes or broaden
   independently demonstrated parity regions.
+- The 2026-09-09 [RTX 5090 canary](benchmarks/a3-gpu-canary-windows-rtx5090.md)
+  passed 119 selected tests with no failures, errors or skips: 19 real RL/RL-TV
+  provider cases, 30 advisory-contract checks, 12 shared-execution checks and
+  58 batch/resume/provenance checks. The report distinguishes real-device
+  execution from CPU/fake-runtime contracts and records the exact scientific
+  source fingerprint. It does not establish numerical parity over every
+  admitted parameter combination or recovery of unfinished GPU work.
 - Windows shortcut/icon assets, launcher identity, startup-window behavior and
   macOS desktop launch configuration changed. Unchanged reader/dependency
-  evidence above does not qualify these launch paths. Installed Windows desktop
-  confirmation and affected native Apple Silicon/Intel checks remain pending,
-  with exact-main distributions and exact-tag installer integrity required
-  before any eventual publication.
+  evidence above does not qualify these launch paths. The approved frameless
+  splash passed 47 focused startup/launcher checks and native Windows
+  drag/minimize/restore review. This was a source preview, not a final installed
+  artifact. The final artifact must include this change, pass exact-main CI,
+  and refresh the affected installed/native launch checks.
 - Native macOS smoke run 34335358823 installed both candidate PKGs, then failed
   `pip check`: conda 26.7.2 requires `ruamel.yaml>=0.11.14,<0.19`, while the
   unconstrained solve selected 0.19.1. The constructor runtime now carries that
-  compatibility constraint. Both architectures require rebuilt-package
-  dependency and launch checks; the failed run is not startup qualification.
+  compatibility constraint. The replacement
+  [native smoke run 34342855514](https://github.com/rensutheart/napari-vipp/actions/runs/34342855514)
+  passed installed dependency, desktop launch and frozen reader-corpus checks
+  on both architectures at `88d7cdf`; the earlier failed run is superseded.
+  This covers the changed dependency/menu route, not the subsequent frameless
+  splash refinement. Exact-tag packages retain their own native launch checks.
+- Candidate `88d7cdf` passed the complete
+  [18-job CI matrix](https://github.com/rensutheart/napari-vipp/actions/runs/34342849638)
+  and [Windows frozen-EXE smoke](https://github.com/rensutheart/napari-vipp/actions/runs/34342852473).
+  That result is not substituted for final-main CI after the approved splash
+  refinement. Package metadata, all supported Python/OS lanes and both Qt
+  bindings remain checked through the normal CI path.
 - On 2026-09-09 the user reported end-to-end acceptance item 3 complete. This is
   a user attestation for the exercised workflow, not independently retained
   output comparisons, biological validation or cross-machine reproducibility.

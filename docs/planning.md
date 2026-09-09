@@ -42,8 +42,9 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.15.0a3` is the current unreleased candidate; `0.15.0a2` remains the published
-baseline until the candidate passes its changed-domain gates. The a2 official
+`0.15.0a3` is the current release target, authorized on 2026-09-09;
+`0.15.0a2` is its preceding published baseline. Publication of a3 requires
+its changed-domain gates and exact-artifact checks. The a2 official
 [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a2),
 checksum sidecars,
 [PyPI package](https://pypi.org/project/napari-vipp/0.15.0a2/), and
@@ -114,7 +115,8 @@ presentation fixes; see the [release notes](../release-notes.md). Qualification
 and publication follow the [release runbook](release-runbook.md), with the
 complete a2-to-a3 delta declared in the [qualification baseline](release-qualification-baseline.md).
 
-The user reports the end-to-end acceptance item 3 complete on 2026-09-09.
+The user reports the end-to-end acceptance item 3 complete and approves the
+frameless startup presentation on 2026-09-09.
 This is user acceptance of the exercised workflow, not independently captured
 output-equivalence or cross-machine validation. Exact-final-main CI, the RL
 catalogue correction and its regression checks, installed desktop launch review,

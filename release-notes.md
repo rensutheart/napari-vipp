@@ -1,8 +1,8 @@
 # VIPP 0.15.0a3
 
-VIPP 0.15.0a3 prepares a reviewed path from a recorded batch run to a portable reproducibility package, adds verified interrupted-run recovery, and improves object QC and desktop workflow handling.
+VIPP 0.15.0a3 adds a reviewed path from a recorded batch run to a portable reproducibility package, verified interrupted-run recovery, and clearer object QC and desktop workflow handling.
 
-**Unreleased candidate.** 0.15.0a2 remains the public alpha. These notes describe the candidate scope, not completed CI, native installer qualification or public downloads. Preserve original data, workflows, environments and decisive outputs.
+**Alpha software.** Preserve original data, workflows, environments and decisive outputs. Review the included checks and limitations before using this version for scientific analysis.
 
 ## Review, share and repeat a recorded analysis
 
@@ -25,7 +25,7 @@ Manifest schema **6** adds recovery snapshots and run lineage. Earlier manifests
 - **Filter result** shows current input, kept and removed object counts for supported label/mask filters using a cached background diagnostic. Stale, bypassed and uncached results do not display misleading counts.
 - Drag a local workflow JSON onto the graph, tab strip or inspector to open it in a new tab without replacing existing work. Recorded workflows use the same reproduction choice as **Open**.
 - **Separate Overlapping Objects** adds an annotated segmentation and two-mesh example. One **Mesh Objects, Colours & Refinement** example now retains the authored interactive workflow; the duplicate tuned entry is removed.
-- Installed desktop launches gain VIPP window/shortcut branding and a movable, minimizable startup window. Plugin/manual launches retain napari branding. Initial workflow-dock space and the Batch/Display toolbar divider are clearer.
+- Installed desktop launches gain VIPP window/shortcut branding and a title-bar-free startup window. Drag the logo or background to move it, or use the small top-right minimize button; it does not stay above other windows. Plugin/manual launches retain napari branding. Initial workflow-dock space and the Batch/Display toolbar divider are clearer.
 
 ## Broader RL GPU execution, with explicit uncertainty
 
@@ -35,6 +35,6 @@ Ordinary Richardson–Lucy and RL-TV admit more authored parameter combinations,
 
 Workflow and batch-configuration schema numbers remain **6**; the new manifest schema is **6**, compared with **5** in 0.15.0a2. New operations, reproduction references and generated runners require a compatible runtime even where a schema number is unchanged. Keep older evidence unchanged and regenerate Python exports for the exact installed version.
 
-User-reported end-to-end acceptance is recorded separately from independent output comparison. Exact-final-main CI, RL catalogue regression checks, installed desktop confirmation, affected native-architecture checks and release-artifact verification remain gates; see the [qualification declaration](docs/release-qualification-baseline.md).
+User-reported end-to-end acceptance is recorded separately from independent output comparison. The [qualification declaration](https://github.com/rensutheart/napari-vipp/blob/v0.15.0a3/docs/release-qualification-baseline.md) describes changed-domain checks and the scope of carried-forward evidence. Matching inputs, versions or a successful test suite do not guarantee scientific validity for a new dataset.
 
-For candidate instructions, use the [nightly manual](https://rensutheart.github.io/vipp-mkdocs/nightly/). For currently published assets and checksums, use the [0.15.0a2 release](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a2) and its [numbered manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a2/). No 0.15.0a3 public download or numbered manual is claimed by this preparation.
+Use the [0.15.0a3 release page](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a3) for distributions, Windows setup and separate Apple Silicon/Intel macOS installers with their checksums, and the [0.15.0a3 manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a3/) for instructions. Desktop installers are explicitly unsigned alpha builds; macOS packages are also unnotarized. Verify downloads and follow the platform-specific setup guidance.

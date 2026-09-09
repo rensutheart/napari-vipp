@@ -2,10 +2,7 @@
 
 ## Unreleased
 
-## 0.15.0a3 - Unreleased
-
-Target: **0.15.0a3 candidate**. These changes are not yet a published release;
-qualification and local installed-application confirmation remain separate.
+## 0.15.0a3 - 2026-09-09
 
 - Prevent an intermittent splash-startup failure when a generated authentication token begins with a hyphen. Pass the token as an explicitly bound command-line value; keep the token validation and startup handshake unchanged.
 
@@ -43,7 +40,7 @@ qualification and local installed-application confirmation remain separate.
 
 - Add **Resume saved run…** to Batch workflow and `--resume MANIFEST` to newly exported batch runners. Continue the saved workflow/settings without altering the open graph, reusing only whole completed items with verified input/output contents, effective parameters, runtime and checkpoint evidence. Schema 6 manifests preserve run lineage and distinguish verified reuse from new writes. Older or incompatible evidence and unverified existing outputs are refused; Skip existing remains separate. Normal and resumed runs share a crash-released destination lock.
 
-- Use VIPP icons for installed Windows shortcuts and the installed desktop application's running window/taskbar (macOS keeps its branded app bundle). Plugin/manual launches retain napari branding. Make the startup window movable, minimizable and non-topmost, preserving its position when restored. Initially allocate about two-thirds of the available height to the workflow dock, leaving room for napari and allowing normal resizing afterward.
+- Use VIPP icons for installed Windows shortcuts and the installed desktop application's running window/taskbar (macOS keeps its branded app bundle). Plugin/manual launches retain napari branding. Remove the startup window's native title bar while keeping it draggable and non-topmost, with a small top-right minimize button and position preserved when restored. Initially allocate about two-thirds of the available height to the workflow dock, leaving room for napari and allowing normal resizing afterward.
 
 - Add **Separate Overlapping Objects** under **Segmentation & Labels**: an annotated, authored workflow combining intensity segmentation, XOR/OR mask reconstruction and two separately measured, coloured meshes. Preserve its parameters and layout; disabled Save Image nodes keep calculation free of output files.
 
