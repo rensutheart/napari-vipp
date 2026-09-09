@@ -1,0 +1,1212 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic volume",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "rescale_intensity_1",
+      "operation_id": "rescale_intensity",
+      "params": {
+        "cutoff_mode": "Percentiles",
+        "in_low_value": 0.0,
+        "in_high_value": 1.0,
+        "in_low_percentile": 76.03,
+        "in_high_percentile": 98.76,
+        "out_min": 0.0,
+        "out_max": 255.0,
+        "invert_intensity": false
+      }
+    },
+    {
+      "id": "subtract_background_1",
+      "operation_id": "subtract_background",
+      "params": {
+        "radius": 25.8,
+        "light_background": false,
+        "disable_smoothing": false,
+        "clip_negative": true,
+        "spatial_mode": "2D YX",
+        "channel_axis": -1,
+        "resolved_spatial_ndim": 2
+      }
+    },
+    {
+      "id": "non_local_means_filter_1",
+      "operation_id": "non_local_means_filter",
+      "params": {
+        "patch_size": 5,
+        "patch_distance": 6,
+        "h": 0.05,
+        "fast_mode": true,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "otsu_threshold_2",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "channel_axis": -1,
+        "histogram_bins": 256,
+        "threshold_scope": "Stack histogram"
+      }
+    },
+    {
+      "id": "otsu_threshold_3",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "gamma_correction_1",
+      "operation_id": "gamma_correction",
+      "params": {
+        "gamma": 4.247
+      }
+    },
+    {
+      "id": "rescale_intensity_2",
+      "operation_id": "rescale_intensity",
+      "params": {
+        "cutoff_mode": "Values",
+        "in_low_value": 131.965,
+        "in_high_value": 177.607,
+        "in_low_percentile": 0.0,
+        "in_high_percentile": 100.0,
+        "out_min": 0.0,
+        "out_max": 255.0,
+        "invert_intensity": false
+      }
+    },
+    {
+      "id": "gamma_correction_3",
+      "operation_id": "gamma_correction",
+      "params": {
+        "gamma": 10.0
+      }
+    },
+    {
+      "id": "logical_xor_1",
+      "operation_id": "logical_xor",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "logical_or_1",
+      "operation_id": "logical_or",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 232.769,
+        "channel_axis": -1,
+        "foreground": "Above",
+        "low_threshold": 0.25,
+        "high_threshold": 0.75
+      }
+    },
+    {
+      "id": "remove_binary_outliers_2",
+      "operation_id": "remove_binary_outliers",
+      "params": {
+        "radius": 1.9,
+        "which_outliers": "Foreground (remove)"
+      }
+    },
+    {
+      "id": "erode_1",
+      "operation_id": "erode",
+      "params": {
+        "size": 3,
+        "iterations": 1
+      }
+    },
+    {
+      "id": "dilate_1",
+      "operation_id": "dilate",
+      "params": {
+        "size": 3,
+        "iterations": 1
+      }
+    },
+    {
+      "id": "otsu_threshold_4",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "erode_2",
+      "operation_id": "erode",
+      "params": {
+        "size": 3,
+        "iterations": 1
+      }
+    },
+    {
+      "id": "gaussian_blur_3d_1",
+      "operation_id": "gaussian_blur_3d",
+      "params": {
+        "sigma_z": 2.0,
+        "sigma_y": 2.0,
+        "sigma_x": 2.0,
+        "lock_xy": true,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "save_output_1",
+      "operation_id": "save_output",
+      "params": {
+        "enabled": "off",
+        "path": "",
+        "format": "auto",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "save_output_2",
+      "operation_id": "save_output",
+      "params": {
+        "enabled": "off",
+        "path": "",
+        "format": "auto",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "remove_small_objects_1",
+      "operation_id": "remove_small_objects",
+      "params": {
+        "min_size": 10,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected",
+        "resolved_spatial_ndim": 3
+      }
+    },
+    {
+      "id": "mask_to_3d_mesh_1",
+      "operation_id": "mask_to_3d_mesh",
+      "params": {
+        "object_mode": "Single object",
+        "boundary": "Close at image border"
+      }
+    },
+    {
+      "id": "mask_to_3d_mesh_2",
+      "operation_id": "mask_to_3d_mesh",
+      "params": {
+        "object_mode": "Single object",
+        "boundary": "Close at image border"
+      }
+    },
+    {
+      "id": "measure_3d_mesh_morphology_1",
+      "operation_id": "measure_3d_mesh_morphology",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "minimum_voxel_count": 16,
+        "include_convex_hull_metrics": true
+      }
+    },
+    {
+      "id": "measure_3d_mesh_morphology_2",
+      "operation_id": "measure_3d_mesh_morphology",
+      "params": {
+        "include_convex_hull_metrics": true,
+        "minimum_voxel_count": 16,
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "combine_meshes_1",
+      "operation_id": "combine_meshes",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "color_mesh_objects_3",
+      "operation_id": "color_mesh_objects",
+      "params": {
+        "color_by": "Object ID",
+        "color_map": "viridis"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "subtract_background_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "subtract_background_1",
+      "target": "rescale_intensity_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "rescale_intensity_1",
+      "target": "non_local_means_filter_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "non_local_means_filter_1",
+      "target": "otsu_threshold_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "non_local_means_filter_1",
+      "target": "gamma_correction_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gamma_correction_1",
+      "target": "otsu_threshold_3",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "rescale_intensity_1",
+      "target": "gamma_correction_3",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gamma_correction_3",
+      "target": "rescale_intensity_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_2",
+      "target": "logical_xor_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_3",
+      "target": "logical_xor_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "rescale_intensity_2",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "remove_binary_outliers_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_binary_outliers_2",
+      "target": "erode_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "erode_1",
+      "target": "logical_or_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "dilate_1",
+      "target": "logical_or_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_4",
+      "target": "erode_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "logical_or_1",
+      "target": "gaussian_blur_3d_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_blur_3d_1",
+      "target": "otsu_threshold_4",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_3",
+      "target": "save_output_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "erode_2",
+      "target": "save_output_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "logical_xor_1",
+      "target": "remove_small_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "dilate_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "save_output_2",
+      "target": "mask_to_3d_mesh_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "save_output_1",
+      "target": "mask_to_3d_mesh_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "mask_to_3d_mesh_1",
+      "target": "measure_3d_mesh_morphology_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "mask_to_3d_mesh_2",
+      "target": "measure_3d_mesh_morphology_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "mask_to_3d_mesh_2",
+      "target": "combine_meshes_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "mask_to_3d_mesh_1",
+      "target": "combine_meshes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "combine_meshes_1",
+      "target": "color_mesh_objects_3",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "tunnels": [],
+  "positions": {
+    "input": [
+      0.0,
+      324.0
+    ],
+    "rescale_intensity_1": [
+      720.0,
+      334.0
+    ],
+    "subtract_background_1": [
+      360.0,
+      334.0
+    ],
+    "non_local_means_filter_1": [
+      1080.0,
+      177.0
+    ],
+    "otsu_threshold_2": [
+      1440.0,
+      20.0
+    ],
+    "otsu_threshold_3": [
+      1800.0,
+      177.0
+    ],
+    "gamma_correction_1": [
+      1440.0,
+      334.0
+    ],
+    "rescale_intensity_2": [
+      1440.0,
+      648.0
+    ],
+    "gamma_correction_3": [
+      1080.0,
+      491.0
+    ],
+    "logical_xor_1": [
+      2111.0,
+      -8.0
+    ],
+    "logical_or_1": [
+      3141.0,
+      334.0
+    ],
+    "binary_threshold_1": [
+      1800.0,
+      491.0
+    ],
+    "remove_binary_outliers_2": [
+      2160.0,
+      334.0
+    ],
+    "erode_1": [
+      2610.0,
+      491.0
+    ],
+    "dilate_1": [
+      2781.0,
+      181.0
+    ],
+    "otsu_threshold_4": [
+      3951.0,
+      334.0
+    ],
+    "erode_2": [
+      4311.0,
+      334.0
+    ],
+    "gaussian_blur_3d_1": [
+      3591.0,
+      334.0
+    ],
+    "save_output_1": [
+      4673.0,
+      622.0
+    ],
+    "save_output_2": [
+      4671.0,
+      334.0
+    ],
+    "remove_small_objects_1": [
+      2491.0,
+      81.0
+    ],
+    "mask_to_3d_mesh_1": [
+      4973.0,
+      371.0
+    ],
+    "mask_to_3d_mesh_2": [
+      4983.0,
+      662.0
+    ],
+    "measure_3d_mesh_morphology_1": [
+      5296.0,
+      86.0
+    ],
+    "measure_3d_mesh_morphology_2": [
+      5264.0,
+      868.0
+    ],
+    "combine_meshes_1": [
+      5331.0,
+      506.0
+    ],
+    "color_mesh_objects_3": [
+      5773.0,
+      500.0
+    ]
+  },
+  "notes": [
+    {
+      "id": "overlap_start",
+      "text": "1. START WITH THE MIXED IMAGE\nCalculate all. The bundled ZYX sample contains a rounded object and a curved band in one grayscale image, not two channels. Background subtraction, rescaling and denoising prepare the signal.",
+      "position": [
+        0,
+        -290
+      ],
+      "width": 920
+    },
+    {
+      "id": "overlap_separate",
+      "text": "2. SEPARATE THE MASKS\nCompare Otsu on the denoised image with Gamma 4.247 -> Otsu, which isolates the rounded object. Logical XOR keeps foreground present in exactly one mask, revealing the curved-band fragments.",
+      "position": [
+        1050,
+        -290
+      ],
+      "width": 920
+    },
+    {
+      "id": "overlap_reconnect",
+      "text": "3. RECONNECT THE CURVE\nClean and dilate the XOR result. The lower Gamma 10 -> Rescale -> Binary Threshold branch supplies a cleaned bridge through the overlap. Logical OR joins both masks; it is not a mesh union.",
+      "position": [
+        2100,
+        -290
+      ],
+      "width": 920
+    },
+    {
+      "id": "overlap_review",
+      "text": "4. FINISH AND CHECK BOTH OBJECTS\nGaussian Blur 3D -> Otsu -> Erosion smooths the rebuilt curved band. Compare it with the rounded-object mask across Z slices. These sample-specific steps change boundaries; they do not guarantee exact recovery of the original objects.",
+      "position": [
+        3150,
+        -290
+      ],
+      "width": 980
+    },
+    {
+      "id": "overlap_meshes",
+      "text": "5. TURN MASKS INTO MESHES\nEach Mask to 3D Mesh node creates one mesh; the two measurement nodes describe them separately. Close at image border caps surfaces at the volume edges and affects volume measurements. The synthetic sample has 0.45 micrometer spacing on Z, Y and X.",
+      "position": [
+        4300,
+        -290
+      ],
+      "width": 920
+    },
+    {
+      "id": "overlap_combined",
+      "text": "6. VIEW THE TWO OBJECTS TOGETHER\nCombine Meshes retains both objects without fusing geometry; Colour Mesh Objects assigns distinct ID colours. Save Image nodes are disabled, so Calculate all writes no files. Inspect or export the chosen mesh manually.",
+      "position": [
+        5350,
+        -290
+      ],
+      "width": 950
+    }
+  ],
+  "execution": {
+    "compute": {
+      "mode": "auto",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "right_panel_visible": true,
+        "display_profiles": [
+          {
+            "node_id": "binary_threshold_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "color_mesh_objects_3",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "combine_meshes_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "dilate_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "erode_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "erode_2",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "gamma_correction_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          },
+          {
+            "node_id": "gamma_correction_3",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          },
+          {
+            "node_id": "gaussian_blur_3d_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "float32": {}
+            }
+          },
+          {
+            "node_id": "input",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          },
+          {
+            "node_id": "logical_or_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "logical_xor_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "mask_to_3d_mesh_1",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "mask_to_3d_mesh_2",
+            "output_port": 0,
+            "data_kind": "mesh",
+            "display_kind": "mesh",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "blending": "translucent",
+              "projection_mode": "all",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0
+            }
+          },
+          {
+            "node_id": "non_local_means_filter_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          },
+          {
+            "node_id": "otsu_threshold_2",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "otsu_threshold_3",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "otsu_threshold_4",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "remove_binary_outliers_2",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "remove_small_objects_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "rescale_intensity_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          },
+          {
+            "node_id": "rescale_intensity_2",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          },
+          {
+            "node_id": "save_output_1",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "save_output_2",
+            "output_port": 0,
+            "data_kind": "mask",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "opaque",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "bool": {}
+            }
+          },
+          {
+            "node_id": "subtract_background_1",
+            "output_port": 0,
+            "data_kind": "image",
+            "display_kind": "image",
+            "display_rgb": false,
+            "display_rgb_as_channels": false,
+            "display_ndim": 3,
+            "settings": {
+              "colormap": "gray",
+              "blending": "translucent",
+              "interpolation2d": "nearest",
+              "interpolation3d": "linear",
+              "projection_mode": "mean",
+              "rendering": "mip",
+              "depiction": "volume",
+              "visible": true,
+              "opacity": 1.0,
+              "gamma": 1.0,
+              "attenuation": 0.05
+            },
+            "intensity_settings": {
+              "uint8": {}
+            }
+          }
+        ]
+      },
+      "compute_optimizer": {
+        "locked_node_ids": []
+      }
+    }
+  }
+}

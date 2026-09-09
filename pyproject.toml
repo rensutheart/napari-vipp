@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-vipp"
-version = "0.15.0a2"
+version = "0.15.0a3"
 description = "Visual image processing made approachable"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -175,6 +175,7 @@ exclude = ["napari_vipp._tests*"]
 napari_vipp = [
     "napari.yaml",
     "assets/branding/*.svg",
+    "assets/branding/*.ico",
     "examples/*.json",
     "compute_policies/*.json",
 ]

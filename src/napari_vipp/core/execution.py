@@ -182,6 +182,7 @@ _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
         "dilate": "fixed:bool",
         "erode": "fixed:bool",
         "euclidean_distance_transform": "fixed:float32",
+        "find_label_boundaries": "fixed:bool",
         "h_maxima_markers": "fixed:int32",
         "hysteresis_threshold": "fixed:bool",
         "imagej_auto_threshold": "fixed:bool",

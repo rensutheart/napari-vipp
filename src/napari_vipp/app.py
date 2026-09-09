@@ -63,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--startup-token", help=argparse.SUPPRESS)
+    parser.add_argument("--desktop", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--smoke-exit-after-ready",
         action="store_true",
@@ -109,24 +110,37 @@ def run_application(
     reporter: StartupReporter,
     *,
     smoke_exit_after_ready: bool = False,
+    desktop: bool = False,
 ) -> int:
     """Load napari, build VIPP, report readiness, and enter the Qt event loop."""
     reporter.progress("loading_napari")
     import napari
 
     reporter.progress("creating_viewer")
-    viewer = napari.Viewer(title="VIPP")
+    viewer = napari.Viewer(title="VIPP", show=False)
 
     reporter.progress("loading_vipp")
     from napari_vipp._widget import VippWidget
 
     reporter.progress("building_interface")
     widget = _construct_vipp_widget(VippWidget, viewer, profile)
-    viewer.window.add_dock_widget(
+    dock = viewer.window.add_dock_widget(
         widget,
         area="bottom",
         name="VIPP Workflow",
     )
+    if desktop:
+        from qtpy.QtWidgets import QApplication
+
+        from napari_vipp.ui.desktop_branding import (
+            apply_desktop_branding,
+            set_desktop_process_identity,
+        )
+
+        # napari initializes its own app ID/icon during Viewer construction.
+        # Override only this installed desktop process, before it is shown.
+        set_desktop_process_identity()
+        apply_desktop_branding(QApplication.instance(), dock.window())
 
     reporter.progress("preparing_workflow")
     _configure_initial_workflow(widget)
@@ -137,6 +151,7 @@ def run_application(
 
     viewer.show(block=False)
     QApplication.processEvents()
+    widget._apply_initial_dock_size()
     reporter.ready("VIPP is ready")
     reporter.close()
 
@@ -169,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             profile,
             reporter,
             smoke_exit_after_ready=args.smoke_exit_after_ready,
+            desktop=args.desktop,
         )
     except KeyboardInterrupt:
         try:

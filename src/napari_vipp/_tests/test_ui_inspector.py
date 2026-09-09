@@ -10,6 +10,7 @@ from napari_vipp.ui.inspector import (
     BEHAVIOR_SECTION,
     COLOCALIZATION_SECTION,
     COMPUTE_SECTION,
+    FILTER_RESULT_SECTION,
     HISTOGRAMS_SECTION,
     HISTORY_SECTION,
     LABEL_DISTRIBUTION_SECTION,
@@ -242,6 +243,7 @@ def test_label_volume_filter_uses_object_volumes_not_label_id_histograms():
     assert profile.primary_sections == (
         PARAMETERS_SECTION,
         LABEL_DISTRIBUTION_SECTION,
+        FILTER_RESULT_SECTION,
     )
     assert HISTOGRAMS_SECTION not in profile.primary_sections
 
@@ -254,10 +256,12 @@ def test_remove_small_objects_prioritizes_input_sizes_for_masks_and_labels():
     assert label_profile.primary_sections == (
         PARAMETERS_SECTION,
         LABEL_DISTRIBUTION_SECTION,
+        FILTER_RESULT_SECTION,
     )
     assert mask_profile.primary_sections == (
         PARAMETERS_SECTION,
         LABEL_DISTRIBUTION_SECTION,
+        FILTER_RESULT_SECTION,
         MASK_SUMMARY_SECTION,
     )
     assert label_profile.distribution_kind == "object_sizes"
@@ -270,6 +274,7 @@ def test_label_property_filter_prioritizes_the_connected_table_distribution():
     assert profile.primary_sections == (
         PARAMETERS_SECTION,
         LABEL_DISTRIBUTION_SECTION,
+        FILTER_RESULT_SECTION,
     )
     assert profile.distribution_kind == "property_filter"
     assert profile.show_connected_inputs

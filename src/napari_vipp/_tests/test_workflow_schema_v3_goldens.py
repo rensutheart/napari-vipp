@@ -71,9 +71,6 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "34ada05bf06ba895a6e33fcba913fa7272f3c7ba9feb50809dbc95e967db20f8"
     ),
     "synthetic-mesh-objects.json": (
-        "54c844e7c9e280185c41b3c8c8475bd58fa9f98a4350e19d72346e07e871c5d6"
-    ),
-    "synthetic-mesh-refinement-tuned.json": (
         "5551e6579baa275a1b5281be67b60b4bcff0b6e2e2cebc15735820d142101479"
     ),
     "synthetic-object-colocalization-association.json": (
@@ -81,6 +78,9 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-skeleton-qc.json": (
         "4804cd14731db2d940997f26eb62fd2e5d6fddceaee1b4ddf373b7be7612fb47"
+    ),
+    "synthetic-separate-overlapping-objects.json": (
+        "81f3a1064e759cb6b885be316df6f76668601c4b0a7a27215319dd7311e6c4ec"
     ),
 }
 
@@ -202,8 +202,8 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
 @pytest.mark.parametrize(
     ("operation_id", "parameter", "value"),
     (
-        ("mask_to_3d_mesh", "object_mode", "Single object"),
-        ("color_mesh_objects", "color_by", "triangle_count"),
+        ("mask_to_3d_mesh", "object_mode", "Connected objects"),
+        ("color_mesh_objects", "color_by", "mesh_volume_physical"),
         ("filter_mesh_objects", "minimum", 11.0),
         ("smooth_mesh", "strength", 0.1),
         ("simplify_mesh", "target_percent", 60.0),

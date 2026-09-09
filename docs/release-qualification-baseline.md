@@ -1,6 +1,70 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-08
+Last reviewed: 2026-09-09
+
+## 0.15.0a3 candidate qualification declaration
+
+This unreleased alpha candidate covers the complete delta from public
+`v0.15.0a2`, including the earlier RL admission changes and the current
+batch/reproducibility work. This declaration is not a CI pass, an installer
+qualification record, or authorization to publish a tag or package.
+
+```yaml
+tier: alpha
+status: candidate_unreleased
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  source_reader_packaging: false
+  gpu_scientific_shared_execution: true
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: false
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_source_reader_corpus: v0.15.0a2
+  unchanged_dependency_payload: v0.15.0a2
+```
+
+- Batch manifest schema 6 adds sealed recovery snapshots, run lineage and
+  whole-item verified reuse. Workflow and batch-config schema numbers remain
+  6. Earlier manifests are historical records, not sufficient resume evidence;
+  new reproduction references also require a runtime that understands them.
+  [Resume checks](verified-batch-resume.md) cover source/output identity,
+  effective settings, runtime, sidecars, destination locking and fresh-process
+  restart. Partial-item, relocated and cross-version recovery remain excluded.
+- [Reproducibility packages](reproducibility-package.md) use the selected recipe
+  or archived run, require review, exclude input/result data, and distinguish
+  portable redacted evidence from original recovery receipts. Original-input
+  verification, explicit version acknowledgement, source relinking, Run handoff,
+  reopening and completed-run presentation require core and UI regressions.
+  Matching inputs or VIPP versions do not establish output equivalence.
+- Scientific/UI scope includes Find Label Boundaries, exact background object
+  filter counts, workflow-file drops, the authored overlapping-objects example,
+  and consolidation of the mesh example. Existing a2 example evidence retains
+  its historical two-example scope; the candidate's packaged example inventory
+  and executions need current checks.
+- Broader RL/RL-TV GPU execution is distinct from CPU-parity qualification.
+  Numerical-difference advisories are retained in execution provenance version
+  2. The RL sweep catalogue must match the changed admission contract;
+  regression verification must include its four previously failing cases.
+  Changed shared-execution/provenance paths require current-source GPU evidence
+  review; a2 evidence does not automatically qualify these changes or broaden
+  independently demonstrated parity regions.
+- Windows shortcut/icon assets, launcher identity, startup-window behavior and
+  macOS desktop launch configuration changed. Unchanged reader/dependency
+  evidence above does not qualify these launch paths. Installed Windows desktop
+  confirmation and affected native Apple Silicon/Intel checks remain pending,
+  with exact-main distributions and exact-tag installer integrity required
+  before any eventual publication.
+- On 2026-09-09 the user reported end-to-end acceptance item 3 complete. This is
+  a user attestation for the exercised workflow, not independently retained
+  output comparisons, biological validation or cross-machine reproducibility.
+- Exact-final-main CI, full application checks, candidate artifact identities,
+  changed-domain release evidence and companion-manual checks/publication remain
+  separately recorded gates. A local installation or strict manual build does
+  not establish that a3 is public or that the stable manual has moved.
 
 ## 0.15.0a2 qualification declaration
 

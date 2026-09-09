@@ -1030,7 +1030,11 @@ function Certificate($value) {
 """
     env = dict(os.environ)
     env["VIPP_SIGNATURE_TARGET"] = str(path.resolve())
-    system_root = Path(env.get("SystemRoot") or env.get("WINDIR") or r"C:\Windows")
+    # os.environ is case-insensitive on Windows, but its plain-dict copy is not.
+    windows_env = {key.upper(): value for key, value in env.items()}
+    system_root = Path(
+        windows_env.get("SYSTEMROOT") or windows_env.get("WINDIR") or r"C:\Windows"
+    )
     windows_powershell = (
         system_root / "System32" / "WindowsPowerShell" / "v1.0"
     )

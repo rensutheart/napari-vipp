@@ -13530,16 +13530,41 @@ def test_initial_bottom_dock_size_is_applied_once(qtbot):
     qtbot.addWidget(window)
     dock.setWidget(widget)
     window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
 
     widget._apply_initial_dock_size()
     first_height = dock.height()
     widget._initial_dock_size_applied = True
     dock.resize(dock.width(), 120)
+    resized_height = dock.height()  # Qt may clamp to the visible content minimum.
     widget._apply_initial_dock_size()
 
     assert widget._initial_dock_size_applied
     assert first_height >= 300
-    assert dock.height() == 120
+    assert dock.height() == resized_height
+    assert resized_height < first_height
+
+
+@pytest.mark.parametrize("height", [600, 900, 1200])
+def test_initial_bottom_dock_uses_two_thirds_but_keeps_viewer_space(qtbot, height):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    central = QWidget()
+    central.setMinimumHeight(100)
+    window.setCentralWidget(central)
+    dock = QDockWidget()
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.resize(1200, height)
+    widget._apply_initial_dock_size()
+    assert not widget._initial_dock_size_applied
+    window.show()
+    widget._apply_initial_dock_size()
+    QApplication.processEvents()
+    usable = dock.height() + central.height()
+    assert 0.60 <= dock.height() / usable <= 0.72
+    assert central.height() >= usable * 0.28
 
 
 @pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "wrapper"])
@@ -23216,7 +23241,7 @@ def test_toolbar_compute_summary_stays_with_execution_controls_until_narrow(qtbo
     assert widget.compute_status_label.isHidden()
 
 
-def test_toolbar_has_separators_only_after_save_and_preview(qtbot):
+def test_toolbar_separates_document_batch_display_and_execution_actions(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     layout = widget.command_toolbar_layout
@@ -23260,13 +23285,15 @@ def test_toolbar_has_separators_only_after_save_and_preview(qtbot):
         widget.load_workflow_button,
         widget.save_workflow_button,
     ]
-    assert workflow_buttons[-1] is widget.preview_menu_button
-    assert workflow_buttons.index(widget.batch_button) < workflow_buttons.index(
-        widget.preview_menu_button
-    )
+    assert workflow_buttons == [
+        widget.batch_button,
+        widget.leave_batch_button,
+        widget._toolbar_batch_separator,
+        widget.preview_menu_button,
+    ]
     assert widget.leave_batch_button.isHidden()
     separator_color = theme_colors(QWidget.palette(widget)).border.name()
-    for separator in separators:
+    for separator in [*separators, widget._toolbar_batch_separator]:
         assert separator.frameShape() == QFrame.VLine
         assert separator.frameShadow() == QFrame.Plain
         assert separator.lineWidth() == 1
@@ -23277,6 +23304,7 @@ def test_toolbar_has_separators_only_after_save_and_preview(qtbot):
     for width in (1400, 900, 640):
         _show_toolbar_at_width(widget, qtbot, width)
         assert not widget._toolbar_document_separator.isHidden()
+        assert not widget._toolbar_batch_separator.isHidden()
         assert not widget._toolbar_preview_separator.isHidden()
 
 
@@ -28958,7 +28986,8 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     assert dialog._preview_result is None
     assert dialog.results_panel.has_run_report
     assert not dialog.run_button.isEnabled()
-    assert dialog.next_button.text() == "View run report"
+    assert dialog.next_button.text() == "Export package…"
+    assert dialog.next_button.isEnabled()
 
     qtbot.mouseClick(dialog.close_button, Qt.LeftButton)
     assert dialog.isHidden()

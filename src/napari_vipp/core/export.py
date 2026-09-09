@@ -204,6 +204,7 @@ from napari_vipp.core.batch import (
     load_batch_config,
     run_batch,
 )
+from napari_vipp.core.batch_resume import run_batch_resume_from_manifest
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.compute_history import default_pipeline_timing_history_path
 from napari_vipp.core.workflow import deserialize_workflow
@@ -310,8 +311,13 @@ def main(argv=None):
     )
     parser.add_argument(
         "--config",
-        default=str(script_dir / "vipp_batch_config.json"),
+        default=None,
         help="Saved VIPP batch config JSON (default: sibling config artifact).",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="MANIFEST",
+        help="Verify and continue the exact workflow/settings in a saved run manifest.",
     )
     parser.add_argument(
         "--compute-mode",
@@ -337,14 +343,26 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
-        (
-            config_path,
-            config,
-            workflow_path,
-            workflow,
-            restored,
-        ) = _load_run_inputs(args)
-        compute_request = _compute_override(args, config, restored)
+        if args.resume:
+            if (
+                args.workflow or args.config or args.compute_mode
+                or args.fallback_policy or args.node_preference
+            ):
+                raise ValueError(
+                    "--resume uses the saved run's exact settings; do not combine "
+                    "it with config, workflow or compute overrides."
+                )
+        else:
+            if args.config is None:
+                args.config = str(script_dir / "vipp_batch_config.json")
+            (
+                config_path,
+                config,
+                workflow_path,
+                workflow,
+                restored,
+            ) = _load_run_inputs(args)
+            compute_request = _compute_override(args, config, restored)
     except (OSError, TypeError, ValueError) as exc:
         parser.error(str(exc))
 
@@ -362,19 +380,25 @@ def main(argv=None):
 
     signal.signal(signal.SIGINT, request_cancel)
     try:
-        result = run_batch(
-            workflow,
-            config,
-            workflow_path=workflow_path,
-            config_path=config_path,
-            compute_request=compute_request,
-            cancel_event=cancel_event,
-            progress_callback=_progress if args.progress else None,
-            execution_progress_callback=(
+        run_options = {
+            "cancel_event": cancel_event,
+            "progress_callback": _progress if args.progress else None,
+            "execution_progress_callback": (
                 _execution_progress if args.progress else None
             ),
-            performance_history_path=default_pipeline_timing_history_path(),
-        )
+            "performance_history_path": default_pipeline_timing_history_path(),
+        }
+        if args.resume:
+            result = run_batch_resume_from_manifest(args.resume, **run_options)
+        else:
+            result = run_batch(
+                workflow,
+                config,
+                workflow_path=workflow_path,
+                config_path=config_path,
+                compute_request=compute_request,
+                **run_options,
+            )
     except Exception as exc:
         print(f"Batch failed before or during execution: {exc}", file=sys.stderr)
         return 2

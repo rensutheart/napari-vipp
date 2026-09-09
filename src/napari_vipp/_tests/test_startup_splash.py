@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from qtpy.QtCore import QPoint, Qt
+
 from napari_vipp.startup import LaunchProfile, StartupPhase, StartupSnapshot
 from napari_vipp.ui.startup_splash import StartupSplash
 
@@ -71,3 +73,35 @@ def test_splash_elapsed_time_and_real_milestone_progress(qtbot, tmp_path):
     assert splash.elapsed_label.text() == "Elapsed 1:02:03"
     assert splash.stage_label.text() == "Step 2 of 6"
     assert splash.progress_bar.value() == 33
+
+
+def test_splash_is_movable_minimizable_and_does_not_reposition_or_restore(
+    qtbot, tmp_path
+):
+    splash = StartupSplash(profile="auto", version="test", log_path=tmp_path / "log")
+    qtbot.addWidget(splash)
+    assert splash.windowType() == Qt.Window
+    assert not splash.windowFlags() & Qt.WindowStaysOnTopHint
+    assert splash.windowFlags() & Qt.WindowTitleHint
+    assert splash.windowFlags() & Qt.WindowMinimizeButtonHint
+    splash.show()
+    splash.move(splash.pos() + QPoint(30, 30))
+    position = splash.pos()
+    splash.showMinimized()
+    splash.update_snapshot(_snapshot(StartupPhase.STARTING))
+    assert splash.isMinimized()
+    splash.showNormal()
+    assert splash.pos() == position
+    splash.hide()
+    splash.show()
+    assert splash.pos() == position
+
+
+def test_splash_titlebar_close_requests_hide_not_startup_cancellation(qtbot, tmp_path):
+    splash = StartupSplash(profile="auto", version="test", log_path=tmp_path / "log")
+    qtbot.addWidget(splash)
+    splash.show()
+    with qtbot.waitSignal(splash.hide_requested):
+        assert not splash.close()
+    splash.permit_close()
+    assert splash.close()

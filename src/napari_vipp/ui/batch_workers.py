@@ -20,6 +20,7 @@ from napari_vipp.core.batch import (
     atomic_write_text,
     bind_batch_plan_source_items,
     preflight_batch,
+    require_reproduction_ready,
     run_batch,
     save_batch_config,
     validate_batch_config,
@@ -182,6 +183,16 @@ class CollectionBatchRunRequest:
     preflight_plan: BatchPlan | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CollectionBatchResumeRequest:
+    """Only a checkpoint path crosses Qt; the worker verifies its saved intent."""
+
+    job_id: int
+    origin_session_id: str
+    manifest_path: Path
+    performance_history_path: Path | None = None
+
+
 def prepare_collection_batch_run(
     request,
     *,
@@ -232,6 +243,7 @@ def prepare_collection_batch_run(
         plan = replace(plan, config=config)
         if progress_callback is not None:
             progress_callback(BatchPreflightProgress("handoff"))
+    require_reproduction_ready(plan)
     if request.expected_items is not None and plan.items != request.expected_items:
         raise RuntimeError(
             "The batch plan changed during run startup. No batch item was "
@@ -311,7 +323,10 @@ class CollectionBatchWorker(QRunnable):
 
     def __init__(
         self,
-        prepared: PreparedCollectionBatchRun | CollectionBatchRunRequest,
+        prepared: (
+            PreparedCollectionBatchRun | CollectionBatchRunRequest
+            | CollectionBatchResumeRequest
+        ),
     ) -> None:
         super().__init__()
         self.prepared = prepared
@@ -362,6 +377,23 @@ class CollectionBatchWorker(QRunnable):
                 )
 
         try:
+            if isinstance(prepared, CollectionBatchResumeRequest):
+                from napari_vipp.core.batch_resume import run_batch_resume_from_manifest
+
+                result = run_batch_resume_from_manifest(
+                    prepared.manifest_path,
+                    cancel_event=self._cancel_event,
+                    progress_callback=emit_progress,
+                    execution_progress_callback=emit_operation_progress,
+                    preparation_progress_callback=emit_preparation_progress,
+                    performance_history_path=prepared.performance_history_path,
+                )
+                self.signals.finished.emit(
+                    CollectionBatchWorkerOutcome(
+                        prepared.job_id, prepared.origin_session_id, result=result,
+                    )
+                )
+                return
             if isinstance(prepared, CollectionBatchRunRequest):
                 prepared = prepare_collection_batch_run(
                     prepared,

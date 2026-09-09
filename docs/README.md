@@ -25,6 +25,7 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Windows setup packaging](../packaging/windows/README.md)
 - [macOS PKG packaging](../packaging/macos/README.md)
 - [Full-batch cancellation verification](full-batch-cancellation-verification.md)
+- [Verified batch resume contract](verified-batch-resume.md)
 - [Public data corpus](public-data-corpus.md)
 - [Source-aware loading qualification](source-aware-loading-0.14.0a1.md)
 - [Analytical phantom validation](analytical-phantom-validation.md)
@@ -72,6 +73,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not
 override the current planning documents above.
+
+- [Reproducibility-package export](reproducibility-package.md): portable recipes,
+  archived run evidence, privacy review, readable reports and explicit limits.
 
 - [OME import and export](ome-io-plan.md)
 - [PSF and deconvolution](psf-and-deconvolution-plan.md)

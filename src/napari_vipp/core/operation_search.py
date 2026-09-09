@@ -51,6 +51,9 @@ OPERATION_SEARCH_ALIASES = MappingProxyType(
         "remove_small_objects": ("small object removal", "remove specks"),
         "remove_binary_outliers": ("outlier removal",),
         "clear_border_objects": ("remove border objects", "clear border"),
+        "find_label_boundaries": (
+            "label outlines", "object outlines", "boundary mask", "contours",
+        ),
         "skeletonize": ("skeletonization", "thinning"),
         "label_connected_components": (
             "connected component labeling",

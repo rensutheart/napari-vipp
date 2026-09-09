@@ -77,7 +77,8 @@ _SHORTCUT_SCRIPT = r"""param(
     [Parameter(Mandatory=$true)][string]$Destination,
     [Parameter(Mandatory=$true)][string]$Target,
     [Parameter(Mandatory=$true)][string]$WorkingDirectory,
-    [Parameter(Mandatory=$true)][string]$Description
+    [Parameter(Mandatory=$true)][string]$Description,
+    [Parameter(Mandatory=$true)][string]$IconPath
 )
 $ErrorActionPreference = "Stop"
 $shell = New-Object -ComObject WScript.Shell
@@ -85,6 +86,8 @@ $shortcut = $shell.CreateShortcut($Destination)
 $shortcut.TargetPath = $Target
 $shortcut.WorkingDirectory = $WorkingDirectory
 $shortcut.Description = $Description
+$shortcut.Arguments = "--desktop"
+$shortcut.IconLocation = "$IconPath,0"
 $shortcut.Save()
 if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
     throw "Windows did not create the requested VIPP shortcut."
@@ -1906,6 +1909,14 @@ class ManagedInstallerEngine:
                         f"The launcher for shortcut {shortcut.label!r} is missing: "
                         f"{target}"
                     )
+                icon = environment_root / (
+                    "Lib/site-packages/napari_vipp/assets/branding/vipp-mark.ico"
+                )
+                _assert_direct_path(icon, "VIPP shortcut icon")
+                if not icon.is_file():
+                    raise InstallerEngineError(
+                        f"The VIPP shortcut icon is missing: {icon}"
+                    )
                 self._run_checked(
                     (
                         "powershell.exe",
@@ -1924,6 +1935,8 @@ class ManagedInstallerEngine:
                         str(working_directory),
                         "-Description",
                         "Open VIPP",
+                        "-IconPath",
+                        str(icon),
                     ),
                     log=log,
                     cancellation=cancellation,

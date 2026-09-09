@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+## 0.15.0a3 - Unreleased
+
+Target: **0.15.0a3 candidate**. These changes are not yet a published release;
+qualification and local installed-application confirmation remain separate.
+
+- Compact the Batch reproduction banner by placing its actions to the right of the status text, without a separate full-width button row.
+
+- Show **Run complete · Original inputs verified** in green after a fully successful reproduction with matching VIPP versions. The banner describes the completed run, not permission for another: a new run still needs **Check batch**, and changing folders or settings clears the completed-run badge. Cancelled, partial, failed, or version-exception runs do not receive the green completion state.
+
+- Preserve the latest original-input verification result when handing a reproduction batch from Run preflight to its worker. Verified original files no longer fail as "not checked" at startup, including after correcting a previously mismatched input folder. Execution still rechecks current inputs before processing and publication.
+
+- Open a local workflow JSON dragged onto VIPP's workflow canvas, tab strip, or inspector in a new tab, preserving existing workflows and unsaved edits. Dropped files use the same validation and recorded-run reproduction choice as **Open**.
+
+- Make Batch **Check details…** a compact result view with input-check totals, relevant issues and explicit VIPP version status. Its review button opens all inputs, affected inputs or Setup as appropriate; navigation never rechecks files, approves a version exception or starts a run.
+
+- Preserve authored Image Source parameters when showing the inspector. Opening a portable recorded workflow on Windows no longer changes path separators and falsely rejects its attached Batch Setup as a different workflow.
+
+- Clarify the reproducibility opening dialog with grouped choices, a separate VIPP version status and **Continue to batch setup**. Show release/setup links only where version help is needed; links open web pages without downloading or installing software. Keep explicit version acknowledgement and original-input checks unchanged.
+
+- Add an explicit **Reproduce original run / Use workflow on new data** choice when opening recorded reproducibility workflows. Reproduction checks compare input contents and image selections, show per-item findings and aggregate mismatch counts, and prevent running with unverified inputs. Different VIPP versions need an explicit, recorded acknowledgement; reusing the workflow on new data removes the original comparison requirement. Input data are still shared separately.
+
+- Add **Export reproducibility package…** for the current workflow recipe or a recorded batch run. Review an offline human-readable report, exact file contents and sharing omissions before saving a ZIP. Packages contain portable workflow/settings, a Python runner, software records and redacted run evidence, never raw images, result files or thumbnails. Local folders are hidden and filenames can be anonymised. Batch reports use the archived run snapshot; redacted evidence is explicitly not resumable and does not guarantee identical results on another machine.
+
+- Make package repeat instructions VIPP-first: open the linked `workflow.json`, restore portable Batch Setup, choose input folders and a new output folder, then Check and Run. Include official recorded-version release/setup guidance with an explicit development-build caveat; no installer or locked environment is bundled. Keep Python runners as an advanced alternative and omit empty outcome-message markers.
+
+- Keep explanatory workflow notes in reproducibility packages, with the same folder hiding and optional filename anonymisation. Explain exclusions and sharing checks in plain language. Images, intermediate results, output data and previews remain excluded; review the retained notes for sensitive text before sharing.
+
+- Simplify Batch **Run & results** to one toolbar row for **Resume saved run…**, **Output folder**, and **Refresh file status**. Move **Export reproducibility package…** into the run report card in place of **Find manifest JSON**, with a concise contents/exclusions explanation. After a finished run, the results footer offers **Export package…** to open the same review; **Items & outputs** and **Overrides** retain **View run report**, and **Setup** keeps **Check batch** for a new run. No entry point exports without review.
+
+- Add **Find Label Boundaries** to Label Operations for QC overlays and saveable Boolean boundary masks from labels or Boolean masks. Choose inside objects (default), outside objects, or both sides, with explicit 2D/3D processing and Face/Full connectivity. It preserves the image grid, calibration and upstream labels, processes time/channel blocks independently on CPU, and does not invent background beyond the image edge. Outside placement also marks touching-label interfaces; boundary masks do not retain object IDs or create meshes.
+
+- Add a compact **Filter result** inspector section, after the input/object histogram, showing exact input, kept and removed object counts for Remove Small Objects, Clear Border Objects, Filter Labels by Volume and Filter Labels by Property. Counts use the current calculated input/output, respect processing blocks and mask connectivity, and run in a cached background diagnostic. Stale, bypassed and uncached results do not display misleading counts; no segmentation settings or pixels are changed.
+
+- Add **Resume saved run…** to Batch workflow and `--resume MANIFEST` to newly exported batch runners. Continue the saved workflow/settings without altering the open graph, reusing only whole completed items with verified input/output contents, effective parameters, runtime and checkpoint evidence. Schema 6 manifests preserve run lineage and distinguish verified reuse from new writes. Older or incompatible evidence and unverified existing outputs are refused; Skip existing remains separate. Normal and resumed runs share a crash-released destination lock.
+
+- Use VIPP icons for installed Windows shortcuts and the installed desktop application's running window/taskbar (macOS keeps its branded app bundle). Plugin/manual launches retain napari branding. Make the startup window movable, minimizable and non-topmost, preserving its position when restored. Initially allocate about two-thirds of the available height to the workflow dock, leaving room for napari and allowing normal resizing afterward.
+
+- Add **Separate Overlapping Objects** under **Segmentation & Labels**: an annotated, authored workflow combining intensity segmentation, XOR/OR mask reconstruction and two separately measured, coloured meshes. Preserve its parameters and layout; disabled Save Image nodes keep calculation free of output files.
+
+- Separate **Batch workflow** and **Display settings** with a matching vertical toolbar divider, including compact layouts.
+
+- Keep one **Mesh Objects, Colours & Refinement** example, using the saved interactive workflow unchanged. Remove the duplicate example and its generator while preserving the authored parameters, layout and inspector settings.
+
 ### Broader Richardson-Lucy GPU execution
 
 - Allow ordinary Richardson-Lucy GPU execution for 1–500 iterations and filter

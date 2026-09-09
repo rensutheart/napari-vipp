@@ -27,10 +27,7 @@ def test_packaged_commands_expose_console_and_clickable_profile_launchers():
         project = tomllib.load(stream)["project"]
 
     assert project["scripts"]["vipp"] == "napari_vipp.__main__:main"
-    assert (
-        project["scripts"]["vipp-install-plan"]
-        == "napari_vipp.installer.cli:main"
-    )
+    assert project["scripts"]["vipp-install-plan"] == "napari_vipp.installer.cli:main"
     assert project["gui-scripts"] == {
         "vipp-app": "napari_vipp.launcher:main_auto",
         "vipp-cpu": "napari_vipp.launcher:main_cpu",
@@ -140,6 +137,67 @@ def test_child_command_is_shell_free_and_preserves_space_containing_paths(tmp_pa
         channel.token,
     ]
     channel.cleanup()
+
+
+@pytest.mark.parametrize("desktop", [False, True])
+def test_desktop_flag_reaches_child_and_no_splash_launch(
+    tmp_path, monkeypatch, desktop
+):
+    channel = StartupChannel.create(parent=tmp_path)
+    try:
+        command = build_child_command(
+            executable="python", profile="cpu", channel=channel, desktop=desktop
+        )
+        assert app.build_parser().parse_args(command[3:]).desktop is desktop
+    finally:
+        channel.cleanup()
+    calls = []
+    monkeypatch.setattr(app, "main", lambda argv: calls.append(argv) or 0)
+    assert launcher.main(["--no-splash", *(["--desktop"] if desktop else [])]) == 0
+    assert app.build_parser().parse_args(calls[0]).desktop is desktop
+
+
+@pytest.mark.parametrize("desktop", [False, True])
+def test_application_brands_only_explicit_desktop_launch(qtbot, monkeypatch, desktop):
+    import napari
+
+    from napari_vipp.ui import desktop_branding
+
+    viewer_calls = []
+    branding_calls = []
+    dock_window = object()
+    viewer = SimpleNamespace(
+        window=SimpleNamespace(
+            add_dock_widget=lambda *_args, **_kwargs: SimpleNamespace(
+                window=lambda: dock_window
+            )
+        ),
+        show=lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        napari, "Viewer", lambda **kwargs: viewer_calls.append(kwargs) or viewer
+    )
+    monkeypatch.setattr(napari, "run", lambda: None)
+    monkeypatch.setattr("napari_vipp._widget.VippWidget", _FakeVippWidget)
+    monkeypatch.setattr(
+        _FakeVippWidget, "_apply_initial_dock_size", lambda _self: None, raising=False
+    )
+    monkeypatch.setattr(
+        desktop_branding,
+        "set_desktop_process_identity",
+        lambda: branding_calls.append("identity"),
+    )
+    monkeypatch.setattr(
+        desktop_branding,
+        "apply_desktop_branding",
+        lambda application, window: branding_calls.append(window),
+    )
+    assert (
+        app.run_application(LaunchProfile.CPU, app._ConsoleReporter(), desktop=desktop)
+        == 0
+    )
+    assert viewer_calls == [{"title": "VIPP", "show": False}]
+    assert branding_calls == (["identity", dock_window] if desktop else [])
 
 
 class _FakeNode:

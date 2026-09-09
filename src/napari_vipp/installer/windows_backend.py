@@ -446,7 +446,7 @@ class WindowsInstallerBackend:
             launcher=launcher,
         )
         subprocess.Popen(
-            (str(launcher),),
+            (str(launcher), "--desktop"),
             cwd=str(working_directory),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

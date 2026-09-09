@@ -1090,8 +1090,8 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     assert "vipp_batch_manifest.json" in dialog.run_result_label.text()
     assert "Ground truth passed" in dialog.run_result_label.text()
     assert not dialog.run_button.isEnabled()
-    assert dialog.next_button.text() == "View run report"
-    assert dialog.next_button.isEnabled()
+    assert dialog.next_button.text() == "Export package…"
+    assert not dialog.next_button.isEnabled()  # This stub has no saved manifest.
     assert dialog.preview_button.isEnabled()
     assert dialog.source_group.isEnabled()
     assert not dialog.preview_item_button.isEnabled()

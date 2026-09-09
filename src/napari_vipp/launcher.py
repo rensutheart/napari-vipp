@@ -39,10 +39,11 @@ def build_child_command(
     executable: str | os.PathLike[str],
     profile: LaunchProfile | str,
     channel: StartupChannel,
+    desktop: bool = False,
 ) -> list[str]:
     """Build a shell-free command that remains correct for paths with spaces."""
     parsed_profile = LaunchProfile.parse(profile)
-    return [
+    command = [
         os.fspath(executable),
         "-m",
         "napari_vipp.app",
@@ -53,6 +54,9 @@ def build_child_command(
         "--startup-token",
         channel.token,
     ]
+    if desktop:
+        command.append("--desktop")
+    return command
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=tuple(profile.value for profile in LaunchProfile),
         default=LaunchProfile.AUTO.value,
         help="Initial compute profile for this session (default: auto).",
+    )
+    parser.add_argument(
+        "--desktop",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-splash",
@@ -102,6 +111,7 @@ class LauncherController:
         executable: str | os.PathLike[str] | None = None,
         process_factory: Any = subprocess.Popen,
         schedule: Any = None,
+        desktop: bool = False,
     ) -> None:
         self.application = application
         self.splash = splash
@@ -112,6 +122,7 @@ class LauncherController:
         self.executable = sys.executable if executable is None else executable
         self.process_factory = process_factory
         self.schedule = schedule
+        self.desktop = desktop
         self.reader = StatusReader(channel.path, channel.token)
         self.machine = StartupStateMachine(timeout_seconds=timeout_seconds)
         self.process: subprocess.Popen[bytes] | None = None
@@ -132,6 +143,7 @@ class LauncherController:
             executable=self.executable,
             profile=self.profile,
             channel=self.channel,
+            desktop=self.desktop,
         )
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -237,6 +249,7 @@ def run_splash(
     profile: LaunchProfile,
     *,
     timeout_seconds: float,
+    desktop: bool = False,
 ) -> int:
     """Create the lightweight Qt splash and monitor the full child app."""
     from qtpy.QtCore import QTimer
@@ -249,6 +262,10 @@ def run_splash(
     if existing_application is None:
         application.setApplicationName("VIPP")
         application.setOrganizationName("VIPP")
+        if desktop:
+            from napari_vipp.ui.desktop_branding import set_desktop_process_identity
+
+            set_desktop_process_identity()
 
     channel = StartupChannel.create()
     try:
@@ -258,6 +275,10 @@ def run_splash(
             version=installed_version(),
             log_path=log_path,
         )
+        if desktop and existing_application is None:
+            from napari_vipp.ui.desktop_branding import apply_desktop_branding
+
+            apply_desktop_branding(application, splash)
         timer = QTimer(application)
         controller = LauncherController(
             application=application,
@@ -267,6 +288,7 @@ def run_splash(
             channel=channel,
             log_path=log_path,
             timeout_seconds=timeout_seconds,
+            desktop=desktop,
         )
         # Keep a strong reference for the full event-loop lifetime.
         application._vipp_launcher_controller = controller
@@ -289,9 +311,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_splash:
         from napari_vipp.app import main as app_main
 
-        return app_main(["--profile", profile.value])
+        return app_main(
+            ["--profile", profile.value, *(["--desktop"] if args.desktop else [])]
+        )
     try:
-        return run_splash(profile, timeout_seconds=args.timeout)
+        return run_splash(profile, timeout_seconds=args.timeout, desktop=args.desktop)
     except ImportError as exc:
         if sys.stderr is not None:
             print(

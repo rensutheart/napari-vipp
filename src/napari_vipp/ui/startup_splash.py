@@ -62,12 +62,22 @@ class StartupSplash(QWidget):
         self.profile_spec = PROFILE_SPECS[self.profile]
         self.log_path = Path(log_path)
         self._allow_close = False
+        self._positioned = False
         self._build_ui(version)
 
     def _build_ui(self, version: str) -> None:
         self.setObjectName("VippStandaloneSplash")
         self.setWindowTitle("Starting VIPP")
-        self.setWindowFlags(Qt.SplashScreen | Qt.WindowStaysOnTopHint)
+        # A normal window can be moved, minimized and covered by other apps.
+        # Qt.SplashScreen itself can imply special stacking on some platforms.
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.CustomizeWindowHint
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowCloseButtonHint
+        )
         self.setFixedSize(640, 390)
         accent = self.profile_spec.accent
         self.setStyleSheet(
@@ -243,11 +253,14 @@ class StartupSplash(QWidget):
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
+        if self._positioned:
+            return
         screen = QApplication.primaryScreen()
         if screen is not None:
             frame = self.frameGeometry()
             frame.moveCenter(screen.availableGeometry().center())
             self.move(frame.topLeft())
+            self._positioned = True
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._allow_close:

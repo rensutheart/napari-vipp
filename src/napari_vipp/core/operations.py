@@ -32,6 +32,9 @@ from napari_vipp.core.connected_components import (
 )
 from napari_vipp.core.convex_hull import convex_hull_block
 from napari_vipp.core.io import write_image
+from napari_vipp.core.label_boundaries import (
+    find_label_boundaries as find_label_boundaries,
+)
 from napari_vipp.core.progress import ProgressContext
 from napari_vipp.core.remove_outliers import (
     imagej_remove_outliers_footprint as imagej_remove_outliers_footprint,

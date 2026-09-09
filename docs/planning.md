@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-07
+Last reviewed: 2026-09-09
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -42,20 +42,21 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.15.0a2` is the current release candidate; `0.15.0a1` remains the published
-baseline until the candidate passes its changed-domain gates. The a1 official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a1),
+`0.15.0a3` is the current unreleased candidate; `0.15.0a2` remains the published
+baseline until the candidate passes its changed-domain gates. The a2 official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a2),
 checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.15.0a1/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.15.0a1/) and
+[PyPI package](https://pypi.org/project/napari-vipp/0.15.0a2/), and
+[numbered](https://rensutheart.github.io/vipp-mkdocs/0.15.0a2/) and
 [stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-the release surfaces. This alpha changes core/UI, batch configuration, shared
-execution, and scientific/GPU measurement domains. Affected evidence and
-unchanged installer-lifecycle carry-forward boundaries are recorded in the
+the release surfaces. The a3 candidate changes batch recovery, portable
+reproduction, core/UI, shared execution, RL GPU admission and desktop launch
+presentation. Affected evidence and bounded carry-forward rules are recorded in the
 [qualification baseline](release-qualification-baseline.md); a version change
 alone does not qualify or invalidate a domain. The current line provides:
 
-- SourceItem v1 through workflow schema 6, batch config 6, and manifest schema 5,
+- SourceItem v1 through workflow schema 6, batch config 6, and manifest schema 6
+  in the candidate (schema 5 in a2),
   with stable selected-item identity, reader evidence, source revision, axes,
   metadata, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
@@ -103,12 +104,21 @@ Important remaining limits are:
 ## Active Release Order
 
 The released `0.15.0a1` consolidates the batch, inspector, measurement, and
-workflow-interface overhaul. The `0.15.0a2` candidate adds batteries-included
+workflow-interface overhaul. The released `0.15.0a2` adds batteries-included
 readers, quiet update discovery, clearer display/search/inspector controls,
 threshold ranges, explicit intensity inversion, convex hulls and object-aware
-3D mesh workflows; see the [release notes](../release-notes.md). Qualification
+3D mesh workflows. The `0.15.0a3` candidate adds verified batch resume, reviewed
+reproducibility packages and original-input checks, label boundaries and filter
+diagnostics, broader RL GPU execution with advisories, and desktop/workflow
+presentation fixes; see the [release notes](../release-notes.md). Qualification
 and publication follow the [release runbook](release-runbook.md), with the
-complete a1-to-a2 delta declared in the [qualification baseline](release-qualification-baseline.md).
+complete a2-to-a3 delta declared in the [qualification baseline](release-qualification-baseline.md).
+
+The user reports the end-to-end acceptance item 3 complete on 2026-09-09.
+This is user acceptance of the exercised workflow, not independently captured
+output-equivalence or cross-machine validation. Exact-final-main CI, the RL
+catalogue correction and its regression checks, installed desktop launch review,
+and affected native-architecture checks remain separate release gates.
 
 The next planned feature series is **0.16: registration, image comparison,
 and template matching**. See the [release scope below](#planned-016-registration-image-comparison-and-template-matching)
@@ -117,9 +127,9 @@ This records intent, not completed implementation, a version bump, or a release
 date. Existing correctness and qualification gates remain mandatory. The
 implementation records below retain their original 0.14 and 0.13 versions.
 
-### Current 0.15 follow-up: 3D surface output
+### Delivered in 0.15.0a2: 3D surface output
 
-The implemented, unreleased **3D Meshes** category includes mask/label surface
+The **3D Meshes** category includes mask/label surface
 creation, object IDs and measurement colours, combine/split/filter controls,
 explicit smoothing/simplification, and calibrated OBJ/3MF publication through
 the inspector, batch and generated Python. **Measure 3D Mesh Morphology**
@@ -129,15 +139,16 @@ See the [implementation contract](object-mesh-morphology-plan.md#object-aware-me
 Geometric union, external measurement-table colouring, repair and print
 qualification remain separate future work; input geometry is never changed.
 
-### Current 0.15 follow-up: batteries-included file readers
+### Delivered in 0.15.0a2: batteries-included file readers
 
 - [x] Include native CZI, Leica, ND2/legacy codecs and Olympus readers in base
   plugin dependencies and the managed desktop recipes.
 - [x] Put collapsed reader checks and missing-reader setup in Image Source,
   with explicit package review and close-before-install handling.
-- [ ] Complete native macOS clean-plugin and installed-PKG qualification on
-  Apple Silicon and Intel before publishing this change. CI gates are wired;
-  local Windows results are not a substitute for those runs.
+- [x] Record native installed-PKG qualification on Apple Silicon and Intel for
+  a2, including pinned reader pixels/metadata, mesh export and startup; see the
+  [a2 evidence](release-qualification-baseline.md#refreshed-behavioral-evidence).
+  This does not qualify a3's changed desktop launch and installer presentation.
 
 The [reader implementation and qualification record](update-and-reader-plan.md)
 defines the exact packages, optional Bio-Formats boundary and safety limits.
@@ -995,13 +1006,17 @@ exact scientific region reads.
 
 #### Reproducibility, Resume, And Validation Packs
 
-- Export a reviewed reproducibility package containing workflow, batch config,
-  generated runner, environment, source-item summaries, manifests, checkpoints,
-  implementation provenance, output digests, and explicit omissions without
-  silently embedding restricted raw data.
-- Turn checkpoints into verified automatic resume: validate schemas, workflow,
-  effective per-item intent, source identities, destinations, and prior
-  checkpoint integrity before preserving completed work.
+- Implemented first version, unreleased after 0.15.0a2:
+  [reviewed reproducibility-package export](reproducibility-package.md) combines
+  a readable report, portable workflow/batch settings, shared-executor runner,
+  software records and redacted evidence views. Source images and result files
+  are excluded; sharing review is required. Refinement of report wording and
+  presentation remains open to user feedback. This is not environment recreation
+  or a cross-machine batch-resume mechanism.
+- Implemented, unreleased after 0.15.0a2: [verified interrupted-batch resume](verified-batch-resume.md)
+  checks schemas, effective per-item intent, exact input/output contents,
+  software/runtime and destinations before reusing whole completed items.
+  Partial-item recovery, relocated runs and cross-version resume remain deferred.
 - Maintain compatibility goldens for released workflow, batch, manifest,
   provenance, and generated-runner schemas.
 - Continue publication-grade validation packs for watershed, colocalization,

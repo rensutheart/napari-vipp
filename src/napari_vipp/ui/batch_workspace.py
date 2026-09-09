@@ -65,6 +65,8 @@ from napari_vipp.ui.batch_output_policy import (
     with_output_policy_config,
 )
 from napari_vipp.ui.batch_override_presentation import BatchOverridePresentation
+from napari_vipp.ui.batch_reproduction import BatchReproductionPresentation
+from napari_vipp.ui.batch_resume import BatchResumeActions
 from napari_vipp.ui.batch_setup import BatchSetupPresentation
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
 from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
@@ -124,7 +126,9 @@ class BatchWorkflowTabBar(QTabBar):
 
 
 class BatchWorkflowWorkspace(
-    BatchSetupPresentation, BatchCheckProgressPresentation, BatchOverridePresentation
+    BatchSetupPresentation, BatchCheckProgressPresentation, BatchOverridePresentation,
+    BatchResumeActions,
+    BatchReproductionPresentation,
 ):
     """UI mixin; all processing remains in CollectionBatchDialog/controller."""
 
@@ -170,6 +174,8 @@ class BatchWorkflowWorkspace(
         self.more_menu = QMenu(self.more_button)
         self.demo_action = self.more_menu.addAction("Load demo configuration…")
         self.demo_action.triggered.connect(self.demo_config_button.click)
+        self.resume_action = self.more_menu.addAction("Resume saved run…")
+        self.resume_action.triggered.connect(self._request_resume)
         self.more_button.setMenu(self.more_menu)
         toolbar.addWidget(self.more_button)
         self.more_menu.aboutToShow.connect(
@@ -352,12 +358,14 @@ class BatchWorkflowWorkspace(
         self.run_recap_label.setObjectName("BatchRunRecap")
         run.addWidget(self.run_recap_label)
         self.results_panel = BatchResultsPanel()
+        self.results_panel.resumeRequested.connect(self._request_resume)
         self.results_panel.policyChanged.connect(self._choose_existing_file_policy)
         self.results_panel.existing_files_controls.resetItemsRequested.connect(
             self._reset_item_file_policies
         )
         self.results_panel.itemRequested.connect(self._review_result_item)
         self.results_panel.checkBatchRequested.connect(self._check_batch)
+        self.results_panel.packageAvailabilityChanged.connect(self._sync_workspace)
         run.addWidget(self.results_panel, 1)
         # Preserve public progress controls for the host and older integrations.
         # The panel's copies are the one visible source of detailed progress.
@@ -443,6 +451,8 @@ class BatchWorkflowWorkspace(
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
         layout.addWidget(self.config_row)
+        self._build_reproduction_banner()
+        layout.addWidget(self.reproduction_banner)
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self.footer)
         for button in self.findChildren(QPushButton):
@@ -565,6 +575,7 @@ class BatchWorkflowWorkspace(
     def _apply_workspace_theme(self) -> None:
         if not getattr(self, "_workspace_ready", False):
             return
+        self._sync_reproduction_banner()
         colors = custom_paint_colors(self.palette())
         tones = theme_colors(self.palette())
         apply_batch_table_style(
@@ -639,7 +650,9 @@ class BatchWorkflowWorkspace(
 
     def _update_next_button_icon(self) -> None:
         kind = (
-            "activity"
+            "archive"
+            if self.next_button.text() == "Export package…"
+            else "activity"
             if self.next_button.text() == "View run report"
             else "checklist"
             if self._preview_result is None
@@ -690,6 +703,9 @@ class BatchWorkflowWorkspace(
         display = self._display_plan
         busy = self._run_in_progress or self._checking_plan
         valid = plan is not None and bool(plan.items)
+        reproduction_reason = self._reproduction_block_reason()
+        reproduction_check = self._reproduction_check()
+        self._sync_reproduction_banner()
         parameter_error = self.parameter_override_editor.error_message
         can_check = (
             self._actions is not None
@@ -702,6 +718,7 @@ class BatchWorkflowWorkspace(
         report_available = (
             self.results_panel.has_run_report and not valid and section != 0
         )
+        export_action = report_available and section == 3
         if section == 1 and getattr(self, "_item_reveal_pending", False):
             self._item_reveal_pending = False
             self._review_result_item(self._current_item)
@@ -755,6 +772,8 @@ class BatchWorkflowWorkspace(
         self.next_button.setText(
             "Checking…"
             if self._checking_plan
+            else "Export package…"
+            if export_action
             else "View run report"
             if report_available
             else "Check batch"
@@ -765,12 +784,22 @@ class BatchWorkflowWorkspace(
         )
         self._update_next_button_icon()
         self._style_review_banner()
-        self.next_button.setEnabled(not busy if report_available else bool(can_check))
+        self.next_button.setEnabled(
+            not busy and self.results_panel.export_package_button.isEnabled()
+            if export_action
+            else not busy
+            if report_available
+            else bool(can_check)
+            and (not valid or section == 0 or not reproduction_reason)
+        )
         self.next_button.setToolTip(
-            "Review the finished batch in Run & results. "
+            self.results_panel.export_package_button.toolTip()
+            if export_action
+            else "Review the finished batch in Run & results. "
             "This does not check or run the batch again."
             if report_available
             else parameter_error
+            or reproduction_reason
             or (
                 "Check current inputs, settings and output destinations for a new run. "
                 "This replaces the on-screen report, but does not process images or "
@@ -804,6 +833,7 @@ class BatchWorkflowWorkspace(
         )
         self.run_button.setToolTip(
             parameter_error
+            or reproduction_reason
             or (
                 "Wait for the active sample preview to finish."
                 if self._representative_pending
@@ -823,6 +853,7 @@ class BatchWorkflowWorkspace(
             and not parameter_error
             and not self._representative_pending
             and self._actions is not None
+            and not reproduction_reason
         )
         self.footer_overrides_button.setVisible(section == 1 and valid and not busy)
         for controls in (
@@ -839,9 +870,11 @@ class BatchWorkflowWorkspace(
             )
         self.footer_overrides_button.setEnabled(
             self.parameter_override_editor.configured
+            and not self._reproduction_table_active
         )
         self.load_overrides_button.setEnabled(
             not busy and inventory is None and self.parameter_override_editor.configured
+            and not self._reproduction_table_active
         )
         has_current = display is not None and bool(display.items)
         has_inventory = inventory is not None and bool(inventory)
@@ -850,6 +883,7 @@ class BatchWorkflowWorkspace(
             and not busy
             and self._actions is not None
             and self._actions.check_items is not None
+            and self._reproduction_request is None
         )
         self.preview_button.setEnabled(
             self._actions is not None and not busy and not parameter_error
@@ -861,6 +895,7 @@ class BatchWorkflowWorkspace(
             and self._actions is not None
             and self._actions.preview_item is not None
             and bool(self.preview_table.selectionModel().selectedRows())
+            and not reproduction_reason
         )
         self.close_button.setText("Hide window" if self._run_in_progress else "Close")
         self.tabs.setTabEnabled(
@@ -869,7 +904,8 @@ class BatchWorkflowWorkspace(
             or has_inventory
             or bool(self._item_file_policies)
             or self._checking_plan
-            or self._batch_activity_state == "error",
+            or self._batch_activity_state == "error"
+            or bool(reproduction_check and reproduction_check.rows),
         )
         self.tabs.setTabEnabled(
             2,
@@ -903,6 +939,12 @@ class BatchWorkflowWorkspace(
         )
         if self._actions is not None and self._actions.compute_summary is not None:
             label, detail = self._actions.compute_summary()
+        if self._resume_source_path is not None:
+            label = "Saved run · verified resume"
+            detail = (
+                "Uses the archive's compute request after verifying its recorded "
+                "software and runtime. The main toolbar's settings are unchanged."
+            )
         self.compute_summary_label.setText(label)
         self.compute_summary_label.setToolTip(detail)
         self.compute_icon_label.setToolTip(detail)
@@ -919,6 +961,15 @@ class BatchWorkflowWorkspace(
         self._layout_compute_summary()
 
     def _update_run_recap(self) -> None:
+        if self._resume_source_path is not None:
+            self.run_recap_label.setTextFormat(Qt.PlainText)
+            self.run_recap_label.setText(
+                "Saved-run continuation · " + self._resume_source_path.name
+                + "\nUsing the archive's workflow and settings; the open workflow "
+                "is unchanged."
+            )
+            self.run_recap_label.show()
+            return
         plan = self._preview_result
         # The actionable banner already explains a stale plan. Avoid a second
         # instruction above it, especially while showing a previous run's results.
@@ -941,11 +992,16 @@ class BatchWorkflowWorkspace(
         if self._checking_plan or self._run_in_progress:
             return
         if self._preview_result is None or not self._preview_result.items:
-            if self.results_panel.has_run_report and self.tabs.currentIndex() != 0:
+            if self.results_panel.has_run_report and self.tabs.currentIndex() == 3:
+                self.results_panel._export_package()
+            elif self.results_panel.has_run_report and self.tabs.currentIndex() != 0:
                 self._show_run_report()
             else:
                 self._check_batch()
         else:
+            if self.tabs.currentIndex() != 0 and self._reproduction_block_reason():
+                self._sync_workspace()
+                return
             self.tabs.setCurrentIndex(1 if self.tabs.currentIndex() == 0 else 3)
 
     def _show_run_report(self) -> None:
@@ -973,6 +1029,7 @@ class BatchWorkflowWorkspace(
         if self.parameter_override_editor.error_message:
             self._sync_workspace()
             return False
+        self._completed_reproduction = None
         self._checking_plan = True
         self._clear_check_progress()
         self._preview_result = None
@@ -1013,6 +1070,12 @@ class BatchWorkflowWorkspace(
             return False
 
     def _recheck_selected_items(self) -> None:
+        if self._reproduction_request is not None:
+            self.preview_status.setText(
+                "Reproduction requires Check batch for the complete collection; "
+                "a selected-item check cannot waive an original-input mismatch."
+            )
+            return
         if self._preview_result is None or self._run_in_progress or self._checking_plan:
             return
         if self._actions is None or self._actions.check_items is None:
@@ -1249,8 +1312,11 @@ class BatchWorkflowWorkspace(
     def _render_items(self) -> None:
         if not getattr(self, "_workspace_ready", False):
             return
+        self._reproduction_table_active = False
         if self._check_rows is not None:
             self._render_check_items()
+            return
+        if self._render_reproduction_checks_table():
             return
         self._display_rows_by_index = (
             {row.batch_index: row for row in self._display_plan.rows}
@@ -1296,6 +1362,14 @@ class BatchWorkflowWorkspace(
                 )
                 if self._preview_result is None:
                     checks = "Needs recheck"
+                elif self._reproduction_request is not None:
+                    check = self._reproduction_check()
+                    checks = (
+                        "Verified"
+                        if check is not None and check.can_run
+                        and item.reproduction_status == "matched"
+                        else "Not verified"
+                    )
                 values = [
                     row.batch_id,
                     f"{len(row.sources)} paired"
@@ -1359,7 +1433,7 @@ class BatchWorkflowWorkspace(
                 if cell is None:
                     continue
                 text = cell.text().casefold()
-                if text in {"ready", "completed", "saved"}:
+                if text in {"ready", "verified", "completed", "saved"}:
                     color = tones.success.foreground
                 elif any(
                     word in text for word in ("error", "failed", "collision", "blocked")
@@ -1396,7 +1470,10 @@ class BatchWorkflowWorkspace(
         self._sync_workspace()
 
     def _item_check_changed(self, item) -> None:
-        if self._rendering_items or self._check_rows is not None or item.column() != 0:
+        if (
+            self._rendering_items or self._check_rows is not None
+            or item.column() != 0 or self._reproduction_table_active
+        ):
             return
         position = int(item.data(Qt.UserRole))
         if item.checkState() == Qt.Checked:
@@ -1407,6 +1484,8 @@ class BatchWorkflowWorkspace(
         self._render_items()
 
     def _show_item_details(self) -> None:
+        if self._show_reproduction_item_details():
+            return
         if self._check_rows is not None:
             self._show_check_item_details()
             return
@@ -1577,7 +1656,7 @@ class BatchWorkflowWorkspace(
                 return
 
     def _item_context_menu(self, point) -> None:
-        if self._check_rows is not None:
+        if self._check_rows is not None or self._reproduction_table_active:
             return
         row_index = self.preview_table.rowAt(point.y())
         if row_index < 0:
@@ -1685,7 +1764,10 @@ class BatchWorkflowWorkspace(
 
     def _open_selected_overrides(self, _checked=False, *, current_only=False) -> None:
         editor = self.parameter_override_editor
-        if not editor.configured or self._run_in_progress or self._checking_plan:
+        if (
+            not editor.configured or self._run_in_progress or self._checking_plan
+            or self._reproduction_table_active
+        ):
             return
         positions = (
             {self._current_item}
@@ -1755,6 +1837,8 @@ class BatchWorkflowWorkspace(
             self._syncing_selection = False
 
     def _review_result_item(self, position: int) -> None:
+        if self._resume_source_path is not None:
+            return
         self._current_item = position
         with QSignalBlocker(self.item_search):
             self.item_search.clear()

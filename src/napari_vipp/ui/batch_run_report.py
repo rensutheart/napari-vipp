@@ -78,15 +78,18 @@ class BatchRunReport(QFrame):
             "and details."
         )
         layout.addWidget(self.evidence_label)
-        technical = QHBoxLayout()
-        self.manifest_button = ToolbarCommandButton("Find manifest JSON")
-        technical.addWidget(self.manifest_button)
-        self.technical_label = self._label(
-            "Technical record of inputs, settings and results — "
-            "for reproducibility and troubleshooting."
+        package = QHBoxLayout()
+        self.export_package_button = ToolbarCommandButton(
+            "Export reproducibility package…"
         )
-        technical.addWidget(self.technical_label, 1)
-        layout.addLayout(technical)
+        self.export_package_button.setObjectName("BatchReportExportAction")
+        package.addWidget(self.export_package_button, 0, Qt.AlignTop)
+        self.package_label = self._label(
+            "Share the workflow, settings, software versions and run records. "
+            "Images and result files are not included. Review before exporting."
+        )
+        package.addWidget(self.package_label, 1)
+        layout.addLayout(package)
         self.hide()
         self._apply_theme()
 
@@ -106,10 +109,15 @@ class BatchRunReport(QFrame):
             output for item in records for output in getattr(item, "outputs", ())
         ]
         saved = len(result.saved_paths)
+        reused_items = [
+            item for item in records if getattr(item, "resumed_from_run_id", "")
+        ]
+        reused_outputs = sum(len(item.outputs) for item in reused_items)
         overwritten = sum(
             _status(output) == "completed"
             and getattr(output, "overwrote_existing", False)
-            for output in outputs
+            for item in records if not getattr(item, "resumed_from_run_id", "")
+            for output in getattr(item, "outputs", ())
         )
         kept = sum(
             _status(output) == "skipped"
@@ -142,10 +150,16 @@ class BatchRunReport(QFrame):
         unfinished = sum(_status(item) in ("pending", "running") for item in records)
         if unfinished:
             counts.append(f"{unfinished:,} unfinished")
+        if reused_items:
+            counts.append(
+                f"{len(reused_items):,} verified reused (included in completed)"
+            )
         self.fields["Items"].setText(
             f"{len(records):,} total · " + (" · ".join(counts) or "None processed")
         )
         file_counts = [f"{saved:,} saved this run"]
+        if reused_outputs:
+            file_counts.append(f"{reused_outputs:,} verified from previous run")
         if overwritten:
             file_counts[0] += f" ({overwritten:,} overwritten)"
         if kept:
@@ -241,7 +255,7 @@ class BatchRunReport(QFrame):
             self._apply_theme()
 
     def _apply_theme(self):
-        if not hasattr(self, "technical_label") or getattr(
+        if not hasattr(self, "package_label") or getattr(
             self, "_applying_theme", False
         ):
             return
@@ -273,12 +287,15 @@ class BatchRunReport(QFrame):
             f"border: 1px solid {tone.border.name()}; "
             f"border-left: 3px solid {tone.accent.name()};"
             "border-radius: 4px; }"
+            "QPushButton#BatchReportExportAction { font-weight: bold; "
+            f"border: 1px solid {theme_colors(self.palette()).info.accent.name()}; "
+            "padding: 6px 10px; }"
         )
         self.outcome_label.setStyleSheet(
             font_style + f"color: {tone.foreground.name()}; font-weight: bold;"
         )
-        for label in (self.evidence_label, self.technical_label):
+        for label in (self.evidence_label, self.package_label):
             label.setStyleSheet(font_style + f"color: {muted};")
         self.icon.setPixmap(toolbar_icon("activity", self.palette()).pixmap(18, 18))
-        self.manifest_button.setIcon(toolbar_icon("open", self.palette()))
+        self.export_package_button.setIcon(toolbar_icon("archive", self.palette()))
         self.details_toggle.setIcon(toolbar_icon("activity", self.palette()))

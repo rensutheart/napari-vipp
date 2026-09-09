@@ -8,6 +8,8 @@ import tomllib
 from pathlib import Path
 from urllib.parse import unquote
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MARKDOWN_LINK = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
 ABSOLUTE_HOME_PATHS = (
@@ -22,28 +24,100 @@ RELEASE_NOTE_BLOCK_START = re.compile(
 )
 
 
-def test_release_version_contract_is_consistent() -> None:
-    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    citation = (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
-    changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    release_notes = (REPO_ROOT / "release-notes.md").read_text(encoding="utf-8")
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-
-    version = project["project"]["version"]
+def _public_release_metadata(citation: str) -> tuple[str, str]:
+    version_match = re.search(r'^version: "([^"\n]+)"$', citation, re.MULTILINE)
     release_date_match = re.search(
         r'^date-released: "(\d{4}-\d{2}-\d{2})"$', citation, re.MULTILINE
     )
+    assert version_match is not None
     assert release_date_match is not None
-    release_date = release_date_match.group(1)
-    assert f'version: "{version}"' in citation
+    return version_match.group(1), release_date_match.group(1)
+
+
+def _assert_release_version_contract(
+    *, version: str, citation: str, changelog: str, release_notes: str, readme: str
+) -> None:
+    public_version, release_date = _public_release_metadata(citation)
     headers = re.findall(r"^## (.+)$", changelog, re.MULTILINE)
     if headers and headers[0] == "Unreleased":
         headers.pop(0)
-    assert headers[0] == f"{version} - {release_date}"
+    candidate_notices = re.findall(
+        r"^\*\*Unreleased candidate\.\*\* (\S+) remains the public alpha\.",
+        release_notes,
+        re.MULTILINE,
+    )
+    assert headers
+    if candidate_notices:
+        assert candidate_notices == [public_version]
+        assert version != public_version
+        assert headers[0] == f"{version} - Unreleased"
+        assert f"{public_version} - {release_date}" in headers[1:]
+    else:
+        assert version == public_version
+        assert headers[0] == f"{version} - {release_date}"
     assert release_notes.startswith(f"# VIPP {version}\n")
     assert "release candidate" not in release_notes.casefold()
-    assert f"releases/tag/v{version}" in readme
-    assert f"napari-vipp=={version}" in readme
+    assert f"releases/tag/v{public_version}" in readme
+    assert f"napari-vipp=={public_version}" in readme
+
+
+def test_release_version_contract_is_consistent() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    _assert_release_version_contract(
+        version=project["project"]["version"],
+        citation=(REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"),
+        changelog=(REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
+        release_notes=(REPO_ROOT / "release-notes.md").read_text(encoding="utf-8"),
+        readme=(REPO_ROOT / "README.md").read_text(encoding="utf-8"),
+    )
+
+
+def _release_contract_fixture(*, candidate: bool) -> dict[str, str]:
+    public_version = "1.0.0a1"
+    version = "1.0.0a2" if candidate else public_version
+    published_header = f"## {public_version} - 2026-09-08\n"
+    candidate_header = f"## {version} - Unreleased\n\n" if candidate else ""
+    notice = (
+        f"**Unreleased candidate.** {public_version} remains the public alpha.\n"
+        if candidate
+        else ""
+    )
+    return {
+        "version": version,
+        "citation": f'version: "{public_version}"\ndate-released: "2026-09-08"\n',
+        "changelog": f"## Unreleased\n\n{candidate_header}{published_header}",
+        "release_notes": f"# VIPP {version}\n\n{notice}",
+        "readme": f"releases/tag/v{public_version}\nnapari-vipp=={public_version}\n",
+    }
+
+
+@pytest.mark.parametrize("candidate", [False, True], ids=["published", "candidate"])
+def test_release_version_contract_accepts_explicit_states(candidate: bool) -> None:
+    _assert_release_version_contract(**_release_contract_fixture(candidate=candidate))
+
+
+@pytest.mark.parametrize(
+    ("candidate", "field", "old", "new"),
+    [
+        (True, "release_notes", "**Unreleased candidate.**", "Candidate:"),
+        (True, "release_notes", "1.0.0a1 remains", "1.0.0a2 remains"),
+        (True, "release_notes", "# VIPP 1.0.0a2\n", "# VIPP 1.0.0a2 candidate\n"),
+        (True, "changelog", "1.0.0a2 - Unreleased", "1.0.0a2 - 2026-09-09"),
+        (True, "changelog", "1.0.0a1 - 2026-09-08", "1.0.0a1 - 2026-09-09"),
+        (True, "readme", "releases/tag/v1.0.0a1", "releases/tag/v1.0.0a2"),
+        (True, "readme", "napari-vipp==1.0.0a1", "napari-vipp==1.0.0a2"),
+        (False, "version", "1.0.0a1", "1.0.0a2"),
+        (False, "changelog", "1.0.0a1 - 2026-09-08", "1.0.0a1 - Unreleased"),
+    ],
+)
+def test_release_version_contract_rejects_mixed_states(
+    candidate: bool, field: str, old: str, new: str
+) -> None:
+    documents = _release_contract_fixture(candidate=candidate)
+    assert old in documents[field]
+    documents[field] = documents[field].replace(old, new)
+    with pytest.raises(AssertionError):
+        _assert_release_version_contract(**documents)
 
 
 def test_release_notes_do_not_hard_wrap_prose() -> None:
@@ -166,8 +240,9 @@ def test_public_guides_are_short_relocation_notes():
 
 
 def test_windows_readme_and_packaging_keep_repository_facts():
-    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    version = project["project"]["version"]
+    version, _ = _public_release_metadata(
+        (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    )
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     packaging = (REPO_ROOT / "packaging/windows/README.md").read_text(encoding="utf-8")
     planner = (REPO_ROOT / "docs/windows-installation-planner.md").read_text(
@@ -192,8 +267,9 @@ def test_windows_readme_and_packaging_keep_repository_facts():
 
 
 def test_macos_readme_keeps_architecture_specific_packages():
-    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    version = project["project"]["version"]
+    version, _ = _public_release_metadata(
+        (REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8")
+    )
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     for architecture in ("arm64", "x86_64"):
         assert f"VIPP-{version}-macOS-{architecture}-UNSIGNED.pkg" in readme

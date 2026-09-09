@@ -2920,6 +2920,16 @@ def _operation_history(
             f"{operation_title}: distance {distance}, "
             f"{params.get('spatial_mode', 'Auto from axes')}"
         )
+    if operation_id == "find_label_boundaries":
+        scope = {2: "2D YX planes", 3: "3D ZYX volumes"}.get(
+            params.get("resolved_spatial_ndim"),
+            str(params.get("spatial_mode", "Auto from axes")),
+        )
+        return (
+            f"{operation_title}: {params.get('boundary_placement', 'Inside objects')}, "
+            f"{params.get('connectivity', 'Face connected')}, {scope}; "
+            "background label 0, no exterior padding, original grid retained"
+        )
     if operation_id == "binary_threshold":
         foreground = params.get("foreground", "Above")
         if foreground in {"In range", "Outside range"}:

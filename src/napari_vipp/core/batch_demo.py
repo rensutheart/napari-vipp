@@ -31,6 +31,7 @@ from napari_vipp.core.batch import (
     save_batch_config,
     scientific_workflow_hash,
 )
+from napari_vipp.core.batch_resume import seal_document
 from napari_vipp.core.export import export_batch_runner_to_python
 from napari_vipp.core.source_identity import capture_local_source_identity
 
@@ -493,7 +494,10 @@ def validate_synthetic_batch_demo(
         for path in sorted(sidecar_dir.glob("*.json"))
     ]
     _require(
-        sidecars == [item.to_dict() for item in result.manifest.items],
+        sidecars == [
+            seal_document({**item.to_dict(), "run_id": result.manifest.run_id})
+            for item in result.manifest.items
+        ],
         "Per-item sidecars differ from the finalized manifest items.",
     )
     source_titles = {

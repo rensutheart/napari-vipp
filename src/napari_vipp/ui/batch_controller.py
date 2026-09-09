@@ -33,6 +33,7 @@ from napari_vipp.core.batch_setup import (
 )
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.reproduction import ReproductionRequest
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceChangedError,
@@ -89,12 +90,16 @@ def execute_prepared_collection_batch_preview(
         progress_callback=progress_callback,
         cancel_callback=cancel_callback,
     )
-    _verify_reviewed_source_identities(
-        prepared,
-        plan,
-        progress_callback=progress_callback,
-        cancel_callback=cancel_callback,
-    )
+    # A blocked reference comparison is diagnostic evidence, never a runnable
+    # plan. Do not replace its complete missing/changed list with a secondary
+    # first-failure exception from an older displayed representative snapshot.
+    if plan.reproduction is None or plan.reproduction.can_run:
+        _verify_reviewed_source_identities(
+            prepared,
+            plan,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
     return _batch_preview_result(
         plan,
         prepared.config,
@@ -230,6 +235,7 @@ def _batch_preview_result(
         total_items=len(plan.items),
         collision_count=collision_count,
         explicit_outputs=explicit_outputs,
+        reproduction=plan.reproduction,
     )
 
 
@@ -263,6 +269,7 @@ class CollectionBatchController:
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
+        reproduction: ReproductionRequest | None = None,
     ) -> BatchConfig:
         """Build a validated config from one stable workflow snapshot."""
         del save_workflow_snapshot
@@ -284,6 +291,7 @@ class CollectionBatchController:
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
             item_file_policies=item_file_policies,
+            reproduction=reproduction,
         )
 
     def save_config(
@@ -352,6 +360,7 @@ class CollectionBatchController:
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
+        reproduction: ReproductionRequest | None = None,
     ) -> BatchPreviewResult:
         """Map the core preflight plan into the dialog preview contract."""
         prepared = self.prepare_preview(
@@ -369,6 +378,7 @@ class CollectionBatchController:
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
             item_file_policies=item_file_policies,
+            reproduction=reproduction,
         )
         return execute_prepared_collection_batch_preview(prepared)
 
@@ -388,6 +398,7 @@ class CollectionBatchController:
         parameter_overrides: tuple[BatchSourceParameterOverrides, ...] = (),
         node_execution_overrides: tuple[BatchNodeExecutionOverride, ...] = (),
         item_file_policies: tuple[BatchItemFilePolicy, ...] = (),
+        reproduction: ReproductionRequest | None = None,
     ) -> PreparedCollectionBatchPreview:
         """Freeze GUI-owned providers before a preview runs now or in a worker."""
 
@@ -407,6 +418,7 @@ class CollectionBatchController:
             parameter_overrides=parameter_overrides,
             node_execution_overrides=node_execution_overrides,
             item_file_policies=item_file_policies,
+            reproduction=reproduction,
         )
         return PreparedCollectionBatchPreview(
             workflow=workflow,
@@ -459,6 +471,7 @@ class CollectionBatchController:
             parameter_overrides=config.parameter_overrides,
             node_execution_overrides=config.node_execution_overrides,
             item_file_policies=config.item_file_policies,
+            reproduction=config.reproduction,
         )
         frozen_inventory = any(source.source_items for source in config.sources)
         return PreparedCollectionBatchPreview(

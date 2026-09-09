@@ -495,9 +495,9 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
         ComputeMode.PREFER_GPU,
     )
 
-    if spec.id == "mesh-refinement-tuned":
+    if spec.id == "mesh-objects":
         for pipeline in (cpu_pipeline, prefer_gpu_pipeline):
-            _assert_tuned_mesh_example_result(pipeline)
+            _assert_mesh_example_result(pipeline)
 
     assert cpu_pipeline.topological_order() == prefer_gpu_pipeline.topological_order()
     for node_id in cpu_pipeline.topological_order():
@@ -519,7 +519,7 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
         )
 
 
-def _assert_tuned_mesh_example_result(pipeline: PrototypePipeline) -> None:
+def _assert_mesh_example_result(pipeline: PrototypePipeline) -> None:
     """Keep the new matrix case meaningful beyond CPU/fallback equality."""
     outputs = pipeline.outputs
     original = outputs["mask_to_3d_mesh_1"]
@@ -564,6 +564,7 @@ def test_compute_matrix_covers_every_bundled_example():
         "general-node-bypass",
         "batch-provenance",
         "label-cleanup",
+        "separate-overlapping-objects",
         "gpu-segmentation",
         "object-intensity",
         "merged-measurements",
@@ -571,7 +572,6 @@ def test_compute_matrix_covers_every_bundled_example():
         "derived-morphology",
         "mesh-morphology",
         "mesh-objects",
-        "mesh-refinement-tuned",
         "skeleton-qc",
         "advanced-skeleton",
         "racc-colocalization",

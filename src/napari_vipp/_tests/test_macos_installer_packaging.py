@@ -244,6 +244,9 @@ def test_menu_template_renders_valid_numeric_apple_versions(tmp_path):
     item = document["menu_items"][0]
     assert item["name"] == "VIPP"
     assert item["command"][-2:] == ["--profile", "cpu"]
+    assert "--desktop" in item["command"]
+    assert "--desktop" in item["platforms"]["osx"]["command"]
+    assert item["icon"] == "{{ MENU_DIR }}/vipp.{{ ICON_EXT }}"
     assert item["platforms"]["osx"]["CFBundleVersion"] == "445"
     assert (
         item["platforms"]["osx"]["info_plist_extra"][
