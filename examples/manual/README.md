@@ -9,8 +9,8 @@ access in the app.
 
 Choose **Open example... → Exhaustive Inspector Showcase**, or open
 `exhaustive-inspector-showcase.json` here with **Load workflow...**. The graph
-contains every operation currently exposed in the node palette: 113 distinct
-operations across 119 nodes, with seven bundled sample sources. Every non-source
+contains every operation currently exposed in the node palette: 123 distinct
+operations across 129 nodes, with seven bundled sample sources. Every non-source
 operation appears exactly once.
 
 The graph is arranged as seven labelled horizontal lanes:
@@ -18,7 +18,7 @@ The graph is arranged as seven labelled horizontal lanes:
 1. axes, regions, metadata, projections, and generated PSF;
 2. intensity transformations and filtering;
 3. channels, RGB, thresholds, and image math;
-4. morphology, object separation, labels, measurements, and tables;
+4. morphology, object separation, labels and boundary QC, measurements, and tables;
 5. colocalization and spatial association;
 6. skeleton QC and network measurements; and
 7. PSF preparation and deconvolution.
@@ -26,7 +26,7 @@ The graph is arranged as seven labelled horizontal lanes:
 The lanes are independent where combining them would be scientifically
 artificial. Fan-outs indicate alternative analyses of the same data rather than
 an intended sequence. Nine named tunnels carry the longest reused inputs across
-lanes; 82 nearby connections remain as ordinary wires so each lane's main path
+lanes; 91 nearby connections remain as ordinary wires so each lane's main path
 is still visible.
 
 The workflow is safe to inspect after loading. **Save Image** is disabled and
@@ -40,6 +40,10 @@ Regenerate the JSON after a palette or parameter-schema change with:
 ```powershell
 .\.venv-gpu-cu13\Scripts\python.exe scripts\generate_exhaustive_inspector_workflow.py
 ```
+
+The generator updates this manual-QA file and both catalogue/package mirrors
+together. The boundary-QC branch below Relabel Sequential shows an inside-object
+mask without changing the labels used by measurements and mesh extraction.
 
 The focused regression test checks current-schema canonicalization, graph
 validity, complete palette coverage, node placement, required connections, the

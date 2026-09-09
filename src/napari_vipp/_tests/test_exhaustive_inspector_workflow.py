@@ -30,6 +30,8 @@ def _showcase_document() -> dict[str, object]:
 
 def test_bundled_exhaustive_inspector_showcase_matches_manual_qa_source():
     assert WORKFLOW_PATH.read_bytes() == MANUAL_WORKFLOW_PATH.read_bytes()
+    packaged = REPO_ROOT / "src" / "napari_vipp" / "examples" / WORKFLOW_PATH.name
+    assert packaged.read_bytes() == WORKFLOW_PATH.read_bytes()
 
 
 def test_exhaustive_inspector_showcase_is_current_and_canonical():
@@ -175,7 +177,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         }
     )
     assert sum(tunnel_counts.values()) == 62
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 90
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 91
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:
