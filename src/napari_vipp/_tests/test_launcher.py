@@ -133,22 +133,29 @@ def test_child_command_is_shell_free_and_preserves_space_containing_paths(tmp_pa
         "prefer_gpu",
         "--startup-channel",
         str(channel.path),
-        "--startup-token",
-        channel.token,
+        f"--startup-token={channel.token}",
     ]
     channel.cleanup()
 
 
 @pytest.mark.parametrize("desktop", [False, True])
+@pytest.mark.parametrize("token", ["a" * 43, "-" + "a" * 42, "--desktop" + "a" * 34])
 def test_desktop_flag_reaches_child_and_no_splash_launch(
-    tmp_path, monkeypatch, desktop
+    tmp_path, monkeypatch, desktop, token
 ):
+    monkeypatch.setattr(
+        "napari_vipp.startup.secrets.token_urlsafe", lambda _size: token
+    )
     channel = StartupChannel.create(parent=tmp_path)
     try:
         command = build_child_command(
             executable="python", profile="cpu", channel=channel, desktop=desktop
         )
-        assert app.build_parser().parse_args(command[3:]).desktop is desktop
+        parsed = app.build_parser().parse_args(command[3:])
+        assert parsed.desktop is desktop
+        assert parsed.startup_token == token == channel.token
+        assert parsed.startup_channel == channel.path
+        assert parsed.profile == "cpu"
     finally:
         channel.cleanup()
     calls = []
@@ -406,14 +413,19 @@ def _controller(
 
 def test_controller_closes_splash_after_authenticated_ready_without_killing_child(
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        "napari_vipp.startup.secrets.token_urlsafe", lambda _size: "-" + "a" * 42
+    )
     child = _FakeProcess()
 
     def process_factory(command, **kwargs):
         del kwargs
-        channel_path = command[command.index("--startup-channel") + 1]
-        token = command[command.index("--startup-token") + 1]
-        with StatusEmitter(channel_path, token) as emitter:
+        arguments = app.build_parser().parse_args(command[3:])
+        with StatusEmitter(
+            arguments.startup_channel, arguments.startup_token
+        ) as emitter:
             emitter.progress("starting_python")
             emitter.progress("building_interface")
             emitter.ready()

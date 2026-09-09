@@ -342,6 +342,39 @@ def test_native_installer_workflows_keep_strict_installed_dependency_check(workf
     )
 
 
+@pytest.mark.parametrize(
+    "workflow", ["macos-installer.yml", "unsigned-installers-release.yml"]
+)
+def test_native_installer_workflows_check_rendered_desktop_launcher(
+    tmp_path, workflow
+):
+    menu = tmp_path / "vipp-menu.json"
+    packager._render_menu_metadata(
+        REPO_ROOT / "packaging/macos/vipp-menu.json.in", menu, _release_state()
+    )
+    item = json.loads(menu.read_text(encoding="utf-8"))["menu_items"][0]
+    command = item["platforms"]["osx"]["command"]
+    assert command[1:] == ["-m", "napari_vipp", "--desktop", "--profile", "cpu"]
+    expected_command = " ".join(command).replace("{{ MENU_ITEM_LOCATION }}", "$app")
+    text = (REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+    # Keep the exact installed-script guard aligned with production menu metadata.
+    # A pre-desktop command caused both architectures to exit before GUI launch.
+    lines = [line.strip() for line in text.splitlines()]
+    command_checks = [
+        line for line in lines if "grep" in line and " -m napari_vipp " in line
+    ]
+    assert command_checks == [f'grep -Fq "{expected_command}" \\']
+    check_index = lines.index(command_checks[0])
+    assert lines[check_index + 1] == '"$launcher_script"'
+    # Matching the script is not a replacement for launching the installed app.
+    assert 'QT_API=pyqt6 "$launcher" \\' in lines[check_index + 2 :]
+    assert 'test "$shortcut_ready" -eq 1' in lines
+    assert lines.count('kill -0 "$child_pid"') == 2
+    assert 'QT_API=pyside6 "$prefix/bin/python" -m napari_vipp.app \\' in lines
+    assert '--profile cpu --smoke-exit-after-ready \\' in lines
+    assert 'grep -Fq "VIPP: VIPP is ready" "$RUNNER_TEMP/vipp-native.log"' in lines
+
+
 def test_builder_environment_pins_wheel_build_toolchain():
     environment = (
         REPO_ROOT / "packaging/macos/builder-environment.yml"

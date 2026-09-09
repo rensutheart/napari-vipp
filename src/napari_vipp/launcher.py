@@ -51,8 +51,9 @@ def build_child_command(
         parsed_profile.value,
         "--startup-channel",
         os.fspath(channel.path),
-        "--startup-token",
-        channel.token,
+        # URL-safe random tokens can start with '-'; bind the value so argparse
+        # cannot mistake it for another option. Preserve the token verbatim.
+        f"--startup-token={channel.token}",
     ]
     if desktop:
         command.append("--desktop")

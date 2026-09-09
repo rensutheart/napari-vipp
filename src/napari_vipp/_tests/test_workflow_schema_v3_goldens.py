@@ -16,12 +16,13 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # The two examples regenerated during a2 development had explicitly added
-    # no-op threshold/rescale defaults. Their new canonical hashes omit those
-    # fields, as pre-a2 documents already did; authored values are unchanged.
+    # a3 adds one boundary-QC branch to the exhaustive showcase. The regression
+    # below also pins its preceding hash to preserve all existing analysis.
     "exhaustive-inspector-showcase.json": (
-        "54a9d1145c119130e8a9cf8dd7a88fa819ddf637f9d84c92c086bae829393b18"
+        "8a6ed48c2f96869ec7e4d1ee58bea3552481c639a3e72460cb85f95700903cb3"
     ),
+    # This regenerated a2 example omits no-op threshold/rescale defaults, as
+    # pre-a2 documents already did; authored values are unchanged.
     "general-node-bypass-acceptance.json": (
         "79b42499676ba18da66d3340d53f0328828bf129eb91bf0041bf53b2589c7f69"
     ),
@@ -197,6 +198,40 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
 
     assert scientific_workflow_hash(document) == expected_hash
     assert scientific_workflow_hash(reserialized) == expected_hash
+
+
+def test_showcase_adds_boundary_qc_without_changing_preexisting_analysis():
+    document = _load_example("exhaustive-inspector-showcase.json")
+    boundary_id = "find_label_boundaries_1"
+    (boundary,) = [node for node in document["nodes"] if node["id"] == boundary_id]
+    assert boundary == {
+        "id": boundary_id,
+        "operation_id": "find_label_boundaries",
+        "params": {
+            "boundary_placement": "Inside objects",
+            "spatial_mode": "Auto from axes",
+            "connectivity": "Face connected",
+        },
+    }
+    edges = [
+        edge
+        for edge in document["connections"]
+        if boundary_id in (edge["source"], edge["target"])
+    ]
+    assert edges == [
+        {
+            "source": "relabel_sequential_1",
+            "target": boundary_id,
+            "target_port": 0,
+            "source_port": 0,
+        }
+    ]
+    document["nodes"].remove(boundary)
+    document["connections"].remove(edges[0])
+    document["positions"].pop(boundary_id)
+    assert scientific_workflow_hash(document) == (
+        "54a9d1145c119130e8a9cf8dd7a88fa819ddf637f9d84c92c086bae829393b18"
+    )
 
 
 @pytest.mark.parametrize(
