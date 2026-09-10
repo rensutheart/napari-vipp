@@ -1,6 +1,71 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-09
+Last reviewed: 2026-09-10
+
+## 0.15.0a4 qualification declaration
+
+This iterative alpha covers the complete delta from published `v0.15.0a3` at
+`e7a4de8f0f48b7e52cd217697a4b681fe83bdf3f`. The user authorized the narrow release
+on 2026-09-10. Final-main CI, immutable tag and exact asset identities must be
+verified at publication; this declaration does not claim those future checks
+have already passed.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  workflow_schema_provenance: false
+  source_reader_packaging: false
+  gpu_scientific_shared_execution: false
+  windows_installer_runtime: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+  packaging_release: false
+  documentation: true
+carried_forward:
+  scientific_gpu_schemas_readers: v0.15.0a3
+  installer_lifecycle: v0.15.0a3
+```
+
+- The runtime delta is limited to `_graph.py` wire routing and `ui/plots.py`
+  detailed multichannel histogram rendering. Scientific arrays, operation
+  parameters, graph topology, schemas, numerical providers, dependencies and
+  installer implementation are unchanged. Plot/statistics and AI additions
+  are planning documents, not new runtime capabilities or release claims.
+- Source verification passed 198 focused tests across graph routing/layout,
+  histogram rendering/dialog/hover, plus repository Ruff, napari manifest
+  validation, wheel/source build and 26 documentation checks. Regressions cover
+  backward/same-column/multi-port routes, obstacle detours, card movement/growth,
+  stepped histogram boundaries, fill-before-outline order, logarithmic zero
+  gaps, dense-bin peaks, unchanged hover data and read-only source arrays.
+- Visual source review exercised six actual Qt graph layouts before, during
+  and after movement, and eight histogram cases including light/dark themes,
+  reduced-size figures, multiple channels and dense bins. Single-channel
+  renders matched the prior implementation; PNG/TIFF exports were checked.
+  `scripts/check_wire_routing_layouts.py` retains the repeatable graph review
+  harness. Impossible overlapping-card geometry is not claimed to be solved;
+  full graph-obstacle avoidance is refreshed after dragging.
+- The runtime merge `73258dae16eae423da554763f1a0efccfbc6170b` passed the full
+  [CI matrix](https://github.com/rensutheart/napari-vipp/actions/runs/34463520351).
+  Later changes before release preparation were planning-only. This supports
+  the behavioral review but does not replace the final version-bumped main CI.
+- The preceding a3 release passed its exact-main
+  [CI](https://github.com/rensutheart/napari-vipp/actions/runs/34356557640),
+  [unsigned installer checks](https://github.com/rensutheart/napari-vipp/actions/runs/34361810019),
+  [same-byte PyPI publication](https://github.com/rensutheart/napari-vipp/actions/runs/34372244957)
+  and numbered/stable documentation publication. Its narrower scientific and
+  lifecycle evidence remains applicable only while the relevant implementation,
+  dependency/toolchain and environment inputs stay unchanged. A new dependency
+  resolution or failed artifact check must be assessed rather than waved through.
+- Rebuild the exact-tag Windows and both native macOS artifacts using the
+  established workflows and qualified CI wheel. Require their actual embedded
+  wheel, version/source identity, signature state, asset inventory and checksum
+  checks. Preserve unsigned/unnotarized labeling. No unrelated full GPU sweep
+  or installer install/repair/rollback/uninstall matrix is required by this delta.
+- Publication retains the qualified wheel/source archive bytes for both GitHub
+  and PyPI, with their SHA-256 identities, and verifies the matching numbered
+  manual. Recorded reproduction still treats VIPP version changes explicitly;
+  unchanged schemas do not waive cross-version acknowledgement or resume rules.
 
 ## 0.15.0a3 qualification declaration
 

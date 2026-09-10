@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.15.0a4 - 2026-09-10
+
 - Make overlapping channels easier to compare in the detailed histogram window and PNG/TIFF exports: draw faint fills first, then continuous stepped channel outlines, without opaque vertical borders around every bin. Single-channel bars, bin values, hover details, logarithmic zero gaps and dense-plot peak preservation remain unchanged.
 
 - Keep backward and same-column wires outside their source and destination cards, including wide multi-input nodes and while dragging. Avoid nearby cards even with close ports, check rounded detours against the whole graph, and use a bounded alternate-route search for crowded layouts. Moving or resizing cards updates their routes; workflow connections and calculations are unchanged.
