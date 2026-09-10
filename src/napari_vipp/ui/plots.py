@@ -7,7 +7,7 @@ from numbers import Rational
 
 import numpy as np
 from qtpy.QtCore import QEvent, QPointF, QRect, QRectF, Qt, Signal
-from qtpy.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
+from qtpy.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen
 from qtpy.QtWidgets import QToolTip, QWidget
 
 from napari_vipp.core.channel_colors import (
@@ -1216,16 +1216,35 @@ class DetailedHistogramPlot(QWidget):
         if self._series_values.size == 0:
             return
         series_count = int(self._series_values.shape[0])
+        if series_count > 1:
+            self._draw_step_overlays(painter, plot_rect)
+        else:
+            self._draw_single_series_bars(painter, plot_rect)
+
+        if self._hovered_bin is None:
+            return
+        index = int(self._hovered_bin)
+        left = self._x_pixel(float(self._bin_edges[index]), plot_rect)
+        right = self._x_pixel(float(self._bin_edges[index + 1]), plot_rect)
+        highlight = QColor(custom_paint_colors(self.palette()).text)
+        highlight.setAlpha(48)
+        painter.fillRect(
+            QRectF(
+                float(left),
+                float(plot_rect.top()),
+                max(float(right - left), 1.0),
+                float(plot_rect.height()),
+            ),
+            highlight,
+        )
+
+    def _draw_single_series_bars(self, painter: QPainter, plot_rect: QRect) -> None:
         bin_count = int(self._series_values.shape[1])
         aggregate_for_pixels = bin_count > max(int(plot_rect.width()) * 2, 512)
         for series_index, values in enumerate(self._series_values):
             color = QColor(self._series_colors[series_index])
             fill = QColor(color)
-            fill.setAlpha(
-                HISTOGRAM_SINGLE_SERIES_FILL_ALPHA
-                if series_count == 1
-                else HISTOGRAM_MULTI_SERIES_FILL_ALPHA
-            )
+            fill.setAlpha(HISTOGRAM_SINGLE_SERIES_FILL_ALPHA)
             painter.setPen(QPen(color, 1.0))
             painter.setBrush(fill)
             if aggregate_for_pixels:
@@ -1258,31 +1277,44 @@ class DetailedHistogramPlot(QWidget):
                     painter.drawRect(rect)
             painter.setBrush(Qt.NoBrush)
 
-        if self._hovered_bin is None:
-            return
-        index = int(self._hovered_bin)
-        left = self._x_pixel(float(self._bin_edges[index]), plot_rect)
-        right = self._x_pixel(float(self._bin_edges[index + 1]), plot_rect)
-        highlight = QColor(custom_paint_colors(self.palette()).text)
-        highlight.setAlpha(48)
-        painter.fillRect(
-            QRectF(
-                float(left),
-                float(plot_rect.top()),
-                max(float(right - left), 1.0),
-                float(plot_rect.height()),
-            ),
-            highlight,
-        )
+    def _draw_step_overlays(self, painter: QPainter, plot_rect: QRect) -> None:
+        """Paint translucent areas first, then every channel's bin-top outline.
 
-    def _draw_pixel_aggregated_bars(
-        self,
-        painter: QPainter,
-        plot_rect: QRect,
-        values: np.ndarray,
-    ) -> None:
-        """Draw at most one peak-preserving bar per horizontal plot pixel."""
+        Per-bin vertical borders obscure previously drawn channels. Stepped
+        outlines instead join adjacent bin tops at the actual bin edges; they
+        do not smooth the data or draw a picket fence down to the baseline.
+        """
+        left_pixels = self._x_pixels(self._bin_edges[:-1], plot_rect)
+        right_pixels = self._x_pixels(self._bin_edges[1:], plot_rect)
+        width = max(int(plot_rect.width()), 1)
+        aggregate = self._series_values.shape[1] > max(width * 2, 512)
+        paths = []
+        for values in self._series_values:
+            if aggregate:
+                offsets, peaks = self._pixel_aggregated_values(values, plot_rect)
+                left = plot_rect.left() + offsets
+                right = left + 1
+                heights = self._y_pixels(peaks, plot_rect)
+            else:
+                left, right = left_pixels, right_pixels
+                heights = self._y_pixels(values, plot_rect)
+            paths.append(
+                _histogram_step_paths(left, right, heights, plot_rect.bottom())
+            )
 
+        # Later fills must never dim earlier channel outlines. Keep these two
+        # passes separate for both on-screen rendering and PNG/TIFF exports.
+        for (_outline, area), color in zip(paths, self._series_colors, strict=True):
+            fill = QColor(color)
+            fill.setAlpha(min(fill.alpha(), HISTOGRAM_MULTI_SERIES_FILL_ALPHA))
+            painter.fillPath(area, fill)
+        for (outline, _area), color in zip(paths, self._series_colors, strict=True):
+            painter.strokePath(outline, QPen(color, 1.5, Qt.SolidLine, Qt.FlatCap))
+
+    def _pixel_aggregated_values(
+        self, values: np.ndarray, plot_rect: QRect
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Retain the existing per-pixel maxima without changing stored bins."""
         width = max(int(plot_rect.width()), 1)
         left_pixels = self._x_pixels(self._bin_edges[:-1], plot_rect)
         right_pixels = self._x_pixels(self._bin_edges[1:], plot_rect)
@@ -1292,9 +1324,23 @@ class DetailedHistogramPlot(QWidget):
         occupied = np.zeros(width, dtype=bool)
         np.maximum.at(reduced, center_pixels, values)
         occupied[center_pixels] = True
-        y_pixels = self._y_pixels(reduced, plot_rect)
-        for offset in np.flatnonzero(occupied & (y_pixels >= 0)):
-            top = min(int(y_pixels[offset]), plot_rect.bottom() - 1)
+        offsets = np.flatnonzero(occupied)
+        return offsets, reduced[offsets]
+
+    def _draw_pixel_aggregated_bars(
+        self,
+        painter: QPainter,
+        plot_rect: QRect,
+        values: np.ndarray,
+    ) -> None:
+        """Draw at most one peak-preserving bar per horizontal plot pixel."""
+
+        offsets, peaks = self._pixel_aggregated_values(values, plot_rect)
+        y_pixels = self._y_pixels(peaks, plot_rect)
+        for offset, y in zip(offsets, y_pixels, strict=True):
+            if y < 0:
+                continue
+            top = min(int(y), plot_rect.bottom() - 1)
             painter.drawRect(
                 QRectF(
                     float(plot_rect.left() + int(offset)),
@@ -1513,6 +1559,47 @@ class DetailedHistogramPlot(QWidget):
             )
             lines.append(f"{label}: {values}")
         return "\n".join(lines)
+
+
+def _histogram_step_paths(
+    left_edges: np.ndarray,
+    right_edges: np.ndarray,
+    heights: np.ndarray,
+    baseline: float,
+) -> tuple[QPainterPath, QPainterPath]:
+    """Return a bin-top outline and a separately closed area in screen space.
+
+    Negative heights mark omitted log-zero bins. Break both paths there (or
+    between unoccupied pixel groups), rather than inventing an interpolated
+    value across the gap. Only the fill closes down to the visible baseline.
+    """
+    outline, area = QPainterPath(), QPainterPath()
+    active = False
+    previous_right = 0.0
+    for left, right, height in zip(left_edges, right_edges, heights, strict=True):
+        left, right, height = float(left), float(right), float(height)
+        if height < 0 or (active and left > previous_right):
+            if active:
+                area.lineTo(previous_right, baseline)
+                area.closeSubpath()
+                active = False
+            if height < 0:
+                continue
+        if not active:
+            outline.moveTo(left, height)
+            area.moveTo(left, baseline)
+            area.lineTo(left, height)
+            active = True
+        else:
+            outline.lineTo(left, height)
+            area.lineTo(left, height)
+        outline.lineTo(right, height)
+        area.lineTo(right, height)
+        previous_right = right
+    if active:
+        area.lineTo(previous_right, baseline)
+        area.closeSubpath()
+    return outline, area
 
 
 def _detailed_histogram_scale(value: object, *, axis: str) -> str:

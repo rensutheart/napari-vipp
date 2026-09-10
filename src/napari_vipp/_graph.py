@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from heapq import heappop, heappush
 from math import ceil
 
 import numpy as np
@@ -2393,9 +2394,7 @@ class ConnectionItem(QGraphicsPathItem):
         self.source_port = int(source_port)
         self._insert_preview_state: str | None = None
         self._pulse_phase = 0
-        self._last_route_key: (
-            tuple[float, float, float, float, int, bool] | None
-        ) = None
+        self._last_route_key: tuple | None = None
         self.setZValue(-10)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
@@ -2407,6 +2406,10 @@ class ConnectionItem(QGraphicsPathItem):
         end = self.target.port_scene_pos("input", self.target_port)
         view = _view_for_scene(self.scene())
         revision = int(view.route_revision) if view is not None else -1
+        endpoint_rects = (
+            self.source.sceneBoundingRect(),
+            self.target.sceneBoundingRect(),
+        )
         route_key = (
             round(start.x(), 3),
             round(start.y(), 3),
@@ -2414,6 +2417,7 @@ class ConnectionItem(QGraphicsPathItem):
             round(end.y(), 3),
             revision,
             bool(obstacle_aware),
+            *(rect.getRect() for rect in endpoint_rects),
         )
         if route_key == self._last_route_key:
             return
@@ -2422,7 +2426,12 @@ class ConnectionItem(QGraphicsPathItem):
             if view is not None and obstacle_aware
             else ()
         )
-        self.setPath(_wire_path(start, end, obstacles=obstacles))
+        # Even the cheap, pointer-tracking route must go around its own cards.
+        # Endpoint geometry also belongs in the key: a multi-port card can grow
+        # without moving the particular ports attached to this connection.
+        self.setPath(
+            _wire_path(start, end, obstacles=obstacles, endpoint_rects=endpoint_rects)
+        )
         self._last_route_key = route_key
 
     def shape(self) -> QPainterPath:
@@ -5449,28 +5458,39 @@ def _wire_path(
     end: QPointF,
     *,
     obstacles: tuple[QRectF, ...] | list[QRectF] = (),
+    endpoint_rects: tuple[QRectF, ...] = (),
 ) -> QPainterPath:
+    # Ports sit on the card boundary. Protect the interior without treating the
+    # required contact at the port itself as an obstacle collision.
+    protected = tuple(
+        rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        for rect in endpoint_rects
+        if rect.isValid() and rect.width() > 1 and rect.height() > 1
+    )
     clean_obstacles = tuple(
         rect for rect in obstacles if rect.isValid() and not rect.isNull()
     )
-    if not clean_obstacles:
-        return _bezier_wire_path(start, end)
-    relevant_obstacles = _route_corridor_obstacles(start, end, clean_obstacles)
-    if not relevant_obstacles:
-        return _bezier_wire_path(start, end)
-    if _should_use_close_port_curve(start, end):
-        return _bezier_wire_path(start, end)
-
+    all_obstacles = protected + clean_obstacles
     bezier = _bezier_wire_path(start, end)
-    bezier_points = _sample_path_points(bezier, samples=24)
-    if not _route_collision_penalty(bezier_points, relevant_obstacles):
+    if not all_obstacles:
+        return bezier
+    bezier_points = _flatten_wire_path(bezier)
+    if not _route_collision_penalty(bezier_points, all_obstacles):
         return bezier
 
-    candidates = _wire_route_candidates(start, end, relevant_obstacles)
-    best_path, _points, _score = min(
+    candidates = _wire_route_candidates(
+        start, end, all_obstacles, protected=protected
+    )
+    best_path, points, _score = min(
         candidates,
         key=lambda candidate: candidate[2],
     )
+    if _route_collision_penalty(points, all_obstacles):
+        # A few pleasant routes cover ordinary layouts. Only a blocked layout
+        # pays for a bounded rectilinear search between obstacle-side lanes.
+        detour = _wire_visibility_detour(start, end, all_obstacles, protected)
+        if detour is not None:
+            return detour
     return best_path
 
 
@@ -5489,37 +5509,42 @@ def _bezier_wire_path(start: QPointF, end: QPointF) -> QPainterPath:
     return path
 
 
-def _should_use_close_port_curve(start: QPointF, end: QPointF) -> bool:
-    horizontal_gap = end.x() - start.x()
-    return 0 < horizontal_gap <= 220.0
-
-
 def _wire_route_candidates(
     start: QPointF,
     end: QPointF,
     obstacles: tuple[QRectF, ...],
-) -> list[tuple[QPainterPath, tuple[QPointF, ...], float]]:
-    candidates: list[tuple[QPainterPath, tuple[QPointF, ...], float]] = []
+    *,
+    protected: tuple[QRectF, ...] = (),
+) -> list[tuple[QPainterPath, tuple[QPointF, ...], tuple[bool, float]]]:
+    candidates = []
     bezier = _bezier_wire_path(start, end)
-    bezier_points = _sample_path_points(bezier, samples=32)
+    bezier_points = _flatten_wire_path(bezier)
     candidates.append(
         (
             bezier,
             bezier_points,
-            _route_score(bezier_points, obstacles, bends=0),
+            _route_score(bezier_points, obstacles, bends=0, protected=protected),
         )
     )
 
-    for points in _orthogonal_route_candidates(start, end, obstacles):
+    # Limit lane generation, not collision checks. In particular, a detour can
+    # meet cards outside the original port corridor, and endpoints must never
+    # disappear from the candidate geometry in a crowded graph.
+    blockers = protected + _route_relevant_obstacles(start, end, obstacles)
+    for points in _orthogonal_route_candidates(start, end, blockers):
         clean = _clean_route_points(points)
-        if len(clean) < 2:
+        if len(clean) < 2 or _route_doubles_back(clean):
             continue
         path = _rounded_polyline_path(clean)
+        drawn_points = _flatten_wire_path(path)
         candidates.append(
             (
                 path,
-                tuple(clean),
-                _route_score(tuple(clean), obstacles, bends=max(len(clean) - 2, 0)),
+                drawn_points,
+                _route_score(
+                    drawn_points, obstacles, bends=max(len(clean) - 2, 0),
+                    protected=protected,
+                ),
             )
         )
     return candidates
@@ -5530,9 +5555,7 @@ def _orthogonal_route_candidates(
     end: QPointF,
     obstacles: tuple[QRectF, ...],
 ) -> list[list[QPointF]]:
-    port_stub = _port_stub_length(start, end)
-    route_start = QPointF(start.x() + port_stub, start.y())
-    route_end = QPointF(end.x() - port_stub, end.y())
+    route_start, route_end = _wire_port_stubs(start, end, obstacles)
     sign = 1.0 if route_end.x() >= route_start.x() else -1.0
     horizontal_gap = abs(route_end.x() - route_start.x())
     lead = min(max(horizontal_gap * 0.22, 56.0), 130.0)
@@ -5566,7 +5589,7 @@ def _orthogonal_route_candidates(
         ],
     ]
 
-    blockers = _route_relevant_obstacles(route_start, route_end, obstacles)
+    blockers = obstacles
     if blockers:
         top = min(rect.top() for rect in blockers)
         bottom = max(rect.bottom() for rect in blockers)
@@ -5603,6 +5626,22 @@ def _orthogonal_route_candidates(
                 end,
             ]
         )
+    # Backward/same-column connections need to leave to the right, go around
+    # both cards, then enter from the left. Also try the gaps between cards:
+    # routing around the entire column is often a needless, confusing U-turn.
+    lanes = {mid_y, above_y, below_y}
+    for rect in blockers:
+        lanes.update((rect.top() - pad, rect.bottom() + pad))
+    boundaries = sorted({y for rect in blockers for y in (rect.top(), rect.bottom())})
+    lanes.update(
+        (top + bottom) / 2.0
+        for top, bottom in zip(boundaries, boundaries[1:], strict=False)
+    )
+    for y in sorted(lanes):
+        candidates.append([
+            start, route_start, QPointF(route_start.x(), y),
+            QPointF(route_end.x(), y), route_end, end,
+        ])
     for x in (left_x, right_x):
         if x < lo_x or x > hi_x:
             continue
@@ -5625,6 +5664,115 @@ def _port_stub_length(start: QPointF, end: QPointF) -> float:
     if horizontal_gap > 0:
         return min(preferred, max(1.0, horizontal_gap / 3.0))
     return min(preferred, max(10.0, abs(horizontal_gap) * 0.18))
+
+
+def _wire_port_stubs(
+    start: QPointF, end: QPointF, obstacles: tuple[QRectF, ...]
+) -> tuple[QPointF, QPointF]:
+    departure = arrival = _port_stub_length(start, end)
+    for rect in obstacles:
+        if rect.top() < start.y() < rect.bottom() and rect.left() > start.x():
+            departure = min(departure, (rect.left() - start.x()) / 2.0)
+        if rect.top() < end.y() < rect.bottom() and rect.right() < end.x():
+            arrival = min(arrival, (end.x() - rect.right()) / 2.0)
+    return QPointF(start.x() + departure, start.y()), QPointF(
+        end.x() - arrival, end.y()
+    )
+
+
+def _wire_visibility_detour(
+    start: QPointF,
+    end: QPointF,
+    obstacles: tuple[QRectF, ...],
+    protected: tuple[QRectF, ...],
+) -> QPainterPath | None:
+    """Bounded A* fallback for staggered cards that need more than one detour.
+
+    Lane generation is local and capped, but every segment and the final
+    rounded path are checked against *all* cards. Failure leaves the ordinary
+    least-obstructed route in place, with endpoint protection taking priority.
+    """
+    first, last = _wire_port_stubs(start, end, obstacles)
+    if _route_collision_penalty((start, first), obstacles) or _route_collision_penalty(
+        (last, end), obstacles
+    ):
+        return None
+    corridor = QRectF(first, last).normalized()
+    # Distance from the port corridor, not its centre: protect narrow passages
+    # near either end even for a very long wire.
+    def distance(rect: QRectF) -> float:
+        horizontal = max(
+            corridor.left() - rect.right(), rect.left() - corridor.right(), 0
+        )
+        return horizontal + max(
+            corridor.top() - rect.bottom(), rect.top() - corridor.bottom(), 0
+        )
+
+    lanes = protected + tuple(sorted(obstacles, key=distance)[:32])
+    pad = 20.0  # More than the rounded corner's 18-pixel radius.
+    xs = sorted({first.x(), last.x()} | {
+        value for rect in lanes for value in (rect.left() - pad, rect.right() + pad)
+    })
+    ys = sorted({first.y(), last.y()} | {
+        value for rect in lanes for value in (rect.top() - pad, rect.bottom() + pad)
+    })
+    origin = (xs.index(first.x()), ys.index(first.y()), 0)
+    goal = (xs.index(last.x()), ys.index(last.y()))
+    costs = {origin: 0.0}
+    parents = {}
+    pending = [(0.0, 0.0, origin)]
+    segment_clear = {}
+    visits = 0
+    while pending and visits < 12000:
+        _estimate, cost, state = heappop(pending)
+        if cost != costs[state]:
+            continue
+        visits += 1
+        ix, iy, direction = state
+        if (ix, iy) == goal:
+            route = [QPointF(xs[ix], ys[iy])]
+            while state != origin:
+                state = parents[state]
+                route.append(QPointF(xs[state[0]], ys[state[1]]))
+            points = _clean_route_points([start, *reversed(route), end])
+            if _route_doubles_back(points):
+                return None
+            path = _rounded_polyline_path(points)
+            if not _route_collision_penalty(_flatten_wire_path(path), obstacles):
+                return path
+            # A lane squeezed against another card may leave no rounding room.
+            # A square bend is preferable to cutting through that card.
+            path = _rounded_polyline_path(points, radius=0)
+            if not _route_collision_penalty(_flatten_wire_path(path), obstacles):
+                return path
+            return None
+        for nx, ny, next_direction in (
+            (ix - 1, iy, 0), (ix + 1, iy, 0), (ix, iy - 1, 1), (ix, iy + 1, 1),
+        ):
+            if not (0 <= nx < len(xs) and 0 <= ny < len(ys)):
+                continue
+            # Do not immediately reverse the exit/entry stub into a small loop.
+            if state == origin and nx < ix:
+                continue
+            if (nx, ny) == goal and nx < ix:
+                continue
+            key = tuple(sorted(((ix, iy), (nx, ny))))
+            if key not in segment_clear:
+                segment_clear[key] = not _route_collision_penalty(
+                    (QPointF(xs[ix], ys[iy]), QPointF(xs[nx], ys[ny])), obstacles
+                )
+            if not segment_clear[key]:
+                continue
+            next_cost = cost + abs(xs[nx] - xs[ix]) + abs(ys[ny] - ys[iy])
+            next_cost += 42.0 * (direction != next_direction)
+            next_state = (nx, ny, next_direction)
+            if next_cost >= costs.get(next_state, float("inf")):
+                continue
+            costs[next_state] = next_cost
+            parents[next_state] = state
+            estimate = next_cost + abs(xs[nx] - last.x()) + abs(ys[ny] - last.y())
+            heappush(pending, (estimate, next_cost, next_state))
+    return None
 
 
 def _route_relevant_obstacles(
@@ -5655,16 +5803,30 @@ def _route_score(
     obstacles: tuple[QRectF, ...],
     *,
     bends: int,
-) -> float:
+    protected: tuple[QRectF, ...] = (),
+) -> tuple[bool, float]:
     collision = _route_collision_penalty(points, obstacles)
-    return collision * 1000.0 + _polyline_length(points) + bends * 42.0
+    return (
+        bool(_route_collision_penalty(points, protected)),
+        collision * 1000.0 + _polyline_length(points) + bends * 42.0,
+    )
 
 
 def _route_collision_penalty(
     points: tuple[QPointF, ...],
     obstacles: tuple[QRectF, ...],
 ) -> float:
-    return sum(_polyline_rect_penalty(points, rect) for rect in obstacles)
+    if len(points) < 2 or not obstacles:
+        return 0.0
+    xs, ys = zip(*((point.x(), point.y()) for point in points), strict=True)
+    bounds = QRectF(QPointF(min(xs), min(ys)), QPointF(max(xs), max(ys)))
+    # A straight horizontal/vertical wire has zero-area bounds. Give its broad
+    # phase a tiny extent, then let exact segment clipping decide intersections.
+    bounds.adjust(-0.001, -0.001, 0.001, 0.001)
+    return sum(
+        _polyline_rect_penalty(points, rect)
+        for rect in obstacles if bounds.intersects(rect)
+    )
 
 
 def _polyline_rect_penalty(points: tuple[QPointF, ...], rect: QRectF) -> float:
@@ -5680,33 +5842,22 @@ def _segment_rect_penalty(start: QPointF, end: QPointF, rect: QRectF) -> float:
         return 0.0
     dx = end.x() - start.x()
     dy = end.y() - start.y()
-    if abs(dy) < 0.001:
-        if rect.top() <= start.y() <= rect.bottom():
-            overlap = _range_overlap(start.x(), end.x(), rect.left(), rect.right())
-            return max(overlap, 0.0) + 25.0
-        return 0.0
-    if abs(dx) < 0.001:
-        if rect.left() <= start.x() <= rect.right():
-            overlap = _range_overlap(start.y(), end.y(), rect.top(), rect.bottom())
-            return max(overlap, 0.0) + 25.0
-        return 0.0
-
-    samples = max(int(np.hypot(dx, dy) / 18.0), 8)
-    inside = 0
-    for index in range(samples + 1):
-        t = index / max(samples, 1)
-        point = QPointF(start.x() + dx * t, start.y() + dy * t)
-        if rect.contains(point):
-            inside += 1
-    if inside:
-        return inside * 18.0 + 25.0
-    return 0.0
-
-
-def _range_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
-    lo_a, hi_a = sorted((float(a0), float(a1)))
-    lo_b, hi_b = sorted((float(b0), float(b1)))
-    return max(0.0, min(hi_a, hi_b) - max(lo_a, lo_b))
+    # Clip the segment to the rectangle instead of sampling every 18 pixels;
+    # sampling can miss a thin card or a corner crossed by a rounded bend.
+    enter, leave = 0.0, 1.0
+    for origin, delta, low, high in (
+        (start.x(), dx, rect.left(), rect.right()),
+        (start.y(), dy, rect.top(), rect.bottom()),
+    ):
+        if abs(delta) < 1e-9:
+            if not low < origin < high:
+                return 0.0
+            continue
+        first, last = sorted(((low - origin) / delta, (high - origin) / delta))
+        enter, leave = max(enter, first), min(leave, last)
+        if leave <= enter:
+            return 0.0
+    return (leave - enter) * float(np.hypot(dx, dy)) + 25.0
 
 
 def _polyline_length(points: tuple[QPointF, ...]) -> float:
@@ -5716,9 +5867,23 @@ def _polyline_length(points: tuple[QPointF, ...]) -> float:
     )
 
 
-def _sample_path_points(path: QPainterPath, *, samples: int) -> tuple[QPointF, ...]:
-    count = max(int(samples), 2)
-    return tuple(path.pointAtPercent(index / count) for index in range(count + 1))
+def _flatten_wire_path(path: QPainterPath) -> tuple[QPointF, ...]:
+    """Qt's adaptive curve flattening, without closing the open wire."""
+    # PyQt polygon iteration can expose points backed by that polygon's native
+    # storage. Own each point after the temporary polygons have been destroyed.
+    return tuple(
+        QPointF(point) for polygon in path.toSubpathPolygons() for point in polygon
+    )
+
+
+def _route_doubles_back(points: list[QPointF]) -> bool:
+    for first, middle, last in zip(points, points[1:], points[2:], strict=False):
+        incoming, outgoing = middle - first, last - middle
+        cross = incoming.x() * outgoing.y() - incoming.y() * outgoing.x()
+        dot = incoming.x() * outgoing.x() + incoming.y() * outgoing.y()
+        if abs(cross) < 0.001 and dot < 0:
+            return True
+    return False
 
 
 def _rounded_polyline_path(points: list[QPointF], radius: float = 18.0) -> QPainterPath:
@@ -5750,6 +5915,12 @@ def _clean_route_points(points: list[QPointF]) -> list[QPointF]:
     for point in points:
         if clean and _point_distance(clean[-1], point) < 0.5:
             continue
+        if len(clean) >= 2:
+            incoming, outgoing = clean[-1] - clean[-2], point - clean[-1]
+            cross = incoming.x() * outgoing.y() - incoming.y() * outgoing.x()
+            dot = incoming.x() * outgoing.x() + incoming.y() * outgoing.y()
+            if abs(cross) < 0.001 and dot >= 0:
+                clean.pop()
         clean.append(QPointF(point))
     return clean
 
