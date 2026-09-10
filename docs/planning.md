@@ -49,22 +49,21 @@ scale, interactivity, and reproducibility foundations below.
 
 ## Current Baseline
 
-`0.15.0a3` is the current release target, authorized on 2026-09-09;
-`0.15.0a2` is its preceding published baseline. Publication of a3 requires
-its changed-domain gates and exact-artifact checks. The a2 official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a2),
+The published `0.15.0a3` is the baseline for the narrow `0.15.0a4` release,
+authorized on 2026-09-10. The a3 official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a3),
 checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.15.0a2/), and
-[numbered](https://rensutheart.github.io/vipp-mkdocs/0.15.0a2/) and
-[stable](https://rensutheart.github.io/vipp-mkdocs/stable/) documentation are
-the release surfaces. The a3 candidate changes batch recovery, portable
-reproduction, core/UI, shared execution, RL GPU admission and desktop launch
-presentation. Affected evidence and bounded carry-forward rules are recorded in the
+[PyPI package](https://pypi.org/project/napari-vipp/0.15.0a3/), and
+[numbered manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a3/) establish
+that released baseline. Version a4 changes graph-wire routing and detailed
+multichannel histogram presentation, including PNG/TIFF export. Scientific
+calculations, schemas, GPU algorithms, dependencies and installer code are
+unchanged. Affected evidence and bounded carry-forward rules are recorded in the
 [qualification baseline](release-qualification-baseline.md); a version change
 alone does not qualify or invalidate a domain. The current line provides:
 
 - SourceItem v1 through workflow schema 6, batch config 6, and manifest schema 6
-  in the candidate (schema 5 in a2),
+  in a3/a4 (manifest schema 5 in a2),
   with stable selected-item identity, reader evidence, source revision, axes,
   metadata, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
@@ -115,19 +114,21 @@ The released `0.15.0a1` consolidates the batch, inspector, measurement, and
 workflow-interface overhaul. The released `0.15.0a2` adds batteries-included
 readers, quiet update discovery, clearer display/search/inspector controls,
 threshold ranges, explicit intensity inversion, convex hulls and object-aware
-3D mesh workflows. The `0.15.0a3` candidate adds verified batch resume, reviewed
+3D mesh workflows. The released `0.15.0a3` adds verified batch resume, reviewed
 reproducibility packages and original-input checks, label boundaries and filter
 diagnostics, broader RL GPU execution with advisories, and desktop/workflow
-presentation fixes; see the [release notes](../release-notes.md). Qualification
-and publication follow the [release runbook](release-runbook.md), with the
-complete a2-to-a3 delta declared in the [qualification baseline](release-qualification-baseline.md).
+presentation fixes. The narrow `0.15.0a4` release improves wire routing and
+histogram overlap visibility; see the [release notes](../release-notes.md).
+Qualification and publication follow the iterative-alpha
+[release runbook](release-runbook.md), with the complete tag-to-tag delta and
+unchanged-domain carry-forward declared in the
+[qualification baseline](release-qualification-baseline.md).
 
-The user reports the end-to-end acceptance item 3 complete and approves the
-frameless startup presentation on 2026-09-09.
-This is user acceptance of the exercised workflow, not independently captured
-output-equivalence or cross-machine validation. Exact-final-main CI, the RL
-catalogue correction and its regression checks, installed desktop launch review,
-and affected native-architecture checks remain separate release gates.
+User acceptance of a3's end-to-end workflow and startup presentation remains
+historical evidence, not an independent output-equivalence claim. Each release
+still requires passing exact-final-main CI and its own immutable artifact
+identities. The a4 presentation-only scope does not require replaying unchanged
+GPU or installer lifecycle matrices.
 
 The next planned feature series is **0.16: alignment and measurement results**.
 See the [registration/comparison/detection scope](#planned-016-registration-image-comparison-and-template-matching)
