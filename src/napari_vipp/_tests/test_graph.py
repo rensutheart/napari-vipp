@@ -1901,11 +1901,12 @@ def test_close_port_routing_does_not_create_horizontal_loop():
 
     assert min(point.x() for point in points) >= start.x() - 1.0
     assert max(point.x() for point in points) <= end.x() + 1.0
+    assert not _path_intersects_rect(path, obstacle)
     assert path.pointAtPercent(0.01).x() > start.x()
     assert path.pointAtPercent(0.99).x() < end.x()
 
 
-def test_local_obstacle_uses_compact_curve_instead_of_deep_u():
+def test_close_ports_route_around_a_blocking_card():
     start = QPointF(0, 100)
     end = QPointF(170, 118)
     obstacle = QRectF(55, 45, 90, 160)
@@ -1916,6 +1917,7 @@ def test_local_obstacle_uses_compact_curve_instead_of_deep_u():
     assert max(point.y() for point in points) <= end.y() + 1.0
     assert min(point.x() for point in points) >= start.x() - 1.0
     assert max(point.x() for point in points) <= end.x() + 1.0
+    assert not _path_intersects_rect(path, obstacle)
 
 
 def test_adding_node_over_existing_wire_reroutes_connection(qtbot):

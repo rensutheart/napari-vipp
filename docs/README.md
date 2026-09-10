@@ -34,6 +34,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Measurement plots and statistics](measurement-plots-and-statistics-plan.md):
+  planned 0.16 results workflow with two general-purpose nodes, batch-table
+  collection, independent-sample safeguards, editable pop-outs, and figure export.
 - [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
   planned 0.16 scope for 2D/3D alignment, SSIM and related comparisons, template
   detection, and transform contracts; drift/rigid/affine follow-ups are separate.

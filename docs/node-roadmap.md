@@ -2,7 +2,7 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-09-08
+Last reviewed: 2026-09-10
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -24,6 +24,9 @@ specialist docs for implementation detail:
   generation and deconvolution.
 - [registration-and-template-matching-plan.md](registration-and-template-matching-plan.md):
   planned 0.16 alignment/comparison/detection nodes, transform contracts, and gates.
+- [measurement-plots-and-statistics-plan.md](measurement-plots-and-statistics-plan.md):
+  planned 0.16 table-driven figures, descriptive statistics, independent-sample
+  safeguards, batch-results collection, and editable/exportable plot pop-outs.
 - [ome-io-plan.md](ome-io-plan.md) and
   [cache-and-memory.md](cache-and-memory.md): I/O, lazy data, preview, cache,
   and memory policy.
@@ -52,8 +55,10 @@ library feature parity. The important workflow families remain:
 PSF generation, deconvolution foundations, and optional microscope-reader
 routing are implemented foundations. Their remaining work is real-data
 validation, metadata coverage, and performance polish. Registration and template
-matching, with image comparison, now form the planned 0.16 feature scope. These
-nodes are not implemented; the detailed proposal defines release gates. Model-backed
+matching, with image comparison, form one part of the planned 0.16 scope;
+table-driven measurement plots and statistics form the other. The new features
+are not implemented; their detailed proposals define release gates. Existing
+table summaries will be extended, not duplicated. Model-backed
 segmentation, stitching, object tracking, and specialist mitochondrial indices
 remain later work unless a current validation or publication workflow needs them.
 
@@ -229,6 +234,24 @@ needs a transform contract, label-safe interpolation, metadata updates, and
 validation phantoms. Do not require a general batch-axis iterator before a
 bounded explicit time-series drift workflow. Template detection remains a
 separate capability from aligning images or segmenting their contents.
+
+### Measurement Plots And Statistics (Planned 0.16)
+
+Keep two general-purpose results nodes under **Measurements -> Tables**, with
+plot families and statistical methods selected inside them rather than added
+as separate nodes. See the [detailed plan](measurement-plots-and-statistics-plan.md).
+
+| Node | Suggested backend | Prerequisite |
+| --- | --- | --- |
+| Plot Results | Existing Matplotlib dependency; shared Qt-free recipe/renderer | Table columns/units, explicit grouping and independent samples, typed plot output, editable inspector/pop-out, headless PNG/TIFF/SVG/PDF export. |
+| Statistics | Existing summary reductions and bounded SciPy statistics | Compatible expansion of Summarize Measurements, not a duplicate node; versioned missing-data/insufficient-n rules, declared aggregation/pairing, qualified method menu. |
+
+An explicit batch-results collection and annotation path must retain source,
+object, condition, and replicate identities for across-image analyses. Existing
+Merge Tables joins columns; it does not supply this row-collection capability.
+Descriptive plots/summaries come first. Do not silently count nested cells as
+independent replicates, select tests automatically, or recreate general
+statistical modeling software.
 
 ### Geometry And Sampling
 

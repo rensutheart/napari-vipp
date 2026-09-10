@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-09
+Last reviewed: 2026-09-10
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -32,8 +32,12 @@ count or accelerator badges. A workflow should:
 - produce enough structured evidence for another person to reproduce or audit
   the run.
 
-Registration, image comparison, and template matching are the planned theme
-for **0.16**, with a [detailed proposal](registration-and-template-matching-plan.md).
+The planned **0.16** scope combines
+[registration, image comparison, and template matching](registration-and-template-matching-plan.md)
+with [measurement plots and statistics](measurement-plots-and-statistics-plan.md).
+The latter adds a focused results workflow, not a general statistical package:
+two configurable nodes, explicit independent samples, batch-table collection,
+editable plot pop-outs, and reproducible figure export.
 Model-backed segmentation, stitching,
 tracking, AI-assisted graph authoring, and custom code remain possible future
 directions. They are recorded
@@ -122,9 +126,9 @@ output-equivalence or cross-machine validation. Exact-final-main CI, the RL
 catalogue correction and its regression checks, installed desktop launch review,
 and affected native-architecture checks remain separate release gates.
 
-The next planned feature series is **0.16: registration, image comparison,
-and template matching**. See the [release scope below](#planned-016-registration-image-comparison-and-template-matching)
-and the [detailed proposal](registration-and-template-matching-plan.md).
+The next planned feature series is **0.16: alignment and measurement results**.
+See the [registration/comparison/detection scope](#planned-016-registration-image-comparison-and-template-matching)
+and the [measurement plots/statistics scope](#planned-016-measurement-plots-and-statistics).
 This records intent, not completed implementation, a version bump, or a release
 date. Existing correctness and qualification gates remain mandatory. The
 implementation records below retain their original 0.14 and 0.13 versions.
@@ -1028,7 +1032,7 @@ exact scientific region reads.
 ## Planned 0.16: Registration, Image Comparison, And Template Matching
 
 The [detailed implementation proposal](registration-and-template-matching-plan.md)
-defines the planned **0.16 release series**. The goal is to align images, assess
+defines the alignment/detection part of **0.16**. The goal is to align images, assess
 the result, and find template-like structures in explicit 2D/3D data. This is
 planning only; no implementation or alpha release date is claimed.
 
@@ -1054,6 +1058,34 @@ interpolation, truthful diagnostics, headless/batch/export parity, known-answer
 2D/3D examples, and concise illustrated vipp-mkdocs tutorials. Next action:
 confirm representative alignment/detection data and open an implementation
 issue before coding. Source, memory, and reproducibility priorities still apply.
+
+## Planned 0.16: Measurement Plots And Statistics
+
+The [detailed results proposal](measurement-plots-and-statistics-plan.md) records
+the 2026-09-10 request for a self-contained way to explore bioimage measurements
+and export useful figures. It complements the alignment scope above; this is
+planning only, not an implemented feature or a version bump.
+
+- **Plot Results:** table input, configurable plot families/fields, a preview,
+  and an editable nonmodal pop-out sharing the inspector's saved settings.
+  Export PNG/TIFF and SVG/PDF at explicit dimensions, with headless parity.
+- **Statistics:** expand **Summarize Measurements** rather than adding a
+  competing node. Descriptive summaries first; bounded comparisons only after
+  experimental-design and numerical-validation gates. Keep both nodes under
+  **Measurements -> Tables**.
+- **Across-image results:** explicitly collect and annotate batch measurement
+  tables with image, condition, and independent-sample identities. Existing
+  Merge Tables is not a batch-row collector. Per-image and post-batch analyses
+  must remain distinguishable and reproducible.
+- **Scientific guardrails:** never confuse cell counts with independent
+  replicates; declare aggregation/pairing, retain units, expose exclusions,
+  and show observations alongside clearly defined summaries/uncertainty.
+  Advanced statistical modeling remains external.
+
+Deliver collection/design contracts and descriptive plots before extending the
+test menu. Matplotlib/SciPy are existing dependencies; no new heavyweight
+statistics library is planned. Review the selector/pop-out workflow with the
+user and qualify complete interactive, batch, and export examples.
 
 ## 0.15 Correctness Follow-Ups
 

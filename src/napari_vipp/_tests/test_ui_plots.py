@@ -53,6 +53,12 @@ class _BarPaintRecorder:
     def drawRect(self, *_args) -> None:  # noqa: N802
         return None
 
+    def fillPath(self, _path, brush) -> None:  # noqa: N802
+        self.brush_colors.append(QColor(brush))
+
+    def strokePath(self, _path, pen) -> None:  # noqa: N802
+        self.pen_colors.append(QColor(pen.color()))
+
 
 def _record_compact_histogram_paint(qtbot, *, series_count: int, bin_count: int):
     plot = plots.HistogramPlot()
@@ -470,7 +476,7 @@ def test_compact_discrete_histogram_only_reduces_multiseries_fill_opacity(qtbot)
     )
 
 
-def test_detailed_histogram_only_reduces_multiseries_fill_opacity(qtbot):
+def test_detailed_histogram_has_faint_areas_and_crisp_channel_outlines(qtbot):
     single = _record_detailed_histogram_paint(qtbot, series_count=1)
     multiseries = _record_detailed_histogram_paint(qtbot, series_count=2)
 

@@ -62,6 +62,22 @@ napari / npe2
 
 `test_architecture.py` enforces the first two rules.
 
+## Graph wire routing
+
+`_graph.py` protects the connected cards' interiors separately from other
+node obstacles. Endpoint geometry is part of the route cache key and remains
+protected during the cheap pointer-tracking route; graph-wide obstacle routing
+runs on release. Rounded routes are collision-tested as drawn, including cards
+outside the original port corridor. A capped rectilinear search is used only
+when the ordinary candidates are blocked. Overlapping cards can make a clear
+route impossible; endpoint protection takes priority over other intersections.
+All of this is presentation-only: routing does not change topology or execution.
+
+`test_graph_wire_routing.py` covers backward/multi-port connections, movement,
+card growth and detours. `scripts/check_wire_routing_layouts.py --output-dir PATH`
+renders six actual Qt layouts before, during and after a drag; optional
+`--baseline-ref REF` renders an earlier implementation without changing files.
+
 ## Rescale Output Direction
 
 `rescale_intensity` requires finite ordered `out_min <= out_max` and an explicit
