@@ -40,7 +40,10 @@ two configurable nodes, explicit independent samples, batch-table collection,
 editable plot pop-outs, and reproducible figure export.
 Model-backed segmentation, stitching,
 tracking, AI-assisted graph authoring, and custom code remain possible future
-directions. They are recorded
+directions. The [AI authoring plan](ai-assisted-authoring-plan.md) connects
+description-driven workflows, AI-assisted custom-node creation with VIPP-owned
+boilerplate, and eventual image-guided iterative tuning. It is future planning,
+not an addition to the committed 0.16 scope. These ideas are recorded
 in [product ideas](product-ideas.md) and do not displace the active source,
 scale, interactivity, and reproducibility foundations below.
 
@@ -1086,6 +1089,27 @@ Deliver collection/design contracts and descriptive plots before extending the
 test menu. Matplotlib/SciPy are existing dependencies; no new heavyweight
 statistics library is planned. Review the selector/pop-out workflow with the
 user and qualify complete interactive, batch, and export examples.
+
+## Future Direction: AI-Assisted Nodes And Workflows
+
+The [staged proposal](ai-assisted-authoring-plan.md) records the 2026-09-10
+request to let users describe workflows and create their own nodes without
+hand-writing VIPP integration code. Users could supply natural-language goals,
+example snippets, inputs/outputs, and parameters; a cloud model drafts the
+operation while VIPP supplies trusted templates, validation, and a reviewable
+node-installation flow.
+
+Begin by assembling existing nodes, then introduce reusable custom-node
+packages after their trust/runtime contracts are ready. Later stages inspect
+selected images and measurements, adjust parameters, add/reconnect nodes,
+and arrange layouts. The long-term aim is a bounded self-iteration loop with
+user-approved objectives, data access, budgets, checkpoints, and stop rules.
+
+Generated code is not automatically trustworthy, and visual improvement is
+not proof of scientific correctness. Require cloud opt-in, isolated validation,
+reversible edits, and exact saved implementations/decisions so accepted
+workflows can be rerun without the model. This remains a longer-horizon product
+direction with no release assignment; it does not displace current 0.16 work.
 
 ## 0.15 Correctness Follow-Ups
 

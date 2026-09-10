@@ -1,6 +1,6 @@
 # VIPP Product Ideas
 
-Last reviewed: 2026-09-07
+Last reviewed: 2026-09-10
 
 This page preserves promising product concepts that are not committed to an
 active release. An idea moves into the [active roadmap](planning.md) only after
@@ -108,6 +108,29 @@ navigation, narrow-window behavior, and the clear separation between preview,
 edit, and run actions, and should be validated with representative workflows
 before implementation.
 
+## AI-Assisted Authoring And Iterative Analysis
+
+The [detailed future plan](ai-assisted-authoring-plan.md) records the 2026-09-10
+request for a connected AI authoring system, not a release commitment:
+
+1. Describe an analysis and assemble a reviewable workflow from existing nodes,
+   with sensible connections, parameters, layout, and explanatory notes.
+2. Describe a missing node, optionally supply code snippets, and declare
+   inputs/outputs and parameters. A cloud model can draft the operation while
+   VIPP owns the integration boilerplate, validation, and approval flow.
+3. Inspect selected images/results, suggest changes, and compare candidate
+   workflows, including parameter edits and adding/reconnecting nodes.
+4. Progress to authorized, bounded self-iteration over workflow structure,
+   layout, and parameters, with evaluation criteria, budgets, stopping rules,
+   checkpoints, and a reproducible accepted result.
+
+Reuse the operation and graph contracts, but do not mistake the current node
+registry for a safe custom-code runtime. Generated code needs explicit trust,
+isolated testing, versioned packaging, and scientific validation; cloud image
+access needs informed opt-in. Prefer existing nodes before inventing new ones.
+Saved accepted workflows must run without re-generating code or calling an AI
+model again. These capabilities remain outside the committed 0.16 scope.
+
 ## Longer-Horizon Product Concepts
 
 These remain worthwhile but are not all release commitments. Translation,
@@ -127,10 +150,9 @@ a stretch candidate; the broader concepts below are not core 0.16 gates.
 - Apple acceleration after a time-boxed provider study, with CPU retained as
   the honest fallback until admission passes;
 - stitching, mosaics, tracking, and specialist mitochondrial event metrics;
-- AI-assisted graph authoring only after validated fragments, structured diffs,
-  local approval, bounded context, and reproducibility provenance; and
-- custom code nodes only with explicit trust, serialization, review, and
-  sandboxing rules.
+- [AI-assisted custom nodes, workflow authoring, and bounded iterative analysis](ai-assisted-authoring-plan.md)
+  through the staged plan above, with explicit trust, cloud privacy, review,
+  versioned replay, and execution boundaries.
 
 ## Promotion Checklist
 

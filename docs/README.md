@@ -47,6 +47,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
   and active priorities.
 - [Product ideas](product-ideas.md) preserves promising concepts that are not
   committed to a release, including conditional batch routing.
+- [AI-assisted nodes, workflows, and iterative analysis](ai-assisted-authoring-plan.md):
+  future, unassigned scope for description-driven authoring, system-generated
+  custom-node integration, and bounded image-guided refinement.
 - [Planning history through 0.13.0a7](planning-history-0.13.md) preserves the
   delivered chronology and detailed qualification rationale removed from the
   active roadmap.
