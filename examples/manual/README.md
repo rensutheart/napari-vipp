@@ -13,6 +13,10 @@ contains every operation currently exposed in the node palette: 123 distinct
 operations across 129 nodes, with seven bundled sample sources. Every non-source
 operation appears exactly once.
 
+The logical columns reserve room for wide multi-input cards and tunnel labels.
+The full catalogue layout audit also checks this showcase before and after
+ready-result controls appear; no scientific operation is run by that visual audit.
+
 The graph is arranged as seven labelled horizontal lanes:
 
 1. axes, regions, metadata, projections, and generated PSF;

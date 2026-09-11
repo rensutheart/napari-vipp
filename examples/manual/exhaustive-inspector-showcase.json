@@ -2239,47 +2239,47 @@
       0.0
     ],
     "crop_stack_1": [
-      340.0,
+      646.0,
       0.0
     ],
     "select_axis_slice_1": [
-      680.0,
+      1292.0,
       0.0
     ],
     "split_axis_1": [
-      1020.0,
+      1938.0,
       0.0
     ],
     "reorder_axes_1": [
-      1360.0,
+      2584.0,
       0.0
     ],
     "set_microscope_metadata_1": [
-      1020.0,
+      1938.0,
       330.0
     ],
     "set_pixel_size_1": [
-      1360.0,
+      2584.0,
       330.0
     ],
     "rescale_axes_1": [
-      1700.0,
+      3230.0,
       330.0
     ],
     "born_wolf_psf_1": [
-      2040.0,
+      3876.0,
       330.0
     ],
     "mip_1": [
-      1700.0,
+      3230.0,
       -10.0
     ],
     "project_image_1": [
-      2040.0,
+      3876.0,
       -10.0
     ],
     "orthogonal_projection_1": [
-      2380.0,
+      4522.0,
       -10.0
     ],
     "input_2": [
@@ -2287,79 +2287,79 @@
       1020.0
     ],
     "linear_scale_offset_1": [
-      340.0,
+      646.0,
       1020.0
     ],
     "gamma_correction_1": [
-      680.0,
+      1292.0,
       1020.0
     ],
     "rescale_intensity_1": [
-      1020.0,
+      1938.0,
       1020.0
     ],
     "normalize_image_1": [
-      1360.0,
+      2584.0,
       1020.0
     ],
     "clip_intensity_1": [
-      1700.0,
+      3230.0,
       1020.0
     ],
     "average_blur_1": [
-      340.0,
+      646.0,
       1320.0
     ],
     "median_filter_1": [
-      680.0,
+      1292.0,
       1320.0
     ],
     "sigma_filter_1": [
-      1020.0,
+      1938.0,
       1320.0
     ],
     "bilateral_filter_1": [
-      1360.0,
+      2584.0,
       1320.0
     ],
     "non_local_means_filter_1": [
-      1700.0,
+      3230.0,
       1320.0
     ],
     "gaussian": [
-      340.0,
+      646.0,
       1620.0
     ],
     "unsharp_mask_1": [
-      680.0,
+      1292.0,
       1620.0
     ],
     "sobel_filter_1": [
-      1020.0,
+      1938.0,
       1620.0
     ],
     "laplace_filter_1": [
-      1360.0,
+      2584.0,
       1620.0
     ],
     "gaussian_blur_3d_1": [
-      340.0,
+      646.0,
       1920.0
     ],
     "rolling_ball_background_1": [
-      680.0,
+      1292.0,
       1920.0
     ],
     "subtract_background_1": [
-      1020.0,
+      1938.0,
       1920.0
     ],
     "difference_of_gaussians_1": [
-      1360.0,
+      2584.0,
       1920.0
     ],
     "canny_edges_1": [
-      1700.0,
+      3230.0,
       1920.0
     ],
     "input_3": [
@@ -2367,315 +2367,315 @@
       2760.0
     ],
     "split_channels_1": [
-      340.0,
+      646.0,
       2760.0
     ],
     "combine_channels_1": [
-      680.0,
+      1292.0,
       2760.0
     ],
     "assign_channel_colors_1": [
-      1020.0,
+      1938.0,
       2760.0
     ],
     "composite_to_rgb_1": [
-      1360.0,
+      2584.0,
       2760.0
     ],
     "intensity_histogram_1": [
-      1700.0,
+      3230.0,
       2760.0
     ],
     "save_output_1": [
-      1700.0,
+      3230.0,
       3060.0
     ],
     "extract_channel_1": [
-      680.0,
+      1292.0,
       3060.0
     ],
     "convert_dtype_1": [
-      1020.0,
+      1938.0,
       3060.0
     ],
     "imagej_auto_threshold_1": [
-      1360.0,
+      2584.0,
       3060.0
     ],
     "calculate_weighted_image_1": [
-      680.0,
+      1292.0,
       3380.0
     ],
     "add_images_1": [
-      1020.0,
+      1938.0,
       3380.0
     ],
     "subtract_images_1": [
-      1360.0,
+      2584.0,
       3380.0
     ],
     "ratio_image_1": [
-      1700.0,
+      3230.0,
       3380.0
     ],
     "input_4": [
-      340.0,
+      646.0,
       3700.0
     ],
     "binary_threshold_1": [
-      680.0,
+      1292.0,
       3700.0
     ],
     "threshold": [
-      1020.0,
+      1938.0,
       3700.0
     ],
     "triangle_threshold_1": [
-      1360.0,
+      2584.0,
       3700.0
     ],
     "li_threshold_1": [
-      1700.0,
+      3230.0,
       3700.0
     ],
     "isodata_threshold_1": [
-      2040.0,
+      3876.0,
       3700.0
     ],
     "minimum_threshold_1": [
-      2380.0,
+      4522.0,
       3700.0
     ],
     "hysteresis_threshold_1": [
-      680.0,
+      1292.0,
       4010.0
     ],
     "adaptive_mean_threshold_1": [
-      1020.0,
+      1938.0,
       4010.0
     ],
     "adaptive_gaussian_threshold_1": [
-      1360.0,
+      2584.0,
       4010.0
     ],
     "sauvola_threshold_1": [
-      1700.0,
+      3230.0,
       4010.0
     ],
     "niblack_threshold_1": [
-      2040.0,
+      3876.0,
       4010.0
     ],
     "mask_image_1": [
-      2040.0,
+      3876.0,
       3380.0
     ],
     "invert_1": [
-      2380.0,
+      4522.0,
       3380.0
     ],
     "logical_and_1": [
-      2380.0,
+      4522.0,
       4010.0
     ],
     "logical_or_1": [
-      2720.0,
+      5168.0,
       4010.0
     ],
     "logical_xor_1": [
-      3060.0,
+      5814.0,
       4010.0
     ],
     "dilate_1": [
-      680.0,
+      1292.0,
       4790.0
     ],
     "erode_1": [
-      1020.0,
+      1938.0,
       4790.0
     ],
     "opening_1": [
-      1360.0,
+      2584.0,
       4790.0
     ],
     "closing_1": [
-      1700.0,
+      3230.0,
       4790.0
     ],
     "top_hat_1": [
-      2040.0,
+      3876.0,
       4790.0
     ],
     "black_hat_1": [
-      2380.0,
+      4522.0,
       4790.0
     ],
     "morphological_gradient_1": [
-      2720.0,
+      5168.0,
       4790.0
     ],
     "convex_hull_1": [
-      3060.0,
+      5814.0,
       4790.0
     ],
     "mask_to_3d_mesh_1": [
-      3400.0,
+      6460.0,
       4790.0
     ],
     "remove_binary_outliers_1": [
-      680.0,
+      646.0,
       5110.0
     ],
     "fill_holes_1": [
-      1020.0,
+      1938.0,
       5110.0
     ],
     "remove_small_objects_1": [
-      1360.0,
+      2584.0,
       5110.0
     ],
     "euclidean_distance_transform_1": [
-      1700.0,
+      3230.0,
       5110.0
     ],
     "h_maxima_markers_1": [
-      2040.0,
+      3876.0,
       5110.0
     ],
     "marker_controlled_watershed_1": [
-      2380.0,
+      4522.0,
       5110.0
     ],
     "expand_labels_1": [
-      2720.0,
+      5168.0,
       5110.0
     ],
     "auto_watershed_from_mask_1": [
-      2380.0,
+      4522.0,
       5430.0
     ],
     "label_connected_components_1": [
-      1700.0,
+      3230.0,
       5430.0
     ],
     "clear_border_objects_1": [
-      2040.0,
+      3876.0,
       5750.0
     ],
     "filter_labels_by_volume_1": [
-      2380.0,
+      4522.0,
       5750.0
     ],
     "relabel_sequential_1": [
-      2720.0,
+      5168.0,
       5750.0
     ],
     "find_label_boundaries_1": [
-      3060.0,
+      5814.0,
       6070.0
     ],
     "measure_objects_1": [
-      3060.0,
+      5814.0,
       5750.0
     ],
     "filter_labels_by_property_1": [
-      3400.0,
+      6460.0,
       5750.0
     ],
     "measure_objects_intensity_1": [
-      3740.0,
+      7106.0,
       5750.0
     ],
     "measure_3d_mesh_morphology_1": [
-      3740.0,
+      7106.0,
       6070.0
     ],
     "merge_tables_1": [
-      4080.0,
+      7752.0,
       5750.0
     ],
     "add_metadata_columns_1": [
-      4420.0,
+      8398.0,
       5750.0
     ],
     "select_table_columns_1": [
-      4760.0,
+      9044.0,
       5750.0
     ],
     "summarize_measurements_1": [
-      5100.0,
+      9690.0,
       5750.0
     ],
     "batch_output_1": [
-      5440.0,
+      10336.0,
       5750.0
     ],
     "labels_to_3d_mesh_1": [
-      4080.0,
+      7752.0,
       6070.0
     ],
     "split_mesh_objects_1": [
-      4420.0,
+      8398.0,
       6070.0
     ],
     "color_mesh_objects_1": [
-      4760.0,
+      9044.0,
       6070.0
     ],
     "filter_mesh_objects_1": [
-      5100.0,
+      9690.0,
       6070.0
     ],
     "combine_meshes_1": [
-      5440.0,
+      10336.0,
       6070.0
     ],
     "smooth_mesh_1": [
-      5780.0,
+      10982.0,
       6070.0
     ],
     "simplify_mesh_1": [
-      6120.0,
+      11628.0,
       6070.0
     ],
     "colocalization_metrics_1": [
-      680.0,
+      1292.0,
       6590.0
     ],
     "masked_colocalization_metrics_1": [
-      1020.0,
+      1938.0,
       6590.0
     ],
     "colocalized_voxels_1": [
-      2040.0,
+      3876.0,
       6590.0
     ],
     "masked_colocalized_voxels_1": [
-      2380.0,
+      4522.0,
       6590.0
     ],
     "racc_index_1": [
-      2720.0,
+      5168.0,
       6590.0
     ],
     "masked_racc_index_1": [
-      3060.0,
+      5814.0,
       6590.0
     ],
     "object_colocalization_metrics_1": [
-      3400.0,
+      6460.0,
       6590.0
     ],
     "label_overlap_association_1": [
-      3740.0,
+      7106.0,
       6590.0
     ],
     "nearest_object_distance_1": [
-      4080.0,
+      7752.0,
       6590.0
     ],
     "event_localization_1": [
-      4420.0,
+      8398.0,
       6590.0
     ],
     "input_5": [
@@ -2683,51 +2683,51 @@
       7470.0
     ],
     "yen_threshold_1": [
-      340.0,
+      646.0,
       7470.0
     ],
     "skeletonize_1": [
-      680.0,
+      1292.0,
       7470.0
     ],
     "analyze_skeleton_1": [
-      1020.0,
+      1938.0,
       7470.0
     ],
     "measure_skeleton_branches_1": [
-      1360.0,
+      2584.0,
       7470.0
     ],
     "summarize_skeleton_branches_1": [
-      1700.0,
+      3230.0,
       7470.0
     ],
     "skeleton_graph_tables_1": [
-      2040.0,
+      3876.0,
       7470.0
     ],
     "measure_overall_skeleton_network_1": [
-      2380.0,
+      4522.0,
       7470.0
     ],
     "skeleton_keypoints_1": [
-      1020.0,
+      1938.0,
       7790.0
     ],
     "skeleton_graph_overlay_1": [
-      1360.0,
+      2584.0,
       7790.0
     ],
     "label_skeleton_components_1": [
-      1700.0,
+      3230.0,
       7790.0
     ],
     "label_skeleton_branches_1": [
-      2040.0,
+      3876.0,
       7790.0
     ],
     "prune_skeleton_branches_1": [
-      2380.0,
+      4522.0,
       7790.0
     ],
     "input_6": [
@@ -2739,15 +2739,15 @@
       9010.0
     ],
     "prepare_validate_psf_1": [
-      340.0,
+      646.0,
       9010.0
     ],
     "richardson_lucy_deconvolution_1": [
-      680.0,
+      1292.0,
       8690.0
     ],
     "richardson_lucy_tv_deconvolution_1": [
-      1020.0,
+      1938.0,
       8690.0
     ]
   },

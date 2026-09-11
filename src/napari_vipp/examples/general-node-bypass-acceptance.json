@@ -151,28 +151,28 @@
     {
       "id": "note_unary",
       "text": "TEST 1 - UNARY BYPASS\nSelect Gaussian Blur. PASS: Bypass node is checked, the card is visibly faded with its Bypassed badge, dotted outline, and pass-through cue, and its scientific output is the exact Image Source value and metadata. The card thumbnail remains a presentation-only preview of the sigma 2.4 blur that Run would produce; it never becomes downstream scientific data.",
-      "position": [300.0, -190.0],
+      "position": [250.0, 40.0],
       "width": 500.0,
       "attached_node": "gaussian_bypass"
     },
     {
       "id": "note_rl_tv",
       "text": "TEST 2 - MULTI-INPUT RL-TV BYPASS\nSelect Richardson-Lucy TV. Both Image and PSF are connected, and Bypass node starts checked. PASS: the internal cue runs from Image (port 0) to the sole output. The exact Image/intensity input is forwarded scientifically; PSF stays connected but is ignored by the bypass path. The would-run thumbnail is presentation only and may use the PSF plus the stored three-iteration settings. Clear Bypass node to run RL-TV, then check it again to restore the exact Image pass-through.",
-      "position": [760.0, -190.0],
-      "width": 520.0,
+      "position": [790.0, 40.0],
+      "width": 500.0,
       "attached_node": "rl_tv_bypass"
     },
     {
       "id": "note_terminal_boundaries",
       "text": "TEST 3 - TERMINALS AND BOUNDARIES\nSelect the Image Source and the rightmost, terminal Gaussian Blur node. PASS: a source never offers Bypass, while a terminal node has no enabled bypass because there is no scientific output consumer. Split Channels and other multi-output operations cannot define one unambiguous pass-through output. Save Image and Batch Output are publication boundaries and are also excluded.",
-      "position": [1260.0, -190.0],
-      "width": 500.0,
+      "position": [1330.0, 40.0],
+      "width": 480.0,
       "attached_node": "downstream_consumer"
     },
     {
       "id": "note_incompatible",
       "text": "TEST 4 - TYPE-INCOMPATIBLE SPLICE\nSelect Otsu Threshold. Its image input normally becomes a mask consumed by Remove Outliers. PASS: Bypass is unavailable and its tooltip explains that forwarding image data cannot satisfy the mask input. VIPP fails closed instead of relabelling the image as a mask. This check is topology-aware: only a primary input that every current output consumer accepts can be forwarded.",
-      "position": [330.0, 1450.0],
+      "position": [330.0, 1410.0],
       "width": 560.0,
       "attached_node": "incompatible_threshold"
     },

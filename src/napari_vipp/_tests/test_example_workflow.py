@@ -1024,7 +1024,7 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
     record = metrics.records()[0]
     masked_record = masked_metrics.records()[0]
 
-    # Six Costes nodes collapse to one full-image and one ROI-restricted fit.
+    # Four Costes nodes share two fits; both RACC nodes use manual thresholds.
     assert costes_calls == 2
 
     assert (
@@ -1039,6 +1039,7 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
     assert overlay.dtype == np.float32
     assert roi_mask.shape == data.shape[1:]
     assert roi_mask.dtype == bool
+    np.testing.assert_array_equal(roi_mask, data[0] > 30000)
     assert masked_overlay.shape == data.shape[1:] + (3,)
     assert metrics.row_count == 1
     assert masked_metrics.row_count == 1
@@ -1055,6 +1056,10 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
     assert masked_racc.shape == data.shape[1:]
     assert masked_racc.dtype == np.float32
     assert float(masked_racc.max()) > 0.0
+    for node_id in ("racc_index_1", "masked_racc_index_1"):
+        assert pipeline.nodes[node_id].params["threshold_mode"] == "Manual"
+        assert pipeline.nodes[node_id].params["channel_1_threshold"] == 43970.51
+        assert pipeline.nodes[node_id].params["channel_2_threshold"] == 48073.03
     assert not np.isclose(
         pipeline.nodes["colocalization_metrics_1"].params["channel_1_threshold"],
         35,

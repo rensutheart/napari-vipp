@@ -57,7 +57,8 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "5d2ba1a07eab4197c41e153e52bb9ae652c3ac4634c44ac2d33de601143fba1f"
     ),
     "synthetic-colocalization-racc.json": (
-        "38a5d9785b708833e6cba0ee544ca490735900fa307230ea4cf85e016ec4c4a6"
+        # Explicit manual RACC thresholds and the 30,000 red-channel ROI.
+        "294fba5428ae41a8edaaf9d63d89d9104d6271fac0525d2544b5002ff84efc37"
     ),
     "synthetic-deconvolution-rl-tv.json": (
         "0b71434287cdbb12204c65e64dc565adf104e7b13b1da81e175f089d7cde310f"
@@ -279,7 +280,7 @@ def test_schema_v3_scientific_hash_is_independent_of_record_and_mapping_order():
     assert scientific_workflow_hash(reordered) == scientific_workflow_hash(document)
 
 
-def test_synthetic_colocalization_example_uses_costes_for_every_threshold_node():
+def test_synthetic_colocalization_example_has_tuned_manual_racc_thresholds():
     document = _load_example("synthetic-colocalization-racc.json")
 
     threshold_modes = {
@@ -291,8 +292,14 @@ def test_synthetic_colocalization_example_uses_costes_for_every_threshold_node()
     assert threshold_modes == {
         "colocalized_voxels_1": "Costes auto",
         "colocalization_metrics_1": "Costes auto",
-        "racc_index_1": "Costes auto",
+        "racc_index_1": "Manual",
         "masked_colocalized_voxels_1": "Costes auto",
         "masked_colocalization_metrics_1": "Costes auto",
-        "masked_racc_index_1": "Costes auto",
+        "masked_racc_index_1": "Manual",
     }
+
+    nodes = {node["id"]: node for node in document["nodes"]}
+    assert nodes["binary_threshold_1"]["params"]["threshold"] == 30000
+    for node_id in ("racc_index_1", "masked_racc_index_1"):
+        assert nodes[node_id]["params"]["channel_1_threshold"] == 43970.51
+        assert nodes[node_id]["params"]["channel_2_threshold"] == 48073.03

@@ -78,42 +78,42 @@
     {
       "id": "note_bypass",
       "text": "TEST 1 - VERIFY THE AUTHORED BYPASS\nSelect Crop Stack. The compact Bypass node checkbox starts checked; hover over it for the exact pass-through explanation. PASS: the card retains its Bypassed badge, fades slightly, has a prominent dotted outline, and shows a subtle non-interactive line from input to output. Its thumbnail previews the 10 x 87 x 115 crop that the stored margins would produce, while the card metadata and inspected output truthfully remain the unchanged 12 x 96 x 128 ZYX input from Gaussian Before. No active crop ROI is presented.",
-      "position": [760.0, -170.0],
+      "position": [760.0, 40.0],
       "width": 500.0,
       "attached_node": "crop_stack_bypass"
     },
     {
       "id": "note_run",
       "text": "TEST 2 - SWITCH TO RUN\nClear Bypass node in the inspector, or right-click Crop Stack and clear the checkable Bypass node action. PASS: the fade, dotted outline, pass-through cue, and Bypassed badge clear. The stored controls become active, the thumbnail still shows the retained crop but the card metadata now also becomes the real 10 x 87 x 115 output, and the downstream Gaussian recalculates. The crop uses Z 1/1, Y 4/5, X 6/7 while the upstream Gaussian remains intact.",
-      "position": [760.0, 620.0],
+      "position": [760.0, 550.0],
       "width": 500.0,
       "attached_node": "crop_stack_bypass"
     },
     {
       "id": "note_history",
       "text": "TEST 3 - UNDO AND REDO AS ONE EDIT\nAfter switching to Run, press Ctrl+Z once. PASS: Crop Stack returns directly to Bypass; its checkbox, badge, fade, dotted outline, and pass-through cue agree. The authored margin values and would-run thumbnail are retained, while unrelated upstream previews do not disappear or recalculate. Press Ctrl+Shift+Z or Ctrl+Y once: Run and its real 10 x 87 x 115 result return.",
-      "position": [1280.0, -170.0],
+      "position": [1300.0, 40.0],
       "width": 480.0,
       "attached_node": "gaussian_after"
     },
     {
       "id": "note_gpu",
       "text": "TEST 4 - CHECK COMPUTE TRUTHFULNESS\nWith Prefer GPU selected, check Bypass node again in the inspector or context menu. PASS: it is reported as Bypassed, never as CPU or GPU scientific work; the would-run thumbnail is presentation only. On a supported GPU, Gaussian Before and Gaussian After may remain in one resident device chain across the alias; on CPU the same exact-value contract applies. Find fastest must not benchmark Crop Stack while it is bypassed.",
-      "position": [1280.0, 620.0],
+      "position": [1300.0, 550.0],
       "width": 500.0,
       "attached_node": "gaussian_after"
     },
     {
       "id": "note_persistence",
       "text": "TEST 5 - SAVE, REOPEN, AND EXPORT\nLeave Crop Stack on Bypass, press Ctrl+S, close and reopen the workflow, then use Export to Python if desired. PASS: Bypass is restored explicitly and every execution surface forwards the exact upstream value. Changing Bypass to Run marks the workflow dirty and changes its scientific workflow identity.",
-      "position": [-20.0, 620.0],
+      "position": [-20.0, 550.0],
       "width": 500.0,
       "attached_node": "input"
     },
     {
       "id": "note_batch",
       "text": "TEST 6 - REVIEW WHOLE-BATCH BEHAVIOR\nOpen Batch workspace. For Crop Stack, choose Use workflow, Run, or Bypass for all samples. PASS: Use workflow inherits this saved Bypass state; Run and Bypass override it only for the detached batch plan and do not mutate the authored graph. Representative preview, preflight, full batch, saved config, and generated batch runner agree.",
-      "position": [230.0, -170.0],
+      "position": [230.0, 40.0],
       "width": 500.0,
       "attached_node": "gaussian_before"
     }

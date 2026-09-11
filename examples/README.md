@@ -8,6 +8,13 @@ These workflows are checked into the repository as small, deterministic review
 graphs. They are intended for regression testing, manual UI review, and future
 documentation screenshots.
 
+Check presentation after changing a fixture with
+`python scripts/check_example_layouts.py <filename-stem> --output-dir .cache/example-layout-review`.
+This renders real Qt cards, tunnels and notes before and after illustrative
+ready-result expansion, without executing analysis or reading input files.
+Inspect the PNGs as well as the collision diagnostics; layout regression tests
+cover the full catalogue. Scientific golden hashes remain separate from layout.
+
 Launch one of the named review workflows with:
 
 ```bash
@@ -78,12 +85,12 @@ example...**. Its actively maintained source also remains under
 
 `synthetic-mesh-objects.json` is the manually authored **Mesh Objects, Colours &
 Refinement** example (`mesh-objects`, under **3D Meshes**). It
-retains the interactive node parameters, positions and inspector profiles:
+retains the interactive node parameters and inspector profiles:
 single-object extraction followed by splitting, Turbo triangle-count colours,
 two smoothing iterations at strength 1, and a 10% simplification target at
 aggressiveness 4. Its regression tests check the saved settings, five object IDs,
-calibration and absence of automatic output files. Preserve this snapshot rather
-than regenerating its parameters or layout; the previous generator was removed.
+calibration and absence of automatic output files. Preserve its authored analysis
+and display profiles when improving layout; the previous generator was removed.
 
 The repository test suite loads and runs every workflow above. When adding a new
 example workflow, also add:

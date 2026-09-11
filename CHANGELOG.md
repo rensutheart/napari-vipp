@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Review the full example catalogue for readable graph placement. Separate crowded nodes, tunnel labels and explanatory notes; leave room for calculated-result controls, and widen the exhaustive showcase's seven logical lanes. Keep the examples' analysis parameters, connections, saved display profiles and operation coverage intact.
+
+- Space out the **RACC Colocalization** example so channel tunnels clear neighbouring nodes. Use a 30,000 binary ROI threshold and manual thresholds of 43,970.51 / 48,073.03 for both RACC variants. Display all RACC index images with Magma in VIPP thumbnails, Inspect and pinned views; metric and voxel-overlay threshold modes are unchanged.
+
+- Give the Intensity Histogram inspector a minimum drawable plot height plus adaptive space for its title, channel legend and axis labels. Narrow inspectors and larger fonts expand vertically instead of compressing the graph; horizontal titles use the available label bands. Histogram values, log scales, pop-out plots and exports are unchanged.
+
 - Avoid resetting unchanged mesh display calibration during node selection, pinning and refresh, reducing unnecessary napari transform callbacks. Keep genuine calibration changes exact. Contain delayed selection display failures without changing calculated results; show a concise warning with **Details…** and **Dismiss** instead of an inline traceback filling the workflow dock.
 
 - Simplify desktop launch to one **VIPP** app/shortcut using Auto, for both Windows CPU/CUDA installations and macOS. Remove the separate CPU/Prefer-GPU graphical entry points and the normal splash's Automatic badge/profile explanation; compute controls remain inside VIPP. Upgrades retain ownership and rollback checks when retiring old profile shortcuts. GPU dependencies remain a separate installation capability, not a separate app icon.

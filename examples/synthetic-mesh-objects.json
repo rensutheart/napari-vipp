@@ -194,8 +194,8 @@
   "tunnels": [],
   "positions": {
     "input": [
-      -9.0,
-      -2.0
+      0.0,
+      0.0
     ],
     "binary_threshold_1": [
       350.0,
@@ -226,8 +226,8 @@
       120.0
     ],
     "smooth_mesh_1": [
-      2502.0,
-      123.0
+      2500.0,
+      120.0
     ],
     "simplify_mesh_1": [
       2800.0,
@@ -248,7 +248,7 @@
       "text": "1. CALCULATE ALL, THEN INSPECT THE MESHES\nFive synthetic objects; explicit Z/Y/X, 2 x 0.5 x 0.5 micrometres. Extract as Single object, then Split Mesh Objects gives disconnected surfaces separate IDs. Colour, Smooth and Simplify have Auto Recalculate enabled in this saved workflow.",
       "position": [
         0.0,
-        -250.0
+        -170.0
       ],
       "width": 670.0
     },
@@ -257,7 +257,7 @@
       "text": "2. IDENTITIES, COLOURS AND TWO DISJOINT GROUPS\nSplit uses shared triangle edges; no implicit union. Colour uses Triangle count with Turbo. Volume filtering keeps four objects >= 10 um^3 in one branch and the tiny object in the other. Combine reunites all five without welding or lost colours.",
       "position": [
         1050.0,
-        -250.0
+        -170.0
       ],
       "width": 670.0
     },
@@ -266,7 +266,7 @@
       "text": "3. COMPARE ORIGINAL AND REFINED GEOMETRY\nSaved settings: Smooth 2 iterations at strength 1; Simplify keeps a target of 10% at aggressiveness 4. Open boundaries stay fixed. These sample-specific settings can change shape and measurements; upstream originals remain available. The 3MF Batch Output only declares an output: Calculate all saves nothing.",
       "position": [
         2450.0,
-        -250.0
+        -170.0
       ],
       "width": 1000.0
     }

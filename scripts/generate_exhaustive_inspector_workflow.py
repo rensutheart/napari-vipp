@@ -664,7 +664,7 @@ def build_workflow() -> tuple[
 
     outliers = place(
         "remove_binary_outliers",
-        680,
+        340,
         5110,
         radius=1.5,
         which_outliers="Foreground (remove)",
@@ -1237,6 +1237,11 @@ def build_workflow() -> tuple[
         raise RuntimeError(f"Non-source operation duplicates: {duplicates}")
     if set(positions) != set(pipeline.nodes):
         raise RuntimeError("Every showcase node must have a canvas position.")
+
+    # The authored 340-unit logical grid predates the wider multi-input cards
+    # and named channel badges. Keep the seven conceptual lanes and ordering,
+    # but reserve horizontal room for both cards and their tunnel labels.
+    positions = {node_id: (x * 1.9, y) for node_id, (x, y) in positions.items()}
 
     return pipeline, positions, notes
 

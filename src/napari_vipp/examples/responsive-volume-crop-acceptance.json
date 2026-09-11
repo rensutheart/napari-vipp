@@ -53,49 +53,49 @@
     {
       "id": "note_axes",
       "text": "TEST 1 - REVIEW THE EXPLICIT TCZYX CROP\nThe supplied source is a deterministic 5 x 3 x 12 x 96 x 128 TCZYX image. Select Crop Stack and calculate it. Z start and Z end are visible because Z is explicitly declared. PASS: the result is 5 x 3 x 9 x 87 x 115; all five timepoints and all three channels remain intact.",
-      "position": [-40.0, -150.0],
+      "position": [-40.0, 0.0],
       "width": 450.0,
       "attached_node": "input"
     },
     {
       "id": "note_drag",
       "text": "TEST 2 - DRAG WITHOUT RECALCULATING EVERY TICK\nDrag any Crop Stack margin rapidly back and forth without releasing it. PASS: a lightweight crop box and current-slice outline follow the latest draft over the cached image, while the scientific pixel calculation does not restart for every slider event. On a 2D slice the outline is orange inside the retained Z range and red on an excluded Z plane; switch napari to 3D to see the retained box faces. Release the slider: exactly one calculation starts from the final margins.",
-      "position": [420.0, -170.0],
+      "position": [420.0, 0.0],
       "width": 470.0,
       "attached_node": "crop_stack_1"
     },
     {
       "id": "note_idle_undo",
       "text": "TEST 3 - HOLD THROUGH IDLE, THEN UNDO ONCE\nPress and hold a crop slider, move it, pause for at least one second without releasing, move it again, and then release. PASS: the pause does not commit or create an Undo point; release commits only the final value and calculates once. Press Ctrl+Z once: the crop returns directly to the value present at mouse-down. Press Ctrl+Shift+Z or Ctrl+Y once: the final crop returns. Numeric entry still commits when you press Enter or leave the field.",
-      "position": [920.0, -170.0],
+      "position": [920.0, 0.0],
       "width": 470.0,
       "attached_node": "crop_stack_1"
     },
     {
       "id": "note_origin",
       "text": "TEST 4 - CHECK SHAPE, ORIGIN, AND HISTORY\nRestore the authored margins Z 2/1, Y 4/5, X 6/7 and inspect Output Metadata. PASS: Z/Y/X spacing stays 0.45 micrometre, origins become 0.9, 1.8, and 2.7 micrometres, T/C metadata is unchanged, and history records every leading and trailing margin. Pixel values equal source[:, :, 2:-1, 4:-5, 6:-7].",
-      "position": [400.0, 590.0],
+      "position": [400.0, 550.0],
       "width": 500.0,
       "attached_node": "crop_stack_1"
     },
     {
       "id": "note_boundaries",
       "text": "TEST 5 - FLUSH BEFORE DURABLE OR EXECUTION BOUNDARIES\nMove a margin and immediately use Calculate, Calculate all, Save workflow, Export to Python, batch start, another workflow tab, or close. PASS: the final visible draft is committed before the action. Save and reopen the workflow, then run its exported Python or batch form: parameters, pixels, shape, calibration, history, and provenance match the interactive result.",
-      "position": [930.0, 590.0],
+      "position": [930.0, 550.0],
       "width": 510.0,
       "attached_node": "crop_stack_1"
     },
     {
       "id": "note_qyx",
       "text": "TEST 6 - NEVER GUESS THAT Q IS Z\nTemporarily point Image Source at a generic QYX TIFF. PASS: Z start and Z end disappear and a nonzero Z crop is rejected. Only when independent acquisition knowledge justifies choosing Image stack = Stack planes are depth slices (the exact QYX -> ZYX declaration) do the Z controls reappear. Reordering Q does not rename it to Z.",
-      "position": [-50.0, 590.0],
+      "position": [-50.0, 550.0],
       "width": 420.0,
       "attached_node": "input"
     },
     {
       "id": "note_compute",
       "text": "TEST 7 - READ CPU/GPU STATUS TRUTHFULLY\nThis example requests Prefer GPU with visible fallback. PASS: VIPP reports the implementation that actually ran. Crop Stack currently has no admitted GPU implementation, so it receives an explained ordinary CPU assignment; visible fallback remains available for eligible forced GPU work if an admitted GPU candidate fails. CPU, any future admitted GPU implementation, interactive execution, generated Python, export, and batch must produce the same exact crop contract.",
-      "position": [1480.0, 190.0],
+      "position": [930.0, 260.0],
       "width": 470.0,
       "attached_node": "crop_stack_1"
     }

@@ -250,35 +250,53 @@
   "positions": {
     "input": [0.0, 520.0],
     "binary_threshold_1": [360.0, 520.0],
-    "skeleton_graph_overlay_1": [760.0, 0.0],
-    "skeleton_keypoints_1": [760.0, 240.0],
-    "label_skeleton_components_1": [760.0, 480.0],
-    "label_skeleton_branches_1": [760.0, 720.0],
-    "analyze_skeleton_1": [1160.0, 0.0],
-    "measure_skeleton_branches_1": [1160.0, 240.0],
-    "summarize_skeleton_branches_1": [1560.0, 240.0],
-    "skeleton_graph_tables_1": [1160.0, 480.0],
-    "measure_overall_skeleton_network_1": [1160.0, 720.0],
-    "prune_skeleton_branches_1": [1560.0, 720.0],
-    "skeleton_graph_overlay_2": [1960.0, 480.0],
-    "measure_skeleton_branches_2": [1960.0, 720.0],
-    "summarize_skeleton_branches_2": [2360.0, 720.0],
-    "measure_overall_skeleton_network_2": [1960.0, 960.0]
+    "skeleton_graph_overlay_1": [840.0, 0.0],
+    "skeleton_keypoints_1": [840.0, 300.0],
+    "label_skeleton_components_1": [840.0, 600.0],
+    "label_skeleton_branches_1": [840.0, 900.0],
+    "analyze_skeleton_1": [1440.0, 0.0],
+    "measure_skeleton_branches_1": [1440.0, 300.0],
+    "summarize_skeleton_branches_1": [1840.0, 300.0],
+    "skeleton_graph_tables_1": [1440.0, 600.0],
+    "measure_overall_skeleton_network_1": [1440.0, 900.0],
+    "prune_skeleton_branches_1": [1940.0, 900.0],
+    "skeleton_graph_overlay_2": [2380.0, 600.0],
+    "measure_skeleton_branches_2": [2380.0, 900.0],
+    "summarize_skeleton_branches_2": [2780.0, 900.0],
+    "measure_overall_skeleton_network_2": [2380.0, 1200.0]
   },
   "notes": [
     {
       "id": "note_1",
-      "text": "This thresholded skeleton intentionally fans out through the Skeleton mask tunnel to multiple 3D QC views and tables.",
-      "position": [360.0, 390.0],
-      "width": 270.0,
+      "text": "ONE SHARED SKELETON\nThe thresholded mask feeds the original QC views, measurements and pruning through the Skeleton mask tunnel.",
+      "position": [0.0, 360.0],
+      "width": 580.0,
       "attached_node": "binary_threshold_1"
     },
     {
+      "id": "network_views",
+      "text": "1. INSPECT THE ORIGINAL\nGraph overlay, keypoints, components and branches are complementary 3D QC views.",
+      "position": [840.0, -110.0],
+      "width": 440.0
+    },
+    {
+      "id": "network_tables",
+      "text": "2. MEASURE BEFORE PRUNING\nReview the original branch statistics, graph tables and whole-network measurements.",
+      "position": [1440.0, -110.0],
+      "width": 620.0
+    },
+    {
       "id": "note_2",
-      "text": "Pruned outputs are measured separately so before/after network summaries can be compared.",
-      "position": [1560.0, 950.0],
-      "width": 270.0,
+      "text": "3. PRUNE SHORT BRANCHES\nThis creates a separate result; the original skeleton and measurements stay available.",
+      "position": [1940.0, 730.0],
+      "width": 320.0,
       "attached_node": "prune_skeleton_branches_1"
+    },
+    {
+      "id": "network_after",
+      "text": "4. COMPARE AFTER PRUNING\nInspect the new overlay, then compare branch and whole-network summaries with the original measurements on the left.",
+      "position": [2380.0, 460.0],
+      "width": 620.0
     }
   ],
   "tunnels": [

@@ -549,7 +549,7 @@
       "text": "1. START WITH THE MIXED IMAGE\nCalculate all. The bundled ZYX sample contains a rounded object and a curved band in one grayscale image, not two channels. Background subtraction, rescaling and denoising prepare the signal.",
       "position": [
         0,
-        -290
+        -180
       ],
       "width": 920
     },
@@ -558,7 +558,7 @@
       "text": "2. SEPARATE THE MASKS\nCompare Otsu on the denoised image with Gamma 4.247 -> Otsu, which isolates the rounded object. Logical XOR keeps foreground present in exactly one mask, revealing the curved-band fragments.",
       "position": [
         1050,
-        -290
+        -180
       ],
       "width": 920
     },
@@ -567,7 +567,7 @@
       "text": "3. RECONNECT THE CURVE\nClean and dilate the XOR result. The lower Gamma 10 -> Rescale -> Binary Threshold branch supplies a cleaned bridge through the overlap. Logical OR joins both masks; it is not a mesh union.",
       "position": [
         2100,
-        -290
+        -180
       ],
       "width": 920
     },
@@ -576,7 +576,7 @@
       "text": "4. FINISH AND CHECK BOTH OBJECTS\nGaussian Blur 3D -> Otsu -> Erosion smooths the rebuilt curved band. Compare it with the rounded-object mask across Z slices. These sample-specific steps change boundaries; they do not guarantee exact recovery of the original objects.",
       "position": [
         3150,
-        -290
+        -180
       ],
       "width": 980
     },
@@ -585,7 +585,7 @@
       "text": "5. TURN MASKS INTO MESHES\nEach Mask to 3D Mesh node creates one mesh; the two measurement nodes describe them separately. Close at image border caps surfaces at the volume edges and affects volume measurements. The synthetic sample has 0.45 micrometer spacing on Z, Y and X.",
       "position": [
         4300,
-        -290
+        -180
       ],
       "width": 920
     },
@@ -594,7 +594,7 @@
       "text": "6. VIEW THE TWO OBJECTS TOGETHER\nCombine Meshes retains both objects without fusing geometry; Colour Mesh Objects assigns distinct ID colours. Save Image nodes are disabled, so Calculate all writes no files. Inspect or export the chosen mesh manually.",
       "position": [
         5350,
-        -290
+        -180
       ],
       "width": 950
     }
