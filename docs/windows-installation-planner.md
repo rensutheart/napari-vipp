@@ -19,20 +19,27 @@ than copy planner or pip commands.
 
 ## Supported Plans
 
-The planner covers four explicit routes:
+The planner covers four explicit routes. Unreleased after `0.15.0a4`, each
+route plans one **VIPP** shortcut per selected location, using `vipp-app`/Auto:
 
 | Environment | Compute track | Result |
 | --- | --- | --- |
-| Managed | CPU | A new VIPP app environment and a CPU launcher profile in each selected shortcut location |
-| Managed | CUDA 13 | A new VIPP app/CUDA environment and Automatic, CPU, and Prefer-GPU profiles in each selected shortcut location |
-| Existing napari venv | CPU | Plan the exact VIPP release and selected launcher profile without replacing napari or Qt |
-| Existing napari venv | CUDA 13 | Plan the exact CUDA extra and selected launcher profiles after environment and hardware validation |
+| Managed | CPU | A new VIPP app environment and one VIPP shortcut |
+| Managed | CUDA 13 | A new VIPP app/CUDA environment and one VIPP shortcut |
+| Existing napari venv | CPU | Plan the exact VIPP release and VIPP launcher without replacing napari or Qt |
+| Existing napari venv | CUDA 13 | Plan the exact CUDA extra and VIPP launcher after environment and hardware validation |
 
 The existing-environment route is deliberately conservative. This first slice
 accepts a normal 64-bit CPython virtual environment containing napari 0.6 or
 newer and PyQt6. It rejects global Python, editable VIPP, mixed Qt bindings,
 conflicting CuPy tracks, and environments that inherit system site-packages.
 Managed installation remains the recommended route.
+
+Compute policy is selected inside VIPP. Auto still uses CPU-only implementations
+when no qualified GPU runtime is installed. Command-line profile overrides are
+retained for diagnostics, but do not produce additional installed app icons.
+An unchanged, ownership-bound legacy shortcut may be retired during upgrade;
+an unowned, modified or other-installation shortcut is never overwritten.
 
 CPU installation supports CPython 3.12 and 3.13. CUDA installation requires
 CPython 3.12 on native 64-bit Windows. CUDA discovery calls the installed

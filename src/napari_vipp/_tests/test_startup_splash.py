@@ -20,7 +20,7 @@ def _snapshot(phase: StartupPhase, *, error: str = "") -> StartupSnapshot:
     )
 
 
-def test_splash_profiles_share_branding_but_show_distinct_badges(qtbot, tmp_path):
+def test_explicit_diagnostic_profiles_remain_visible(qtbot, tmp_path):
     splash = StartupSplash(
         profile=LaunchProfile.PREFER_GPU,
         version="1.2.3",
@@ -43,6 +43,21 @@ def test_splash_profiles_share_branding_but_show_distinct_badges(qtbot, tmp_path
     assert "CUDA" not in cpu_splash.note_label.text()
 
 
+def test_default_splash_has_one_vipp_identity_without_automatic_badge(qtbot, tmp_path):
+    splash = StartupSplash(
+        profile="auto", version="1.2.3", log_path=tmp_path / "startup.log"
+    )
+    qtbot.addWidget(splash)
+    splash.show()
+    assert splash.version_label.text() == "VIPP 1.2.3"
+    assert splash.findChild(QLabel, "VippProfileText") is None
+    assert splash.profile_description.isHidden()
+    assert not any(
+        "automatic" in label.text().casefold()
+        for label in splash.findChildren(QLabel) if label.isVisibleTo(splash)
+    )
+
+
 @pytest.mark.parametrize("profile", tuple(LaunchProfile))
 def test_splash_stylesheet_parses_and_styles_profile_and_minimize_button(
     qtbot, qtlog, tmp_path, profile
@@ -62,12 +77,15 @@ def test_splash_stylesheet_parses_and_styles_profile_and_minimize_button(
     ]
     assert not stylesheet_errors, stylesheet_errors
     badge = splash.findChild(QLabel, "VippProfileText")
-    assert badge is not None
-    assert badge.palette().color(QPalette.WindowText).name() == (
-        splash.profile_spec.accent.lower()
-    )
-    assert badge.font().bold()
-    assert badge.font().pixelSize() == 10
+    if profile is LaunchProfile.AUTO:
+        assert badge is None
+    else:
+        assert badge is not None
+        assert badge.palette().color(QPalette.WindowText).name() == (
+            splash.profile_spec.accent.lower()
+        )
+        assert badge.font().bold()
+        assert badge.font().pixelSize() == 10
     # A malformed rule earlier in the shared sheet can also discard the new
     # minimize rule, even though the window still launches and minimizes.
     assert splash.minimize_button.font().pixelSize() == 22

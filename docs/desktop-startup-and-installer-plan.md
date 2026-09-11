@@ -36,19 +36,19 @@ fails. After five minutes, the user can keep waiting or hide the splash; neither
 choice terminates VIPP. This matters on a first CUDA launch, when local
 kernel compilation and cache creation can legitimately take several minutes.
 
-Installed entry points are split by intent:
+Unreleased after `0.15.0a4`, there is one installed graphical launcher:
 
 | Command | Intended shortcut label | Initial compute policy |
 | --- | --- | --- |
-| `vipp-app` | VIPP Automatic | Auto |
-| `vipp-cpu` | VIPP CPU | CPU only |
-| `vipp-prefer-gpu` | VIPP Prefer GPU | Prefer scientifically eligible GPU implementations |
+| `vipp-app` | VIPP | Auto |
 | `vipp` | VIPP command-line launcher | Auto, or `--profile`/`--no-splash` |
 
-The graphical commands share the same identity and milestones. Their badge and
-accent differ so the session policy is visible without suggesting that a GPU
-shortcut guarantees every node will run on a GPU. Scientific, environment,
-memory, and fallback gates still apply.
+The normal splash shows VIPP and its version without an Automatic badge or
+profile explanation. CPU/Prefer-GPU command-line overrides remain available for
+diagnostics and explicitly identify that exceptional policy on the splash;
+separate graphical entry points are no longer packaged. Scientific, environment,
+memory, and fallback gates still apply. Ordinary compute choices belong inside
+the workflow UI, not in separate application icons.
 
 When VIPP is opened from napari's Plugins menu, napari cannot display the
 standalone process splash. The plugin therefore returns a lightweight branded
@@ -64,7 +64,7 @@ present them as four technical choices:
 
 | Existing setup | CPU | GPU |
 | --- | --- | --- |
-| No napari environment | Create a managed VIPP environment and CPU shortcut | Create a managed VIPP CUDA environment and Auto/CPU/Prefer-GPU shortcuts |
+| No napari environment | Create a managed VIPP environment and one VIPP shortcut | Create a managed VIPP CUDA environment and one VIPP shortcut |
 | Existing napari environment | Leave it unchanged; link to the advanced version-pinned manual route | Leave it unchanged; CUDA integration remains an expert manual route |
 
 Creating a separate managed environment should be the recommended default.
@@ -92,10 +92,13 @@ names or approve each internal command. Existing-napari installation, manual
 CPU/GPU selection, package inspection, and custom shortcut locations are
 advanced choices.
 
-For a managed CPU installation, the ordinary shortcut is simply **VIPP**, not
-**VIPP CPU**. When qualified GPU installation is added, **VIPP** starts in Auto;
-CPU-reference and Prefer-GPU launchers can remain in the Start menu or behind
-an advanced shortcut option rather than cluttering the desktop.
+For either managed installation track, the only application shortcut is
+**VIPP**, starting in Auto. The same rule applies to each requested Desktop or
+Start Menu location. Auto does not add missing GPU dependencies to a CPU-only
+installation. Same-track upgrades retire only unchanged, installer-owned legacy
+profile shortcuts through the transaction's existing rollback boundary. A VIPP
+shortcut owned by another installation or modified by the user is never silently
+replaced; side-by-side installations cannot share that shortcut path.
 
 Platform scope should remain truthful:
 

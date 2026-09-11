@@ -2362,17 +2362,10 @@ def _prepare_shortcuts(
     *,
     allowed_roots: tuple[Path, ...],
 ) -> tuple[PreparedShortcut, ...]:
-    planned: list[tuple[str, str, Path]]
-    if plan.request.track is ComputeTrack.CPU:
-        directories = tuple(
-            dict.fromkeys(shortcut.destination.parent for shortcut in plan.shortcuts)
-        )
-        planned = [("VIPP", "cpu", directory / "VIPP.lnk") for directory in directories]
-    else:
-        planned = [
-            (shortcut.label, shortcut.profile, shortcut.destination)
-            for shortcut in plan.shortcuts
-        ]
+    planned = [
+        (shortcut.label, shortcut.profile, shortcut.destination)
+        for shortcut in plan.shortcuts
+    ]
     owned = inspection.record.shortcuts if inspection.record is not None else ()
     prepared: list[PreparedShortcut] = []
     for label, profile, destination in planned:
@@ -2408,7 +2401,10 @@ def _prepare_shortcuts(
         if authority is None or authority.sha256 != digest:
             raise PreparationError(
                 "A requested shortcut already exists but is not the exact shortcut "
-                f"owned by this VIPP installation: {destination}"
+                f"owned by this VIPP installation: {destination}. It may belong to "
+                "another VIPP installation or have been changed. It was preserved; "
+                "update the installation that owns it, or move or rename that "
+                "shortcut before retrying."
             )
         prepared.append(
             PreparedShortcut(
@@ -2647,11 +2643,12 @@ def _acceptance_argv(action: PlannedAction, python: Path) -> tuple[str, ...]:
 
 
 def _launcher_path(environment: Path, track: ComputeTrack) -> Path:
-    name = "vipp-app.exe" if track is ComputeTrack.CUDA13 else "vipp-cpu.exe"
-    return environment / "Scripts" / name
+    return environment / "Scripts" / "vipp-app.exe"
 
 
 def _profile_launcher(environment: Path, profile: str) -> Path:
+    # Legacy profiles remain readable for journals from interrupted older setup.
+    # New plans use only auto, regardless of installed optional GPU dependencies.
     name = {
         "auto": "vipp-app.exe",
         "cpu": "vipp-cpu.exe",

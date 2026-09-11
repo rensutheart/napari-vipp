@@ -13,7 +13,7 @@
         "napari_vipp",
         "--desktop",
         "--profile",
-        "cpu"
+        "auto"
       ],
       "activate": true,
       "terminal": false,
@@ -28,7 +28,7 @@
             "napari_vipp",
             "--desktop",
             "--profile",
-            "cpu"
+            "auto"
           ],
           "CFBundleName": "VIPP",
           "CFBundleDisplayName": "VIPP",

@@ -122,15 +122,20 @@ class StartupSplash(QWidget):
         self.version_label = QLabel(f"VIPP {version}")
         self.version_label.setStyleSheet("color: #94A3B8; font-size: 11px;")
         identity.addWidget(self.version_label)
-        identity.addSpacing(10)
-        badge = QFrame()
-        badge.setObjectName("VippProfileBadge")
-        badge_layout = QHBoxLayout(badge)
-        badge_layout.setContentsMargins(10, 3, 10, 3)
-        profile_label = QLabel(self.profile_spec.label.upper())
-        profile_label.setObjectName("VippProfileText")
-        badge_layout.addWidget(profile_label)
-        identity.addWidget(badge)
+        # The installed application has one identity: VIPP. Only an explicit
+        # diagnostic CLI override needs a mode badge; Auto is the normal path.
+        explicit_profile = self.profile is not LaunchProfile.AUTO
+        if explicit_profile:
+            identity.addSpacing(10)
+            badge = QFrame()
+            badge.setObjectName("VippProfileBadge")
+            badge_layout = QHBoxLayout(badge)
+            badge_layout.setContentsMargins(10, 3, 10, 3)
+            profile_label = QLabel(self.profile_spec.label.upper())
+            profile_label.setObjectName("VippProfileText")
+            badge_layout.addWidget(profile_label)
+            badge.setAttribute(Qt.WA_TransparentForMouseEvents)
+            identity.addWidget(badge)
         identity.addStretch(1)
         root.addLayout(identity)
 
@@ -156,11 +161,14 @@ class StartupSplash(QWidget):
         stats.addWidget(self.elapsed_label)
         root.addLayout(stats)
 
-        self.profile_description = QLabel(self.profile_spec.description)
+        self.profile_description = QLabel(
+            self.profile_spec.description if explicit_profile else ""
+        )
         self.profile_description.setAlignment(Qt.AlignCenter)
         self.profile_description.setWordWrap(True)
         self.profile_description.setStyleSheet("color: #A8B7C8; font-size: 10px;")
         root.addWidget(self.profile_description)
+        self.profile_description.setVisible(explicit_profile)
 
         self.detail_label = QLabel()
         self.detail_label.setAlignment(Qt.AlignCenter)
@@ -216,7 +224,6 @@ class StartupSplash(QWidget):
         for label in self.findChildren(QLabel):
             if label is not self.detail_label:
                 label.setAttribute(Qt.WA_TransparentForMouseEvents)
-        badge.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.progress_bar.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         # Overlay the existing top margin, rather than adding a toolbar row.

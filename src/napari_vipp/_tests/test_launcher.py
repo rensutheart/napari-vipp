@@ -22,7 +22,7 @@ from napari_vipp.startup import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_packaged_commands_expose_console_and_clickable_profile_launchers():
+def test_packaged_commands_expose_one_graphical_vipp_launcher():
     with (PROJECT_ROOT / "pyproject.toml").open("rb") as stream:
         project = tomllib.load(stream)["project"]
 
@@ -30,8 +30,6 @@ def test_packaged_commands_expose_console_and_clickable_profile_launchers():
     assert project["scripts"]["vipp-install-plan"] == "napari_vipp.installer.cli:main"
     assert project["gui-scripts"] == {
         "vipp-app": "napari_vipp.launcher:main_auto",
-        "vipp-cpu": "napari_vipp.launcher:main_cpu",
-        "vipp-prefer-gpu": "napari_vipp.launcher:main_prefer_gpu",
     }
 
 
@@ -43,7 +41,7 @@ def test_packaged_commands_expose_console_and_clickable_profile_launchers():
         ("main_prefer_gpu", "cpu", "prefer_gpu"),
     ],
 )
-def test_graphical_profile_commands_cannot_be_overridden(
+def test_graphical_launcher_and_legacy_facades_keep_explicit_profile(
     monkeypatch,
     facade_name,
     conflicting_profile,

@@ -11,6 +11,7 @@ import re
 import sys
 import textwrap
 import threading
+import traceback
 import weakref
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
@@ -741,7 +742,11 @@ from napari_vipp.ui.source_preview import (
     SourcePreviewWorkerResult,
     SourcePreviewWorkerSpec,
 )
-from napari_vipp.ui.status import MessageSeverity, StatusMessageStrip
+from napari_vipp.ui.status import (
+    MessageSeverity,
+    StatusMessageActions,
+    StatusMessageStrip,
+)
 from napari_vipp.ui.toolbar_controls import (
     ToolbarCommandButton as _ToolbarCommandButton,
 )
@@ -5237,6 +5242,10 @@ class VippWidget(QWidget):
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(6)
         status_row.addWidget(self.status_label, 1)
+        self.status_actions = StatusMessageActions(
+            self.status_label, self.status_toolbar_widget
+        )
+        status_row.addWidget(self.status_actions)
 
         self.pipeline_activity_group = QFrame(self.status_toolbar_widget)
         self.pipeline_activity_group.setObjectName("VippPipelineActivityGroup")
@@ -5928,6 +5937,7 @@ class VippWidget(QWidget):
         # status. Hiding the older message prevents duplicate status copy and
         # leaves enough room for long node names at every dock width.
         self.status_label.setVisible(not busy)
+        self.status_actions.set_active(not busy)
         self.pipeline_busy_label.setMinimumWidth(0 if narrow else 80)
         self.pipeline_busy_label.setMaximumWidth(160 if narrow else 300)
         self.pipeline_busy_bar.setMinimumWidth(80 if narrow else 96)
@@ -21544,13 +21554,24 @@ class VippWidget(QWidget):
 
         dims_changed = False
         if node_id:
+            display_error = None
             self._selected_viewer_refresh_in_progress = True
             try:
                 self._inspect_selected_node()
+            except Exception as exc:
+                # A delayed selection callback must not leak a display-only
+                # failure into Qt's exception handler or strand its inspector.
+                # Preserve the cached result and report it after flag cleanup.
+                display_error = exc
             finally:
                 self._selected_viewer_refresh_in_progress = False
                 dims_changed = self._selected_viewer_dims_refresh_pending
                 self._selected_viewer_dims_refresh_pending = False
+            if display_error is not None:
+                self._report_result_display_error(
+                    display_error, result_calculated=False
+                )
+                return dims_changed
             if self._closing or node_id != self._selected_node_id:
                 return dims_changed
         self._apply_selected_viewer_surface(select_layer=select_layer)
@@ -37061,11 +37082,19 @@ class VippWidget(QWidget):
             self.pipeline_busy_label.setText("Processing graph")
         self._sync_run_activity_button()
 
-    def _report_result_display_error(self, error: Exception) -> None:
+    def _report_result_display_error(
+        self, error: Exception, *, result_calculated: bool = True
+    ) -> None:
+        summary = (
+            "Result calculated, but the viewer could not fully update. "
+            if result_calculated
+            else "The viewer could not fully update. "
+        )
         self._set_status(
-            f"Result calculated, but its display could not be updated: {error}",
-            severity=MessageSeverity.ERROR,
+            summary + "Reselect the node to retry its display.",
+            severity=MessageSeverity.WARNING,
             actionable=True,
+            detail="".join(traceback.format_exception(error)),
         )
 
     def _sync_view_dims_bar(self) -> None:
@@ -43547,7 +43576,12 @@ class VippWidget(QWidget):
             layer.vertex_colors = vertex_colors
             layer.metadata.update(metadata)
             for key, value in settings.items():
-                setattr(layer, key, value)
+                # napari invalidates transform caches and emits changed even
+                # for identical scale/translation values. Ordinary mesh
+                # refreshes need no such weak-listener churn. Compare exactly:
+                # small but genuine calibration changes must still be applied.
+                if not np.array_equal(getattr(layer, key), value):
+                    setattr(layer, key, value)
             layer.visible = True
 
     def _viewer_nsteps(self) -> tuple[int, ...] | None:

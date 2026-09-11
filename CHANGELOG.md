@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Avoid resetting unchanged mesh display calibration during node selection, pinning and refresh, reducing unnecessary napari transform callbacks. Keep genuine calibration changes exact. Contain delayed selection display failures without changing calculated results; show a concise warning with **Details…** and **Dismiss** instead of an inline traceback filling the workflow dock.
+
+- Simplify desktop launch to one **VIPP** app/shortcut using Auto, for both Windows CPU/CUDA installations and macOS. Remove the separate CPU/Prefer-GPU graphical entry points and the normal splash's Automatic badge/profile explanation; compute controls remain inside VIPP. Upgrades retain ownership and rollback checks when retiring old profile shortcuts. GPU dependencies remain a separate installation capability, not a separate app icon.
+
 - Check for updates on every startup (unless disabled), retry a transient GitHub failure once, and explain connection failures without presenting a cached release as freshly checked. Separate installed/latest versions, status, update actions and preferences in the update dialog.
 
 - Add an explicit **Download & open update** action for owned Windows desktop installations. Download official installer assets in the background, verify SHA-256 and the active installation, then open guided setup with the current location and CPU/CUDA profile selected. Setup still requires review; VIPP never silently updates a Python environment or closes unsaved work. Other installation types retain browser/manual update routes.

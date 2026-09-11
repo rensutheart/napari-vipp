@@ -1,6 +1,7 @@
 VIPP was installed for the current user.
 
-Open ~/Applications/VIPP.app to start the CPU-safe macOS build. The first
-launch can take a little longer while the image-processing interface loads.
+Open ~/Applications/VIPP.app to start VIPP. Compute mode starts at Auto and
+can be changed inside VIPP. The first launch can take a little longer while
+the image-processing interface loads.
 
 __VIPP_CONCLUSION_NOTICE__

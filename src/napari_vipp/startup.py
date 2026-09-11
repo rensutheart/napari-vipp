@@ -25,7 +25,7 @@ DEFAULT_STARTUP_TIMEOUT_SECONDS = 300.0
 
 
 class LaunchProfile(StrEnum):
-    """Compute policy selected by a launcher shortcut for this session."""
+    """Initial compute policy: Auto normally, explicit overrides for diagnostics."""
 
     AUTO = "auto"
     CPU = "cpu"

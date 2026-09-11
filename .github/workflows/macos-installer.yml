@@ -120,7 +120,7 @@ jobs:
           test -x "$launcher"
           test -x "$launcher_script"
           grep -Fq "export QT_API=pyside6" "$launcher_script"
-          grep -Fq "$app/Contents/Resources/python -m napari_vipp --desktop --profile cpu" \
+          grep -Fq "$app/Contents/Resources/python -m napari_vipp --desktop --profile auto" \
             "$launcher_script"
 
           QT_API=pyqt6 "$launcher" \

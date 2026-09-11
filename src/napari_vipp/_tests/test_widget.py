@@ -20363,7 +20363,9 @@ def test_finish_clears_busy_state_when_result_display_fails(qtbot, monkeypatch):
     assert widget.pipeline_busy_label.isHidden()
     assert widget.pipeline_busy_bar.isHidden()
     assert "Result calculated" in widget.status_label.text()
-    assert "generated layer failed" in widget.status_label.text()
+    assert "generated layer failed" in widget.status_label.toolTip()
+    assert "generated layer failed" not in widget.status_label.text()
+    assert not widget.status_actions.isHidden()
 
 
 def test_completed_background_node_clears_processing_when_presentation_fails(
@@ -20402,7 +20404,7 @@ def test_completed_background_node_clears_processing_when_presentation_fails(
 
     assert not widget.graph_view._cards["gaussian"].is_processing()
     assert "Result calculated" in widget.status_label.text()
-    assert "progressive display failed" in widget.status_label.text()
+    assert "progressive display failed" in widget.status_label.toolTip()
 
 
 def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch):
@@ -23906,6 +23908,7 @@ def test_status_toolbar_progress_stop_and_run_activity_stay_synchronized(qtbot):
     assert widget.workflow_toolbar_layout is widget.status_toolbar_layout
     assert status_widgets == [
         widget.status_label,
+        widget.status_actions,
         widget.cache_status_label,
         widget.pipeline_activity_group,
         widget.run_activity_button,

@@ -336,17 +336,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def main_auto() -> int:
-    """GUI-entry-point facade for an Automatic shortcut."""
+    """The single graphical VIPP launcher; compute choices live inside VIPP."""
     return main([*sys.argv[1:], "--profile", LaunchProfile.AUTO.value])
 
 
 def main_cpu() -> int:
-    """GUI-entry-point facade for a CPU-safe-mode shortcut."""
+    """Compatibility facade for older launch scripts, not a packaged shortcut."""
     return main([*sys.argv[1:], "--profile", LaunchProfile.CPU.value])
 
 
 def main_prefer_gpu() -> int:
-    """GUI-entry-point facade for a Prefer-GPU shortcut."""
+    """Compatibility facade for older launch scripts, not a packaged shortcut."""
     return main([*sys.argv[1:], "--profile", LaunchProfile.PREFER_GPU.value])
 
 

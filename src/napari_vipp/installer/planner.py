@@ -959,12 +959,12 @@ def _validate_shortcuts(
                 severity=IssueSeverity.ERROR,
                 subject="shortcuts",
                 message=(
-                    "One or more requested shortcut paths already exist without a "
-                    "VIPP installer ownership record."
+                    "One or more requested shortcut paths already exist and are "
+                    "not owned unchanged by this VIPP installation."
                 ),
                 remediation=(
-                    "Choose another shortcut location or remove the foreign shortcut "
-                    "after reviewing it."
+                    "Update the installation that owns the shortcut, or move or "
+                    "rename it after reviewing it."
                 ),
                 details=(
                     (
@@ -1087,19 +1087,6 @@ def _shortcut_plans(
     if request.shortcut_scope is ShortcutScope.NONE:
         return ()
     scripts = target_python.parent
-    profiles = (
-        (
-            ("VIPP Automatic", "auto", scripts / "vipp-app.exe"),
-            ("VIPP CPU", "cpu", scripts / "vipp-cpu.exe"),
-            (
-                "VIPP Prefer GPU",
-                "prefer_gpu",
-                scripts / "vipp-prefer-gpu.exe",
-            ),
-        )
-        if request.track is ComputeTrack.CUDA13
-        else (("VIPP", "cpu", scripts / "vipp-cpu.exe"),)
-    )
     directories: list[Path] = []
     filesystem = discovery.filesystem
     if request.shortcut_scope in {ShortcutScope.DESKTOP, ShortcutScope.BOTH}:
@@ -1111,13 +1098,12 @@ def _shortcut_plans(
     unique_directories = tuple(dict.fromkeys(directories))
     return tuple(
         ShortcutPlan(
-            label=label,
-            profile=profile,
-            executable=executable,
-            destination=directory / f"{label}.lnk",
+            label="VIPP",
+            profile="auto",
+            executable=scripts / "vipp-app.exe",
+            destination=directory / "VIPP.lnk",
         )
         for directory in unique_directories
-        for label, profile, executable in profiles
     )
 
 
@@ -1266,8 +1252,7 @@ def _release_acceptance_code(version: str) -> str:
         f"expected={version!r}; "
         "assert version('napari-vipp') == expected; "
         "points={(p.group,p.name) for p in distribution('napari-vipp').entry_points}; "
-        "required={('gui_scripts','vipp-app'),('gui_scripts','vipp-cpu'),"
-        "('gui_scripts','vipp-prefer-gpu')}; "
+        "required={('gui_scripts','vipp-app')}; "
         "assert required <= points"
     )
 

@@ -8,6 +8,7 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,12 +66,18 @@ _DEPENDENCY_HASH = "b" * 64
 
 @pytest.fixture(autouse=True)
 def _isolate_installer_temporary_directory(monkeypatch, tmp_path):
-    """Keep Windows-installer tests off redirected host temp directories."""
+    """Keep simulated installs independent of host temp paths and free space."""
 
     monkeypatch.setattr(
         engine_module.tempfile,
         "gettempdir",
         lambda: str(tmp_path.resolve()),
+    )
+    monkeypatch.setattr(
+        engine_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=50 * 1024**3, used=10 * 1024**3,
+                                     free=40 * 1024**3),
     )
 
 
@@ -94,6 +101,7 @@ def _record(
     version: str = "0.13.0a6",
     healthy: bool = True,
     shortcut: Path | None = None,
+    track: ComputeTrack = ComputeTrack.CPU,
 ) -> OwnershipRecord:
     environment = managed_environments_root(target) / f"{version}-old"
     environment.mkdir(parents=True)
@@ -114,14 +122,17 @@ def _record(
         scripts.mkdir()
         (environment / "pyvenv.cfg").write_text("home = test\n", encoding="utf-8")
         (scripts / "python.exe").touch()
+        (scripts / "vipp-app.exe").touch()
         (scripts / "vipp-cpu.exe").touch()
+        if track is ComputeTrack.CUDA13:
+            (scripts / "vipp-prefer-gpu.exe").touch()
     record = OwnershipRecord(
         installation_id=str(uuid.uuid4()),
         managed_root=target,
         environment_root=environment,
         distribution="napari-vipp",
         version=version,
-        track=ComputeTrack.CPU,
+        track=track,
         base_python=target.parent / "base-python.exe",
         resolved_plan_id="c" * 64,
         packages=(OwnedPackage("napari-vipp", version, _VIPP_HASH),),
@@ -149,10 +160,14 @@ def _plan(
     *,
     shortcut_directory: Path | None = None,
     track: ComputeTrack = ComputeTrack.CPU,
+    shortcut_scope: ShortcutScope | None = None,
 ):
-    scope = (
-        ShortcutScope.DESKTOP if shortcut_directory is not None else ShortcutScope.NONE
-    )
+    scope = shortcut_scope
+    if scope is None:
+        scope = (
+            ShortcutScope.DESKTOP
+            if shortcut_directory is not None else ShortcutScope.NONE
+        )
     request = InstallRequest(
         mode=InstallMode.MANAGED,
         track=track,
@@ -194,8 +209,8 @@ def _plan(
             nearest_existing_ancestor_is_directory=True,
             free_bytes=20 * 1024**3,
             disk_probe_error="",
-            desktop_directory=shortcut_directory,
-            start_menu_directory=None,
+            desktop_directory=shortcut_directory or target.parent / "Desktop",
+            start_menu_directory=target.parent / "Programs" / "VIPP",
             managed_ownership=(
                 ownership.record.to_snapshot(ownership.manifest_sha256)
                 if ownership.record is not None
@@ -270,9 +285,7 @@ class _FakeRunner:
         if "--requirement" in call:
             if self.cancel_on_install is not None:
                 self.cancel_on_install.cancel()
-            (Path(call[0]).parent / "vipp-cpu.exe").touch()
             (Path(call[0]).parent / "vipp-app.exe").touch()
-            (Path(call[0]).parent / "vipp-prefer-gpu.exe").touch()
             icon = Path(call[0]).parent.parent / (
                 "Lib/site-packages/napari_vipp/assets/branding/vipp-mark.ico"
             )
@@ -779,11 +792,9 @@ def test_shortcuts_are_branded_staged_after_acceptance_and_atomically_owned(
     prepared = engine.prepare(
         _plan(target, _release(), shortcut_directory=desktop, track=track)
     )
-    expected_names = (
-        ["VIPP.lnk"] if track is ComputeTrack.CPU else
-        ["VIPP Automatic.lnk", "VIPP CPU.lnk", "VIPP Prefer GPU.lnk"]
-    )
+    expected_names = ["VIPP.lnk"]
     assert [item.destination.name for item in prepared.shortcuts] == expected_names
+    assert [item.profile for item in prepared.shortcuts] == ["auto"]
 
     result = engine.apply(
         prepared,
@@ -793,6 +804,7 @@ def test_shortcuts_are_branded_staged_after_acceptance_and_atomically_owned(
     shortcut = desktop / expected_names[0]
     assert result.succeeded
     assert shortcut.is_file()
+    assert result.launcher_path == result.environment_root / "Scripts" / "vipp-app.exe"
     calls = runner.calls
     acceptance_index = max(
         index
@@ -815,6 +827,7 @@ def test_shortcuts_are_branded_staged_after_acceptance_and_atomically_owned(
     assert ownership is not None
     assert len(ownership.shortcuts) == len(expected_names)
     assert ownership.shortcuts[0].path == shortcut
+    assert ownership.shortcuts[0].target == result.launcher_path
     assert (
         ownership.shortcuts[0].sha256
         == hashlib.sha256(shortcut.read_bytes()).hexdigest()
@@ -842,6 +855,163 @@ def test_foreign_shortcut_is_never_overwritten(tmp_path):
 
     assert shortcut.read_bytes() == b"a researcher's existing shortcut"
     assert not target.exists()
+
+
+def _legacy_cuda_shortcuts(target, directories):
+    record = _record(target, track=ComputeTrack.CUDA13)
+    shortcuts = []
+    for directory in directories:
+        directory.mkdir(parents=True, exist_ok=True)
+        for label, executable in (
+            ("VIPP Automatic", "vipp-app.exe"),
+            ("VIPP CPU", "vipp-cpu.exe"),
+            ("VIPP Prefer GPU", "vipp-prefer-gpu.exe"),
+        ):
+            path = directory / f"{label}.lnk"
+            launcher = record.environment_root / "Scripts" / executable
+            path.write_bytes(f"shortcut:{launcher}".encode())
+            shortcuts.append(
+                OwnedShortcut(
+                    path, hashlib.sha256(path.read_bytes()).hexdigest(), launcher
+                )
+            )
+    record = replace(record, shortcuts=tuple(shortcuts))
+    write_ownership_record(target, record)
+    return record
+
+
+@pytest.mark.parametrize(
+    "scope", [ShortcutScope.DESKTOP, ShortcutScope.START_MENU, ShortcutScope.BOTH]
+)
+def test_cuda_upgrade_replaces_owned_legacy_profiles_with_one_auto_per_scope(
+    tmp_path, scope
+):
+    target = tmp_path / "managed"
+    directories = []
+    if scope in {ShortcutScope.DESKTOP, ShortcutScope.BOTH}:
+        directories.append(tmp_path / "Desktop")
+    if scope in {ShortcutScope.START_MENU, ShortcutScope.BOTH}:
+        directories.append(tmp_path / "Programs" / "VIPP")
+    old = _legacy_cuda_shortcuts(target, directories)
+    engine = _engine(tmp_path, _FakeRunner())
+    prepared = engine.prepare(
+        _plan(target, _release(), track=ComputeTrack.CUDA13, shortcut_scope=scope)
+    )
+    assert {item.destination for item in prepared.shortcuts if item.remove} == {
+        item.path for item in old.shortcuts
+    }
+    assert [item.profile for item in prepared.shortcuts if not item.remove] == (
+        ["auto"] * len(directories)
+    )
+
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.succeeded
+    current = inspect_ownership(target).record
+    assert current is not None
+    assert {item.path for item in current.shortcuts} == {
+        directory / "VIPP.lnk" for directory in directories
+    }
+    assert all(item.target == result.launcher_path for item in current.shortcuts)
+    assert result.launcher_path.name == "vipp-app.exe"
+    assert all(not item.path.exists() for item in old.shortcuts)
+    assert old.environment_root.is_dir()
+    assert current.retired_environment_roots == (old.environment_root,)
+
+
+def test_cuda_upgrade_preserves_unowned_legacy_profile_link(tmp_path):
+    target = tmp_path / "managed"
+    desktop = tmp_path / "Desktop"
+    old = _legacy_cuda_shortcuts(target, [desktop])
+    unowned = old.shortcuts[-1].path
+    preserved_bytes = unowned.read_bytes()
+    write_ownership_record(target, replace(old, shortcuts=old.shortcuts[:-1]))
+    engine = _engine(tmp_path, _FakeRunner())
+    prepared = engine.prepare(
+        _plan(target, _release(), track=ComputeTrack.CUDA13, shortcut_directory=desktop)
+    )
+
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.succeeded
+    assert unowned.read_bytes() == preserved_bytes
+    assert {item.path.name for item in inspect_ownership(target).record.shortcuts} == {
+        "VIPP.lnk"
+    }
+
+
+def test_cuda_upgrade_blocks_and_preserves_modified_owned_legacy_profile(tmp_path):
+    target = tmp_path / "managed"
+    desktop = tmp_path / "Desktop"
+    old = _legacy_cuda_shortcuts(target, [desktop])
+    changed = old.shortcuts[-1].path
+    changed.write_bytes(b"user changed target or arguments")
+    runner = _FakeRunner()
+    engine = _engine(tmp_path, runner)
+
+    with pytest.raises(PreparationError, match="changed and was preserved"):
+        engine.prepare(
+            _plan(
+                target, _release(), track=ComputeTrack.CUDA13,
+                shortcut_directory=desktop,
+            )
+        )
+
+    assert changed.read_bytes() == b"user changed target or arguments"
+    assert all(item.path.exists() for item in old.shortcuts)
+    assert inspect_ownership(target).record == old
+    assert not (desktop / "VIPP.lnk").exists()
+
+
+def test_cuda_legacy_shortcut_migration_rolls_back_all_scopes_on_failed_commit(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "managed"
+    directories = [tmp_path / "Desktop", tmp_path / "Programs" / "VIPP"]
+    old = _legacy_cuda_shortcuts(target, directories)
+    original_bytes = {item.path: item.path.read_bytes() for item in old.shortcuts}
+    engine = _engine(tmp_path, _FakeRunner())
+    prepared = engine.prepare(
+        _plan(
+            target, _release(), track=ComputeTrack.CUDA13,
+            shortcut_scope=ShortcutScope.BOTH,
+        )
+    )
+
+    def fail_commit(_target, _record):
+        raise OSError("simulated ownership commit failure")
+
+    monkeypatch.setattr(engine_module, "write_ownership_record", fail_commit)
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.status is InstallStatus.FAILED
+    assert result.rollback.completed
+    assert {path: path.read_bytes() for path in original_bytes} == original_bytes
+    assert all(not (directory / "VIPP.lnk").exists() for directory in directories)
+    assert inspect_ownership(target).record == old
+    assert old.environment_root.is_dir()
+
+
+def test_other_track_owned_single_launcher_is_never_retargeted(tmp_path):
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    shortcut = desktop / "VIPP.lnk"
+    shortcut.write_bytes(b"CPU installation launcher")
+    cpu = _record(tmp_path / "cpu", shortcut=shortcut)
+    cuda_target = tmp_path / "cuda13"
+    engine = _engine(tmp_path, _FakeRunner())
+
+    with pytest.raises(PreparationError, match="another VIPP installation"):
+        engine.prepare(
+            _plan(
+                cuda_target, _release(), track=ComputeTrack.CUDA13,
+                shortcut_directory=desktop,
+            )
+        )
+
+    assert shortcut.read_bytes() == b"CPU installation launcher"
+    assert inspect_ownership(cpu.managed_root).record == cpu
+    assert not cuda_target.exists()
 
 
 def test_shortcut_is_rolled_back_if_ownership_commit_fails(tmp_path, monkeypatch):

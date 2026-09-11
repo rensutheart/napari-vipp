@@ -242,11 +242,17 @@ def test_menu_template_renders_valid_numeric_apple_versions(tmp_path):
 
     document = json.loads(output.read_text(encoding="utf-8"))
     assert document["$schema"].endswith("/menuinst/menuinst-1-1-3.schema.json")
+    assert document["menu_name"] == "VIPP"
+    assert len(document["menu_items"]) == 1
     item = document["menu_items"][0]
     assert item["name"] == "VIPP"
-    assert item["command"][-2:] == ["--profile", "cpu"]
-    assert "--desktop" in item["command"]
-    assert "--desktop" in item["platforms"]["osx"]["command"]
+    expected_arguments = ["-m", "napari_vipp", "--desktop", "--profile", "auto"]
+    assert item["command"] == ["{{ PYTHON }}", *expected_arguments]
+    assert item["platforms"]["osx"]["command"] == [
+        "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python", *expected_arguments
+    ]
+    assert item["platforms"]["osx"]["CFBundleName"] == "VIPP"
+    assert item["platforms"]["osx"]["CFBundleDisplayName"] == "VIPP"
     assert item["icon"] == "{{ MENU_DIR }}/vipp.{{ ICON_EXT }}"
     assert item["platforms"]["osx"]["CFBundleVersion"] == "445"
     assert (
@@ -277,6 +283,23 @@ def test_macos_recipe_keeps_application_and_menu_packages_separate():
     assert '"${PREFIX}/Menu' in recipe
     assert '"${{ SRC_DIR }}/' not in recipe
     assert '"${{ PREFIX }}/' not in recipe
+
+
+def test_macos_recipe_has_only_one_gui_entry_point():
+    recipe = (REPO_ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    entry_points = recipe.split("entry_points:\n", 1)[1].split("      script:", 1)[0]
+    actual = {
+        name.strip(): target.strip()
+        for line in entry_points.splitlines()
+        for name, target in [line.strip().removeprefix("- ").split(" = ", 1)]
+    }
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    assert project["gui-scripts"] == {"vipp-app": "napari_vipp.launcher:main_auto"}
+    assert actual == {**project["scripts"], **project["gui-scripts"]}
 
 
 def test_constructor_template_is_current_user_cpu_only_development_config():
@@ -354,7 +377,7 @@ def test_native_installer_workflows_check_rendered_desktop_launcher(
     )
     item = json.loads(menu.read_text(encoding="utf-8"))["menu_items"][0]
     command = item["platforms"]["osx"]["command"]
-    assert command[1:] == ["-m", "napari_vipp", "--desktop", "--profile", "cpu"]
+    assert command[1:] == ["-m", "napari_vipp", "--desktop", "--profile", "auto"]
     expected_command = " ".join(command).replace("{{ MENU_ITEM_LOCATION }}", "$app")
     text = (REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
     # Keep the exact installed-script guard aligned with production menu metadata.
@@ -410,6 +433,15 @@ def test_constructor_documents_render_separate_development_and_unsigned_alpha_te
     assert "Never disable Gatekeeper" in release_text
     assert "Open Anyway" in release_conclusion
     assert "__VIPP_" not in development_text + release_text + release_conclusion
+    for text in (development_text, release_text, release_conclusion):
+        assert "~/Applications/VIPP.app" in text
+        assert "Auto" in text
+        assert "inside VIPP" in text
+        assert "CPU-safe" not in text
+        assert "VIPP Automatic" not in text
+        assert "VIPP CPU" not in text
+        assert "VIPP GPU" not in text
+    assert "does not include NVIDIA CUDA" in release_text
 
 
 def test_development_signature_requires_exact_unsigned_status(
