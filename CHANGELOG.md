@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Check for updates on every startup (unless disabled), retry a transient GitHub failure once, and explain connection failures without presenting a cached release as freshly checked. Separate installed/latest versions, status, update actions and preferences in the update dialog.
+
+- Add an explicit **Download & open update** action for owned Windows desktop installations. Download official installer assets in the background, verify SHA-256 and the active installation, then open guided setup with the current location and CPU/CUDA profile selected. Setup still requires review; VIPP never silently updates a Python environment or closes unsaved work. Other installation types retain browser/manual update routes.
+
 ## 0.15.0a4 - 2026-09-10
 
 - Make overlapping channels easier to compare in the detailed histogram window and PNG/TIFF exports: draw faint fills first, then continuous stepped channel outlines, without opaque vertical borders around every bin. Single-channel bars, bin values, hover details, logarithmic zero gaps and dense-plot peak preservation remain unchanged.

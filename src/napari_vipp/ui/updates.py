@@ -1,47 +1,37 @@
 """Quiet, bounded release checks and an explicitly opened update dialog.
 
 Network replies, timers, and dialogs have Qt owners. No worker touches scientific
-state and no path installs packages or executes a downloaded file.
+state. Installer downloads and handoffs require an explicit dialog action.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import platform
+import re
 import time
-from importlib.resources import files
 
 from packaging.version import Version
 from qtpy.QtCore import QEvent, QObject, QSettings, Qt, QTimer, QUrl, Signal
-from qtpy.QtGui import QDesktopServices, QPixmap
-from qtpy.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
-from qtpy.QtWidgets import (
-    QBoxLayout,
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QLayout,
-    QMenu,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
+from qtpy.QtGui import QDesktopServices
+from qtpy.QtNetwork import (
+    QNetworkAccessManager,
+    QNetworkReply,
+    QNetworkRequest,
+    QSslSocket,
 )
+from qtpy.QtWidgets import QMenu, QPushButton
 
 from napari_vipp.core.updates import (
     MAX_RESPONSE_BYTES,
     RELEASES_API,
-    RELEASES_URL,
     current_release_url,
-    installer_asset,
     newest_release,
     parse_releases,
 )
 from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.update_dialog import UpdateDialog as UpdateDialog
+from napari_vipp.ui.update_dialog import _WrappedLabel as _WrappedLabel
 
 CHECK_INTERVAL = 24 * 60 * 60
 DISABLE_AUTO_ENV = "VIPP_DISABLE_UPDATE_CHECKS"
@@ -69,8 +59,17 @@ class UpdateController(QObject):
         self.releases = ()
         self.checking = False
         self.error = ""
+        self.error_kind = ""
+        self.error_details = ""
         self.checked = False
+        self.checked_this_session = False
+        self.last_success = None
         self._closed = False
+        self._last_attempt = None
+        self._attempts = 0
+        self._timed_out = False
+        self._finishing = False
+        self._ssl_errors = []
         self._data = bytearray()
         self._too_large = False
         self.deadline = QTimer(self)
@@ -83,6 +82,15 @@ class UpdateController(QObject):
             self.checked = bool(self.releases)
         except (ValueError, TypeError):
             pass
+        try:
+            saved_success = float(self.settings.value("updates/last-success", 0))
+            if 0 < saved_success <= time.time():
+                self.last_success = saved_success
+        except (ValueError, TypeError):
+            pass
+        self.retry_timer = QTimer(self)
+        self.retry_timer.setSingleShot(True)
+        self.retry_timer.timeout.connect(self._begin_request)
         self.start_timer = QTimer(self)
         self.start_timer.setSingleShot(True)
         self.start_timer.timeout.connect(self.check_if_due)
@@ -126,21 +134,35 @@ class UpdateController(QObject):
     def check_if_due(self):
         if not self.automatic or _bool(os.environ.get(DISABLE_AUTO_ENV, "0")):
             return
-        try:
-            last = float(self.settings.value("updates/last-attempt", 0))
-        except (TypeError, ValueError):
-            last = 0
-        if not 0 <= time.time() - last < CHECK_INTERVAL:
+        # A previous launch's cached success/failure must not suppress this
+        # launch. Only repeated checks within this controller are throttled.
+        if self._last_attempt is None or (
+            time.monotonic() - self._last_attempt >= CHECK_INTERVAL
+        ):
             self.check()
 
     def check(self):
         if self._closed or self.checking:
             return
+        self._last_attempt = time.monotonic()
         self.settings.setValue("updates/last-attempt", time.time())
         self.settings.sync()
         self.checking, self.error = True, ""
+        self.error_kind = self.error_details = ""
+        self.checked_this_session = False
+        self._attempts = 0
+        self._timed_out = False
+        self.deadline.start(20000)
+        self._begin_request()
+        self.changed.emit()
+
+    def _begin_request(self):
+        if self._closed or not self.checking or self.reply is not None:
+            return
+        self._attempts += 1
         self._data = bytearray()
         self._too_large = False
+        self._ssl_errors = []
         request = QNetworkRequest(QUrl(RELEASES_API))
         request.setRawHeader(b"Accept", b"application/vnd.github+json")
         request.setRawHeader(b"User-Agent", b"napari-vipp-update-check")
@@ -149,364 +171,200 @@ class UpdateController(QObject):
             QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
         )
         request.setTransferTimeout(15000)
-        self.reply = self.manager.get(request)
-        self.reply.readyRead.connect(self._read)
-        self.reply.finished.connect(self._finished)
-        self.deadline.start(20000)
-        self.changed.emit()
+        reply = self.manager.get(request)
+        self.reply = reply
+        # A late signal from an aborted attempt cannot drain/finish its retry.
+        reply.readyRead.connect(lambda: self._read(reply))
+        reply.finished.connect(lambda: self._finished(reply))
+        if hasattr(reply, "sslErrors"):
+            reply.sslErrors.connect(
+                lambda errors: self._record_ssl_errors(reply, errors)
+            )
+
+    def _record_ssl_errors(self, reply, errors):
+        if reply is self.reply:
+            self._ssl_errors = [
+                self._safe_detail(error.errorString()) for error in errors[:4]
+            ]
+
+    @staticmethod
+    def _safe_detail(value):
+        detail = " ".join(str(value).split())
+        # Diagnostics stay local, but do not display proxy URL credentials.
+        detail = re.sub(r"(?i)(https?://)[^/\s@]+@", r"\1[redacted]@", detail)
+        return detail[:300]
 
     def _timeout(self):
+        self._timed_out = True
+        self.retry_timer.stop()
         if self.reply is not None:
             self.reply.abort()
+        elif self.checking:
+            self._set_error("timeout", "The GitHub update check timed out. Try again.")
+            self._end_check()
 
-    def _read(self):
-        if self.reply is None or self._too_large:
+    def _read(self, reply=None):
+        reply = self.reply if reply is None else reply
+        if reply is None or reply is not self.reply or self._too_large:
             return
         remaining = MAX_RESPONSE_BYTES - len(self._data)
         # PyQt6 may return None (not an empty QByteArray) after the final drain.
-        self._data.extend(bytes(self.reply.read(remaining + 1) or b""))
+        self._data.extend(bytes(reply.read(remaining + 1) or b""))
         if len(self._data) > MAX_RESPONSE_BYTES:
             self._too_large = True
-            self.reply.abort()
+            reply.abort()
 
-    def _finished(self):
-        reply = self.reply
-        if reply is None:
+    def _finished(self, reply=None):
+        reply = self.reply if reply is None else reply
+        if reply is None or reply is not self.reply or self._finishing:
             return
-        # readyRead normally drains the reply; include any final buffered bytes.
-        self._read()
-        if self.reply is None:  # abort() can synchronously emit finished again
-            return
-        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        self._finishing = True
+        retry = False
         try:
+            # abort() while draining an oversized reply can emit finished again.
+            self._read(reply)
+            if self._closed:
+                return
+            status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
             if self._too_large:
-                raise ValueError(
-                    "The release response was too large. Try the GitHub release page."
+                self._set_error(
+                    "response_size",
+                    "The release response was too large. Try the GitHub release page.",
                 )
-            if status in {403, 429}:
-                raise ValueError(
-                    "GitHub's request limit was reached. Please try again later."
+            elif self._timed_out or (
+                status != 200 or reply.error() != QNetworkReply.NetworkError.NoError
+            ):
+                self._network_error(reply, status)
+                retry = (
+                    self._attempts < 2 and not self._timed_out
+                    and self.deadline.isActive()
+                    and self.error_kind in {"connection", "dns", "timeout", "server"}
                 )
-            if status != 200 or reply.error() != QNetworkReply.NetworkError.NoError:
-                raise ValueError(
-                    "Could not reach GitHub. Check your connection and try again."
+            else:
+                releases = parse_releases(json.loads(bytes(self._data)))
+                if not releases:
+                    raise ValueError("No published VIPP releases were returned.")
+                self.releases = releases
+                self.checked = self.checked_this_session = True
+                self.last_success = time.time()
+                self.settings.setValue(
+                    "updates/cache-v1", json.dumps([r.cache_record() for r in releases])
                 )
-            releases = parse_releases(json.loads(bytes(self._data)))
-            if not releases:
-                raise ValueError(
-                    "No published VIPP releases were returned. Try again later."
-                )
-            self.releases = releases
-            self.checked = True
-            self.settings.setValue(
-                "updates/cache-v1", json.dumps([r.cache_record() for r in releases])
-            )
-            self.settings.setValue("updates/last-success", time.time())
-            self.settings.sync()
+                self.settings.setValue("updates/last-success", self.last_success)
+                self.settings.sync()
         except (ValueError, TypeError, UnicodeError) as exc:
-            self.error = str(exc)
+            self._set_error(
+                "invalid_response",
+                "GitHub returned an invalid release response. Try again later.",
+                self._safe_detail(exc),
+            )
         finally:
-            self.deadline.stop()
             self.reply = None
-            self.checking = False
             self._data.clear()
             reply.deleteLater()
+            self._finishing = False
+            if retry:
+                self.error = self.error_kind = self.error_details = ""
+                self.retry_timer.start(1000)
+            else:
+                self._end_check()
+
+    def _set_error(self, kind, message, details=""):
+        self.error_kind, self.error, self.error_details = kind, message, details
+
+    def _end_check(self):
+        self.deadline.stop()
+        self.retry_timer.stop()
+        self.checking = False
         if not self._closed:
             self.changed.emit()
+
+    def _network_error(self, reply, status):
+        code = reply.error()
+        errors = QNetworkReply.NetworkError
+        name = getattr(code, "name", str(code))
+        detail = self._safe_detail(
+            reply.errorString() if hasattr(reply, "errorString") else ""
+        )
+        details = f"Qt: {name}" + (f"; HTTP {status}" if status is not None else "")
+        if detail and detail != "Unknown error":
+            details += f"; {detail}"
+        if self._ssl_errors:
+            details += "; " + "; ".join(self._ssl_errors)
+        if self._timed_out or code == errors.TimeoutError:
+            kind, message = "timeout", "The GitHub update check timed out. Try again."
+        elif code == errors.SslHandshakeFailedError or self._ssl_errors:
+            kind = "tls"
+            message = (
+                "Could not establish a verified HTTPS connection to GitHub. "
+                "Check your system clock, proxy or security software certificates."
+            )
+        elif code == errors.ProtocolUnknownError and not QSslSocket.supportsSsl():
+            kind, message = "tls", (
+                "This installation's Qt HTTPS support is unavailable. "
+                "Use the GitHub release page or repair the VIPP installation."
+            )
+        elif code in {
+            errors.ProxyConnectionRefusedError, errors.ProxyConnectionClosedError,
+            errors.ProxyNotFoundError, errors.ProxyTimeoutError,
+            errors.ProxyAuthenticationRequiredError, errors.UnknownProxyError,
+        }:
+            kind, message = "proxy", (
+                "The network proxy could not connect to GitHub. "
+                "Check the system proxy settings or ask your network administrator."
+            )
+        elif status in {403, 429}:
+            # HTTP 403 also means access denied, not just rate limiting.
+            rate_limited = status == 429 or b"rate limit" in bytes(self._data).lower()
+            if hasattr(reply, "rawHeader"):
+                rate_limited |= bytes(reply.rawHeader(b"X-RateLimit-Remaining")) == b"0"
+            kind = "rate_limit" if rate_limited else "access"
+            message = (
+                "GitHub's request limit was reached. Please try again later."
+                if rate_limited else
+                "GitHub denied the update request (HTTP 403). "
+                "Check your network policy or try the GitHub release page."
+            )
+        elif status is not None and 300 <= status < 400:
+            kind, message = "redirect", (
+                "GitHub redirected the release request unexpectedly. "
+                "Check your network sign-in or use the GitHub release page."
+            )
+        elif status is not None and status >= 500:
+            kind, message = "server", (
+                "GitHub is temporarily unavailable. Try again later."
+            )
+        elif code == errors.HostNotFoundError:
+            kind, message = "dns", (
+                "Could not find api.github.com. Check your internet or DNS connection."
+            )
+        elif code in {
+            errors.ConnectionRefusedError, errors.RemoteHostClosedError,
+            errors.TemporaryNetworkFailureError, errors.NetworkSessionFailedError,
+        }:
+            kind, message = "connection", (
+                "The connection to GitHub was interrupted. "
+                "Check your connection, proxy or firewall and try again."
+            )
+        else:
+            kind, message = "network", (
+                "Could not check GitHub for updates. "
+                "Check your connection or use the GitHub release page."
+            )
+        self._set_error(kind, message, details)
 
     def shutdown(self):
         self._closed = True
         self.start_timer.stop()
         self.timer.stop()
+        self.retry_timer.stop()
         self.deadline.stop()
         if self.reply is not None:
             self.reply.abort()
-
-
-class _WrappedLabel(QLabel):
-    """Reserve the actual wrapped height inside a resizable scroll area."""
-
-    def __init__(self, text="", parent=None):
-        super().__init__(text, parent)
-        self.setWordWrap(True)
-        self.setTextFormat(Qt.PlainText)
-
-    def setText(self, text):  # noqa: N802
-        super().setText(text)
-        self._fit_height()
-
-    def resizeEvent(self, event):  # noqa: N802
-        super().resizeEvent(event)
-        self._fit_height()
-
-    def changeEvent(self, event):  # noqa: N802
-        super().changeEvent(event)
-        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
-            self._fit_height()
-
-    def _fit_height(self):
-        if self.wordWrap():
-            height = self.heightForWidth(max(1, self.width()))
-            if height >= 0 and self.minimumHeight() != height:
-                self.setMinimumHeight(height)
-
-
-class UpdateDialog(QDialog):
-    def __init__(self, controller: UpdateController, parent=None, *, open_url=None):
-        super().__init__(parent)
-        self.controller = controller
-        self.open_url = open_url or (lambda url: QDesktopServices.openUrl(QUrl(url)))
-        self.setWindowTitle("VIPP updates")
-        self.setMinimumWidth(420)
-        self.resize(560, 420)
-        self._initial_size_fitted = False
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
-        outer.setSpacing(12)
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        body = QWidget(self.scroll)
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignTop)
-        self.scroll.setWidget(body)
-        outer.addWidget(self.scroll, 1)
-        header = QHBoxLayout()
-        header.setSpacing(16)
-        self.logo = QLabel()
-        self.logo.setAccessibleName("VIPP logo")
-        self.logo.setFixedSize(185, 55)
-        self.logo.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap()
-        try:
-            payload = files("napari_vipp").joinpath(
-                "assets", "branding", "vipp-logo-dark.svg"
-            ).read_bytes()
-            pixmap.loadFromData(payload)
-        except (FileNotFoundError, ModuleNotFoundError, OSError, TypeError):
-            pass
-        if pixmap.isNull():
-            self.logo.setText("VIPP")
         else:
-            ratio = self.devicePixelRatioF()
-            pixmap = pixmap.scaledToWidth(
-                round(185 * ratio), Qt.SmoothTransformation
-            )
-            pixmap.setDevicePixelRatio(ratio)
-            self.logo.setPixmap(pixmap)
-        header.addWidget(self.logo)
-        self.heading = _WrappedLabel()
-        self.heading.setStyleSheet("font-size: 16px; font-weight: 650;")
-        self.heading.setWordWrap(True)
-        header.addWidget(self.heading, 1)
-        layout.addLayout(header)
-        self.summary = _WrappedLabel()
-        self.summary.setWordWrap(True)
-        self.summary.setTextFormat(Qt.PlainText)
-        layout.addWidget(self.summary)
-        self.instructions = _WrappedLabel()
-        self.instructions.setWordWrap(True)
-        self.instructions.setTextFormat(Qt.PlainText)
-        layout.addWidget(self.instructions)
-        row = QHBoxLayout()
-        self.download = QPushButton("Download installer")
-        self.download.clicked.connect(self._download)
-        row.addWidget(self.download)
-        self.checksums = QPushButton("Download checksums")
-        self.checksums.clicked.connect(self._checksums)
-        row.addWidget(self.checksums)
-        self.download_row = row
-        self.scroll.viewport().installEventFilter(self)
-        self.notes = QPushButton("Release notes on GitHub")
-        self.notes.clicked.connect(self._notes)
-        layout.addLayout(row)
-        layout.addWidget(self.notes, alignment=Qt.AlignLeft)
-        self.manual = QPushButton("Installation / update instructions")
-        self.manual.clicked.connect(
-            lambda: self._open(
-                "https://rensutheart.github.io/vipp-mkdocs/stable/getting-started/installation/"
-            )
-        )
-        layout.addWidget(self.manual, alignment=Qt.AlignLeft)
-        layout.addSpacing(6)
-        self.prereleases = QCheckBox("Include pre-release versions")
-        self.prereleases.setToolTip(
-            "Include alpha, beta and release-candidate versions."
-        )
-        self.prereleases.setChecked(controller.include_prereleases)
-        self.prereleases.toggled.connect(controller.set_prereleases)
-        layout.addWidget(self.prereleases)
-        self.automatic = QCheckBox("Check automatically once a day")
-        self.automatic.setChecked(controller.automatic)
-        self.automatic.toggled.connect(controller.set_automatic)
-        layout.addWidget(self.automatic)
-        privacy = _WrappedLabel(
-            "Checks contact GitHub for public release information. No images, "
-            "workflows, file paths or hardware details are sent. Installers and "
-            "packages are never downloaded or installed automatically."
-        )
-        privacy.setWordWrap(True)
-        layout.addWidget(privacy)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        self.check_button = buttons.addButton(
-            "Check for updates", QDialogButtonBox.ActionRole
-        )
-        self.check_button.clicked.connect(controller.check)
-        buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
-        self.buttons = buttons
-        controller.changed.connect(self.refresh)
-        self.refresh()
+            self.checking = False
 
-    def showEvent(self, event):  # noqa: N802
-        super().showEvent(event)
-        if not self._initial_size_fitted:
-            self._initial_size_fitted = True
-            # Measure after host fonts and wrapped labels have their real widths.
-            # Subsequent status updates preserve the user's chosen window size.
-            QTimer.singleShot(0, self._fit_initial_size)
 
-    def _fit_initial_size(self):
-        if not self.isVisible():
-            return
-        self._reflow_downloads()
-        body_layout = self.scroll.widget().layout()
-        body_layout.activate()
-        content_height = body_layout.totalHeightForWidth(self.scroll.viewport().width())
-        if content_height < 0:
-            content_height = body_layout.sizeHint().height()
-        margins = self.layout().contentsMargins()
-        height = (
-            content_height + margins.top() + margins.bottom()
-            + self.layout().spacing() + self.buttons.sizeHint().height()
-            + 2 * self.scroll.frameWidth()
-        )
-        # Longer release guidance remains scrollable on a smaller display.
-        self.resize(
-            self.width(), min(height, self.screen().availableGeometry().height() - 80)
-        )
-
-    def eventFilter(self, watched, event):  # noqa: N802
-        if watched is self.scroll.viewport() and event.type() == QEvent.Resize:
-            self._reflow_downloads()
-        return super().eventFilter(watched, event)
-
-    def _reflow_downloads(self):
-        # Native font metrics can make two readable buttons wider than the
-        # viewport. Stack them instead of clipping text or requiring sideways
-        # scrolling; the viewport also accounts for the vertical scrollbar.
-        required = (
-            max(self.download.minimumWidth(), self.download.minimumSizeHint().width())
-            + max(
-                self.checksums.minimumWidth(), self.checksums.minimumSizeHint().width()
-            )
-            + max(0, self.download_row.spacing())
-        )
-        direction = (
-            QBoxLayout.TopToBottom
-            if required > self.scroll.viewport().width()
-            else QBoxLayout.LeftToRight
-        )
-        if self.download_row.direction() != direction:
-            self.download_row.setDirection(direction)
-
-    def refresh(self):
-        controller = self.controller
-        latest = controller.latest
-        if controller.checking:
-            title = "Checking for updates…"
-        elif controller.available:
-            title = f"VIPP {latest.version} is available"
-        elif controller.error:
-            title = "Update check unavailable"
-        elif controller.checked and latest:
-            title = "You're up to date"
-        elif controller.checked:
-            title = "No stable release found"
-        else:
-            title = "Check for a newer VIPP version"
-        self.heading.setText(title)
-        detail = f"Installed: {controller.current_version}"
-        if latest:
-            channel = "pre-release" if latest.prerelease else "release"
-            detail += f" · Latest {channel}: {latest.version}"
-        if controller.error:
-            detail += "\n" + controller.error
-            if latest:
-                detail += (
-                    "\nVersion information above is from the last successful check."
-                )
-        self.summary.setText(detail)
-        offer = (
-            installer_asset(latest, platform.system(), platform.machine())
-            if controller.available
-            else None
-        )
-        self.download.setVisible(offer is not None)
-        self.checksums.setVisible(offer is not None)
-        if offer:
-            self.instructions.setText(
-                "1. Download the installer and its checksums from GitHub.\n"
-                "2. Verify the download, save your workflows, and close VIPP/napari.\n"
-                "3. Run setup and review the installation options.\n\n"
-                "Using pip, conda or a source checkout? Follow your environment's "
-                "update instructions instead. The installer may create a "
-                "separate installation."
-                + (
-                    "\n\nThis alpha installer is unsigned. See the installation "
-                    "guide for verification and platform security warnings."
-                    if "-UNSIGNED" in offer[0]
-                    else ""
-                )
-            )
-        else:
-            self.instructions.setText(
-                "Save your workflows and close VIPP/napari before updating. "
-                "Follow the installation guide for your installer, pip/conda "
-                "environment, or source checkout."
-                + (
-                    "\n\nNo matching installer with checksums is available "
-                    "for this platform in that release."
-                    if controller.available
-                    else ""
-                )
-            )
-        self.check_button.setEnabled(not controller.checking)
-        for checkbox, value in (
-            (self.automatic, controller.automatic),
-            (self.prereleases, controller.include_prereleases),
-        ):
-            checkbox.blockSignals(True)
-            checkbox.setChecked(value)
-            checkbox.blockSignals(False)
-        self._reflow_downloads()
-
-    def _open(self, url):
-        if not self.open_url(url):
-            self.summary.setText(
-                "The browser could not be opened. Copy this address:\n" + url
-            )
-            self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
-
-    def _notes(self):
-        latest = self.controller.latest
-        self._open(latest.notes_url if latest else RELEASES_URL)
-
-    def _download(self):
-        self._open_asset(0)
-
-    def _checksums(self):
-        self._open_asset(1)
-
-    def _open_asset(self, index):
-        latest = self.controller.latest
-        if latest and self.controller.available:
-            offer = installer_asset(latest, platform.system(), platform.machine())
-            if offer:
-                self._open(latest.asset_url(offer[index]))
 
 
 class VersionBadge(QPushButton):
@@ -583,7 +441,7 @@ class VersionBadge(QPushButton):
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()
-        if check or not self.controller.checked:
+        if check or not self.controller.checked_this_session:
             self.controller.check()
 
     def make_context_menu(self):
@@ -604,4 +462,4 @@ class VersionBadge(QPushButton):
     def shutdown(self):
         self.controller.shutdown()
         if self.dialog is not None:
-            self.dialog.close()
+            self.dialog.shutdown()

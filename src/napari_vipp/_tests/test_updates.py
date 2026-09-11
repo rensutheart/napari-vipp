@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 from packaging.version import Version
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtGui import QFont
+from qtpy.QtGui import QFont, QFontDatabase
 from qtpy.QtNetwork import QNetworkReply, QNetworkRequest
 from qtpy.QtWidgets import QApplication
 
@@ -16,8 +18,23 @@ from napari_vipp.core.updates import (
     newest_release,
     parse_releases,
 )
+from napari_vipp.ui import update_dialog as dialog_ui
 from napari_vipp.ui import updates
 from napari_vipp.ui.updates import UpdateController, UpdateDialog, VersionBadge
+
+
+@pytest.fixture(autouse=True, scope="module")
+def native_fonts_for_offscreen(qapp):
+    # The Windows offscreen Qt plugin does not discover system fonts. Load
+    # installed fonts so layout/visual checks measure glyphs, not empty boxes.
+    fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    ids = []
+    for filename in ("segoeui.ttf", "segoeuib.ttf", "seguisb.ttf"):
+        if (fonts / filename).is_file():
+            ids.append(QFontDatabase.addApplicationFont(str(fonts / filename)))
+    yield
+    for font_id in ids:
+        QFontDatabase.removeApplicationFont(font_id)
 
 
 def release(version="0.16.0a1", *, assets=(), **extra):
@@ -323,8 +340,8 @@ def test_dialog_download_is_user_initiated_and_points_to_exact_asset(
 ):
     name = "VIPP-Setup-0.16.0a1-Windows-x86_64-UNSIGNED.exe"
     checksum = "SHA256SUMS-Windows-0.16.0a1.txt"
-    monkeypatch.setattr(updates.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(updates.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(dialog_ui.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(dialog_ui.platform, "machine", lambda: "AMD64")
     deliver(controller, [release(assets=[name, checksum])])
     opened = []
     dialog = UpdateDialog(controller, open_url=lambda url: opened.append(url) or True)
@@ -365,8 +382,8 @@ def test_no_update_for_equal_or_older_release_and_final_defaults_to_stable(qapp)
 def test_installer_actions_reflow_with_wider_native_font_metrics(
     controller, qtbot, monkeypatch,
 ):
-    monkeypatch.setattr(updates.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(updates.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(dialog_ui.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(dialog_ui.platform, "machine", lambda: "AMD64")
     deliver(controller, [release(assets=[
         "VIPP-Setup-0.16.0a1-Windows-x86_64-UNSIGNED.exe",
         "SHA256SUMS-Windows-0.16.0a1.txt",
@@ -398,8 +415,8 @@ def test_update_dialog_is_compact_branded_and_scrollable(
     qapp.setFont(QFont("Segoe UI", font_size))
     try:
         if state == "installer":
-            monkeypatch.setattr(updates.platform, "system", lambda: "Windows")
-            monkeypatch.setattr(updates.platform, "machine", lambda: "AMD64")
+            monkeypatch.setattr(dialog_ui.platform, "system", lambda: "Windows")
+            monkeypatch.setattr(dialog_ui.platform, "machine", lambda: "AMD64")
             deliver(controller, [release(assets=[
                 "VIPP-Setup-0.16.0a1-Windows-x86_64-UNSIGNED.exe",
                 "SHA256SUMS-Windows-0.16.0a1.txt",
@@ -415,16 +432,20 @@ def test_update_dialog_is_compact_branded_and_scrollable(
         )
         dialog.show()
         QApplication.processEvents()
+        # A scrollbar disappearing queues a second viewport-width update.
+        QApplication.processEvents()
         assert dialog.logo.pixmap() is not None
         assert not dialog.logo.pixmap().isNull()
         assert dialog.logo.accessibleName() == "VIPP logo"
         assert dialog.width() == 560
         if state == "current" and font_size == 10:
-            assert dialog.height() < 480
+            assert dialog.height() < 560
             assert dialog.scroll.verticalScrollBar().maximum() == 0
-        assert 0 < dialog.prereleases.y() - dialog.manual.geometry().bottom() <= 28
+        assert dialog.preferences.y() > dialog.separator.geometry().bottom()
+        assert dialog.preferences.y() - dialog.separator.geometry().bottom() <= 20
         for label in dialog.findChildren(updates._WrappedLabel):
-            assert label.height() >= label.heightForWidth(label.width())
+            if label.isVisible():
+                assert label.height() >= label.heightForWidth(label.width())
         assert dialog.grab().save(str(tmp_path / "updates.png"))
         dialog.resize(440, 320)
         qtbot.waitUntil(lambda: dialog.scroll.verticalScrollBar().maximum() > 0)

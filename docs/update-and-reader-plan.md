@@ -1,6 +1,6 @@
 # Update discovery and reader packaging
 
-Engineering record, 2026-09-07. Public instructions belong in the
+Engineering record, updated 2026-09-11. Public instructions belong in the
 [manual](https://rensutheart.github.io/vipp-mkdocs/nightly/getting-started/updating/).
 
 ## Implemented update boundary
@@ -8,16 +8,44 @@ Engineering record, 2026-09-07. Public instructions belong in the
 - `core/updates.py` compares published GitHub releases using PEP 440 versions
   and derives official asset URLs. Drafts and development/local tags are
   excluded. Prereleases default on for alpha installs and off for final ones.
-- `ui/updates.py` owns asynchronous Qt networking, persistent cache/throttling,
-  and the badge/dialog. Automatic checks start after startup, at most daily.
-  Explicit checks bypass that interval. Automatic results change only the badge.
+- `ui/updates.py` owns asynchronous Qt networking and a persistent release cache.
+  Unreleased after 0.15.0a4: automatic checks run eight seconds after every
+  launch, independent of a previous launch's check/failure. Repeat checks in
+  a single session remain daily; explicit checks bypass that interval.
+  Automatic results change only the badge, without opening a dialog.
 - The request uses the public releases list (up to 100 entries), a generic
   user agent, HTTPS, no API redirects, an 8-MiB ceiling, a 15-second socket
   timeout, and a 20-second total deadline. No workflow, file path, image,
-  installed version, or hardware details enter the request.
+  installed version, or hardware details enter the request. One transient retry
+  shares the same total deadline. TLS verification is never bypassed. Typed
+  local diagnostics distinguish TLS, proxy, DNS, HTTP and timeout failures.
+- `ui/update_dialog.py` separates status, installed/latest versions, actions and
+  preferences. A failed check takes priority over cached availability; cached
+  releases and the last-success time are explicitly labeled. Managed download
+  handoff requires a fresh successful check and a separate user click.
 - A matching native installer is offered only with its published checksum
-  sidecar. Browser download is explicit; users verify, save, close, and run
-  setup. This is not an in-process updater for arbitrary Python environments.
+  sidecar. Unreleased: `core/update_install.py` and `ui/update_download.py`
+  support an explicit Windows desktop **Download & open update** action.
+  Detection must bind this desktop's actual prefix and installed package to
+  valid active ownership, version and candidate marker; nearby, retired,
+  editable, plugin, pip/conda and macOS installations do not qualify.
+- The download snapshot binds the exact release, asset names, ownership and
+  compute track. HTTPS asset redirects are allowlisted; checksum/installer
+  streams have independent size limits, bounded reads and a total deadline.
+  Partial, cancelled or hash-mismatched downloads are not executable handoffs.
+  Before handoff, ownership and downloaded bytes are checked again; Windows
+  denies writes/deletion during the final hash check and process creation.
+- Setup opens with the current owned root and CPU/CUDA profile selected. Its
+  existing review/approval and side-by-side installation transaction remain
+  authoritative. This path does not auto-approve, quit/kill VIPP, restart the
+  application, or mutate an arbitrary Python environment. macOS and unmanaged
+  sessions retain explicit browser/manual routes. Unsigned installers remain
+  identified as unsigned; a checksum is not a publisher signature.
+- Download progress/cancellation stays off the GUI thread. Late completions
+  cannot launch after cancellation, owner shutdown or while a close-confirmation
+  question is awaiting the user's answer. No workflow or scientific state is
+  passed to the updater. Successful setup handoff is not reported as a completed
+  installation.
 - `VIPP_DISABLE_UPDATE_CHECKS=1` suppresses automatic requests, not explicit
   manual checks. Tests isolate settings and use fake network replies.
 
