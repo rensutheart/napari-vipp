@@ -293,7 +293,7 @@ jobs:
           done
           cat "$RUNNER_TEMP/vipp-shortcut.log"
           test "$shortcut_ready" -eq 1
-          child_pid="$(pgrep -f 'napari_vipp.app.*--profile cpu' | head -n 1)"
+          child_pid="$(pgrep -f 'napari_vipp.app.*--profile auto' | head -n 1)"
           test -n "$child_pid"
           kill -0 "$child_pid"
           sleep 2

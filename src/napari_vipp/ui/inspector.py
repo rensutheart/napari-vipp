@@ -49,6 +49,7 @@ _COLOCALIZATION_SCATTER_OPERATION_IDS = frozenset(
         "masked_colocalization_scatter_plot",
         "colocalized_voxels",
         "masked_colocalized_voxels",
+        "colocalization_mask",
         "racc_index",
         "masked_racc_index",
     }
@@ -271,6 +272,8 @@ def inspector_profile(
             if is_table:
                 primary.append(TABLE_RESULTS_SECTION)
             primary.append(HISTOGRAMS_SECTION)
+            if output_type == "mask":
+                primary.append(MASK_SUMMARY_SECTION)
             distribution_kind = "colocalization_inputs"
         elif operation_id == "filter_mesh_objects":
             primary.extend((LABEL_DISTRIBUTION_SECTION, METADATA_SECTION))

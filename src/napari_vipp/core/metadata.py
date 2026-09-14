@@ -1889,6 +1889,7 @@ def _multi_input_channels(
     params: dict[str, Any],
 ) -> tuple[ChannelMetadata, ...]:
     if operation_id in {
+        "colocalization_mask",
         "colocalization_scatter_plot",
         "masked_colocalization_scatter_plot",
         "colocalized_voxels",
@@ -3101,6 +3102,14 @@ def _multi_input_history(
         return (
             f"{operation_title}: {bins} bins, {size} x {size} RGB, "
             f"{percentile:g}% populated range, {mode} thresholds"
+        )
+    if operation_id == "colocalization_mask":
+        mode = str(params.get("threshold_mode", "Manual"))
+        threshold_1 = _format_number(params.get("channel_1_threshold", 0.0))
+        threshold_2 = _format_number(params.get("channel_2_threshold", 0.0))
+        return (
+            f"{operation_title}: binary overlap, {mode} thresholds "
+            f"(channel 1 >= {threshold_1}, channel 2 >= {threshold_2})"
         )
     if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
         mode = str(params.get("threshold_mode", "Manual"))

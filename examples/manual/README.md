@@ -9,8 +9,8 @@ access in the app.
 
 Choose **Open example... → Exhaustive Inspector Showcase**, or open
 `exhaustive-inspector-showcase.json` here with **Load workflow...**. The graph
-contains every operation currently exposed in the node palette: 123 distinct
-operations across 129 nodes, with seven bundled sample sources. Every non-source
+contains every operation currently exposed in the node palette: 124 distinct
+operations across 130 nodes, with seven bundled sample sources. Every non-source
 operation appears exactly once.
 
 The logical columns reserve room for wide multi-input cards and tunnel labels.
@@ -48,6 +48,8 @@ Regenerate the JSON after a palette or parameter-schema change with:
 The generator updates this manual-QA file and both catalogue/package mirrors
 together. The boundary-QC branch below Relabel Sequential shows an inside-object
 mask without changing the labels used by measurements and mesh extraction.
+The colocalization lane also includes a true binary overlap mask, alongside the
+colour overlays, with a note pointing to the cleanup and object-counting nodes.
 
 The focused regression test checks current-schema canonicalization, graph
 validity, complete palette coverage, node placement, required connections, the

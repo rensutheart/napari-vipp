@@ -41,6 +41,8 @@ CASES = [
     ("merge channels", "combine_channels"),
     ("colour", "assign_channel_colors"),
     ("colocalisation", "colocalization_metrics"),
+    ("colocalised voxels mask", "colocalization_mask"),
+    ("overlap mask", "colocalization_mask"),
     ("analyse skeleton", "analyze_skeleton"),
     ("division", "ratio_image"),
     ("resizing", "rescale_axes"),

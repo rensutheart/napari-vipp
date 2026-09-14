@@ -76,6 +76,7 @@ from napari_vipp.core.operations import (
     clip_intensity,
     closing,
     colocalization_costes_threshold_result,
+    colocalization_mask,
     colocalization_metrics,
     colocalization_scatter_plot,
     colocalized_voxels,
@@ -1385,6 +1386,7 @@ GLOBAL_THRESHOLD_OPERATIONS = {
     "minimum_threshold",
 }
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
+    "colocalization_mask",
     "colocalization_metrics",
     "masked_colocalization_metrics",
     "colocalization_scatter_plot",
@@ -1405,6 +1407,7 @@ LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
 SAME_SHAPE_GRID_OPERATIONS = {
     "add_images",
     "calculate_weighted_image",
+    "colocalization_mask",
     "colocalization_metrics",
     "colocalization_scatter_plot",
     "colocalized_voxels",
@@ -5109,6 +5112,70 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             InputSpec("roi_mask", "mask_or_labels", "ROI mask"),
         ),
         execution_policy="manual",
+    ),
+    OperationSpec(
+        "colocalization_mask",
+        "Colocalization Mask",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+                tooltip=(
+                    "Keep voxels at or above both channel thresholds. Manual "
+                    "uses native intensity values; Costes auto calculates one "
+                    "threshold pair over the complete input images."
+                ),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (native intensity)",
+                "float",
+                25.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
+                1.0,
+                2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
+                tooltip=(
+                    "Channel 1 must be at or above this value, and channel 2 "
+                    "must also meet its threshold. Values are not rescaled."
+                ),
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (native intensity)",
+                "float",
+                25.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
+                1.0,
+                2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
+                tooltip=(
+                    "Channel 2 must be at or above this value, and channel 1 "
+                    "must also meet its threshold. Values are not rescaled."
+                ),
+            ),
+        ),
+        colocalization_mask,
+        max_inputs=2,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+        ),
     ),
     OperationSpec(
         "colocalized_voxels",
@@ -10662,6 +10729,12 @@ class PrototypePipeline:
         kwargs = self._operation_kwargs(node)
         primary_state = resolved_states[0] if resolved_states else None
         primary_input = resolved_inputs[0]
+        if node.operation_id == "colocalization_mask":
+            _validate_colocalization_mask_scalar_inputs(node, resolved_states)
+            if not axis_contract_only:
+                for value in resolved_inputs:
+                    if isinstance(value, np.ndarray):
+                        _operations._validate_colocalization_mask_integer_range(value)
         if node.operation_id in {"mask_to_3d_mesh", "labels_to_3d_mesh"}:
             mask_mesh_axes(getattr(primary_input, "shape", ()), primary_state)
         _validate_operation_axis_semantics(node, primary_state, kwargs)
@@ -12557,6 +12630,35 @@ def _split_axis_label(
         if name:
             return name.upper() if len(name) == 1 else name
     return f"Axis {axis_index}"
+
+
+def _validate_colocalization_mask_scalar_inputs(
+    node: GraphNode,
+    states: tuple[ImageState | TableState | None, ...],
+) -> None:
+    """Avoid interpreting channel or encoded-colour dimensions as scalar space."""
+    for input_index, state in enumerate(states):
+        if not isinstance(state, ImageState):
+            continue
+        multichannel = any(
+            axis.is_explicit
+            and (
+                axis.name.strip().casefold() in {"rgb", "rgba"}
+                or (index < len(state.shape) and state.shape[index] > 1)
+            )
+            for index, axis in enumerate(state.axes)
+            if index in _image_state_channel_axes(state)
+        )
+        if multichannel or state.kind in {"RGB image", "RGBA image"}:
+            raise AmbiguousAxisError(
+                f"{node.title} requires one scalar image per input; "
+                f"Channel {input_index + 1} contains multiple channels or "
+                "encoded RGB/RGBA colour. Use Split Channels or Extract Channel "
+                "first, then connect one channel to each input.",
+                code="colocalization_mask_requires_scalar_inputs",
+                detected_axes=state.axis_order,
+                failing_node_id=node.id,
+            )
 
 
 def _image_state_channel_axis(input_state: ImageState) -> int | None:

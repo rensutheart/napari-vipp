@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.15.0a5 - 2026-09-14
+
+- Temporarily constrain psygnal to `>=0.14,<0.16` after isolating a 0.16.0 event-callback regression affecting mesh transforms and crop overlays. Preserve real error reporting and scientific calculations; requalify newer versions before removing the constraint.
+
+- Update native macOS installer checks to verify the Auto-launched child process after the single-launcher transition.
+
+- Tighten the example chooser's outer margins, sidebar inset, detail/callout padding and footer gap. Keep Cancel before Open example consistently on Windows, macOS and Linux, with Open remaining the default keyboard action.
+
+- Replace the example chooser's dense two-column list with a searchable, resizable browser and guided detail panel for all 22 examples: input data, plain-language **What to explore** and **What you'll get** bullet lists, a suggested experiment and interpretation notes. Keep developer/test workflows together at the bottom; show the RACC method explanation and an explicit paper link. Use distinct sidebar/detail backgrounds and a visible draggable divider, including under napari's inherited styling. Support wrapped titles, narrow windows, keyboard opening and light/dark themes without loading images while browsing.
+
+- Split the combined colocalization example into focused **RACC Colocalization** and **Colocalization, Overlap & Object Counts** examples. Keep the tuned manual RACC thresholds and ROI settings, add the method's full name and paper citation, and retain whole-image/ROI overlays and metrics plus the **Colocalization Mask → Remove Small Objects → Label Connected Components → Measure Objects** branch in the general example. Both examples have separately arranged graphs and explanatory notes; existing saved workflows are unchanged.
+
+- Add **Colocalization Mask** under Colocalization: a true Boolean mask of voxels meeting both channel thresholds, matching the white overlap in Colocalized Voxels. Use native-intensity Manual or shared whole-image Costes thresholds, with the existing scatter inspector for review. Preserve axes and calibration so the mask can feed cleanup, connected-component labeling and object measurements; the original RGB overlays are unchanged.
+
 - Review the full example catalogue for readable graph placement. Separate crowded nodes, tunnel labels and explanatory notes; leave room for calculated-result controls, and widen the exhaustive showcase's seven logical lanes. Keep the examples' analysis parameters, connections, saved display profiles and operation coverage intact.
 
 - Space out the **RACC Colocalization** example so channel tunnels clear neighbouring nodes. Use a 30,000 binary ROI threshold and manual thresholds of 43,970.51 / 48,073.03 for both RACC variants. Display all RACC index images with Magma in VIPP thumbnails, Inspect and pinned views; metric and voxel-overlay threshold modes are unchanged.
@@ -11,6 +25,8 @@
 - Avoid resetting unchanged mesh display calibration during node selection, pinning and refresh, reducing unnecessary napari transform callbacks. Keep genuine calibration changes exact. Contain delayed selection display failures without changing calculated results; show a concise warning with **Details…** and **Dismiss** instead of an inline traceback filling the workflow dock.
 
 - Simplify desktop launch to one **VIPP** app/shortcut using Auto, for both Windows CPU/CUDA installations and macOS. Remove the separate CPU/Prefer-GPU graphical entry points and the normal splash's Automatic badge/profile explanation; compute controls remain inside VIPP. Upgrades retain ownership and rollback checks when retiring old profile shortcuts. GPU dependencies remain a separate installation capability, not a separate app icon.
+
+- Align native macOS installer smoke checks with the single Auto-mode VIPP launcher on both Apple Silicon and Intel.
 
 - Check for updates on every startup (unless disabled), retry a transient GitHub failure once, and explain connection failures without presenting a cached release as freshly checked. Separate installed/latest versions, status, update actions and preferences in the update dialog.
 

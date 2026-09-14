@@ -85,6 +85,11 @@ OPERATION_SEARCH_ALIASES = MappingProxyType(
         "project_image": ("projection",),
         "euclidean_distance_transform": ("edt", "distance map"),
         "binary_threshold": ("binarize", "binarization", "binarizing"),
+        "colocalization_mask": (
+            "colocalized voxels mask",
+            "overlap mask",
+            "both channels threshold",
+        ),
         "richardson_lucy_deconvolution": ("rl deconvolution",),
         "richardson_lucy_tv_deconvolution": ("rl tv", "total variation deconvolution"),
         "normalize_image": ("normalization", "normalizing"),

@@ -392,6 +392,12 @@ def test_native_installer_workflows_check_rendered_desktop_launcher(
     # Matching the script is not a replacement for launching the installed app.
     assert 'QT_API=pyqt6 "$launcher" \\' in lines[check_index + 2 :]
     assert 'test "$shortcut_ready" -eq 1' in lines
+    child_profile = command[command.index("--profile") + 1]
+    child_checks = [line for line in lines if "pgrep -f 'napari_vipp.app" in line]
+    assert child_checks == [
+        f'child_pid="$(pgrep -f \'napari_vipp.app.*--profile {child_profile}\' '
+        '| head -n 1)"'
+    ]
     assert lines.count('kill -0 "$child_pid"') == 2
     assert 'QT_API=pyside6 "$prefix/bin/python" -m napari_vipp.app \\' in lines
     assert '--profile cpu --smoke-exit-after-ready \\' in lines

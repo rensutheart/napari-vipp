@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from qtpy.QtCore import QEvent
 from qtpy.QtGui import QFont
 
 from napari_vipp._graph import PipelineGraphView, TunnelBadgeItem
@@ -11,16 +12,24 @@ from napari_vipp.core.workflow import load_workflow
 
 
 @pytest.mark.parametrize("calculated", [False, True])
-def test_racc_example_leaves_room_for_tunnels_and_calculation_controls(
-    qtbot, qapp, calculated
+@pytest.mark.parametrize(
+    ("filename", "badge_count"),
+    [
+        ("synthetic-colocalization-racc.json", 7),
+        ("synthetic-colocalization-overlap.json", 13),
+    ],
+)
+def test_colocalization_examples_leave_room_for_tunnels_and_calculation_controls(
+    qtbot, qapp, calculated, filename, badge_count
 ):
     previous_font = qapp.font()
     qapp.setFont(QFont("Segoe UI", 9))
+    view = None
     try:
         workflow = load_workflow(
             Path(__file__).resolve().parents[3]
             / "examples"
-            / "synthetic-colocalization-racc.json"
+            / filename
         )
         pipeline = PrototypePipeline()
         pipeline.restore_graph(
@@ -40,7 +49,7 @@ def test_racc_example_leaves_room_for_tunnels_and_calculation_controls(
         if calculated:
             # Ready results add metadata, status and Recalculate controls.
             for node_id in pipeline.nodes:
-                is_table = "metrics" in node_id
+                is_table = pipeline.nodes[node_id].output_type == "table"
                 if not is_table:
                     view.set_thumbnail(node_id, np.zeros((110, 180, 3), np.uint8))
                 view.set_node_metadata(
@@ -52,8 +61,10 @@ def test_racc_example_leaves_room_for_tunnels_and_calculation_controls(
                 view.set_node_execution_state(
                     node_id,
                     "ready",
-                    manual=node_id
-                    not in {"input", "split_channels_1", "binary_threshold_1"},
+                    manual=pipeline.operation_spec(
+                        pipeline.nodes[node_id].operation_id
+                    ).execution_policy
+                    == "manual",
                 )
         view.show()
         qapp.processEvents()
@@ -69,11 +80,15 @@ def test_racc_example_leaves_room_for_tunnels_and_calculation_controls(
             for item in view.scene.items()
             if isinstance(item, TunnelBadgeItem) and item.isVisible()
         ]
-        assert len(badges) == 15
+        assert len(badges) == badge_count
         for badge in badges:
             for node_id, rect in cards.items():
                 assert not badge.sceneBoundingRect().intersects(
                     rect.adjusted(2, 2, -2, -2)
                 ), (badge._label, node_id)
     finally:
+        if view is not None:
+            view.close()
+            view.deleteLater()
+            qapp.sendPostedEvents(None, QEvent.DeferredDelete)
         qapp.setFont(previous_font)

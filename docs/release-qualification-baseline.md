@@ -1,6 +1,69 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-10
+Last reviewed: 2026-09-14
+
+## 0.15.0a5 qualification declaration
+
+This iterative alpha covers the complete delta from published `v0.15.0a4`
+at `e0899c9a2906097dac3bb5120fd46e2844eecf5b`, including the update experience,
+single desktop launcher, display fixes, example layouts, guided chooser and
+Colocalization Mask. The user authorized release on 2026-09-14. Exact-main CI,
+native installer gates and artifact publication must still be verified against
+the final source; this declaration does not pre-claim their success.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  cpu_scientific: true
+  workflow_schema_provenance: false
+  source_reader_packaging: false
+  gpu_scientific_shared_execution: false
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_gpu_algorithms_readers_schemas: v0.15.0a4
+```
+
+- Scientific scope is the CPU-only Colocalization Mask and its operation-specific
+  shape/dtype facts. Focused review passed 134 tests covering native inclusive
+  thresholds, shared global Costes fitting, large-integer safety, scalar inputs,
+  calibrated grids, immutable inputs, Boolean metadata/history, serialization,
+  downstream cleanup/counting, preserved RACC thresholds and example coverage.
+  GPU providers and qualification policies are unchanged; do not rerun the full
+  GPU catalogue solely for this alpha.
+- Guided-chooser development passed 63 focused behavior, text-rendering,
+  theme/surface and responsive-layout tests, with actual Qt visual review in
+  light/dark and narrow layouts. Application documentation tests and the
+  companion strict manual build also passed. These focused records do not
+  substitute for the final complete CI matrix.
+- The new base constraint `psygnal>=0.14,<0.16` addresses a reproduced event
+  callback regression. Upgrading psygnal alone to 0.16.0 reproduced the mesh
+  transform failure with napari 0.9.0; napari 0.9.1 with psygnal 0.15.1 passed
+  all eight affected mesh/crop tests. The constraint has a focused metadata
+  regression test. Final CI must validate clean resolution on every supported
+  platform. This is a UI/event dependency change, not a numerical-provider or
+  scientific acceptance-policy change; requalify newer psygnal before admitting it.
+- Changed desktop domains require targeted installer, updater, launcher and
+  mesh-display tests. Native macOS jobs must verify the new Auto child process
+  on both architectures. Windows needs the affected managed-launcher/update
+  lifecycle checks; do not overwrite the user's installation to obtain evidence.
+  Carry forward only unrelated lifecycle scenarios whose inputs are unchanged.
+  Focused installer/updater/launcher/mesh tests passed 460 checks with two
+  platform-environment skips. The corrected macOS launcher contracts passed
+  30 checks with one macOS-only skip on Windows. Chooser/platform-dialog tests
+  passed 59 checks, including Windows, macOS, KDE and GNOME button ordering.
+- Packaging removes obsolete graphical entry points and adds a bundled example.
+  Require independent matching wheel/source builds, the single `vipp-app` GUI
+  entry point and all 22 registered examples in the exact release artifacts.
+  Build the Windows EXE and separate macOS PKGs from that qualified wheel and
+  verify frozen payloads, source/version identities, unsigned state and hashes.
+- Publish the same qualified Python bytes on GitHub and PyPI, followed by the
+  numbered/stable manual. Record final CI/build/publication identities and
+  checksums in the release evidence; no development installer may be substituted.
 
 ## 0.15.0a4 qualification declaration
 

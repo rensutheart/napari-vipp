@@ -525,6 +525,7 @@ def test_all_costes_threshold_parameters_have_manual_mode_dependency():
         "masked_colocalization_metrics",
         "colocalized_voxels",
         "masked_colocalized_voxels",
+        "colocalization_mask",
         "colocalization_scatter_plot",
         "masked_colocalization_scatter_plot",
         "racc_index",
