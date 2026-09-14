@@ -51,6 +51,8 @@ outputs:
         - packaging >=23
         - pillow >=10
         - psutil >=5.9
+        # Match the embedded wheel's napari transform callback compatibility bound.
+        - psygnal >=0.14,<0.16
         - qtpy >=2.4
         - scikit-image >=0.21
         - scipy >=1.10

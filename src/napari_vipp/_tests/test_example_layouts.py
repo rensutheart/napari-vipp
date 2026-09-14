@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from qtpy.QtCore import QEvent
+from qtpy.QtGui import QFont, QFontInfo
 
 from napari_vipp.ui.examples import EXAMPLE_WORKFLOWS
 
@@ -19,11 +20,34 @@ _spec.loader.exec_module(audit)
 @pytest.mark.parametrize("phase", ["initial", "ready"])
 @pytest.mark.parametrize("example", EXAMPLE_WORKFLOWS, ids=lambda spec: spec.id)
 def test_example_cards_notes_and_tunnels_have_clear_layout(qtbot, qapp, example, phase):
+    _assert_example_layout(qtbot, qapp, example.filename, phase)
+
+
+@pytest.mark.parametrize("phase", ["initial", "ready"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "synthetic-colocalization-overlap.json",
+        "synthetic-deconvolution-rl-tv.json",
+        "synthetic-3d-deconvolution-rl-tv.json",
+    ],
+)
+def test_example_layouts_allow_wider_linux_font(qtbot, qapp, filename, phase):
+    # Ubuntu cannot use Segoe UI. Its wider DejaVu fallback previously let
+    # RL-TV cards grow into notes and an ROI wire cross a channel tunnel.
+    if QFontInfo(QFont("DejaVu Sans", 9)).family() != "DejaVu Sans":
+        pytest.skip("DejaVu Sans is not installed on this platform")
+    _assert_example_layout(qtbot, qapp, filename, phase, font_family="DejaVu Sans")
+
+
+def _assert_example_layout(qtbot, qapp, filename, phase, *, font_family=None):
     old_font, old_palette = qapp.font(), qapp.palette()
     view = None
     try:
         audit.configure_application()
-        view = audit.build_example(ROOT / "examples" / example.filename, phase)
+        if font_family is not None:
+            qapp.setFont(QFont(font_family, 9))
+        view = audit.build_example(ROOT / "examples" / filename, phase)
         qtbot.addWidget(view)
         report = audit.layout_diagnostics(view)
         assert not report["collisions"], report["collisions"]

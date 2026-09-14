@@ -152,7 +152,7 @@
     {
       "id": "note_2",
       "text": "Both branches use 25 iterations, and RL-TV uses the conservative production-like regularization 0.002. Low-iteration outputs may be under-converged, while more iterations can amplify noise and PSF mismatch. Validate PSF sampling and centering before tuning regularization.",
-      "position": [1370.0, 610.0],
+      "position": [1540.0, 610.0],
       "width": 340.0,
       "attached_node": "richardson_lucy_tv_deconvolution_1"
     },

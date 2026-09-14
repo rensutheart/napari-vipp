@@ -269,7 +269,7 @@
     ],
     "masked_colocalization_metrics_1": [
       1580,
-      100
+      30
     ],
     "masked_colocalized_voxels_1": [
       1580,
@@ -318,7 +318,7 @@
       "text": "3. ROI-RESTRICTED COMPARISON\nBinary Threshold defines an ROI from red-channel values above 30,000. The masked metrics and white overlay fit Costes inside this ROI, so their thresholds can differ from the whole-image branch.",
       "position": [
         1580,
-        -80
+        -140
       ],
       "width": 430,
       "attached_node": "masked_colocalization_metrics_1"

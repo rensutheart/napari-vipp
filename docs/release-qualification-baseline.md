@@ -45,8 +45,13 @@ carried_forward:
   transform failure with napari 0.9.0; napari 0.9.1 with psygnal 0.15.1 passed
   all eight affected mesh/crop tests. The constraint has a focused metadata
   regression test. Final CI must validate clean resolution on every supported
-  platform. This is a UI/event dependency change, not a numerical-provider or
-  scientific acceptance-policy change; requalify newer psygnal before admitting it.
+  platform. The native macOS conda recipe mirrors the wheel's bound, with a
+  parity regression: its initial candidate correctly failed installed
+  `pip check` when conda admitted psygnal 0.16.1. The corrected recipe passed 31
+  packaging tests with one macOS-only skip on Windows; both native architecture
+  jobs must validate the corrected solve. This is a UI/event dependency change,
+  not a numerical-provider or scientific acceptance-policy change; requalify
+  newer psygnal before admitting it.
 - Changed desktop domains require targeted installer, updater, launcher and
   mesh-display tests. Native macOS jobs must verify the new Auto child process
   on both architectures. Windows needs the affected managed-launcher/update

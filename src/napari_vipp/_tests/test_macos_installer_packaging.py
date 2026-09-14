@@ -302,6 +302,37 @@ def test_macos_recipe_has_only_one_gui_entry_point():
     assert actual == {**project["scripts"], **project["gui-scripts"]}
 
 
+def test_macos_recipe_psygnal_constraint_matches_embedded_wheel_metadata():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    wheel_requirement = next(
+        requirement
+        for dependency in project["dependencies"]
+        if (requirement := Requirement(dependency)).name == "psygnal"
+    )
+    recipe = (REPO_ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    application = recipe.split("      name: napari-vipp\n", 1)[1]
+    runtime = application.split("      run:\n", 1)[1].split("    tests:\n", 1)[0]
+    psygnal_specs = [
+        line.strip().removeprefix("- ")
+        for line in runtime.splitlines()
+        if line.strip().startswith("- psygnal ")
+    ]
+
+    # The embedded wheel is installed --no-deps. Conda must honor the same
+    # compatibility bound; otherwise installation succeeds but pip check fails.
+    assert len(psygnal_specs) == 1
+    conda_requirement = Requirement(psygnal_specs[0])
+    assert conda_requirement.specifier == wheel_requirement.specifier
+    for version in ("0.14.0", "0.15.1"):
+        assert conda_requirement.specifier.contains(version)
+    for version in ("0.13.0", "0.16.0", "0.16.1"):
+        assert not conda_requirement.specifier.contains(version)
+
+
 def test_constructor_template_is_current_user_cpu_only_development_config():
     construct = (REPO_ROOT / "packaging/macos/construct.yaml.in").read_text(
         encoding="utf-8"

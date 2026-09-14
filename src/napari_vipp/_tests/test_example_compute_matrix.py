@@ -575,6 +575,7 @@ def test_compute_matrix_covers_every_bundled_example():
         "skeleton-qc",
         "advanced-skeleton",
         "racc-colocalization",
+        "colocalization-overlap",
         "object-colocalization",
         "deconvolution-2d",
         "deconvolution-3d",
