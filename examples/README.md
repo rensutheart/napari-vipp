@@ -8,6 +8,13 @@ These workflows are checked into the repository as small, deterministic review
 graphs. They are intended for regression testing, manual UI review, and future
 documentation screenshots.
 
+Check presentation after changing a fixture with
+`python scripts/check_example_layouts.py <filename-stem> --output-dir .cache/example-layout-review`.
+This renders real Qt cards, tunnels and notes before and after illustrative
+ready-result expansion, without executing analysis or reading input files.
+Inspect the PNGs as well as the collision diagnostics; layout regression tests
+cover the full catalogue. Scientific golden hashes remain separate from layout.
+
 Launch one of the named review workflows with:
 
 ```bash
@@ -24,6 +31,7 @@ registry):
 - `general-node-bypass`
 - `batch-provenance`
 - `label-cleanup`
+- `separate-overlapping-objects`
 - `gpu-segmentation`
 - `object-intensity`
 - `merged-measurements`
@@ -34,6 +42,7 @@ registry):
 - `skeleton-qc`
 - `advanced-skeleton`
 - `racc-colocalization`
+- `colocalization-overlap`
 - `object-colocalization`
 - `deconvolution-2d`
 - `deconvolution-3d`
@@ -69,7 +78,8 @@ example...**. Its actively maintained source also remains under
 | `synthetic-mesh-objects.json` | `VIPP synthetic 3D mesh morphology` | Saved interactive workflow: split a single mesh into five objects, colour by triangle count with Turbo, filter and combine, smooth at 2 iterations/strength 1, then simplify at 10%/aggressiveness 4. Retains layout and inspector profiles; no automatic file output. Open as `mesh-objects`; see the [mesh guide](https://rensutheart.github.io/vipp-mkdocs/nightly/workflows/mask-to-mesh/). |
 | `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path using a `Skeleton mask` tunnel: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
 | `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test using a `Skeleton mask` tunnel for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
-| `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path using named red/green channel tunnels: ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
+| `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Focused whole-image and ROI-masked RACC review: manual thresholds 43,970.51 / 48,073.03, 30,000 red-channel ROI, Magma index views, threshold/scatter review, and notes explaining the method, theta and source paper. Open as `racc-colocalization`. |
+| `synthetic-colocalization-overlap.json` | `VIPP synthetic colocalization` | Whole-image and ROI-masked Costes overlays and Pearson/Manders metrics, plus a Boolean overlap-mask → 3D face-connected cleanup (20 voxels) → labeling → object-measurement branch. No RACC nodes; open as `colocalization-overlap`. |
 | `synthetic-object-colocalization-association.json` | `VIPP synthetic colocalization` | Object-aware colocalization and association review path using named red/green channel tunnels: thresholded channel labels, object colocalization rows, label overlap, nearest-object distances, event localization, and merged morphology/colocalization tables. |
 | `synthetic-deconvolution-rl-tv.json` | `VIPP synthetic deconvolution image` plus `VIPP synthetic measured PSF` | PSF-aware restoration review path with ordinary RL and RL-TV side by side at 25 iterations. RL-TV uses the conservative production-like `0.002` regularization; compare with zero before increasing it. |
 | `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with one shared, visible `float32` Preserve conversion feeding matched 25-iteration RL/RL-TV branches, a matched ZYX PSF, the authored `1e-12` filter epsilon, and conservative `0.002` TV regularization. The conversion does not rescale intensity. GPU agreement is a backend check, not proof that the PSF, iteration count, or restored structures are scientifically valid. |
@@ -78,12 +88,12 @@ example...**. Its actively maintained source also remains under
 
 `synthetic-mesh-objects.json` is the manually authored **Mesh Objects, Colours &
 Refinement** example (`mesh-objects`, under **3D Meshes**). It
-retains the interactive node parameters, positions and inspector profiles:
+retains the interactive node parameters and inspector profiles:
 single-object extraction followed by splitting, Turbo triangle-count colours,
 two smoothing iterations at strength 1, and a 10% simplification target at
 aggressiveness 4. Its regression tests check the saved settings, five object IDs,
-calibration and absence of automatic output files. Preserve this snapshot rather
-than regenerating its parameters or layout; the previous generator was removed.
+calibration and absence of automatic output files. Preserve its authored analysis
+and display profiles when improving layout; the previous generator was removed.
 
 The repository test suite loads and runs every workflow above. When adding a new
 example workflow, also add:
@@ -106,6 +116,7 @@ The current measurement/morphology phase is represented by:
 - `synthetic-skeleton-qc.json`;
 - `synthetic-advanced-skeleton-network.json`;
 - `synthetic-colocalization-racc.json`;
+- `synthetic-colocalization-overlap.json`;
 - `synthetic-object-colocalization-association.json`;
 - `synthetic-deconvolution-rl-tv.json`;
 - `synthetic-3d-deconvolution-rl-tv.json`;

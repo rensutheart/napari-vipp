@@ -140,18 +140,18 @@
   "positions": {
     "input": [0.0, 220.0],
     "split_channels_1": [360.0, 220.0],
-    "gaussian_blur_1": [720.0, 220.0],
-    "otsu_threshold_1": [1080.0, 220.0],
-    "fill_holes_1": [1440.0, 220.0],
-    "label_connected_components_1": [1800.0, 220.0],
-    "filter_labels_by_volume_1": [2160.0, 220.0],
-    "measure_objects_intensity_1": [2520.0, 220.0]
+    "gaussian_blur_1": [880.0, 220.0],
+    "otsu_threshold_1": [1240.0, 220.0],
+    "fill_holes_1": [1600.0, 220.0],
+    "label_connected_components_1": [1960.0, 220.0],
+    "filter_labels_by_volume_1": [2320.0, 220.0],
+    "measure_objects_intensity_1": [2680.0, 300.0]
   },
   "notes": [
     {
       "id": "note_1",
       "text": "Two-input measurement: cleaned labels define objects; the red intensity tunnel supplies the original channel values.",
-      "position": [2520.0, 90.0],
+      "position": [2680.0, 170.0],
       "width": 270.0,
       "attached_node": "measure_objects_intensity_1"
     }

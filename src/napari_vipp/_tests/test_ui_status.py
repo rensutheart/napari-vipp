@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import pytest
-from qtpy.QtCore import QEvent, QObject, Signal
+from qtpy.QtCore import QEvent, QObject, Qt, Signal
 from qtpy.QtGui import QColor, QPalette
-from qtpy.QtWidgets import QApplication, QLabel, QWidget
+from qtpy.QtWidgets import QApplication, QHBoxLayout, QLabel, QWidget
 
 from napari_vipp.ui.palette_roles import theme_colors
-from napari_vipp.ui.status import MessageSeverity, StatusMessageStrip
+from napari_vipp.ui.status import (
+    MessageSeverity,
+    StatusMessageActions,
+    StatusMessageStrip,
+)
 
 
 class _StatusEmitter(QObject):
@@ -221,3 +225,76 @@ def test_actionable_error_restyles_without_losing_alert_semantics(qtbot):
     assert strip.property("fullWidthAlert") is True
     assert strip.severity is MessageSeverity.ERROR
     assert strip.actionable
+
+
+def test_status_treats_error_text_as_plain_text(qtbot):
+    strip = StatusMessageStrip("Error: <image> & <mesh>")
+    qtbot.addWidget(strip)
+    assert strip.textFormat() == Qt.PlainText
+    assert strip.text() == "Error: <image> & <mesh>"
+
+
+@pytest.mark.parametrize("severity", [MessageSeverity.WARNING, MessageSeverity.ERROR])
+def test_status_actions_keep_long_details_out_of_layout_and_allow_dismiss(
+    qtbot, severity
+):
+    host = QWidget()
+    layout = QHBoxLayout(host)
+    strip = StatusMessageStrip(parent=host)
+    actions = StatusMessageActions(strip, host)
+    layout.addWidget(strip, 1)
+    layout.addWidget(actions)
+    qtbot.addWidget(host)
+    host.resize(720, 50)
+    host.show()
+    details = "ReferenceError: weakly-referenced object no longer exists\n" * 200
+    strip.show_message(
+        "Result calculated; display needs attention.",
+        severity=severity,
+        actionable=True,
+        detail=details,
+    )
+    qtbot.waitUntil(lambda: actions.isVisible())
+    assert strip.heightForWidth(400) < 90
+    assert host.sizeHint().height() < 90
+
+    qtbot.mouseClick(actions.details_button, Qt.LeftButton)
+    dialog = actions._details_dialog
+    assert dialog.isVisible()
+    assert not dialog.isModal()
+    assert actions._details_text.isReadOnly()
+    assert details.strip() in actions._details_text.toPlainText()
+    dialog.close()
+
+    qtbot.mouseClick(actions.dismiss_button, Qt.LeftButton)
+    assert strip.text() == ""
+    assert strip.toolTip() == ""
+    assert actions.isHidden()
+    assert strip.severity is MessageSeverity.NEUTRAL
+
+    strip.show_message(
+        "A later display warning", severity=severity, detail="New detail"
+    )
+    qtbot.mouseClick(actions.details_button, Qt.LeftButton)
+    assert actions._details_dialog is dialog
+    assert "New detail" in actions._details_text.toPlainText()
+    assert "ReferenceError" not in actions._details_text.toPlainText()
+
+
+def test_status_actions_follow_replacement_and_progress_visibility(qtbot):
+    strip = StatusMessageStrip()
+    actions = StatusMessageActions(strip)
+    qtbot.addWidget(strip)
+    qtbot.addWidget(actions)
+    strip.show_message("An error", severity="error")
+    assert not actions.isHidden()
+    assert actions.details_button.isHidden()
+    actions.set_active(False)
+    strip.show_message("Another error", severity="error", detail="Technical detail")
+    assert actions.isHidden()
+    actions.set_active(True)
+    assert not actions.isHidden()
+    strip.setText("Selected a node")
+    assert actions.isHidden()
+    strip.show_message("Done", severity="success", detail="Output info")
+    assert actions.isHidden()

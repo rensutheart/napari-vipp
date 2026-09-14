@@ -664,7 +664,7 @@ def build_workflow() -> tuple[
 
     outliers = place(
         "remove_binary_outliers",
-        680,
+        340,
         5110,
         radius=1.5,
         which_outliers="Foreground (remove)",
@@ -911,6 +911,24 @@ def build_workflow() -> tuple[
         channel_1_threshold=12000.0,
         channel_2_threshold=12000.0,
     )
+    coloc_mask = place(
+        "colocalization_mask",
+        1360,
+        6590,
+        threshold_mode="Manual",
+        channel_1_threshold=12000.0,
+        channel_2_threshold=12000.0,
+    )
+    lane_note(
+        "colocalization_mask_cleanup",
+        "COLOCALIZED VOXELS AS A MASK\n"
+        "Only voxels at or above both channel thresholds are foreground. To count "
+        "connected overlap regions, follow with Remove Small Objects, Connected "
+        "Components, and Measure Objects. These are overlap regions, not counts "
+        "of the original organelles.",
+        1360 * 1.9,
+        7000,
+    )
     coloc_voxels = place(
         "colocalized_voxels",
         2040,
@@ -956,7 +974,7 @@ def build_workflow() -> tuple[
         output_dtype="float32",
     )
 
-    unmasked_pairs = (coloc_metrics, coloc_voxels, racc)
+    unmasked_pairs = (coloc_metrics, coloc_mask, coloc_voxels, racc)
     masked_triples = (masked_metrics, masked_voxels, masked_racc)
     for analysis in unmasked_pairs:
         wire(
@@ -1237,6 +1255,11 @@ def build_workflow() -> tuple[
         raise RuntimeError(f"Non-source operation duplicates: {duplicates}")
     if set(positions) != set(pipeline.nodes):
         raise RuntimeError("Every showcase node must have a canvas position.")
+
+    # The authored 340-unit logical grid predates the wider multi-input cards
+    # and named channel badges. Keep the seven conceptual lanes and ordering,
+    # but reserve horizontal room for both cards and their tunnel labels.
+    positions = {node_id: (x * 1.9, y) for node_id, (x, y) in positions.items()}
 
     return pipeline, positions, notes
 

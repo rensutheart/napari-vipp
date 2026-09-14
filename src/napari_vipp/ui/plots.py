@@ -6,9 +6,9 @@ from collections.abc import Mapping, Sequence
 from numbers import Rational
 
 import numpy as np
-from qtpy.QtCore import QEvent, QPointF, QRect, QRectF, Qt, Signal
+from qtpy.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal
 from qtpy.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen
-from qtpy.QtWidgets import QToolTip, QWidget
+from qtpy.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_HEX,
@@ -688,11 +688,16 @@ class DetailedHistogramPlot(QWidget):
     every bar through the selected axis transforms, and exposes the original
     bin values on hover.  Logarithmic axes are genuine base-10 coordinate
     transforms; no ``log1p`` or shifted pseudo-logarithmic presentation is
-    used.
+    used. Embedded inspectors can request ``minimum_plot_height`` to reserve
+    that much drawable space in addition to the font- and width-dependent
+    labels and legend. Detached windows keep their existing free sizing.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, minimum_plot_height: int | None = None):
         super().__init__(parent)
+        if minimum_plot_height is not None and minimum_plot_height <= 0:
+            raise ValueError("The minimum drawable plot height must be positive.")
+        self._minimum_plot_height = minimum_plot_height
         self._bin_edges = np.array([], dtype=np.float64)
         self._series_values = np.empty((0, 0), dtype=np.float64)
         self._series_labels: tuple[str, ...] = ()
@@ -709,6 +714,9 @@ class DetailedHistogramPlot(QWidget):
         self.setMinimumHeight(220)
         self.setMouseTracking(True)
         self.setAccessibleName("Detailed histogram")
+        if minimum_plot_height is not None:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            self._sync_minimum_height()
 
     @property
     def supports_log_x(self) -> bool:
@@ -769,6 +777,7 @@ class DetailedHistogramPlot(QWidget):
         self._hovered_bin = None
         self.setToolTip("")
         self.setAccessibleDescription(str(message))
+        self._sync_minimum_height()
         self.update()
 
     def set_histogram(
@@ -898,6 +907,7 @@ class DetailedHistogramPlot(QWidget):
             "series; "
             f"{self._x_scale} x axis; {self._y_scale} y axis."
         )
+        self._sync_minimum_height()
         self.update()
 
     def set_scales(
@@ -924,6 +934,7 @@ class DetailedHistogramPlot(QWidget):
         self._y_scale = resolved_y
         self._hovered_bin = None
         self.setToolTip("")
+        self._sync_minimum_height()
         self.update()
 
     def set_grid_divisions(
@@ -942,6 +953,7 @@ class DetailedHistogramPlot(QWidget):
             self._x_grid_divisions = _detailed_histogram_grid_divisions(x, axis="x")
         if y is not None:
             self._y_grid_divisions = _detailed_histogram_grid_divisions(y, axis="y")
+        self._sync_minimum_height()
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -999,10 +1011,48 @@ class DetailedHistogramPlot(QWidget):
             self._hovered_bin = None
             self.setToolTip("")
             QToolTip.hideText()
-        return super().event(event)
+        result = super().event(event)
+        if event.type() in (
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+            QEvent.Show,
+        ) and hasattr(self, "_y_axis_label"):
+            self._sync_minimum_height()
+        return result
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_minimum_height()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        if self._minimum_plot_height is not None:
+            return QSize(320, self.minimumHeight())
+        return super().sizeHint()
+
+    def _sync_minimum_height(self) -> None:
+        if self._minimum_plot_height is None:
+            return
+        _left, top, _right, bottom = self._layout_margins(self.width())
+        axis_metrics = QFontMetrics(self._axis_label_font())
+        drawable_height = max(
+            int(self._minimum_plot_height),
+            axis_metrics.horizontalAdvance(self._y_axis_label) + 8,
+        )
+        required = 16 + top + drawable_height + bottom
+        if required != self.minimumHeight():
+            # A minimum rather than a fixed total height lets the inspector
+            # scroll instead of squeezing labels into the data rectangle.
+            self.setMinimumHeight(required)
+            self.updateGeometry()
 
     def _plot_rect(self) -> QRect:
         outer = self.rect().adjusted(8, 8, -8, -8)
+        left, top, right, bottom = self._layout_margins(self.width())
+        return outer.adjusted(left, top, -right, -bottom)
+
+    def _layout_margins(self, width: int) -> tuple[int, int, int, int]:
+        """Use the same text bands for painting and embedded height requests."""
         tick_metrics = QFontMetrics(self._tick_label_font())
         axis_metrics = QFontMetrics(self._axis_label_font())
         title_height = tick_metrics.height() + 11 if self._title else 6
@@ -1017,7 +1067,7 @@ class DetailedHistogramPlot(QWidget):
         )
         y_title_band = axis_metrics.height() + 8 if self._y_axis_label else 0
         left = max(24, y_title_band + y_tick_width + 14)
-        legend_width = max(outer.width() - left - 15, 1)
+        legend_width = max(width - 16 - left - 15, 1)
         legend_rows = self._legend_row_count(tick_metrics, legend_width)
         legend_height = (
             legend_rows * (tick_metrics.height() + 4) + 4
@@ -1027,7 +1077,7 @@ class DetailedHistogramPlot(QWidget):
         x_tick_band = tick_metrics.height() + 7
         x_title_band = axis_metrics.height() + 8 if self._x_axis_label else 0
         bottom = x_tick_band + x_title_band + 6
-        return outer.adjusted(left, title_height + legend_height, -15, -bottom)
+        return left, title_height + legend_height, 15, bottom
 
     def _tick_label_font(self) -> QFont:
         return QFont(self.font())
@@ -1050,6 +1100,15 @@ class DetailedHistogramPlot(QWidget):
     ) -> None:
         colors = custom_paint_colors(self.palette())
         base_font = painter.font()
+        # In an inspector the title and x-axis each own a full horizontal
+        # band. Do not discard their text merely because tick labels leave
+        # a narrower data rectangle. Keep normal pop-out alignment unchanged.
+        label_left = plot_rect.left()
+        label_right = plot_rect.right()
+        if self._minimum_plot_height is not None:
+            label_left = outer.left() + 6
+            label_right = outer.right() - 6
+        label_width = max(label_right - label_left + 1, 1)
         painter.setFont(self._tick_label_font())
         if self._title:
             title_font = painter.font()
@@ -1059,11 +1118,18 @@ class DetailedHistogramPlot(QWidget):
             title = title_metrics.elidedText(
                 self._title,
                 Qt.ElideRight,
-                max(plot_rect.width(), 1),
+                label_width,
             )
             painter.setPen(colors.text)
+            title_x = max(
+                label_left,
+                min(
+                    plot_rect.left(),
+                    label_right - title_metrics.horizontalAdvance(title) + 1,
+                ),
+            )
             painter.drawText(
-                plot_rect.left(),
+                title_x,
                 outer.top() + title_metrics.ascent() + 4,
                 title,
             )
@@ -1077,10 +1143,17 @@ class DetailedHistogramPlot(QWidget):
             label = axis_metrics.elidedText(
                 self._x_axis_label,
                 Qt.ElideRight,
-                max(plot_rect.width(), 1),
+                label_width,
+            )
+            label_x = max(
+                label_left,
+                min(
+                    plot_rect.center().x() - axis_metrics.horizontalAdvance(label) // 2,
+                    label_right - axis_metrics.horizontalAdvance(label) + 1,
+                ),
             )
             painter.drawText(
-                plot_rect.center().x() - axis_metrics.horizontalAdvance(label) // 2,
+                label_x,
                 outer.bottom() - axis_metrics.descent() - 8,
                 label,
             )

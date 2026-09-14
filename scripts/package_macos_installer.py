@@ -198,7 +198,7 @@ def build_installer(
     plan_only: bool = False,
     conda_exe: Path | None = None,
 ) -> dict[str, object]:
-    """Build a native, current-user, CPU-only constructor PKG."""
+    """Build a current-user PKG with CPU backends and one Auto-mode VIPP app."""
     root = repository_root.resolve()
     source = inspect_source(root)
     if not development:

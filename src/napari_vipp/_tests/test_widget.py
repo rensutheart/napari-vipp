@@ -4006,7 +4006,7 @@ def test_example_workflow_dialog_groups_and_filters_examples(qtbot):
         category = dialog.tree.topLevelItem(index)
         for child_index in range(category.childCount()):
             titles.append(category.child(child_index).text(0))
-    assert titles == ["RACC Colocalization"]
+    assert "RACC Colocalization" in titles
 
     dialog.select_example("racc-colocalization")
     assert dialog.selected_example().id == "racc-colocalization"
@@ -4015,10 +4015,10 @@ def test_example_workflow_dialog_groups_and_filters_examples(qtbot):
     dialog.filter_edit.clear()
     dialog.select_example("batch-provenance")
     assert dialog.open_button.text() == "Open batch demo..."
-    assert "ready-to-run" in dialog.details_label.text().lower()
-    assert "Demo data" in dialog.details_label.text()
-    assert "working copy" in dialog.details_label.text()
-    assert "Run demo batch" in dialog.details_label.text()
+    assert "paired inputs" in dialog.details_label.text()
+    assert "synthetic image files" in dialog.data_label.text()
+    assert "working copy" in dialog.footer_hint.text()
+    assert "run the demo" in dialog.try_label.text()
 
 
 def test_example_workflow_files_are_packaged():
@@ -11087,7 +11087,8 @@ def test_node_selection_rejects_a_stale_output_histogram_result(
     assert widget._current_output_histogram_key == new_key
 
 
-def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
+@pytest.mark.parametrize("operation_id", ("colocalized_voxels", "colocalization_mask"))
+def test_colocalization_inspector_scatter_syncs_thresholds(qtbot, operation_id):
     data = np.zeros((2, 16, 16), dtype=np.uint16)
     data[0, 3:11, 3:11] = 6000
     data[1, 6:14, 6:14] = 6500
@@ -11099,10 +11100,11 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     qtbot.addWidget(widget)
 
     split = widget.add_node_from_palette("split_channels")
-    coloc = widget.add_node_from_palette("colocalized_voxels")
+    coloc = widget.add_node_from_palette(operation_id)
     widget.pipeline.set_param(coloc.id, "threshold_mode", "Costes auto")
-    widget.pipeline.set_param(coloc.id, "channel_1_color", "Blue")
-    widget.pipeline.set_param(coloc.id, "channel_2_color", "Yellow")
+    if operation_id == "colocalized_voxels":
+        widget.pipeline.set_param(coloc.id, "channel_1_color", "Blue")
+        widget.pipeline.set_param(coloc.id, "channel_2_color", "Yellow")
     widget._connect_nodes("input", split.id)
     widget._connect_nodes(split.id, coloc.id, source_port=0, target_port=0)
     widget._connect_nodes(split.id, coloc.id, source_port=1, target_port=1)
@@ -11112,8 +11114,20 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
 
     assert not widget.colocalization_scatter_group.isHidden()
     assert widget.colocalization_scatter_plot._image is not None
-    assert widget.colocalization_scatter_plot._channel_1_color.name() == "#0000ff"
-    assert widget.colocalization_scatter_plot._channel_2_color.name() == "#ffff00"
+    if operation_id == "colocalized_voxels":
+        assert widget.colocalization_scatter_plot._channel_1_color.name() == "#0000ff"
+        assert widget.colocalization_scatter_plot._channel_2_color.name() == "#ffff00"
+    else:
+        mask = widget.pipeline.outputs[coloc.id]
+        assert mask.dtype == np.bool_
+        assert mask.shape == data.shape[1:]
+        assert not widget.mask_summary_section.isHidden()
+        params = widget.pipeline.nodes[coloc.id].params
+        np.testing.assert_array_equal(
+            mask,
+            (data[0] >= params["channel_1_threshold"])
+            & (data[1] >= params["channel_2_threshold"]),
+        )
     assert widget.colocalization_scatter_plot.minimumHeight() == 300
     assert widget.colocalization_scatter_summary.minimumHeight() == 42
     assert widget.colocalization_scatter_summary.maximumHeight() > 42
@@ -20363,7 +20377,9 @@ def test_finish_clears_busy_state_when_result_display_fails(qtbot, monkeypatch):
     assert widget.pipeline_busy_label.isHidden()
     assert widget.pipeline_busy_bar.isHidden()
     assert "Result calculated" in widget.status_label.text()
-    assert "generated layer failed" in widget.status_label.text()
+    assert "generated layer failed" in widget.status_label.toolTip()
+    assert "generated layer failed" not in widget.status_label.text()
+    assert not widget.status_actions.isHidden()
 
 
 def test_completed_background_node_clears_processing_when_presentation_fails(
@@ -20402,7 +20418,7 @@ def test_completed_background_node_clears_processing_when_presentation_fails(
 
     assert not widget.graph_view._cards["gaussian"].is_processing()
     assert "Result calculated" in widget.status_label.text()
-    assert "progressive display failed" in widget.status_label.text()
+    assert "progressive display failed" in widget.status_label.toolTip()
 
 
 def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch):
@@ -23906,6 +23922,7 @@ def test_status_toolbar_progress_stop_and_run_activity_stay_synchronized(qtbot):
     assert widget.workflow_toolbar_layout is widget.status_toolbar_layout
     assert status_widgets == [
         widget.status_label,
+        widget.status_actions,
         widget.cache_status_label,
         widget.pipeline_activity_group,
         widget.run_activity_button,

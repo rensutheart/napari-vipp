@@ -24,7 +24,7 @@ refuse it. Developer ID signing and notarization remain the production goal.
 
 | Property | Contract |
 | --- | --- |
-| Compute | CPU only; macOS does not use the NVIDIA CUDA extras |
+| Compute | Auto launch profile; packaged backends remain CPU-only, without NVIDIA CUDA extras |
 | Python | Managed CPython 3.12 environment |
 | UI | napari 0.9.0 with PySide6 6.9.3 |
 | Environment | `~/Library/vipp` |
@@ -38,6 +38,12 @@ Separate architecture packages keep conda's native dependencies auditable;
 this is not a Universal 2 bundle. The app shortcut is supplied by `menuinst`
 and launches the real managed Python. The VIPP launcher can therefore start its
 full child process normally and napari remains extensible.
+
+Unreleased launcher change: the single app remains named `VIPP.app` and now
+starts with `--profile auto`, not a forced CPU profile. Compute choices belong
+inside VIPP; no Automatic, CPU or GPU app variants are created. The recipe
+retains `vipp-app` as the sole GUI entry point, alongside the existing command-line
+tools. This does not add or qualify any macOS GPU backend.
 
 The conda recipe contains two exact-version local packages:
 

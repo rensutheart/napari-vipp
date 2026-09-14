@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from .example_guidance import EXAMPLE_GUIDANCE_BY_ID, ExampleGuidance
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,7 @@ class ExampleWorkflowSpec:
     samples: tuple[str, ...]
     description: str
     generated_batch_demo: bool = False
+    guidance: ExampleGuidance | None = None
 
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
@@ -201,8 +204,21 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "RACC Colocalization",
         "synthetic-colocalization-racc.json",
         ("VIPP synthetic colocalization",),
-        "Inspect red/green channel tunnels, ROI masks, scatter thresholds, "
-        "Manders/Pearson metrics, and RACC output.",
+        "Explore Regression adjusted colocalisation colour mapping (RACC): "
+        "compare whole-image and ROI-restricted index maps using the saved "
+        "manual thresholds. Follow notes on the intensity relationship, "
+        "theta and Magma display, with the original method reference.",
+    ),
+    ExampleWorkflowSpec(
+        "colocalization-overlap",
+        "Colocalization & Association",
+        "Colocalization, Overlap & Object Counts",
+        "synthetic-colocalization-overlap.json",
+        ("VIPP synthetic colocalization",),
+        "Compare whole-image and ROI-restricted Pearson/Manders metrics and "
+        "white overlap views with Costes thresholds. Extract the Boolean "
+        "overlap mask, remove small 3D regions, label them, and measure the "
+        "retained regions. RACC colour mapping is a separate example.",
     ),
     ExampleWorkflowSpec(
         "object-colocalization",
@@ -233,6 +249,11 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         ),
         "Run volumetric PSF-aware restoration with matched 3D image and PSF sources.",
     ),
+)
+
+EXAMPLE_WORKFLOWS = tuple(
+    replace(spec, guidance=EXAMPLE_GUIDANCE_BY_ID[spec.id])
+    for spec in EXAMPLE_WORKFLOWS
 )
 
 

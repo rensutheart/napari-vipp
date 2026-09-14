@@ -11,6 +11,7 @@ import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,7 +38,7 @@ from napari_vipp.installer.models import (
     ShortcutScope,
     installation_request_fingerprint,
 )
-from napari_vipp.installer.planner import create_install_plan
+from napari_vipp.installer.planner import _release_acceptance_code, create_install_plan
 
 
 def _release() -> ReleaseSpec:
@@ -302,6 +303,8 @@ def test_managed_cpu_plan_is_ready_and_cpu_only(tmp_path, minor):
     assert document["status"] == "ready"
     assert document["release"]["requirement"] == "napari-vipp[app]==0.13.0a7"
     assert [shortcut["label"] for shortcut in document["shortcuts"]] == ["VIPP"]
+    assert [shortcut.profile for shortcut in plan.shortcuts] == ["auto"]
+    assert plan.shortcuts[0].executable.name == "vipp-app.exe"
     assert [action["id"] for action in document["proposed_actions"]] == [
         "create_managed_environment",
         "ensure_managed_pip",
@@ -338,17 +341,68 @@ def test_managed_cuda13_accepts_any_qualified_nvidia_model(
     assert document["release"]["requirement"] == (
         "napari-vipp[app,gpu-cuda13]==0.13.0a7"
     )
-    assert {shortcut["label"] for shortcut in document["shortcuts"]} == {
-        "VIPP Automatic",
-        "VIPP CPU",
-        "VIPP Prefer GPU",
-    }
+    assert [shortcut["label"] for shortcut in document["shortcuts"]] == ["VIPP"]
+    assert [shortcut.profile for shortcut in plan.shortcuts] == ["auto"]
+    assert plan.shortcuts[0].executable.name == "vipp-app.exe"
     assert "verify_cuda13" in {action["id"] for action in document["acceptance"]}
     serialized = plan.to_json().casefold()
     assert "system cuda toolkit" not in serialized
     assert document["schema_version"] == 2
     assert "cucim" not in document
     assert device_name.casefold() in serialized
+
+
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+@pytest.mark.parametrize("scope", list(ShortcutScope))
+def test_each_selected_scope_has_only_one_auto_vipp_launcher(tmp_path, track, scope):
+    target = tmp_path / "managed"
+    request = _request(target, track=track, scope=scope)
+    discovery = _snapshot(
+        target, request=request, gpu=_gpu() if track is ComputeTrack.CUDA13 else None
+    )
+    plan = create_install_plan(request, discovery=discovery, release=_release())
+    destinations = discovery_module._planned_shortcut_destinations(
+        request,
+        desktop_directory=discovery.filesystem.desktop_directory,
+        start_menu_directory=discovery.filesystem.start_menu_directory,
+    )
+
+    assert plan.ready
+    expected_count = {
+        ShortcutScope.NONE: 0,
+        ShortcutScope.DESKTOP: 1,
+        ShortcutScope.START_MENU: 1,
+        ShortcutScope.BOTH: 2,
+    }[scope]
+    assert len(plan.shortcuts) == expected_count
+    assert {item.destination for item in plan.shortcuts} == set(destinations)
+    assert all(
+        item.label == "VIPP" and item.profile == "auto" for item in plan.shortcuts
+    )
+    assert all(item.executable.name == "vipp-app.exe" for item in plan.shortcuts)
+    assert all(item.destination.name == "VIPP.lnk" for item in plan.shortcuts)
+
+
+@pytest.mark.parametrize("has_app", [True, False])
+def test_packaged_acceptance_requires_only_the_single_gui_entrypoint(
+    monkeypatch, has_app
+):
+    import importlib.metadata
+
+    points = [SimpleNamespace(group="console_scripts", name="vipp")]
+    if has_app:
+        points.append(SimpleNamespace(group="gui_scripts", name="vipp-app"))
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: _release().version)
+    monkeypatch.setattr(
+        importlib.metadata, "distribution",
+        lambda _name: SimpleNamespace(entry_points=points),
+    )
+    code = _release_acceptance_code(_release().version)
+    if has_app:
+        exec(code, {})
+    else:
+        with pytest.raises(AssertionError):
+            exec(code, {})
 
 
 def test_managed_cuda13_rejects_non_ascii_root_without_mutation(
@@ -1500,7 +1554,8 @@ def test_default_known_folder_is_safety_checked(tmp_path):
     assert "shortcut_directory_unsafe" in {issue.code for issue in plan.issues}
 
 
-def test_dangling_shortcut_entry_is_a_collision(tmp_path, monkeypatch):
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+def test_dangling_shortcut_entry_is_a_collision(tmp_path, monkeypatch, track):
     selected_python = tmp_path / "Python312" / "python.exe"
     selected_python.parent.mkdir()
     selected_python.touch()
@@ -1508,7 +1563,7 @@ def test_dangling_shortcut_entry_is_a_collision(tmp_path, monkeypatch):
     desktop.mkdir()
     destination = desktop / "VIPP.lnk"
     target = tmp_path / "target"
-    request = _request(target, python=selected_python)
+    request = _request(target, python=selected_python, track=track)
     original_lstat = Path.lstat
 
     def simulated_lstat(path):

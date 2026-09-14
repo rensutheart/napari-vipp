@@ -1,0 +1,364 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "colocalization_mask_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic colocalization",
+        "series_index": 0,
+        "channel_colors": "Red,Green",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {
+        "preview_channel": 0
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 30000,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "colocalized_voxels_1",
+      "operation_id": "colocalized_voxels",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35,
+        "display_mode": "White overlay on channels",
+        "channel_1_color": "Red",
+        "channel_2_color": "Green"
+      }
+    },
+    {
+      "id": "colocalization_metrics_1",
+      "operation_id": "colocalization_metrics",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35
+      }
+    },
+    {
+      "id": "masked_colocalized_voxels_1",
+      "operation_id": "masked_colocalized_voxels",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35,
+        "display_mode": "White overlay on channels",
+        "channel_1_color": "Red",
+        "channel_2_color": "Green"
+      }
+    },
+    {
+      "id": "masked_colocalization_metrics_1",
+      "operation_id": "masked_colocalization_metrics",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35
+      }
+    },
+    {
+      "id": "colocalization_mask_1",
+      "operation_id": "colocalization_mask",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35
+      }
+    },
+    {
+      "id": "remove_small_objects_1",
+      "operation_id": "remove_small_objects",
+      "params": {
+        "min_size": 20,
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalized_voxels_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalized_voxels_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 2,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 2,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_mask_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Red channel"
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_mask_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Green channel"
+    },
+    {
+      "source": "colocalization_mask_1",
+      "target": "remove_small_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "measure_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Red channel",
+      "source": "split_channels_1",
+      "source_port": 0
+    },
+    {
+      "name": "Green channel",
+      "source": "split_channels_1",
+      "source_port": 1
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      350
+    ],
+    "split_channels_1": [
+      400,
+      350
+    ],
+    "binary_threshold_1": [
+      1000,
+      30
+    ],
+    "colocalization_metrics_1": [
+      1000,
+      410
+    ],
+    "colocalized_voxels_1": [
+      1000,
+      630
+    ],
+    "masked_colocalization_metrics_1": [
+      1580,
+      30
+    ],
+    "masked_colocalized_voxels_1": [
+      1580,
+      570
+    ],
+    "colocalization_mask_1": [
+      1000,
+      1090
+    ],
+    "remove_small_objects_1": [
+      1480,
+      1090
+    ],
+    "label_connected_components_1": [
+      1840,
+      1090
+    ],
+    "measure_objects_1": [
+      2200,
+      1090
+    ]
+  },
+  "notes": [
+    {
+      "id": "overlap_signals",
+      "text": "1. COMPARE TWO REGISTERED CHANNELS\nThe same red and green outputs feed metrics, white-overlap views and a binary overlap mask. Named tunnels keep their repeated connections readable.",
+      "position": [
+        0,
+        100
+      ],
+      "width": 720,
+      "attached_node": "split_channels_1"
+    },
+    {
+      "id": "overlap_whole",
+      "text": "2. WHOLE-IMAGE THRESHOLDS\nThe unmasked metrics, white overlay and Colocalization Mask share one Costes threshold fit over the complete 3D image. Inspect the scatter and thresholds before interpreting the overlap.",
+      "position": [
+        1000,
+        280
+      ],
+      "width": 356,
+      "attached_node": "colocalization_metrics_1"
+    },
+    {
+      "id": "overlap_roi",
+      "text": "3. ROI-RESTRICTED COMPARISON\nBinary Threshold defines an ROI from red-channel values above 30,000. The masked metrics and white overlay fit Costes inside this ROI, so their thresholds can differ from the whole-image branch.",
+      "position": [
+        1580,
+        -140
+      ],
+      "width": 430,
+      "attached_node": "masked_colocalization_metrics_1"
+    },
+    {
+      "id": "overlap_binary",
+      "text": "4. EXTRACT THE WHITE REGION\nColocalization Mask is exactly the unmasked white-overlap region: voxels at or above both Costes thresholds. Its Boolean output contains no colour channels, and the ROI is not applied to this branch.",
+      "position": [
+        1000,
+        910
+      ],
+      "width": 650,
+      "attached_node": "colocalization_mask_1"
+    },
+    {
+      "id": "overlap_count",
+      "text": "5. CLEAN UP, LABEL AND COUNT\nKeep 3D face-connected regions of at least 20 voxels, label each retained region, then calculate Measure Objects for one row per region. Try a minimum size of 1 and compare row counts. These are connected overlap regions, not original organelle counts or proof of mitophagy.",
+      "position": [
+        1840,
+        910
+      ],
+      "width": 600,
+      "attached_node": "measure_objects_1"
+    },
+    {
+      "id": "overlap_compare",
+      "text": "6. DIFFERENT QUESTIONS, DIFFERENT OUTPUTS\nPearson/Manders metrics describe intensity relationships; the white view and Boolean mask show threshold overlap; the final table counts and measures connected overlap regions. For graded RACC colour mapping, open the separate RACC Colocalization example.",
+      "position": [
+        0,
+        750
+      ],
+      "width": 760,
+      "attached_node": "input"
+    }
+  ],
+  "view": {
+    "zoom": 1,
+    "pan": [
+      0,
+      0
+    ]
+  }
+}

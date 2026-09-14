@@ -5649,6 +5649,62 @@ def event_localization(
     )
 
 
+def colocalization_mask(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    _vipp_resolved_costes: dict[str, float] | None = None,
+    progress=None,
+) -> np.ndarray:
+    """Return a binary mask of voxels at or above both channel thresholds.
+
+    Inputs are two matching scalar images in native intensity units. Every
+    dimension is retained; Costes fits one pair of thresholds across the whole
+    input, not independently per frame or slice. The criterion is exactly the
+    white region of :func:`colocalized_voxels`, without an added RGB dimension.
+    Non-finite channel values are rejected, and neither input is modified.
+    Integer values outside [-2**53, 2**53] are rejected because the shared
+    floating-point threshold comparison cannot preserve every integer there.
+    """
+    values = list(inputs)
+    if len(values) != 2:
+        raise ValueError("Colocalization Mask requires exactly two image inputs.")
+    ch1, ch2, _warnings = _coloc_normalized_inputs(
+        values,
+        intensity_max=255.0,
+    )
+    _validate_colocalization_mask_integer_range(ch1)
+    _validate_colocalization_mask_integer_range(ch2)
+    threshold_1, threshold_2, _costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=255.0,
+        resolved_costes=_vipp_resolved_costes,
+        progress=progress,
+    )
+    if not np.isfinite(threshold_1) or not np.isfinite(threshold_2):
+        raise ValueError("Colocalization Mask requires finite channel thresholds.")
+    return (ch1 >= threshold_1) & (ch2 >= threshold_2)
+
+
+def _validate_colocalization_mask_integer_range(channel: np.ndarray) -> None:
+    """Reject integer values whose conversion could change threshold membership."""
+    if np.issubdtype(channel.dtype, np.integer) and channel.size:
+        # Convert scalar extrema to Python integers, not floats: 2**53 + 1
+        # otherwise rounds down to 2**53 and would evade this safety check.
+        if int(np.min(channel)) < -(2**53) or int(np.max(channel)) > 2**53:
+            raise ValueError(
+                "Colocalization Mask cannot compare integer values outside "
+                "[-2**53, 2**53] exactly with floating-point thresholds. "
+                "Use data within this range, or explicitly rescale the inputs "
+                "and adjust both thresholds before creating the mask."
+            )
+
+
 def colocalized_voxels(
     inputs,
     threshold_mode: str = "Manual",

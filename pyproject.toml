@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-vipp"
-version = "0.15.0a4"
+version = "0.15.0a5"
 description = "Visual image processing made approachable"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -51,6 +51,8 @@ dependencies = [
     "packaging>=23",
     "pillow>=10",
     "psutil>=5.9",
+    # 0.16.0 reproduces dead weak-callback failures in napari mesh/crop transforms.
+    "psygnal>=0.14,<0.16",
     "qtpy>=2.4",
     "scikit-image>=0.21",
     "scipy>=1.10",
@@ -65,8 +67,6 @@ vipp-install-plan = "napari_vipp.installer.cli:main"
 
 [project.gui-scripts]
 vipp-app = "napari_vipp.launcher:main_auto"
-vipp-cpu = "napari_vipp.launcher:main_cpu"
-vipp-prefer-gpu = "napari_vipp.launcher:main_prefer_gpu"
 
 [project.urls]
 Homepage = "https://github.com/rensutheart/napari-vipp"

@@ -242,11 +242,17 @@ def test_menu_template_renders_valid_numeric_apple_versions(tmp_path):
 
     document = json.loads(output.read_text(encoding="utf-8"))
     assert document["$schema"].endswith("/menuinst/menuinst-1-1-3.schema.json")
+    assert document["menu_name"] == "VIPP"
+    assert len(document["menu_items"]) == 1
     item = document["menu_items"][0]
     assert item["name"] == "VIPP"
-    assert item["command"][-2:] == ["--profile", "cpu"]
-    assert "--desktop" in item["command"]
-    assert "--desktop" in item["platforms"]["osx"]["command"]
+    expected_arguments = ["-m", "napari_vipp", "--desktop", "--profile", "auto"]
+    assert item["command"] == ["{{ PYTHON }}", *expected_arguments]
+    assert item["platforms"]["osx"]["command"] == [
+        "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python", *expected_arguments
+    ]
+    assert item["platforms"]["osx"]["CFBundleName"] == "VIPP"
+    assert item["platforms"]["osx"]["CFBundleDisplayName"] == "VIPP"
     assert item["icon"] == "{{ MENU_DIR }}/vipp.{{ ICON_EXT }}"
     assert item["platforms"]["osx"]["CFBundleVersion"] == "445"
     assert (
@@ -277,6 +283,54 @@ def test_macos_recipe_keeps_application_and_menu_packages_separate():
     assert '"${PREFIX}/Menu' in recipe
     assert '"${{ SRC_DIR }}/' not in recipe
     assert '"${{ PREFIX }}/' not in recipe
+
+
+def test_macos_recipe_has_only_one_gui_entry_point():
+    recipe = (REPO_ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    entry_points = recipe.split("entry_points:\n", 1)[1].split("      script:", 1)[0]
+    actual = {
+        name.strip(): target.strip()
+        for line in entry_points.splitlines()
+        for name, target in [line.strip().removeprefix("- ").split(" = ", 1)]
+    }
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    assert project["gui-scripts"] == {"vipp-app": "napari_vipp.launcher:main_auto"}
+    assert actual == {**project["scripts"], **project["gui-scripts"]}
+
+
+def test_macos_recipe_psygnal_constraint_matches_embedded_wheel_metadata():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    wheel_requirement = next(
+        requirement
+        for dependency in project["dependencies"]
+        if (requirement := Requirement(dependency)).name == "psygnal"
+    )
+    recipe = (REPO_ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    application = recipe.split("      name: napari-vipp\n", 1)[1]
+    runtime = application.split("      run:\n", 1)[1].split("    tests:\n", 1)[0]
+    psygnal_specs = [
+        line.strip().removeprefix("- ")
+        for line in runtime.splitlines()
+        if line.strip().startswith("- psygnal ")
+    ]
+
+    # The embedded wheel is installed --no-deps. Conda must honor the same
+    # compatibility bound; otherwise installation succeeds but pip check fails.
+    assert len(psygnal_specs) == 1
+    conda_requirement = Requirement(psygnal_specs[0])
+    assert conda_requirement.specifier == wheel_requirement.specifier
+    for version in ("0.14.0", "0.15.1"):
+        assert conda_requirement.specifier.contains(version)
+    for version in ("0.13.0", "0.16.0", "0.16.1"):
+        assert not conda_requirement.specifier.contains(version)
 
 
 def test_constructor_template_is_current_user_cpu_only_development_config():
@@ -354,7 +408,7 @@ def test_native_installer_workflows_check_rendered_desktop_launcher(
     )
     item = json.loads(menu.read_text(encoding="utf-8"))["menu_items"][0]
     command = item["platforms"]["osx"]["command"]
-    assert command[1:] == ["-m", "napari_vipp", "--desktop", "--profile", "cpu"]
+    assert command[1:] == ["-m", "napari_vipp", "--desktop", "--profile", "auto"]
     expected_command = " ".join(command).replace("{{ MENU_ITEM_LOCATION }}", "$app")
     text = (REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
     # Keep the exact installed-script guard aligned with production menu metadata.
@@ -369,6 +423,12 @@ def test_native_installer_workflows_check_rendered_desktop_launcher(
     # Matching the script is not a replacement for launching the installed app.
     assert 'QT_API=pyqt6 "$launcher" \\' in lines[check_index + 2 :]
     assert 'test "$shortcut_ready" -eq 1' in lines
+    child_profile = command[command.index("--profile") + 1]
+    child_checks = [line for line in lines if "pgrep -f 'napari_vipp.app" in line]
+    assert child_checks == [
+        f'child_pid="$(pgrep -f \'napari_vipp.app.*--profile {child_profile}\' '
+        '| head -n 1)"'
+    ]
     assert lines.count('kill -0 "$child_pid"') == 2
     assert 'QT_API=pyside6 "$prefix/bin/python" -m napari_vipp.app \\' in lines
     assert '--profile cpu --smoke-exit-after-ready \\' in lines
@@ -410,6 +470,15 @@ def test_constructor_documents_render_separate_development_and_unsigned_alpha_te
     assert "Never disable Gatekeeper" in release_text
     assert "Open Anyway" in release_conclusion
     assert "__VIPP_" not in development_text + release_text + release_conclusion
+    for text in (development_text, release_text, release_conclusion):
+        assert "~/Applications/VIPP.app" in text
+        assert "Auto" in text
+        assert "inside VIPP" in text
+        assert "CPU-safe" not in text
+        assert "VIPP Automatic" not in text
+        assert "VIPP CPU" not in text
+        assert "VIPP GPU" not in text
+    assert "does not include NVIDIA CUDA" in release_text
 
 
 def test_development_signature_requires_exact_unsigned_status(

@@ -58,6 +58,11 @@ ADVANCED_SKELETON_EXAMPLE_WORKFLOW = (
 COLOCALIZATION_EXAMPLE_WORKFLOW = (
     Path(__file__).resolve().parents[3]
     / "examples"
+    / "synthetic-colocalization-overlap.json"
+)
+RACC_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
     / "synthetic-colocalization-racc.json"
 )
 OBJECT_COLOCALIZATION_EXAMPLE_WORKFLOW = (
@@ -973,7 +978,7 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
     assert all(record["physical_unit"] == "micrometer" for record in summary_records)
 
 
-def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
+def test_synthetic_colocalization_overlap_workflow_loads_and_runs(monkeypatch):
     workflow = load_workflow(COLOCALIZATION_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
     _restore_workflow(pipeline, workflow)
@@ -1016,15 +1021,17 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
 
     overlay = outputs["colocalized_voxels_1"]
     metrics = outputs["colocalization_metrics_1"]
-    racc = outputs["racc_index_1"]
     roi_mask = outputs["binary_threshold_1"]
     masked_overlay = outputs["masked_colocalized_voxels_1"]
     masked_metrics = outputs["masked_colocalization_metrics_1"]
-    masked_racc = outputs["masked_racc_index_1"]
+    overlap_mask = outputs["colocalization_mask_1"]
+    cleaned_overlap = outputs["remove_small_objects_1"]
+    overlap_labels = outputs["label_connected_components_1"]
+    overlap_measurements = outputs["measure_objects_1"]
     record = metrics.records()[0]
     masked_record = masked_metrics.records()[0]
 
-    # Six Costes nodes collapse to one full-image and one ROI-restricted fit.
+    # Whole-image and ROI analyses share one Costes fit per analysis domain.
     assert costes_calls == 2
 
     assert (
@@ -1037,8 +1044,25 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
     )
     assert overlay.shape == data.shape[1:] + (3,)
     assert overlay.dtype == np.float32
+    assert overlap_mask.dtype == bool
+    assert overlap_mask.shape == data.shape[1:]
+    np.testing.assert_array_equal(overlap_mask, np.all(overlay == 1, axis=-1))
+    assert int(np.count_nonzero(overlap_mask)) == 1153
+    assert int(np.count_nonzero(cleaned_overlap)) == 1147
+    assert int(overlap_labels.max()) == 1
+    assert overlap_measurements.row_count == 1
+    assert overlap_measurements.records()[0]["volume_voxels"] == 1147
+    assert overlap_measurements.records()[0]["physical_unit"] == "micrometer^3"
+    for node_id in (
+        "remove_small_objects_1",
+        "label_connected_components_1",
+        "measure_objects_1",
+    ):
+        assert pipeline.nodes[node_id].params["spatial_mode"] == "3D ZYX"
+    assert pipeline.nodes["remove_small_objects_1"].params["min_size"] == 20
     assert roi_mask.shape == data.shape[1:]
     assert roi_mask.dtype == bool
+    np.testing.assert_array_equal(roi_mask, data[0] > 30000)
     assert masked_overlay.shape == data.shape[1:] + (3,)
     assert metrics.row_count == 1
     assert masked_metrics.row_count == 1
@@ -1049,12 +1073,6 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
     assert masked_record["mask_restricted"] is True
     assert masked_record["total_voxels"] == int(np.count_nonzero(roi_mask))
     assert masked_record["colocalized_voxels"] > 0
-    assert racc.shape == data.shape[1:]
-    assert racc.dtype == np.float32
-    assert float(racc.max()) > 0.0
-    assert masked_racc.shape == data.shape[1:]
-    assert masked_racc.dtype == np.float32
-    assert float(masked_racc.max()) > 0.0
     assert not np.isclose(
         pipeline.nodes["colocalization_metrics_1"].params["channel_1_threshold"],
         35,
@@ -1065,6 +1083,88 @@ def test_synthetic_colocalization_workflow_loads_and_runs(monkeypatch):
         ],
         35,
     )
+
+    # The cleanup is a tunable filter, not baked into the segmentation result.
+    pipeline.set_param("remove_small_objects_1", "min_size", 1)
+    unfiltered = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    np.testing.assert_array_equal(
+        unfiltered["remove_small_objects_1"], unfiltered["colocalization_mask_1"]
+    )
+    assert int(unfiltered["label_connected_components_1"].max()) == 4
+    assert unfiltered["measure_objects_1"].row_count == 4
+    assert sum(
+        record["volume_voxels"] for record in unfiltered["measure_objects_1"].records()
+    ) == 1153
+
+
+def test_focused_racc_workflow_loads_and_runs_without_costes(monkeypatch):
+    workflow = load_workflow(RACC_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+    assert set(pipeline.nodes) == {
+        "input", "split_channels_1", "binary_threshold_1",
+        "racc_index_1", "masked_racc_index_1",
+    }
+    for node_id in ("racc_index_1", "masked_racc_index_1"):
+        assert pipeline.tunnel_connection_for_input(node_id, 0)
+        assert pipeline.tunnel_connection_for_input(node_id, 1)
+
+    def forbidden_costes(*_args, **_kwargs):
+        raise AssertionError("The tuned RACC example uses manual thresholds only.")
+
+    monkeypatch.setattr(operations_module, "_costes_thresholds", forbidden_costes)
+    data, layer_kwargs, _layer_type = next(
+        sample for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic colocalization"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+
+    roi_mask = outputs["binary_threshold_1"]
+    np.testing.assert_array_equal(roi_mask, data[0] > 30000)
+    for node_id in ("racc_index_1", "masked_racc_index_1"):
+        result = outputs[node_id]
+        assert result.shape == data.shape[1:]
+        assert result.dtype == np.float32
+        assert np.isfinite(result).all()
+        assert 0.0 <= float(result.min()) <= float(result.max()) <= 1.0
+        assert float(result.max()) > 0.0
+        params = pipeline.nodes[node_id].params
+        assert params["threshold_mode"] == "Manual"
+        assert params["channel_1_threshold"] == 43970.51
+        assert params["channel_2_threshold"] == 48073.03
+        assert params["theta_degrees"] == 45
+        assert params["include_percentile"] == 99
+        assert params["output_dtype"] == "float32"
+    assert not outputs["masked_racc_index_1"][~roi_mask].any()
+
+    baseline = {
+        node_id: outputs[node_id].copy()
+        for node_id in ("racc_index_1", "masked_racc_index_1")
+    }
+    for node_id in baseline:
+        pipeline.set_param(node_id, "theta_degrees", 60)
+    steeper = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    # The example's suggested theta experiment penalizes off-line voxels;
+    # it changes neither the threshold pair nor the included percentile.
+    for node_id, original in baseline.items():
+        assert np.all(steeper[node_id] <= original)
+        assert np.any(steeper[node_id] < original)
+        params = pipeline.nodes[node_id].params
+        assert params["channel_1_threshold"] == 43970.51
+        assert params["channel_2_threshold"] == 48073.03
+        assert params["include_percentile"] == 99
 
 
 def test_synthetic_object_colocalization_workflow_loads_and_runs():

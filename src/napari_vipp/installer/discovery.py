@@ -1035,11 +1035,6 @@ def _planned_shortcut_destinations(
     desktop_directory: Path | None,
     start_menu_directory: Path | None,
 ) -> tuple[Path, ...]:
-    labels = (
-        ("VIPP Automatic", "VIPP CPU", "VIPP Prefer GPU")
-        if request.track is ComputeTrack.CUDA13
-        else ("VIPP",)
-    )
     directories: list[Path] = []
     if request.shortcut_scope in {ShortcutScope.DESKTOP, ShortcutScope.BOTH}:
         if desktop_directory is not None:
@@ -1047,9 +1042,7 @@ def _planned_shortcut_destinations(
     if request.shortcut_scope in {ShortcutScope.START_MENU, ShortcutScope.BOTH}:
         if start_menu_directory is not None:
             directories.append(start_menu_directory)
-    return tuple(
-        directory / f"{label}.lnk" for directory in directories for label in labels
-    )
+    return tuple(directory / "VIPP.lnk" for directory in dict.fromkeys(directories))
 
 
 def _protected_target(

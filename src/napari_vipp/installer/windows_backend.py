@@ -82,7 +82,9 @@ _ERROR_FRIENDLY_TEXT = {
         "The available NVIDIA graphics hardware is not supported by this release."
     ),
     "shortcut_collision_unowned": (
-        "A shortcut with the same name already exists and setup will not replace it."
+        "The VIPP shortcut already exists and belongs to another installation or "
+        "has been changed. Setup will preserve it. Update the installation that "
+        "owns it, or move or rename that shortcut before retrying."
     ),
     "install_target_protected": (
         "The selected installation location is not safe for automatic setup."
@@ -1318,9 +1320,8 @@ def _first_remediation(plan: InstallPlan) -> str:
 
 
 def _launcher_for_plan(plan: InstallPlan) -> Path | None:
-    preferred = "auto" if plan.request.track is ComputeTrack.CUDA13 else "cpu"
     for shortcut in plan.shortcuts:
-        if shortcut.profile == preferred:
+        if shortcut.profile == "auto":
             return shortcut.executable
     return plan.shortcuts[0].executable if plan.shortcuts else None
 

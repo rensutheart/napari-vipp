@@ -11,6 +11,7 @@ import re
 import sys
 import textwrap
 import threading
+import traceback
 import weakref
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
@@ -741,7 +742,11 @@ from napari_vipp.ui.source_preview import (
     SourcePreviewWorkerResult,
     SourcePreviewWorkerSpec,
 )
-from napari_vipp.ui.status import MessageSeverity, StatusMessageStrip
+from napari_vipp.ui.status import (
+    MessageSeverity,
+    StatusMessageActions,
+    StatusMessageStrip,
+)
 from napari_vipp.ui.toolbar_controls import (
     ToolbarCommandButton as _ToolbarCommandButton,
 )
@@ -1027,6 +1032,7 @@ ISOLATED_TUNING_STATUS_MESSAGES = (
 # event. One display frame gives the newly selected form a deterministic chance
 # to appear before napari layer publication and graph-wide diagnostics begin.
 SELECTION_INSPECTOR_REFRESH_DELAY_MS = 16
+RACC_IMAGE_OPERATIONS = frozenset({"racc_index", "masked_racc_index"})
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
     "masked_colocalization_metrics",
@@ -1034,6 +1040,7 @@ COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "masked_colocalization_scatter_plot",
     "colocalized_voxels",
     "masked_colocalized_voxels",
+    "colocalization_mask",
     "racc_index",
     "masked_racc_index",
     "object_colocalization_metrics",
@@ -3244,8 +3251,7 @@ class VippWidget(QWidget):
             x_axis_label="Intensity (a.u.)",
             y_axis_label="Voxels",
         )
-        self.histogram_result_plot = DetailedHistogramPlot()
-        self.histogram_result_plot.setMinimumHeight(165)
+        self.histogram_result_plot = DetailedHistogramPlot(minimum_plot_height=160)
         self.histogram_result_plot.hide()
         self.rescale_input_histogram_group = _HistogramPanel("Input Histogram")
         # Compatibility aliases intentionally point at the single shared
@@ -5237,6 +5243,10 @@ class VippWidget(QWidget):
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(6)
         status_row.addWidget(self.status_label, 1)
+        self.status_actions = StatusMessageActions(
+            self.status_label, self.status_toolbar_widget
+        )
+        status_row.addWidget(self.status_actions)
 
         self.pipeline_activity_group = QFrame(self.status_toolbar_widget)
         self.pipeline_activity_group.setObjectName("VippPipelineActivityGroup")
@@ -5928,6 +5938,7 @@ class VippWidget(QWidget):
         # status. Hiding the older message prevents duplicate status copy and
         # leaves enough room for long node names at every dock width.
         self.status_label.setVisible(not busy)
+        self.status_actions.set_active(not busy)
         self.pipeline_busy_label.setMinimumWidth(0 if narrow else 80)
         self.pipeline_busy_label.setMaximumWidth(160 if narrow else 300)
         self.pipeline_busy_bar.setMinimumWidth(80 if narrow else 96)
@@ -21544,13 +21555,24 @@ class VippWidget(QWidget):
 
         dims_changed = False
         if node_id:
+            display_error = None
             self._selected_viewer_refresh_in_progress = True
             try:
                 self._inspect_selected_node()
+            except Exception as exc:
+                # A delayed selection callback must not leak a display-only
+                # failure into Qt's exception handler or strand its inspector.
+                # Preserve the cached result and report it after flag cleanup.
+                display_error = exc
             finally:
                 self._selected_viewer_refresh_in_progress = False
                 dims_changed = self._selected_viewer_dims_refresh_pending
                 self._selected_viewer_dims_refresh_pending = False
+            if display_error is not None:
+                self._report_result_display_error(
+                    display_error, result_calculated=False
+                )
+                return dims_changed
             if self._closing or node_id != self._selected_node_id:
                 return dims_changed
         self._apply_selected_viewer_surface(select_layer=select_layer)
@@ -30310,6 +30332,37 @@ class VippWidget(QWidget):
     def _node_preview_channel_colors(self, node_id: str) -> list[str] | None:
         return self._node_presentation_channel_colors(node_id)
 
+    def _node_image_colormap_override(
+        self,
+        node_id: str | None,
+        *,
+        presentation_shadow: bool = False,
+    ) -> str | None:
+        """Keep RACC index presentation independent of source-channel colours."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id in RACC_IMAGE_OPERATIONS:
+            # A bypassed viewer layer is the exact source pass-through, not an
+            # index. Only the card's computed what-if result still uses Magma.
+            if self.pipeline.node_is_bypassed(node_id) and not presentation_shadow:
+                return None
+            return "magma"
+        return None
+
+    def _thumbnail_image_colormap_override(self, node_id: str, data) -> str | None:
+        shadow = self._bypass_shadow_results.get(node_id)
+        return self._node_image_colormap_override(
+            node_id,
+            presentation_shadow=(
+                shadow is not None and not shadow.error and data is shadow.output
+            ),
+        )
+
+    def _generated_image_colormap(self, metadata: dict):
+        return self._node_image_colormap_override(
+            metadata.get("node_id")
+        ) or _napari_channel_colormap(metadata.get("display_channel_color"))
+
     def _node_presentation_channel_colors(
         self,
         node_id: str,
@@ -31089,9 +31142,14 @@ class VippWidget(QWidget):
             arr = np.asarray(data)
         except Exception:
             return None
-        if self._thumbnail_is_encoded_uint8_rgb(arr, state):
+        scalar_colormap = self._thumbnail_image_colormap_override(node_id, data)
+        if not scalar_colormap and self._thumbnail_is_encoded_uint8_rgb(arr, state):
             return None
-        channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
+        channel_axis = (
+            None
+            if scalar_colormap
+            else self._thumbnail_channel_axis_for_contrast(arr, state)
+        )
         shape = tuple(int(size) for size in arr.shape)
         dtype = str(getattr(arr, "dtype", ""))
         mode_key = str(contrast_mode or "").strip().lower()
@@ -31707,6 +31765,8 @@ class VippWidget(QWidget):
         data,
         state: ImageState | None,
     ) -> bool:
+        if self._thumbnail_image_colormap_override(node_id, data):
+            return False
         if state is None:
             return False
         try:
@@ -37061,11 +37121,19 @@ class VippWidget(QWidget):
             self.pipeline_busy_label.setText("Processing graph")
         self._sync_run_activity_button()
 
-    def _report_result_display_error(self, error: Exception) -> None:
+    def _report_result_display_error(
+        self, error: Exception, *, result_calculated: bool = True
+    ) -> None:
+        summary = (
+            "Result calculated, but the viewer could not fully update. "
+            if result_calculated
+            else "The viewer could not fully update. "
+        )
         self._set_status(
-            f"Result calculated, but its display could not be updated: {error}",
-            severity=MessageSeverity.ERROR,
+            summary + "Reselect the node to retry its display.",
+            severity=MessageSeverity.WARNING,
             actionable=True,
+            detail="".join(traceback.format_exception(error)),
         )
 
     def _sync_view_dims_bar(self) -> None:
@@ -37726,6 +37794,20 @@ class VippWidget(QWidget):
             authored_colormap = _napari_channel_colormap(scalar_channel_color)
             if isinstance(authored_colormap, str) and authored_colormap != "gray":
                 thumbnail_colormap = authored_colormap
+        scalar_colormap = self._thumbnail_image_colormap_override(node_id, preview_data)
+        thumbnail_colormap = scalar_colormap or thumbnail_colormap
+        if scalar_colormap and preview_state is not None:
+            # RACC values are scalar indices even when the inputs carried C or
+            # RGB axes. Select a component using the existing dimension position
+            # instead of composing fluorescence colours. This detached preview
+            # state never replaces the scientific/carried ImageState.
+            preview_state = replace(
+                preview_state,
+                axes=tuple(
+                    replace(axis, type="unknown") if axis.type == "channel" else axis
+                    for axis in preview_state.axes
+                ),
+            )
         thumbnail_size = self._thumbnail_render_size()
         recorder = self._interaction_latency_recorder
         interaction_generation = (
@@ -43391,7 +43473,11 @@ class VippWidget(QWidget):
             self._set_or_add_rgb_channel_layers(name, display_data, metadata)
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
-        channel_axis_spec = self._colored_channel_axis_spec(display_data, metadata)
+        channel_axis_spec = (
+            self._colored_channel_axis_spec(display_data, metadata)
+            if self._node_image_colormap_override(metadata.get("node_id")) is None
+            else None
+        )
         if channel_axis_spec is not None:
             self._remove_rgb_channel_layers(name)
             self._set_or_add_colored_channel_axis_layers(
@@ -43413,8 +43499,13 @@ class VippWidget(QWidget):
                 ),
             }
         preserved_display = self._inspect_display_settings_for_metadata(metadata)
-        if scalar_channel_color is not None:
+        if scalar_channel_color is not None or (
+            source is not None and source.operation_id in RACC_IMAGE_OPERATIONS
+        ):
             preserved_display = dict(preserved_display or {})
+            # RACC always uses Magma when VIPP publishes its display, including
+            # older saved palettes. Do not leak that index palette into a bypass
+            # source pass-through either. Preserve all other styling.
             preserved_display.pop("colormap", None)
         if role == "inspect" and name == self._inspect_layer_name:
             inspect_layers = self._owned_scalar_inspect_layers()
@@ -43547,7 +43638,12 @@ class VippWidget(QWidget):
             layer.vertex_colors = vertex_colors
             layer.metadata.update(metadata)
             for key, value in settings.items():
-                setattr(layer, key, value)
+                # napari invalidates transform caches and emits changed even
+                # for identical scale/translation values. Ordinary mesh
+                # refreshes need no such weak-listener churn. Compare exactly:
+                # small but genuine calibration changes must still be applied.
+                if not np.array_equal(getattr(layer, key), value):
+                    setattr(layer, key, value)
             layer.visible = True
 
     def _viewer_nsteps(self) -> tuple[int, ...] | None:
@@ -43646,9 +43742,7 @@ class VippWidget(QWidget):
         kwargs["rgb"] = bool(metadata.get("display_rgb"))
         kwargs["blending"] = "translucent"
         if not metadata.get("display_rgb"):
-            kwargs["colormap"] = _napari_channel_colormap(
-                metadata.get("display_channel_color")
-            )
+            kwargs["colormap"] = self._generated_image_colormap(metadata)
         if metadata["data_kind"] == "mask":
             kwargs.update(
                 {
@@ -44544,9 +44638,7 @@ class VippWidget(QWidget):
                     pass
             if not metadata.get("display_rgb"):
                 try:
-                    layer.colormap = _napari_channel_colormap(
-                        metadata.get("display_channel_color")
-                    )
+                    layer.colormap = self._generated_image_colormap(metadata)
                 except Exception:
                     pass
             plan = self._generated_layer_contrast_plan(layer.name, data)
@@ -44904,6 +44996,8 @@ class VippWidget(QWidget):
         output_port: int = 0,
     ) -> bool:
         if data is None or is_table_data(data) or is_mesh_data(data):
+            return False
+        if self._node_image_colormap_override(node_id):
             return False
         arr = np.asarray(data)
         state = self._node_output_state(node_id, output_port) if node_id else None

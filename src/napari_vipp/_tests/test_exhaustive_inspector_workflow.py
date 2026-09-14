@@ -141,6 +141,38 @@ def test_exhaustive_inspector_showcase_uses_modern_time_slice_parameters():
     assert params["indices"] == params["remove_indices"] == str(selected_index)
 
 
+def test_exhaustive_inspector_showcase_includes_binary_colocalization_mask():
+    snapshot = workflow_snapshot_from_document(_showcase_document())
+    pipeline = snapshot.graph.to_pipeline()
+    mask = pipeline.nodes["colocalization_mask_1"]
+
+    assert mask.params["threshold_mode"] == "Manual"
+    assert mask.params["channel_1_threshold"] == 12000.0
+    assert mask.params["channel_2_threshold"] == 12000.0
+    inputs = sorted(
+        (
+            connection.target_port,
+            connection.source_id,
+            connection.source_port,
+            connection.tunnel_name,
+        )
+        for connection in pipeline.connections
+        if connection.target_id == mask.id
+    )
+    assert inputs == [
+        (0, "split_channels_1", 0, "Red channel"),
+        (1, "split_channels_1", 1, "Green channel"),
+    ]
+    # The overlap mask is deliberately separate from RGB visualization nodes.
+    assert "display_mode" not in mask.params
+    notes = _showcase_document()["notes"]
+    explanation = next(
+        note for note in notes if note["id"] == "colocalization_mask_cleanup"
+    )
+    assert "Connected Components" in explanation["text"]
+    assert "not counts of the original organelles" in explanation["text"]
+
+
 def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
     snapshot = workflow_snapshot_from_document(_showcase_document())
     pipeline = snapshot.graph.to_pipeline()
@@ -148,11 +180,11 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
     expected_tunnels = {
         "Born-Wolf PSF": ("born_wolf_psf_1", 0, 1),
         "Expanded labels": ("expand_labels_1", 0, 1),
-        "Green channel": ("split_channels_1", 1, 14),
+        "Green channel": ("split_channels_1", 1, 15),
         "Object labels": ("relabel_sequential_1", 0, 4),
         "ROI mask": ("binary_threshold_1", 0, 12),
         "Raw volume": ("input_2", 0, 4),
-        "Red channel": ("split_channels_1", 0, 19),
+        "Red channel": ("split_channels_1", 0, 20),
         "Skeleton mask": ("skeletonize_1", 0, 5),
         "Watershed labels": ("auto_watershed_from_mask_1", 0, 2),
     }
@@ -176,7 +208,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 62
+    assert sum(tunnel_counts.values()) == 64
     assert sum(not connection.tunnel_name for connection in pipeline.connections) == 91
 
     for connection in pipeline.connections:

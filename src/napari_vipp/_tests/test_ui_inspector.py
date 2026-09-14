@@ -54,6 +54,7 @@ _COLOCALIZATION_OPERATION_IDS = frozenset(
         "masked_colocalization_scatter_plot",
         "colocalized_voxels",
         "masked_colocalized_voxels",
+        "colocalization_mask",
         "racc_index",
         "masked_racc_index",
         "object_colocalization_metrics",

@@ -27,7 +27,7 @@ def _example():
     return spec, path, json.loads(path.read_text(encoding="utf-8")), pipeline
 
 
-def test_overlap_example_preserves_authored_snapshot_except_notes():
+def test_overlap_example_preserves_authored_science_and_display_profiles():
     spec, path, document, pipeline = _example()
     repository = Path(__file__).resolve().parents[3] / "examples" / spec.filename
     assert path.read_bytes() == repository.read_bytes()
@@ -41,13 +41,14 @@ def test_overlap_example_preserves_authored_snapshot_except_notes():
         assert note["position"][1] < min(
             pos[1] for pos in document["positions"].values()
         )
-    # Captured before adding notes: settings, graph, layout and display profiles
-    # must not be silently regenerated or replaced with operation defaults.
+    # Protect authored settings, graph and display profiles without freezing
+    # node coordinates: intentional layout/annotation improvements are allowed.
+    document.pop("positions")
     assert (
         hashlib.sha256(
             json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        == "f2acbe4575dd6438470fcac29bf7811c9fc322b58c54fe36833113e8edc3d3e5"
+        == "a64a83b57b853457ac04bb487097942db3fd5615a8ad7842cced5ee66893e233"
     )
     assert pipeline.nodes["input"].params["source_mode"] == "sample"
     assert pipeline.nodes["input"].params["sample_name"] == spec.samples[0]
@@ -136,7 +137,7 @@ def test_overlap_example_is_selectable_with_readable_notes(qtbot):
     assert len(widget._graph_notes) == 6
     _, _, document, _ = _example()
     # Check rendered note bounds at ordinary and larger system-font sizes.
-    # Notes sit above the existing layout; no node needs to be moved.
+    # Explanations stay above the graph at ordinary and larger system fonts.
     for point_size in (9, 14):
         rectangles = []
         for note in document["notes"]:

@@ -215,6 +215,7 @@ _EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES = MappingProxyType(
     {
         "add_images": "fixed:float32",
         "calculate_weighted_image": "fixed:float32",
+        "colocalization_mask": "fixed:bool",
         "colocalization_scatter_plot": "fixed:float32",
         "colocalized_voxels": "fixed:float32",
         "filter_labels_by_property": "same",
@@ -235,6 +236,7 @@ _EXACT_HOST_MATCHING_INPUT_SHAPE_OPERATIONS = frozenset(
     {
         "add_images",
         "calculate_weighted_image",
+        "colocalization_mask",
         "colocalization_scatter_plot",
         "colocalized_voxels",
         "logical_and",
@@ -253,7 +255,7 @@ _EXACT_HOST_BOOLEAN_FACT_OPERATIONS = frozenset(
     operation_id
     for operation_id, policy_id in _EXACT_HOST_SHAPE_DTYPE_POLICIES.items()
     if policy_id == "fixed:bool"
-)
+) | frozenset({"colocalization_mask"})
 _EXACT_HOST_LABEL_FACT_OPERATIONS = frozenset(
     operation_id
     for operation_id, policy_id in _EXACT_HOST_SHAPE_DTYPE_POLICIES.items()

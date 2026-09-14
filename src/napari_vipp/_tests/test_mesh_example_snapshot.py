@@ -34,11 +34,18 @@ def test_mesh_example_preserves_authored_parameters_and_packaged_copy():
     spec, packaged, document, pipeline = _example()
     repository = Path(__file__).resolve().parents[3] / "examples" / spec.filename
     assert json.loads(repository.read_text()) == json.loads(packaged.read_text())
-    # Freeze the captured document, including layout and inspector profiles,
-    # independently of its filename and the example chooser's display name.
-    assert hashlib.sha256(packaged.read_bytes()).hexdigest() == (
-        "8412b1e6b87324b63ad9b984349a77d5371fbe786de4a601d5df0229d61ee180"
-    )
+    # Protect the authored graph, parameters and inspector profiles while
+    # allowing intentional presentation-only improvements to notes/layout.
+    scientific_snapshot = {
+        key: value
+        for key, value in document.items()
+        if key not in {"positions", "notes"}
+    }
+    assert hashlib.sha256(
+        json.dumps(
+            scientific_snapshot, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest() == "96fcdb44248c9002ca9bfb81efccdf0829f45a8b704fa59b8d0cd468a1155672"
     nodes = pipeline.nodes
     assert nodes["input"].params["source_mode"] == "sample"
     assert nodes["input"].params["sample_name"] == spec.samples[0]

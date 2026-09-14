@@ -16,10 +16,10 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # a3 adds one boundary-QC branch to the exhaustive showcase. The regression
-    # below also pins its preceding hash to preserve all existing analysis.
+    # Add the binary colocalization branch. The regression below also pins
+    # the preceding mask-free and boundary-free analysis hashes.
     "exhaustive-inspector-showcase.json": (
-        "8a6ed48c2f96869ec7e4d1ee58bea3552481c639a3e72460cb85f95700903cb3"
+        "73c0d4bdec149820aa62922d30d4e22b3f34b1769661e465e6b0686d75180a58"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -57,7 +57,12 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "5d2ba1a07eab4197c41e153e52bb9ae652c3ac4634c44ac2d33de601143fba1f"
     ),
     "synthetic-colocalization-racc.json": (
-        "38a5d9785b708833e6cba0ee544ca490735900fa307230ea4cf85e016ec4c4a6"
+        # Focus RACC in its own example; the union regression below preserves
+        # every scientific node/edge of the preceding combined analysis.
+        "d012cf4ee6c64b7eccd4db8ae3ba38fff11703790bf9490a45eef162b8f81e8c"
+    ),
+    "synthetic-colocalization-overlap.json": (
+        "411dbf591228097140351f9bc1a0e94af07721b8bda5b5a5851a88d26925cf5a"
     ),
     "synthetic-deconvolution-rl-tv.json": (
         "0b71434287cdbb12204c65e64dc565adf104e7b13b1da81e175f089d7cde310f"
@@ -200,8 +205,19 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
     assert scientific_workflow_hash(reserialized) == expected_hash
 
 
-def test_showcase_adds_boundary_qc_without_changing_preexisting_analysis():
+def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
     document = _load_example("exhaustive-inspector-showcase.json")
+    mask_id = "colocalization_mask_1"
+    document["nodes"] = [node for node in document["nodes"] if node["id"] != mask_id]
+    document["connections"] = [
+        edge for edge in document["connections"]
+        if mask_id not in (edge["source"], edge["target"])
+    ]
+    document["positions"].pop(mask_id)
+    assert scientific_workflow_hash(document) == (
+        "8a6ed48c2f96869ec7e4d1ee58bea3552481c639a3e72460cb85f95700903cb3"
+    )
+
     boundary_id = "find_label_boundaries_1"
     (boundary,) = [node for node in document["nodes"] if node["id"] == boundary_id]
     assert boundary == {
@@ -279,7 +295,7 @@ def test_schema_v3_scientific_hash_is_independent_of_record_and_mapping_order():
     assert scientific_workflow_hash(reordered) == scientific_workflow_hash(document)
 
 
-def test_synthetic_colocalization_example_uses_costes_for_every_threshold_node():
+def test_focused_racc_example_has_tuned_manual_thresholds():
     document = _load_example("synthetic-colocalization-racc.json")
 
     threshold_modes = {
@@ -289,10 +305,107 @@ def test_synthetic_colocalization_example_uses_costes_for_every_threshold_node()
     }
 
     assert threshold_modes == {
+        "racc_index_1": "Manual",
+        "masked_racc_index_1": "Manual",
+    }
+
+    nodes = {node["id"]: node for node in document["nodes"]}
+    assert nodes["binary_threshold_1"]["params"]["threshold"] == 30000
+    for node_id in ("racc_index_1", "masked_racc_index_1"):
+        assert nodes[node_id]["params"]["channel_1_threshold"] == 43970.51
+        assert nodes[node_id]["params"]["channel_2_threshold"] == 48073.03
+        assert nodes[node_id]["params"]["theta_degrees"] == 45
+        assert nodes[node_id]["params"]["include_percentile"] == 99
+        assert nodes[node_id]["params"]["output_dtype"] == "float32"
+
+
+def test_overlap_example_keeps_costes_segmentation_separate_from_racc():
+    document = _load_example("synthetic-colocalization-overlap.json")
+    threshold_modes = {
+        node["id"]: node["params"]["threshold_mode"]
+        for node in document["nodes"]
+        if "threshold_mode" in node["params"]
+    }
+    assert threshold_modes == {
+        "colocalization_mask_1": "Costes auto",
         "colocalized_voxels_1": "Costes auto",
         "colocalization_metrics_1": "Costes auto",
-        "racc_index_1": "Costes auto",
         "masked_colocalized_voxels_1": "Costes auto",
         "masked_colocalization_metrics_1": "Costes auto",
-        "masked_racc_index_1": "Costes auto",
     }
+    assert not any("racc" in node["operation_id"] for node in document["nodes"])
+
+
+def _combined_colocalization_examples() -> dict[str, Any]:
+    racc = _load_example("synthetic-colocalization-racc.json")
+    overlap = _load_example("synthetic-colocalization-overlap.json")
+    racc_nodes = {node["id"]: node for node in racc["nodes"]}
+    overlap_nodes = {node["id"]: node for node in overlap["nodes"]}
+    common_ids = racc_nodes.keys() & overlap_nodes.keys()
+    assert common_ids == {"input", "split_channels_1", "binary_threshold_1"}
+    assert len(racc_nodes) == 5
+    assert len(overlap_nodes) == 11
+    for node_id in common_ids:
+        assert racc_nodes[node_id] == overlap_nodes[node_id]
+    combined = deepcopy(racc)
+    combined["nodes"] = list((racc_nodes | overlap_nodes).values())
+    for collection in ("connections", "tunnels"):
+        unique = {
+            json.dumps(record, sort_keys=True): record
+            for record in (*racc[collection], *overlap[collection])
+        }
+        combined[collection] = list(unique.values())
+    combined["positions"] = racc["positions"] | overlap["positions"]
+    for document in (racc, overlap):
+        ids = {node["id"] for node in document["nodes"]}
+        assert set(document["positions"]) == ids
+        assert all(
+            edge["source"] in ids and edge["target"] in ids
+            for edge in document["connections"]
+        )
+        assert all(tunnel["source"] in ids for tunnel in document["tunnels"])
+    return combined
+
+
+def test_split_colocalization_examples_preserve_the_complete_prior_analysis():
+    # This is the exact 13-node scientific contract before the catalog split.
+    # Reconstructing its union prevents accidental retuning or lost coverage.
+    assert scientific_workflow_hash(_combined_colocalization_examples()) == (
+        "380c53b1881b61c4173dfa6c1f48aa864ab45ecdf599e29b1b317689e235e744"
+    )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["synthetic-colocalization-racc.json", "synthetic-colocalization-overlap.json"],
+)
+def test_split_colocalization_example_packaged_copy_matches_repository(filename):
+    repository_file = Path(__file__).resolve().parents[3] / "examples" / filename
+    assert repository_file.read_bytes() == (_EXAMPLE_DIR / filename).read_bytes()
+
+
+def test_overlap_chain_preserves_the_historical_nine_node_analysis():
+    document = _combined_colocalization_examples()
+    added_ids = {
+        "colocalization_mask_1",
+        "remove_small_objects_1",
+        "label_connected_components_1",
+        "measure_objects_1",
+    }
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_ids
+    ]
+    document["connections"] = [
+        connection
+        for connection in document["connections"]
+        if connection["source"] not in added_ids
+        and connection["target"] not in added_ids
+    ]
+    document["positions"] = {
+        node_id: position
+        for node_id, position in document["positions"].items()
+        if node_id not in added_ids
+    }
+    assert scientific_workflow_hash(document) == (
+        "294fba5428ae41a8edaaf9d63d89d9104d6271fac0525d2544b5002ff84efc37"
+    )

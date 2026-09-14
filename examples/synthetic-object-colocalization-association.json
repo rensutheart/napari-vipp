@@ -243,11 +243,11 @@
     "label_connected_components_1": [1120.0, 240.0],
     "label_connected_components_2": [1120.0, 760.0],
     "measure_objects_1": [1520.0, 0.0],
-    "object_colocalization_metrics_1": [1520.0, 240.0],
+    "object_colocalization_metrics_1": [1920.0, 240.0],
     "label_overlap_association_1": [1520.0, 520.0],
     "nearest_object_distance_1": [1520.0, 1000.0],
     "event_localization_1": [1520.0, 760.0],
-    "merge_tables_1": [1920.0, 240.0]
+    "merge_tables_1": [2340.0, 240.0]
   },
   "notes": [
     {
@@ -260,7 +260,7 @@
     {
       "id": "note_2",
       "text": "Final table merges red-object morphology with per-object colocalization metrics; association outputs remain separate.",
-      "position": [1920.0, 110.0],
+      "position": [2340.0, 110.0],
       "width": 270.0,
       "attached_node": "merge_tables_1"
     }

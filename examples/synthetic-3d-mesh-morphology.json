@@ -134,7 +134,7 @@
     {
       "id": "note_1",
       "text": "Mesh metrics use physical voxel calibration; tiny labels may report skipped_too_few_voxels.",
-      "position": [1080.0, 750.0],
+      "position": [1080.0, 710.0],
       "width": 270.0,
       "attached_node": "measure_3d_mesh_morphology_1"
     }

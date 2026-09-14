@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from qtpy.QtCore import QEvent, Signal
-from qtpy.QtWidgets import QLabel, QSizePolicy, QWidget
+from qtpy.QtCore import QEvent, Qt, Signal
+from qtpy.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_vipp.ui.palette_roles import SemanticToneColors, theme_colors
 
@@ -44,6 +54,7 @@ class StatusMessageStrip(QLabel):
         self._actionable = False
         self._applying_theme_style = False
         self.setObjectName("VippStatusMessageStrip")
+        self.setTextFormat(Qt.PlainText)
         self.setWordWrap(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.show_message(text)
@@ -164,4 +175,75 @@ class StatusMessageStrip(QLabel):
         }[self._severity]
 
 
-__all__ = ["MessageSeverity", "StatusMessageStrip"]
+class StatusMessageActions(QWidget):
+    """Compact, keyboard-accessible actions beside a workflow status strip.
+
+    Dismissing only clears presentation; it never changes execution state or
+    acknowledges a scientific error. Details are a snapshot in a reusable,
+    nonmodal window, so even a long traceback cannot enlarge the workflow dock.
+    """
+
+    def __init__(self, strip: StatusMessageStrip, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._strip = strip
+        self._active = True
+        self._details_dialog: QDialog | None = None
+        self._details_text: QPlainTextEdit | None = None
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.details_button = QPushButton("Details…", self)
+        self.details_button.setAccessibleName("Show status details")
+        self.details_button.setToolTip("View and copy the full technical message.")
+        self.details_button.clicked.connect(self._show_details)
+        self.dismiss_button = QPushButton("Dismiss", self)
+        self.dismiss_button.setAccessibleName("Dismiss status message")
+        self.dismiss_button.setToolTip(
+            "Hide this message. Calculated results and node errors are unchanged."
+        )
+        self.dismiss_button.clicked.connect(lambda: strip.setText(""))
+        layout.addWidget(self.details_button)
+        layout.addWidget(self.dismiss_button)
+        strip.message_changed.connect(self._sync)
+        self._sync()
+
+    def set_active(self, active: bool) -> None:
+        """Hide alongside the status strip while the progress row is shown."""
+        self._active = bool(active)
+        self._sync()
+
+    def _sync(self) -> None:
+        self.details_button.setVisible(bool(self._strip.toolTip()))
+        self.setVisible(
+            self._active
+            and bool(self._strip.text())
+            and self._strip.severity in (MessageSeverity.WARNING, MessageSeverity.ERROR)
+        )
+
+    def _show_details(self) -> None:
+        if not self._strip.toolTip():
+            return
+        if self._details_dialog is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("VIPP message details")
+            dialog.resize(680, 400)
+            layout = QVBoxLayout(dialog)
+            details = QPlainTextEdit(dialog)
+            details.setReadOnly(True)
+            details.setAccessibleName("Technical message; select text to copy")
+            layout.addWidget(details, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)
+            buttons.rejected.connect(dialog.close)
+            layout.addWidget(buttons)
+            self._details_dialog = dialog
+            self._details_text = details
+        self._details_text.setPlainText(
+            f"{self._strip.text()}\n\n{self._strip.toolTip()}"
+        )
+        self._details_dialog.show()
+        self._details_dialog.raise_()
+        self._details_dialog.activateWindow()
+
+
+__all__ = ["MessageSeverity", "StatusMessageActions", "StatusMessageStrip"]

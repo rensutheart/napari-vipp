@@ -120,7 +120,7 @@ jobs:
           test -x "$launcher"
           test -x "$launcher_script"
           grep -Fq "export QT_API=pyside6" "$launcher_script"
-          grep -Fq "$app/Contents/Resources/python -m napari_vipp --desktop --profile cpu" \
+          grep -Fq "$app/Contents/Resources/python -m napari_vipp --desktop --profile auto" \
             "$launcher_script"
 
           QT_API=pyqt6 "$launcher" \
@@ -138,7 +138,7 @@ jobs:
           done
           cat "$RUNNER_TEMP/vipp-shortcut.log"
           test "$shortcut_ready" -eq 1
-          child_pid="$(pgrep -f 'napari_vipp.app.*--profile cpu' | head -n 1)"
+          child_pid="$(pgrep -f 'napari_vipp.app.*--profile auto' | head -n 1)"
           test -n "$child_pid"
           kill -0 "$child_pid"
           sleep 2

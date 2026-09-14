@@ -189,25 +189,37 @@
     }
   ],
   "positions": {
-    "input": [0.0, 430.0],
-    "binary_threshold_1": [360.0, 430.0],
-    "skeleton_keypoints_1": [760.0, 0.0],
-    "label_skeleton_components_1": [760.0, 240.0],
-    "label_skeleton_branches_1": [760.0, 480.0],
-    "analyze_skeleton_1": [1160.0, 0.0],
-    "measure_skeleton_branches_1": [1160.0, 240.0],
-    "summarize_skeleton_branches_1": [1560.0, 240.0],
-    "skeleton_graph_tables_1": [1160.0, 480.0],
-    "measure_overall_skeleton_network_1": [1160.0, 720.0],
-    "prune_skeleton_branches_1": [760.0, 720.0],
-    "analyze_skeleton_2": [1560.0, 720.0]
+    "input": [0.0, 450.0],
+    "binary_threshold_1": [360.0, 450.0],
+    "skeleton_keypoints_1": [840.0, 0.0],
+    "label_skeleton_components_1": [840.0, 300.0],
+    "label_skeleton_branches_1": [840.0, 600.0],
+    "analyze_skeleton_1": [1440.0, 0.0],
+    "measure_skeleton_branches_1": [1440.0, 300.0],
+    "summarize_skeleton_branches_1": [1840.0, 300.0],
+    "skeleton_graph_tables_1": [1440.0, 600.0],
+    "measure_overall_skeleton_network_1": [1440.0, 900.0],
+    "prune_skeleton_branches_1": [840.0, 1200.0],
+    "analyze_skeleton_2": [1440.0, 1200.0]
   },
   "notes": [
     {
+      "id": "qc_views",
+      "text": "1. INSPECT THE ORIGINAL SKELETON\nKeypoints, components and branches are separate views of the same Skeleton mask tunnel.",
+      "position": [840.0, -110.0],
+      "width": 440.0
+    },
+    {
+      "id": "qc_tables",
+      "text": "2. MEASURE THE ORIGINAL SKELETON\nCompare the analysis, per-branch summary, graph tables and whole-network measurements.",
+      "position": [1440.0, -110.0],
+      "width": 620.0
+    },
+    {
       "id": "note_1",
-      "text": "Pruning removes short terminal branches; compare the before/after skeleton analysis nodes.",
-      "position": [760.0, 950.0],
-      "width": 270.0,
+      "text": "3. PRUNE AND COMPARE\nPruning removes short terminal branches. Compare this lower analysis with Analyze Skeleton in the original measurements above.",
+      "position": [840.0, 1040.0],
+      "width": 480.0,
       "attached_node": "prune_skeleton_branches_1"
     }
   ],
