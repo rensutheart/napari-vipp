@@ -27,6 +27,7 @@ from napari_vipp.core.result_plots import (
     PlotRecipe,
     PlotState,
     build_plot_result,
+    measurement_label,
     numeric_columns,
     plot_results,
     plot_state_from_data,
@@ -56,7 +57,7 @@ def test_default_is_numeric_not_label_and_preserves_units(table):
     data = build_plot_result(table)
     assert data.recipe.y_column == "area"
     assert data.series[0].y == (2.0, 4.0, 12.0, 8.0)
-    assert data.y_label == "area (micrometer^2)"
+    assert data.y_label == "Area (micrometer^2)"
     assert data.counts.plotted_points == 4
     assert data.nbytes > 0
 
@@ -102,7 +103,7 @@ def test_histogram_edges_shared_and_exact_percent(table):
     assert first.bin_edges == second.bin_edges == (2, 7, 12)
     assert first.histogram_values == pytest.approx((200 / 3, 100 / 3))
     assert second.histogram_values == (0, 100)
-    assert data.x_label == "area (micrometer^2)"
+    assert data.x_label == "Area (micrometer^2)"
     assert data.y_label == "Within-group percent (%)"
 
 
@@ -250,13 +251,63 @@ def test_recipe_json_roundtrip_and_validation():
 
 def test_conflicting_image_groups_are_not_silently_split(table):
     table = replace(table, rows=(table.rows[0], (*table.rows[1][:3], "B", "a")))
-    with pytest.raises(ValueError, match="several groups"):
+    with pytest.raises(ValueError, match="one mean per image") as error:
         build_plot_result(
             table,
             group_column="condition",
             image_column="image_id",
             point_unit="Mean per image",
         )
+    assert "Group by is set to 'Condition'" in str(error.value)
+    assert "image 'a'" in str(error.value)
+
+
+def test_varying_object_measurement_explains_image_mean_conflict_and_recovery():
+    table = TableData(
+        ("major_axis_length_pixels", "minor_axis_length_pixels", "image_id"),
+        (
+            (42.0, 19.0, "synthetic field 01"),
+            (36.0, 20.0, "synthetic field 01"),
+            (21.0, 19.0, "synthetic field 01"),
+        ),
+        column_units=(
+            ("major_axis_length_pixels", "pixels"),
+            ("minor_axis_length_pixels", "pixels"),
+        ),
+    )
+    original_rows = table.rows
+    recipe = PlotRecipe(
+        y_column="major_axis_length_pixels",
+        group_column="minor_axis_length_pixels",
+        image_column="image_id",
+        point_unit="Mean per image",
+    )
+    with pytest.raises(ValueError) as error:
+        build_plot_result(table, recipe=recipe)
+    title, explanation, recovery, identity_hint = str(error.value).split("\n\n")
+    assert title == "Cannot calculate one mean per image with this grouping."
+    assert "Group by is set to 'Minor axis length (pixels)'" in explanation
+    assert "image 'synthetic field 01'" in explanation
+    assert "Each image must belong to one group" in explanation
+    assert "Each point represents to Objects" in recovery
+    assert "Group by to None" in recovery
+    assert "treatment, with one value per image" in recovery
+    assert "same ID refers to different images" in identity_hint
+    assert "Image identity column" in identity_hint
+
+    objects = build_plot_result(table, recipe=replace(recipe, point_unit="Objects"))
+    assert objects.counts.plotted_points == 3
+    assert tuple(series.name for series in objects.series) == ("19.0", "20.0")
+    assert objects.series[0].y == (42.0, 21.0)
+    assert objects.series[0].source_rows == ((0,), (2,))
+    assert objects.series[1].y == (36.0,)
+    image_mean = build_plot_result(table, recipe=replace(recipe, group_column=""))
+    assert image_mean.counts.plotted_points == 1
+    assert image_mean.series[0].y == (33.0,)
+    assert image_mean.series[0].source_rows == ((0, 1, 2),)
+    assert table.rows is original_rows
+    assert recipe.point_unit == "Mean per image"
+    assert recipe.group_column == "minor_axis_length_pixels"
 
 
 def test_plot_state_never_becomes_an_image(table):
@@ -448,3 +499,81 @@ def test_log_image_means_do_not_drop_negative_contributors():
     assert data.counts.nonpositive_rows == 2
     assert data.counts.eligible_rows == 2
     assert data.counts.finite_rows == 4
+
+
+@pytest.mark.parametrize(
+    ("column", "unit", "expected"),
+    [
+        ("major_axis_length_pixels", "pixels", "Major axis length (pixels)"),
+        ("minor axis length (pixels)", "pixels", "Minor axis length (pixels)"),
+        ("area_micrometer^2", "micrometer^2", "Area (micrometer^2)"),
+        ("DNA_intensity", "a.u.", "DNA intensity (a.u.)"),
+        ("major_axis_length_pixels", "", "Major axis length pixels"),
+        ("major_axis_length_pixels", "µm", "Major axis length pixels (µm)"),
+        ("distance_Mm", "mm", "Distance Mm (mm)"),
+        ("pixels", "pixels", "Pixels (pixels)"),
+    ],
+)
+def test_measurement_labels_are_display_only_and_only_strip_matching_unit(
+    column, unit, expected
+):
+    table = TableData((column,), ((1.23456789012345,),), column_units=((column, unit),))
+    assert measurement_label(table, column) == expected
+    result = build_plot_result(table, y_column=column)
+    assert result.y_label == expected
+    assert result.recipe.y_column == column
+    assert result.source_table == table
+    assert result.series[0].y == (1.23456789012345,)
+
+
+def test_many_numeric_groups_explain_scatter_without_changing_categories():
+    values = tuple(19.0 + i * 0.000000000001 for i in range(60))
+    table = TableData(
+        ("major_axis_length_pixels", "minor_axis_length_pixels"),
+        tuple((float(i), value) for i, value in enumerate(values)),
+        column_units=(
+            ("major_axis_length_pixels", "pixels"),
+            ("minor_axis_length_pixels", "pixels"),
+        ),
+    )
+    result = build_plot_result(
+        table,
+        y_column="major_axis_length_pixels",
+        group_column="minor_axis_length_pixels",
+    )
+    assert result.recipe.plot_type == "Compare groups"
+    assert result.x_label == "Minor axis length (pixels)"
+    assert result.y_label == "Major axis length (pixels)"
+    assert len(result.series) == 60
+    assert tuple(series.name for series in result.series) == tuple(map(str, values))
+    assert (
+        tuple(
+            row["source:minor_axis_length_pixels"]
+            for row in result.plotted_table.records()
+        )
+        == values
+    )
+    warning = result.warnings[0]
+    assert "60 numeric groups" in warning
+    assert "equal spacing" in warning
+    assert "Scatter" in warning
+    assert "X measurement to Minor axis length (pixels)" in warning
+    assert "Group by to None" in warning
+    scatter = build_plot_result(
+        table,
+        plot_type="Scatter",
+        x_column="minor_axis_length_pixels",
+        y_column="major_axis_length_pixels",
+    )
+    assert scatter.series[0].x == values
+    assert not any("numeric groups" in warning for warning in scatter.warnings)
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [tuple(range(12)), (1, 2, 3) * 20, tuple(str(i) for i in range(60)), (True, False)],
+)
+def test_small_or_textual_groups_do_not_suggest_numeric_scatter(groups):
+    table = TableData(("area", "group"), tuple((1.0, group) for group in groups))
+    result = build_plot_result(table, y_column="area", group_column="group")
+    assert not any("numeric groups" in warning for warning in result.warnings)

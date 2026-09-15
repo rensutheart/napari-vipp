@@ -143,3 +143,74 @@ def test_export_worker_cancellation_closes_only_after_safe_stop(qtbot, tmp_path)
     qtbot.waitUntil(lambda: export._thread is None, timeout=10000)
     assert export.exported is None
     assert not target.exists()
+
+
+def test_numeric_groups_warning_visible_in_inspector_and_above_popup_plot(qtbot):
+    table = TableData(
+        ("major_axis_length_pixels", "minor_axis_length_pixels"),
+        tuple((30 + i, 19.123456789012345 + i / 100) for i in range(60)),
+        column_units=(
+            ("major_axis_length_pixels", "pixels"),
+            ("minor_axis_length_pixels", "pixels"),
+        ),
+    )
+    result = build_plot_result(
+        table,
+        y_column="major_axis_length_pixels",
+        group_column="minor_axis_length_pixels",
+    )
+    panel = PlotResultsPanel(table, result.recipe.to_params(), result)
+    qtbot.addWidget(panel)
+    panel.show()
+    window = panel.open_plot()
+    qtbot.waitUntil(window.isVisible)
+    assert panel.warning.isVisible()
+    assert window.warning.isVisible()
+    assert "60 numeric groups" in panel.warning.text()
+    assert window.warning.text() == panel.warning.text()
+    assert (
+        window.warning.geometry().bottom()
+        < window.plot.mapTo(window, window.plot.rect().topLeft()).y()
+    )
+    group = panel.controls.controls["group_column"]
+    assert group.currentText() == "Minor axis length (pixels)"
+    assert group.currentData() == "minor_axis_length_pixels"
+    assert (
+        group.itemData(group.currentIndex(), Qt.ToolTipRole)
+        == "minor_axis_length_pixels"
+    )
+    measurement = window.controls.controls["y_column"]
+    assert measurement.currentText() == "Major axis length (pixels)"
+    artist = window.plot.canvas.figure.axes[0].collections[0]
+    window.plot._picked(SimpleNamespace(artist=artist, ind=[0]))
+    assert "minor_axis_length_pixels: 19.123456789012344" in window.point_label.text()
+    assert "Major axis length (pixels): 30" in window.point_label.text()
+    window.controls.controls["plot_type"].setCurrentText("Scatter")
+    assert panel.stale
+    assert not panel.warning.isVisible()
+    assert not window.warning.isVisible()
+    panel.close_plot()
+
+
+def test_picked_image_mean_reports_prepared_value_not_first_contributor(qtbot):
+    table = TableData(
+        ("area", "image_id", "dose"),
+        ((2.0, "one", 1.23456789), (8.0, "one", 1.23456789)),
+    )
+    result = build_plot_result(
+        table,
+        y_column="area",
+        group_column="dose",
+        image_column="image_id",
+        point_unit="Mean per image",
+    )
+    panel = PlotResultsPanel(table, result.recipe.to_params(), result)
+    qtbot.addWidget(panel)
+    window = panel.open_plot()
+    artist = window.plot.canvas.figure.axes[0].collections[0]
+    window.plot._picked(SimpleNamespace(artist=artist, ind=[0]))
+    assert "dose: 1.23456789" in window.point_label.text()
+    assert "Mean Area: 5.0" in window.point_label.text()
+    assert "Image mean from 2 rows" in window.point_label.text()
+    assert "Area: 2.0" not in window.point_label.text()
+    panel.close_plot()

@@ -216,3 +216,16 @@ def test_batch_tiff_format_accepts_tif_extension(tmp_path):
     assert save_plot_output(target, _result(), file_format="tiff") == target
     with Image.open(target) as image:
         assert image.format == "TIFF"
+
+
+@pytest.mark.parametrize("rows", [(), ((1.25, "One group"),)])
+def test_empty_and_single_category_labels_render(rows):
+    result = build_plot_result(
+        TableData(("measurement", "condition"), rows),
+        y_column="measurement",
+        group_column="condition",
+    )
+    figure = build_plot_figure(result, size_inches=(3, 2.8), compact=True)
+    FigureCanvasAgg(figure).draw()
+    assert len(figure.axes[0].get_xticklabels()) == len(rows)
+    assert not figure.texts[0].get_text()

@@ -19,6 +19,8 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -42,7 +44,11 @@ from napari_vipp.core.plot_rendering import (
     plot_export_targets,
 )
 from napari_vipp.core.progress import OperationCancelled
-from napari_vipp.core.result_plots import PlotRecipe, numeric_columns
+from napari_vipp.core.result_plots import (
+    PlotRecipe,
+    measurement_label,
+    numeric_columns,
+)
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -53,6 +59,87 @@ def _label(text, parent=None):
     widget.setTextFormat(Qt.PlainText)
     widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
     return widget
+
+
+def _retain_hidden_space(widget):
+    policy = widget.sizePolicy()
+    policy.setRetainSizeWhenHidden(True)
+    widget.setSizePolicy(policy)
+
+
+def _summary_slot(layout):
+    """Reserve the larger of the current and updating summaries, including wraps."""
+    slot = QWidget()
+    slot.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+    grid = QGridLayout(slot)
+    grid.setContentsMargins(0, 0, 0, 0)
+    current, alternate = _label(""), _label("")
+    _retain_hidden_space(alternate)
+    grid.addWidget(current, 0, 0)
+    grid.addWidget(alternate, 0, 0)
+    alternate.hide()
+    layout.addWidget(slot)
+    return current, alternate
+
+
+def _set_plot_warnings(widget, result, *, stale=False):
+    # A transient update should hide outdated advice without collapsing its row.
+    # Keep its text too: an empty QLabel has a different hidden size hint.
+    if stale:
+        widget.hide()
+        return
+    # The biological-replication caveat is already beside the point-unit selector.
+    warnings = (
+        tuple(
+            warning
+            for warning in result.warnings
+            if "independent biological sample" not in warning
+        )
+        if result is not None and not stale
+        else ()
+    )
+    widget.setText("\n".join(warnings))
+    policy = widget.sizePolicy()
+    policy.setRetainSizeWhenHidden(bool(warnings))
+    widget.setSizePolicy(policy)
+    widget.setVisible(bool(warnings))
+    colors = theme_colors(widget.palette()).warning
+    widget.setStyleSheet(
+        f"QLabel {{ background-color: {colors.surface.name()}; "
+        f"color: {colors.foreground.name()}; "
+        f"border-left: 3px solid {colors.accent.name()}; padding: 8px; }}"
+    )
+
+
+class _PlotBusyIndicator(QWidget):
+    """Small indeterminate progress row; never imply a completion percentage."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.progress = QProgressBar(self)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedSize(56, 6)
+        self.progress.setAccessibleName("Plot update in progress")
+        row.addWidget(self.progress)
+        self.label = _label("Updating plot…", self)
+        self.label.setWordWrap(False)
+        self.label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        row.addWidget(self.label, 1)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        _retain_hidden_space(self)
+        self.set_busy(False)
+
+    def set_busy(self, busy, message=""):
+        self.label.setText(message or "Updating plot…")
+        self.label.setToolTip(self.label.text())
+        self.setAccessibleName(self.label.text() if busy else "")
+        self.progress.setRange(0, 0 if busy else 1)
+        if not busy:
+            self.progress.setValue(0)
+        self.setVisible(busy)
 
 
 class PlotRecipeControls(QWidget):
@@ -100,6 +187,11 @@ class PlotRecipeControls(QWidget):
             "Objects uses one measurement row per point. Mean per image gives "
             "each image equal weight, after averaging its eligible rows. Neither "
             "choice automatically establishes independent biological samples."
+        )
+        self.controls["group_column"].setToolTip(
+            "With Mean per image, every object in an image must have the same "
+            "group value. Choose an image-level category such as treatment, "
+            "or None. Use Objects to group individual object measurements."
         )
         bins = QSpinBox(self)
         bins.setRange(2, 512)
@@ -186,9 +278,8 @@ class PlotRecipeControls(QWidget):
                     )
                     candidates = columns
                 for column in candidates:
-                    unit = table.unit_for(column)
-                    title = column.replace("_", " ").strip()
-                    combo.addItem(f"{title} ({unit})" if unit else title, column)
+                    combo.addItem(measurement_label(table, column), column)
+                    combo.setItemData(combo.count() - 1, column, Qt.ToolTipRole)
                 selected = self._params[key]
                 if combo.findData(selected) < 0 and selected:
                     combo.addItem(f"Unavailable: {selected}", selected)
@@ -203,6 +294,7 @@ class PlotRecipeControls(QWidget):
                 else:
                     widget.setValue(value)
             self._update_visibility()
+            self._update_point_unit_note()
         finally:
             self._updating = False
 
@@ -221,16 +313,26 @@ class PlotRecipeControls(QWidget):
                 params[key] = widget.value()
         self._params = params
         self._update_visibility()
+        self._update_point_unit_note()
         if params["point_unit"] == "Mean per image" and not params["image_column"]:
+            return
+        self.params_changed.emit(params)
+
+    def _update_point_unit_note(self):
+        if self._params["point_unit"] == "Mean per image":
             self.note.setText(
                 "Choose the image identity column to prepare one mean per image."
+                if not self._params["image_column"]
+                else "Mean per image makes one point per image. Use Group by: None "
+                "or a category shared by all objects in that image, such as "
+                "treatment. Images are not automatically independent "
+                "biological samples."
             )
             return
         self.note.setText(
             "Objects in one image are not automatically independent biological "
             "samples. These plots describe the connected measurements."
         )
-        self.params_changed.emit(params)
 
     def _update_visibility(self):
         mode = self._params["plot_type"]
@@ -297,11 +399,45 @@ class ResultPlotCanvas(QWidget):
         )
         self.placeholder.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.placeholder)
+        self.error_view = QScrollArea(self)
+        self.error_view.setWidgetResizable(True)
+        self.error_view.setFrameShape(QFrame.NoFrame)
+        self.error_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        error_content = QWidget()
+        error_layout = QVBoxLayout(error_content)
+        error_layout.setContentsMargins(0, 0, 0, 0)
+        self.error_card = QFrame()
+        self.error_card.setObjectName("PlotCalculationProblem")
+        card_layout = QVBoxLayout(self.error_card)
+        card_layout.setContentsMargins(14, 12, 14, 12)
+        card_layout.setSpacing(12)
+        self.error_title = _label("Plot could not be created")
+        font = self.error_title.font()
+        font.setBold(True)
+        self.error_title.setFont(font)
+        self.error_detail = _label("")
+        self.error_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        for label in (self.error_title, self.error_detail):
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            card_layout.addWidget(label)
+        error_layout.addWidget(self.error_card)
+        error_layout.addWidget(
+            _label(
+                "Change the plot settings to continue. The input measurements "
+                "have not been changed."
+            )
+        )
+        error_layout.addStretch(1)
+        self.error_view.setWidget(error_content)
+        self.error_view.hide()
+        self.layout.addWidget(self.error_view, 1)
         self.setMinimumHeight(260 if compact else 320)
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
 
     def set_result(self, result):
+        self.error_view.hide()
         if result is self.result and self.canvas is not None:
             return
         self.result = result
@@ -334,6 +470,33 @@ class ResultPlotCanvas(QWidget):
         self.layout.addWidget(self.canvas)
         self.canvas.draw_idle()
 
+    def set_error(self, message):
+        """Replace a failed/stale drawing with a readable, scrollable explanation."""
+        self.set_result(None)
+        self.placeholder.hide()
+        text = message.strip() or "Review the selected fields and try again."
+        heading, separator, details = text.partition("\n\n")
+        self.error_title.setText(heading if separator else "Plot could not be created")
+        self.error_detail.setText(details if separator else text)
+        colors = theme_colors(self.palette()).error
+        self.error_card.setStyleSheet(
+            f"QFrame#PlotCalculationProblem {{ background: {colors.surface.name()}; "
+            f"border-left: 3px solid {colors.accent.name()}; }} "
+            "QFrame#PlotCalculationProblem QLabel { "
+            f"color: {colors.foreground.name()}; "
+            "background: transparent; border: none; }"
+        )
+        self.error_view.setAccessibleName("Plot calculation problem")
+        self.error_view.setAccessibleDescription(text)
+        self.error_view.show()
+
+    def set_busy(self, busy):
+        self.placeholder.setText(
+            "Preparing the updated plot…"
+            if busy
+            else "Calculate the connected measurements to prepare this plot."
+        )
+
     def _picked(self, event):
         if self.result is None or not len(event.ind):
             return
@@ -346,6 +509,7 @@ class ResultPlotCanvas(QWidget):
         if not indices:
             return
         row = table.rows[indices[0]]
+        recipe = self.result.recipe
         identities = [
             f"{name}: {row[position]}"
             for position, name in enumerate(table.columns)
@@ -353,8 +517,41 @@ class ResultPlotCanvas(QWidget):
             or "image" in name.casefold()
             or "source" in name.casefold()
             or name.casefold() in {"object_id", "_vipp_item_key"}
+            or name in {recipe.group_column, recipe.image_column}
         ]
         message = " · ".join(identities) or f"Measurement row {indices[0] + 1}"
+        measurements = [recipe.y_column]
+        if recipe.plot_type == "Scatter":
+            measurements.insert(0, recipe.x_column)
+        if recipe.point_unit == "Objects":
+            details = [
+                f"{measurement_label(table, column)}: "
+                f"{row[table.columns.index(column)]}"
+                for column in dict.fromkeys(measurements)
+            ]
+        else:
+            # Use the prepared image means, never the first contributor's value.
+            values = next(
+                (
+                    {recipe.y_column: series.y[position]}
+                    | (
+                        {recipe.x_column: series.x[position]}
+                        if recipe.plot_type == "Scatter"
+                        else {}
+                    )
+                    for series in self.result.series
+                    for position, rows in enumerate(series.source_rows)
+                    if tuple(rows) == tuple(indices)
+                ),
+                {},
+            )
+            details = [
+                f"Mean {measurement_label(table, column)}: {values[column]}"
+                for column in dict.fromkeys(measurements)
+                if column in values
+            ]
+        if details:
+            message += " · " + " · ".join(details)
         if len(indices) > 1:
             message = f"Image mean from {len(indices):,} rows · " + message
         self.point_selected.emit(message)
@@ -409,6 +606,10 @@ class PlotResultsPanel(QWidget):
         self.params = params or PlotRecipe().to_params()
         self.result = result
         self.stale = False
+        self.failed = False
+        self.error_message = ""
+        self.busy = False
+        self.busy_message = ""
         self.dialog = None
         self.protected_paths = ()
         self.setMinimumWidth(0)
@@ -419,11 +620,14 @@ class PlotResultsPanel(QWidget):
         self.controls.params_changed.connect(self._edited)
         self.controls.layout_changed.connect(self.layout_changed.emit)
         layout.addWidget(self.controls)
+        self.busy_indicator = _PlotBusyIndicator(self)
+        layout.addWidget(self.busy_indicator)
         self.plot = ResultPlotCanvas(self, compact=True)
         self.plot.setFixedHeight(280)
         layout.addWidget(self.plot)
-        self.summary = _label("")
-        layout.addWidget(self.summary)
+        self.summary, self._summary_reserve = _summary_slot(layout)
+        self.warning = _label("")
+        layout.addWidget(self.warning)
         self.open_button = QPushButton("Open plot…", self)
         self.open_button.clicked.connect(self.open_plot)
         layout.addWidget(self.open_button)
@@ -437,6 +641,9 @@ class PlotResultsPanel(QWidget):
         params=None,
         result=None,
         stale=False,
+        failed=False,
+        busy=False,
+        busy_message="",
         message="",
         protected_paths=None,
     ):
@@ -449,13 +656,37 @@ class PlotResultsPanel(QWidget):
             result.recipe.to_params() if result is not None else self.params
         )
         self.result = result
-        self.stale = stale
+        self.failed = bool(failed)
+        self.error_message = message if failed else ""
+        self.busy = bool(busy) and not self.failed
+        self.busy_message = busy_message if self.busy else ""
+        self.stale = stale or self.failed or self.busy
+        self.busy_indicator.set_busy(self.busy, self.busy_message)
         if protected_paths is not None:
             self.protected_paths = tuple(protected_paths)
         self.controls.set_state(self.table, self.params)
-        self.plot.set_result(result)
+        if self.failed:
+            self.plot.set_error(self.error_message)
+        else:
+            self.plot.set_result(result)
+        self.plot.set_busy(self.busy)
+        updating_summary = (
+            "Previous plot shown; waiting for the updated result."
+            if result is not None
+            else "Preparing the plot from connected measurements."
+        )
+        ready_summary = (
+            _result_summary(result)
+            if result is not None
+            else "Connect a measurement table and calculate this node."
+        )
+        self._summary_reserve.setText(ready_summary if self.busy else updating_summary)
         self.summary.setText(
-            message
+            "Plot not created — review the settings."
+            if self.failed
+            else updating_summary
+            if self.busy
+            else message
             or (
                 "Plot is out of date. Calculate again before exporting."
                 if stale
@@ -464,7 +695,11 @@ class PlotResultsPanel(QWidget):
                 else "Connect a measurement table and calculate this node."
             )
         )
-        self.open_button.setEnabled(result is not None)
+        self.open_button.setText("Review plot…" if self.failed else "Open plot…")
+        self.open_button.setEnabled(
+            result is not None or self.table is not None or self.failed or self.busy
+        )
+        _set_plot_warnings(self.warning, result, stale=self.stale)
         if self.dialog is not None:
             self.dialog.set_state()
 
@@ -488,7 +723,12 @@ class PlotResultsPanel(QWidget):
         self.params_changed.emit(params)
 
     def open_plot(self):
-        if self.result is None:
+        if (
+            self.result is None
+            and self.table is None
+            and not self.failed
+            and not self.busy
+        ):
             return None
         if self.dialog is None:
             self.dialog = PlotResultsDialog(self)
@@ -520,8 +760,11 @@ class PlotResultsDialog(QDialog):
         font.setPointSize(font.pointSize() + 3)
         title.setFont(font)
         layout.addWidget(title)
-        self.summary = _label("")
-        layout.addWidget(self.summary)
+        self.summary, self._summary_reserve = _summary_slot(layout)
+        self.busy_indicator = _PlotBusyIndicator(self)
+        layout.addWidget(self.busy_indicator)
+        self.warning = _label("")
+        layout.addWidget(self.warning)
         splitter = QSplitter(Qt.Horizontal, self)
         plot_side = QWidget(self)
         plot_layout = QVBoxLayout(plot_side)
@@ -531,6 +774,7 @@ class PlotResultsDialog(QDialog):
         self.point_label = _label(
             "Click a point to identify its object label or source image."
         )
+        _retain_hidden_space(self.point_label)
         self.plot.point_selected.connect(self.point_label.setText)
         plot_layout.addWidget(self.point_label)
         self.data_view = QTableView(self)
@@ -550,12 +794,11 @@ class PlotResultsDialog(QDialog):
         splitter.setSizes([790, 300])
         splitter.setStretchFactor(0, 1)
         layout.addWidget(splitter, 1)
-        self.warning = _label("")
-        layout.addWidget(self.warning)
         row = QHBoxLayout()
         self.data_button = QPushButton("View plotted data", self)
         self.data_button.setCheckable(True)
         self.data_button.toggled.connect(self.data_view.setVisible)
+        self._data_before_busy = None
         row.addWidget(self.data_button)
         row.addStretch(1)
         self.export_button = QPushButton("Export figure…", self)
@@ -569,33 +812,49 @@ class PlotResultsDialog(QDialog):
 
     def set_state(self):
         owner = self.owner
+        if owner.busy:
+            if self._data_before_busy is None:
+                self._data_before_busy = self.data_button.isChecked()
+            policy = self.data_view.sizePolicy()
+            policy.setRetainSizeWhenHidden(self._data_before_busy)
+            self.data_view.setSizePolicy(policy)
+        self.busy_indicator.set_busy(owner.busy, owner.busy_message)
         self.controls.set_state(owner.table, owner.params)
-        self.plot.set_result(owner.result)
+        if owner.failed:
+            self.plot.set_error(owner.error_message)
+        else:
+            self.plot.set_result(owner.result)
+        self.plot.set_busy(owner.busy)
         self.summary.setText(owner.summary.text())
+        self._summary_reserve.setText(owner._summary_reserve.text())
         self.export_button.setEnabled(owner.result is not None and not owner.stale)
-        self.data_button.setEnabled(owner.result is not None)
-        warnings = (
-            tuple(
-                warning
-                for warning in owner.result.warnings
-                if "independent biological sample" not in warning
-            )
-            if owner.result is not None
-            else ()
-        )
-        # The unit caveat is already beside the point-unit selector.
-        self.warning.setText("\n".join(warnings))
-        self.warning.setVisible(bool(warnings))
-        if owner.result is not None:
+        current_data = owner.result is not None and not owner.failed and not owner.busy
+        self.data_button.setEnabled(current_data)
+        _set_plot_warnings(self.warning, owner.result, stale=owner.stale)
+        if current_data:
             old = self.data_view.model()
             self.data_view.setModel(
                 _PreparedTableModel(owner.result.plotted_table, self.data_view)
             )
             if old is not None:
                 old.deleteLater()
-        self.point_label.setText(
-            "Click a point to identify its object label or source image."
-        )
+        else:
+            self.data_button.setChecked(False)
+            old = self.data_view.model()
+            self.data_view.setModel(None)
+            if old is not None:
+                old.deleteLater()
+        if not owner.busy and self._data_before_busy is not None:
+            self.data_button.setChecked(current_data and self._data_before_busy)
+            self._data_before_busy = None
+            policy = self.data_view.sizePolicy()
+            policy.setRetainSizeWhenHidden(False)
+            self.data_view.setSizePolicy(policy)
+        self.point_label.setVisible(current_data)
+        if not owner.busy:
+            self.point_label.setText(
+                "Click a point to identify its object label or source image."
+            )
 
     def request_export(self):
         if self.owner.result is None or self.owner.stale:

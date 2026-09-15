@@ -8,7 +8,11 @@ from pathlib import Path
 import numpy as np
 from qtpy.QtCore import QObject, QTimer
 
-from napari_vipp.core.pipeline import EXECUTION_READY
+from napari_vipp.core.pipeline import (
+    EXECUTION_ERROR,
+    EXECUTION_READY,
+    MANUAL_RUN_SKIP,
+)
 from napari_vipp.core.result_plots import PlotRecipe, is_plot_data
 from napari_vipp.core.tables import is_table_data
 
@@ -23,6 +27,7 @@ class ResultPlotController(QObject):
         self._keys = {}
         self._thumbnails = {}
         self._closed = False
+        self._debounce_connected = False
 
     def close(self):
         self._closed = True
@@ -39,6 +44,12 @@ class ResultPlotController(QObject):
     def render_parameters(self, node_id):
         from napari_vipp.ui.result_plots import PlotResultsPanel
 
+        if not self._debounce_connected:
+            # The widget creates its debounce timer after this controller. An
+            # edit may finish without dispatching (missing inputs, for example),
+            # so refresh after the timeout as well as at worker state changes.
+            self.widget._debounce_timer.timeout.connect(self.refresh)
+            self._debounce_connected = True
         key = self._context(node_id)
         panel = self.panels.get(key)
         if panel is None:
@@ -89,6 +100,59 @@ class ResultPlotController(QObject):
             widget.status_label.setText(f"Plot settings: {exc}")
             self._refresh_panel(context, self.panels[context], force=True)
 
+    def _busy_state(self, node_id, ancestors, execution):
+        """Describe real scheduled work, never infer progress from stale alone."""
+        widget = self.widget
+        if widget._closing or widget._compute_runtime_quarantined_reason:
+            return False, ""
+        run_id = widget._active_pipeline_run_id
+        if (
+            run_id is not None
+            and widget._pipeline_user_cancel_requested_run_id == run_id
+        ):
+            return False, ""
+
+        pending = widget._pending_dirty_node_ids & set(widget.pipeline.nodes)
+        queued = widget._debounce_timer.isActive() or widget._pipeline_run_pending
+        if queued and pending & ancestors:
+            # Use the same manual-frontier rules as execution: a queued edit
+            # behind an unrequested manual measurement is not a queued plot.
+            manual_ids = (
+                widget.pipeline.auto_recalculate_node_ids()
+                | widget._pending_manual_node_ids
+            )
+            isolated = widget._isolated_tuning_node_id
+            targets = None
+            if isolated is not None and isolated in pending:
+                pending = {isolated}
+                targets = {isolated}
+                manual_ids = {isolated}
+            plan = widget.pipeline.plan_execution(
+                pending,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=manual_ids,
+                target_node_ids=targets,
+            )
+            if node_id in plan.runnable_node_ids:
+                return True, "Plot update queued…"
+
+        if execution == EXECUTION_ERROR or run_id is None:
+            return False, ""
+        cancel = widget._pipeline_cancel_events.get(run_id)
+        if cancel is not None and cancel.is_set():
+            return False, ""
+        context = widget._pipeline_run_context.get(run_id, ())
+        runnable = context[6] if len(context) > 6 else ()
+        if node_id not in runnable:
+            return False, ""
+        accepted = widget._background_execution_state_overrides.get(node_id)
+        if accepted is not None and accepted[:2] == (run_id, EXECUTION_READY):
+            # This plot has finished, even if an unrelated branch is still busy.
+            return False, ""
+        if widget._active_pipeline_node_id == node_id:
+            return True, "Updating plot…"
+        return True, "Preparing plot measurements…"
+
     def _refresh_panel(self, context, panel, *, force=False):
         widget = self.widget
         current = widget._workflow_tabs.current
@@ -108,13 +172,17 @@ class ResultPlotController(QObject):
         execution, message = widget._node_execution_ui_state(node.id)
         ancestors = widget.pipeline.ancestors_inclusive({node.id})
         dirty = bool(ancestors & widget._pending_dirty_node_ids)
+        busy, busy_message = self._busy_state(node.id, ancestors, execution)
         stale = execution != EXECUTION_READY or dirty
         stamp = (
             id(result),
             id(table),
             json.dumps(node.params, sort_keys=True),
             stale,
+            execution,
             message,
+            busy,
+            busy_message,
         )
         if force or self._keys.get(context) != stamp:
             self._keys[context] = stamp
@@ -138,6 +206,9 @@ class ResultPlotController(QObject):
                 params=node.params,
                 result=result,
                 stale=stale,
+                failed=execution == EXECUTION_ERROR,
+                busy=busy,
+                busy_message=busy_message,
                 protected_paths=protected,
                 message=message
                 or (
@@ -148,6 +219,11 @@ class ResultPlotController(QObject):
             )
             if node.id == widget._selected_node_id:
                 QTimer.singleShot(0, widget._sync_parameter_form_height)
+            if dirty and not busy and execution != EXECUTION_ERROR:
+                # Generic parameter controls start their timer just after dirty
+                # state is published. One queued refresh observes that start;
+                # the unchanged stamp prevents repeated polling while idle.
+                QTimer.singleShot(0, self.refresh)
 
     def refresh(self):
         if self._closed or not self.panels:

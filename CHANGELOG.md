@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Keep the Plot Results activity row reserved while idle so updates do not move
+  the plot or controls. Preserve the surrounding summary, hint, warning and
+  opened data-view space while replacing an out-of-date result.
+
+- Use whole-number ticks for Plot Results histogram counts and explicitly
+  count-valued object measurements, without rounding percentages or image means.
+  Show an indeterminate update indicator in the inspector and plot window while
+  relevant calculations are queued or running; old plots remain unavailable for
+  export until the update is ready.
+
+- Explain incompatible **Mean per image** grouping inside the plot window and
+  inspector, with clear choices for individual objects or image-level groups.
+  Failed plots can be reopened for review; status messages stay compact with
+  full Details, and failed/stale figures cannot be exported as current results.
+
+- Keep Plot Results category labels readable when resizing or exporting:
+  shorten, wrap, rotate and space labels without changing groups or values,
+  and state when only some group labels fit. Show clearer axis titles with
+  units once, reveal exact group values on point selection, and suggest
+  **Scatter** when a numeric **Group by** field creates many separate groups.
+
 - Standardize dialog footer actions across plots, tables, examples, batch and
   setup windows: on Windows, the main action precedes the rightmost
   **Cancel**/**Close**; on macOS, dismissal precedes the main action. Keep

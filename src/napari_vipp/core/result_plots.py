@@ -18,6 +18,7 @@ from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.tables import TableData
 
 DISPLAY_POINT_LIMIT = 10_000
+NUMERIC_GROUP_WARNING_LIMIT = 12
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,23 @@ def numeric_columns(
     return tuple(result)
 
 
+def measurement_label(table: TableData, column: str) -> str:
+    """Readable display title without changing the underlying column identity.
+
+    A trailing unit is removed only when it exactly matches the table's declared
+    unit. In particular, unit case and spelling are not guessed or converted.
+    """
+    title = column.replace("_", " ").strip()
+    unit = table.unit_for(column).strip()
+    if unit:
+        for suffix in (f" ({unit})", f" {unit}"):
+            if title.endswith(suffix) and len(title) > len(suffix):
+                title = title[: -len(suffix)].rstrip()
+                break
+    title = title[:1].upper() + title[1:]
+    return f"{title} ({unit})" if unit else title
+
+
 def _scalar(value: object) -> object:
     if isinstance(value, np.generic):
         value = value.item()
@@ -371,8 +389,19 @@ def build_plot_result(
             image_key = _identity(image)
             if image_key in image_groups and image_groups[image_key] != key:
                 raise ValueError(
-                    f"Image {image!r} occurs in several groups. Choose a unique image "
-                    "identity and a group that is constant within each image."
+                    "Cannot calculate one mean per image with this grouping.\n\n"
+                    "Group by is set to "
+                    f"{measurement_label(table, recipe.group_column)!r}, "
+                    f"but its value changes between objects in image {image!r}. "
+                    "Each image must belong to one group to produce one mean.\n\n"
+                    "Choose one:\n"
+                    "• To plot individual objects, set Each point represents "
+                    "to Objects.\n"
+                    "• To compare image means, set Group by to None or choose an "
+                    "image-level category, such as treatment, with one value "
+                    "per image.\n\n"
+                    "If the same ID refers to different images, choose an Image "
+                    "identity column that uniquely identifies each image."
                 )
             image_groups[image_key] = key
         if key not in groups:
@@ -500,16 +529,16 @@ def build_plot_result(
             )
         offset += len(points)
 
-    def label(column: str) -> str:
-        unit = table.unit_for(column)
-        return f"{column} ({unit})" if unit else column
-
     x_label = (
-        label(x_column)
+        measurement_label(table, x_column)
         if recipe.plot_type == "Scatter"
-        else (recipe.group_column or "Objects")
+        else (
+            measurement_label(table, recipe.group_column)
+            if recipe.group_column
+            else "Objects"
+        )
     )
-    y_label = label(y_column)
+    y_label = measurement_label(table, y_column)
     if recipe.point_unit == "Mean per image":
         y_label = f"Mean per image: {y_label}"
         if recipe.plot_type == "Scatter":
@@ -526,6 +555,23 @@ def build_plot_result(
             )
         )
     warnings = []
+    if (
+        recipe.plot_type == "Compare groups"
+        and group_index is not None
+        and len(prepared) > NUMERIC_GROUP_WARNING_LIMIT
+        and all(
+            isinstance(table.rows[points[0][3][0]][group_index], Real)
+            and not isinstance(table.rows[points[0][3][0]][group_index], bool)
+            for _, points in prepared
+        )
+    ):
+        warnings.append(
+            f"{len(prepared):,} numeric groups: Compare groups treats each distinct "
+            "value as a separate category, with equal spacing. To compare two "
+            f"measurements on numeric axes, choose Scatter and set X measurement "
+            f"to {measurement_label(table, recipe.group_column)}; set Group by "
+            "to None (or a category such as treatment)."
+        )
     if y_log or (recipe.plot_type == "Scatter" and recipe.log_x):
         warnings.append(
             "Image means use all finite values first; logarithmic axes then "

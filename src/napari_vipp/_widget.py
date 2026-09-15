@@ -7012,6 +7012,35 @@ class VippWidget(QWidget):
         )
         self._reserve_status_toolbar_height()
 
+    def _set_pipeline_error_status(
+        self,
+        text: str,
+        *,
+        failed_node_ids: Iterable[str],
+        actionable: bool = True,
+    ) -> None:
+        """Keep plot guidance concise without hiding other pipeline failures."""
+        failed_nodes = tuple(failed_node_ids)
+        plot_only = bool(failed_nodes) and all(
+            node_id in self.pipeline.nodes
+            and self.pipeline.nodes[node_id].operation_id == "plot_results"
+            for node_id in failed_nodes
+        )
+        if plot_only:
+            headline = text.splitlines()[0]
+            self._set_status(
+                f"{headline} See the plot window or inspector for how to fix it.",
+                severity=MessageSeverity.ERROR,
+                actionable=actionable,
+                detail=text,
+            )
+        else:
+            self._set_status(
+                text,
+                severity=MessageSeverity.ERROR,
+                actionable=actionable,
+            )
+
     def _show_compute_setup_dialog(self) -> None:
         """Show one reusable, nonblocking GPU setup and memory dialog."""
         dialog = self._compute_setup_dialog
@@ -34841,6 +34870,18 @@ class VippWidget(QWidget):
                 for node_id in getattr(exc, "node_ids", ())
                 if node_id in self.pipeline.nodes
             )
+            # Requested manual targets may depend on an upstream node that
+            # failed. Only actual execution errors identify a plot-only failure.
+            status_error_node_ids = {
+                node_id
+                for node_id in synchronous_node_ids
+                if self.pipeline.node_execution_states.get(node_id) == EXECUTION_ERROR
+            }
+            status_error_node_ids.update(
+                node_id
+                for node_id in getattr(exc, "node_ids", ())
+                if node_id in self.pipeline.nodes
+            )
             for node_id in affected_error_nodes:
                 self.pipeline.set_node_execution_error(node_id, str(exc))
             self._sync_execution_ui()
@@ -34858,9 +34899,9 @@ class VippWidget(QWidget):
                 if result_display_error is not None
                 else ""
             )
-            self._set_status(
+            self._set_pipeline_error_status(
                 f"Pipeline error: {exc}{display_note}",
-                severity=MessageSeverity.ERROR,
+                failed_node_ids=status_error_node_ids,
                 actionable=True,
             )
             self._sync_compute_toolbar_summary()
@@ -36560,9 +36601,9 @@ class VippWidget(QWidget):
                 else ""
             )
             suffix = "; continuing queued graph edit" if continue_pending else ""
-            self._set_status(
+            self._set_pipeline_error_status(
                 f"Pipeline error: {result.error}{source_note}{display_note}{suffix}",
-                severity=MessageSeverity.ERROR,
+                failed_node_ids=failure_messages,
                 actionable=not continue_pending,
             )
             if continue_pending:
@@ -37101,6 +37142,7 @@ class VippWidget(QWidget):
             self._sync_execution_ui()
         else:
             self.pipeline_busy_label.setText("Processing graph")
+            self._result_plots.refresh()
         self._sync_run_activity_button()
 
     def _report_result_display_error(

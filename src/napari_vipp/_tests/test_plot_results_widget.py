@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from napari_vipp._tests.test_ui_inspector_widget_integration import (
     _publish_table_output,
     _select,
     _widget,
 )
-from napari_vipp.core.pipeline import EXECUTION_READY
+from napari_vipp.core.pipeline import EXECUTION_ERROR, EXECUTION_READY
 from napari_vipp.core.result_plots import build_plot_result, plot_state_from_data
 from napari_vipp.core.tables import TableData
 from napari_vipp.core.workflow import load_workflow, save_workflow
+from napari_vipp.ui.status import MessageSeverity
 
 
 def _plot_widget(qtbot):
@@ -116,3 +119,101 @@ def test_upstream_edit_marks_open_plot_stale(qtbot):
     widget._result_plots.refresh()
     assert panel.stale
     assert not panel.dialog.export_button.isEnabled()
+
+
+@pytest.mark.parametrize("actionable", [True, False])
+@pytest.mark.parametrize("plot_count", [1, 2])
+def test_plot_failure_status_is_compact_but_keeps_full_error(
+    qtbot, actionable, plot_count
+):
+    widget = _widget(qtbot)
+    plots = [widget.add_node_from_palette("plot_results") for _ in range(plot_count)]
+    error = (
+        "Cannot average one image into several groups.\n\n"
+        "Choose Objects, or a grouping column that is constant within each image."
+    )
+    for node in plots:
+        widget.pipeline.set_node_execution_error(node.id, error)
+    formatted_error = f"Pipeline error: {error}"
+
+    widget._set_pipeline_error_status(
+        formatted_error,
+        failed_node_ids=(node.id for node in plots),
+        actionable=actionable,
+    )
+
+    assert widget.status_label.text() == (
+        "Pipeline error: Cannot average one image into several groups. "
+        "See the plot window or inspector for how to fix it."
+    )
+    assert widget.status_label.toolTip() == formatted_error
+    assert formatted_error in widget.status_label.accessibleDescription()
+    assert widget.status_label.severity is MessageSeverity.ERROR
+    assert widget.status_label.actionable is actionable
+    for node in plots:
+        assert widget.pipeline.node_execution_states[node.id] == EXECUTION_ERROR
+        assert widget.pipeline.node_execution_messages[node.id] == error
+
+
+@pytest.mark.parametrize("failures", ["other", "mixed", "unknown", "unattributed"])
+def test_other_pipeline_failures_do_not_use_plot_specific_status(qtbot, failures):
+    widget = _widget(qtbot)
+    plot = widget.add_node_from_palette("plot_results")
+    other = widget.add_node_from_palette("binary_threshold")
+    failed_ids = {
+        "other": (other.id,),
+        "mixed": (plot.id, other.id),
+        "unknown": (plot.id, "removed-node"),
+        "unattributed": (),
+    }[failures]
+    error = (
+        "Pipeline error: Scientific calculation failed.\n"
+        "Do not obscure this unrelated explanation or partial-result warning."
+    )
+    widget._set_pipeline_error_status(error, failed_node_ids=failed_ids)
+
+    assert widget.status_label.text() == error
+    assert widget.status_label.toolTip() == ""
+    assert widget.status_label.severity is MessageSeverity.ERROR
+    assert widget.status_label.actionable
+
+
+@pytest.mark.parametrize("select_source", [False, True])
+def test_plot_execution_error_refreshes_inspector_and_detached_plot(
+    qtbot, select_source
+):
+    widget, source, node, _table, result = _plot_widget(qtbot)
+    panel = widget._result_plots.panels[widget._result_plots._context(node.id)]
+    panel.open_plot()
+    if select_source:
+        _select(widget, source.id)
+    error = (
+        "Cannot average one image into several groups.\n\n"
+        "Choose Objects, or a grouping column that is constant within each image."
+    )
+    widget.pipeline.set_node_execution_error(node.id, error)
+    widget._result_plots.refresh()
+
+    assert panel.failed
+    assert panel.error_message == error
+    assert panel.result is result  # Retain the scientific cache, not its old drawing.
+    assert panel.plot.canvas is None
+    assert panel.dialog.plot.canvas is None
+    assert not panel.plot.error_view.isHidden()
+    assert not panel.dialog.plot.error_view.isHidden()
+    assert panel.plot.error_title.text() == error.split("\n\n")[0]
+    assert panel.dialog.plot.error_detail.text() == error.split("\n\n")[1]
+    assert not panel.dialog.export_button.isEnabled()
+    assert not panel.dialog.data_button.isEnabled()
+    assert panel.open_button.text() == "Review plot…"
+    assert panel.open_button.isEnabled()
+
+    # Execution state belongs in the refresh stamp even if cached data survives.
+    widget.pipeline.node_execution_states[node.id] = EXECUTION_READY
+    widget.pipeline.node_execution_messages.pop(node.id, None)
+    widget._result_plots.refresh()
+    assert not panel.failed
+    assert panel.plot.error_view.isHidden()
+    assert panel.dialog.plot.error_view.isHidden()
+    assert panel.dialog.plot.canvas is not None
+    assert panel.dialog.export_button.isEnabled()

@@ -13,12 +13,24 @@ import math
 import os
 import shutil
 import tempfile
+import textwrap
+from collections import Counter
 from dataclasses import asdict, dataclass
+from numbers import Integral, Real
 from pathlib import Path
 
 import numpy as np
 from matplotlib.figure import Figure
-from matplotlib.ticker import MaxNLocator
+from matplotlib.font_manager import FontProperties
+from matplotlib.textpath import TextToPath
+from matplotlib.ticker import (
+    Formatter,
+    Locator,
+    LogLocator,
+    MaxNLocator,
+    NullLocator,
+    StrMethodFormatter,
+)
 
 from napari_vipp.core.measurement_collection import _check, _ordinary_path
 from napari_vipp.core.measurement_export import (
@@ -30,6 +42,194 @@ from napari_vipp.core.measurement_export import (
 PLOT_COLORS = ("#278AC7", "#D88027", "#289D8F", "#AA6BC4", "#CB536C", "#80733D")
 PLOT_MARKERS = ("o", "D", "s", "^", "v", "P")
 PLOT_JITTER_SEED = 1729
+
+
+class _CountLogLocator(LogLocator):
+    """Logarithmic count ticks cannot describe fractions of an observation."""
+
+    def tick_values(self, vmin, vmax):
+        ticks = super().tick_values(vmin, vmax)
+        low, high = sorted((vmin, vmax))
+        # A narrow count range (for example 1–2) may contain only one decade
+        # tick. Add useful integer ticks without changing the logarithmic scale.
+        if np.count_nonzero((ticks >= max(low, 1)) & (ticks <= high)) <= 1:
+            ticks = MaxNLocator(nbins=4, integer=True, min_n_ticks=1).tick_values(
+                max(low, 1), max(high, 1)
+            )
+        return ticks[(ticks >= 1) & (ticks == np.floor(ticks))]
+
+
+def _set_count_axis(axis, *, logarithmic, compact):
+    """Presentation only: use exact count ticks, never round scientific data."""
+    axis.set_major_locator(
+        _CountLogLocator()
+        if logarithmic
+        else MaxNLocator(nbins=4 if compact else 6, integer=True, min_n_ticks=1)
+    )
+    axis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+    # Default log minor locators can otherwise introduce fractional count ticks.
+    axis.set_minor_locator(NullLocator())
+
+
+def _is_discrete_count_measurement(result, *, column, coordinate):
+    """Count units are required; inherited units on fractional aggregates are not."""
+    return result.source_table.unit_for(column) == "count" and all(
+        float(value).is_integer()
+        for series in result.series
+        for value in getattr(series, coordinate)
+    )
+
+
+def _group_tick_labels(result):
+    """Short display labels only; never round group keys or plotted values."""
+    names = [series.name for series in result.series]
+    numeric = {}
+    if result.recipe.group_column:
+        column = result.source_table.columns.index(result.recipe.group_column)
+        for index, series in enumerate(result.series):
+            value = result.source_table.rows[series.source_rows[0][0]][column]
+            if isinstance(value, Real) and not isinstance(
+                value, (Integral, bool, np.bool_)
+            ):
+                numeric[index] = value
+    # Increase precision when needed so nearby numeric groups remain distinct.
+    labels = list(names)
+    for precision in (4, 6, 8, 10, 12, 15, 17):
+        labels = [
+            format(numeric[index], f".{precision}g") if index in numeric else name
+            for index, name in enumerate(names)
+        ]
+        if len(set(labels)) == len(set(names)):
+            break
+    duplicates = Counter(labels)
+    labels = [
+        name if duplicates[label] > 1 else label
+        for name, label in zip(names, labels, strict=True)
+    ]
+    wrapped = [
+        textwrap.fill(
+            label, width=20, break_on_hyphens=False, max_lines=3, placeholder="…"
+        )
+        if index not in numeric
+        else label
+        for index, label in enumerate(labels)
+    ]
+    duplicates = Counter(wrapped)
+    # Long common-prefix identifiers must still have distinct visible labels.
+    wrapped = [
+        f"{label}\n[group {index + 1}]" if duplicates[label] > 1 else label
+        for index, label in enumerate(wrapped)
+    ]
+    return wrapped, any(a != b for a, b in zip(wrapped, names, strict=True))
+
+
+class _GroupLabelFormatter(Formatter):
+    def __init__(self, labels):
+        self.labels = labels
+
+    def __call__(self, value, pos=None):
+        index = round(value)
+        return self.labels[index] if 0 <= index < len(self.labels) else ""
+
+
+class _GroupLabelLocator(Locator):
+    """Fit categorical text at draw time, including resize and vector export.
+
+    Measure in typographic points so DPI alone never changes the label budget.
+    Only tick labels are thinned. Data, summaries and category positions are
+    untouched, and the figure states when some labels are not shown.
+    """
+
+    def __init__(self, labels, note, *, font_size, shortened, compact):
+        self.labels = labels
+        self.note = note
+        self.font_size = font_size
+        self.shortened = shortened
+        self.compact = compact
+        metrics = TextToPath()
+        font = FontProperties(size=font_size)
+        self.sizes = [
+            (
+                max(
+                    metrics.get_text_width_height_descent(line, font, False)[0]
+                    for line in (label.splitlines() or [""])
+                ),
+                max(1, len(label.splitlines())) * font_size * 1.3,
+            )
+            for label in labels
+        ]
+
+    def __call__(self):
+        if not self.labels:
+            self.note.set_text("")
+            return np.array([])
+        low, high = sorted(self.axis.get_view_interval())
+        indices = np.arange(
+            max(0, math.ceil(low)), min(len(self.labels), math.floor(high) + 1)
+        )
+        if not len(indices):
+            return indices
+        figure = self.axis.axes.figure
+        width = self.axis.axes.bbox.width * 72 / figure.dpi
+        spacing = width / max(high - low, 1)
+        max_height = min(
+            85 if not self.compact else 58, figure.get_figheight() * 72 * 0.3
+        )
+        choices = []
+        for angle in (0, 45, 90):
+            radians = math.radians(angle)
+            w = max(
+                self.sizes[i][0] * math.cos(radians)
+                + self.sizes[i][1] * math.sin(radians)
+                for i in indices
+            )
+            h = max(
+                self.sizes[i][0] * math.sin(radians)
+                + self.sizes[i][1] * math.cos(radians)
+                for i in indices
+            )
+            if angle and h > max_height:
+                continue
+            # Extra space covers font hinting and minor constrained-layout shifts.
+            stride = max(1, math.ceil((w + self.font_size * 0.9) / max(spacing, 1)))
+            choices.append((stride, angle))
+            if stride == 1:
+                break
+        stride, angle = min(choices)
+        # Evenly space the labelled categories; retain both endpoints when possible.
+        count = max(1, (len(indices) - 1) // stride + 1)
+        chosen = (
+            indices[np.linspace(0, len(indices) - 1, count, dtype=int)]
+            if count > 1
+            else indices[[len(indices) // 2]]
+        )
+        self.axis.set_tick_params(labelrotation=angle)
+        for tick in self.axis.get_major_ticks(len(chosen)):
+            tick.label1.set(
+                horizontalalignment="center",
+                verticalalignment="top",
+                rotation_mode="default",
+                parse_math=False,
+            )
+        details = []
+        if len(chosen) < len(self.labels):
+            details.append(f"{len(chosen)} group labels shown")
+        if self.shortened:
+            details.append("labels shortened")
+        message = (
+            f"All {len(self.labels)} groups plotted; {', '.join(details)}.\n"
+            "Full group values are in plotted data."
+            if details
+            else ""
+        )
+        # The footnote participates in constrained layout, not an overlay.
+        wrap_width = max(14, int(figure.get_figwidth() * 72 / (self.font_size * 0.6)))
+        self.note.set_text(
+            "\n".join(
+                textwrap.fill(line, width=wrap_width) for line in message.splitlines()
+            )
+        )
+        return chosen
 
 
 def build_plot_figure(
@@ -136,8 +336,15 @@ def build_plot_figure(
             )
 
     if recipe.plot_type == "Compare groups":
-        axes.set_xticks(range(len(result.series)))
-        axes.set_xticklabels([series.name for series in result.series])
+        labels, shortened = _group_tick_labels(result)
+        note = figure.supxlabel("", fontsize=font_size - 1, color=palette["text"])
+        note.set_parse_math(False)
+        axes.xaxis.set_major_locator(
+            _GroupLabelLocator(
+                labels, note, font_size=font_size, shortened=shortened, compact=compact
+            )
+        )
+        axes.xaxis.set_major_formatter(_GroupLabelFormatter(labels))
         axes.set_xlim(-0.6, max(len(result.series) - 0.4, 0.6))
     elif not recipe.log_x:
         axes.xaxis.set_major_locator(MaxNLocator(nbins=4 if compact else 6))
@@ -149,6 +356,30 @@ def build_plot_figure(
         axes.yaxis.set_major_locator(MaxNLocator(nbins=4 if compact else 6))
     if recipe.plot_type == "Distribution" and not recipe.log_y:
         axes.set_ylim(bottom=0)
+    if (
+        recipe.plot_type == "Distribution"
+        and recipe.distribution == "Histogram"
+        and recipe.normalization == "Count"
+    ):
+        _set_count_axis(axes.yaxis, logarithmic=recipe.log_y, compact=compact)
+    if recipe.point_unit == "Objects":
+        # Only explicit count units carry this meaning. Integer-valued data,
+        # column names and count/length densities do not establish count axes;
+        # per-image means of counts may legitimately be fractional. Fractional
+        # upstream aggregates also veto this policy even if count units remain.
+        if _is_discrete_count_measurement(
+            result, column=recipe.y_column, coordinate="y"
+        ):
+            distribution = recipe.plot_type == "Distribution"
+            _set_count_axis(
+                axes.xaxis if distribution else axes.yaxis,
+                logarithmic=recipe.log_x if distribution else recipe.log_y,
+                compact=compact,
+            )
+        if recipe.plot_type == "Scatter" and _is_discrete_count_measurement(
+            result, column=recipe.x_column, coordinate="x"
+        ):
+            _set_count_axis(axes.xaxis, logarithmic=recipe.log_x, compact=compact)
     title = (
         recipe.title
         or {
@@ -311,6 +542,11 @@ def export_plot_result(
                     "Zero-based row indices in the connected measurement table"
                 ),
                 "presentation": {
+                    "group_labels": (
+                        "Labels may be shortened, wrapped, rotated or spaced to fit. "
+                        "All categorical groups retain their exact identity and order; "
+                        "full group values are in the plotted-data CSV."
+                    ),
                     "jitter": "Uniform horizontal display jitter for Compare groups",
                     "jitter_seed": PLOT_JITTER_SEED,
                     "jitter_seed_policy": "Seed plus zero-based group index",
