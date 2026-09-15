@@ -34,6 +34,8 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Batch measurement collection](measurement-collection.md): unreleased
+  collection/export contract, typed datasets, Table Source, and validation record.
 - [Measurement plots and statistics](measurement-plots-and-statistics-plan.md):
   planned 0.16 results workflow with two general-purpose nodes, batch-table
   collection, independent-sample safeguards, editable pop-outs, and figure export.

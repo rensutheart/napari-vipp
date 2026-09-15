@@ -1,6 +1,7 @@
 """Presentation-only format choices for connected output nodes."""
 
 from napari_vipp.core.meshes import is_mesh_data
+from napari_vipp.core.result_plots import is_plot_data
 from napari_vipp.core.tables import is_table_data
 
 
@@ -16,6 +17,8 @@ def writer_format_choices(pipeline, node_id, declared_choices):
             kind = "mesh"
         elif is_table_data(data):
             kind = "table"
+        elif is_plot_data(data):
+            kind = "plot"
         elif data is not None and hasattr(data, "shape") and hasattr(data, "dtype"):
             kind = "array"
     if kind == "mesh":
@@ -24,8 +27,10 @@ def writer_format_choices(pipeline, node_id, declared_choices):
         allowed = (
             {default, "csv", "tsv"} if node.operation_id == "batch_output" else set()
         )
+    elif kind == "plot":
+        allowed = {default, "png", "tiff", "svg", "pdf"}
     elif kind in {"array", "image", "mask", "labels"}:
-        allowed = set(declared_choices) - {"obj", "3mf", "csv", "tsv"}
+        allowed = set(declared_choices) - {"obj", "3mf", "csv", "tsv", "svg", "pdf"}
     else:
         allowed = {default}
     return tuple(value for value in declared_choices if value in allowed)

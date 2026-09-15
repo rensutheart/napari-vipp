@@ -39,6 +39,7 @@ from napari_vipp.ui.controls import (
     ParameterBounds,
     ParameterControl,
 )
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.plots import (
     DETAILED_HISTOGRAM_DEFAULT_GRID_DIVISIONS,
@@ -116,9 +117,7 @@ class HistogramDialog(QDialog):
         self.calculation_form.setHorizontalSpacing(12)
         self.calculation_form.setVerticalSpacing(7)
         self.calculation_controls: dict[str, QWidget] = {}
-        self._calculation_specs = NODE_LIBRARY_BY_ID[
-            "intensity_histogram"
-        ].parameters
+        self._calculation_specs = NODE_LIBRARY_BY_ID["intensity_histogram"].parameters
         self._calculation_parameters = {
             spec.name: spec.default for spec in self._calculation_specs
         }
@@ -218,8 +217,9 @@ class HistogramDialog(QDialog):
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
         actions.addWidget(self.export_hint, 1)
-        actions.addWidget(self.export_button)
-        actions.addWidget(self.close_button)
+        add_dialog_buttons(
+            actions, actions=(self.export_button,), dismiss=self.close_button
+        )
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.calculation_group)
@@ -336,17 +336,15 @@ class HistogramDialog(QDialog):
             self.calculation_form.addRow(label, control)
             self.calculation_controls[spec.name] = control
             control.valueChanged.connect(
-                lambda value, name=spec.name: (
-                    self._on_calculation_parameter_changed(name, value)
+                lambda value, name=spec.name: self._on_calculation_parameter_changed(
+                    name, value
                 )
             )
         self._refresh_calculation_row_visibility()
 
     def _on_calculation_parameter_changed(self, name: str, value: object) -> None:
         spec = next(
-            candidate
-            for candidate in self._calculation_specs
-            if candidate.name == name
+            candidate for candidate in self._calculation_specs if candidate.name == name
         )
         validate_parameter_value(
             spec,
@@ -357,9 +355,7 @@ class HistogramDialog(QDialog):
             return
         self._calculation_parameters[name] = value
         self._refresh_calculation_row_visibility()
-        self.calculationParametersChanged.emit(
-            dict(self._calculation_parameters)
-        )
+        self.calculationParametersChanged.emit(dict(self._calculation_parameters))
 
     def _refresh_calculation_row_visibility(self) -> None:
         context = ParameterVisibilityContext(
@@ -431,8 +427,8 @@ class HistogramDialog(QDialog):
                 raise ValueError(
                     "Pass either a histogram table or extracted arrays, not both."
                 )
-            edges, values, series_labels, series_colors = (
-                histogram_arrays_from_table(table)
+            edges, values, series_labels, series_colors = histogram_arrays_from_table(
+                table
             )
             resolved_metadata = (
                 metadata

@@ -759,12 +759,20 @@ def transform_split_output_state(
 
 def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
+    plot_state = _coerce_plot_state(state_or_data)
+    if plot_state is not None:
+        return (
+            f"PLOT: {plot_state.point_count:,} points\n"
+            f"{plot_state.plot_type} | {plot_state.excluded_row_count:,} excluded rows"
+        )
     mesh_state = _coerce_mesh_state(state_or_data)
     if mesh_state is not None:
         objects = mesh_state.object_count
-        return (f"MESH: {objects:,} object{'s' if objects != 1 else ''} | "
-                f"{mesh_state.vertex_count:,} vertices\n"
-                f"{mesh_state.triangle_count:,} triangles | 3D surface")
+        return (
+            f"MESH: {objects:,} object{'s' if objects != 1 else ''} | "
+            f"{mesh_state.vertex_count:,} vertices\n"
+            f"{mesh_state.triangle_count:,} triangles | 3D surface"
+        )
     table_state = _coerce_table_state(state_or_data)
     if table_state is not None:
         return (
@@ -785,6 +793,16 @@ def format_compact_metadata(state_or_data) -> str:
 
 def metadata_table_rows(state_or_data) -> list[MetadataRow]:
     """Return display rows for the selected-node metadata table."""
+    plot_state = _coerce_plot_state(state_or_data)
+    if plot_state is not None:
+        return [
+            MetadataRow("Kind", "Measurement plot"),
+            MetadataRow("Plot type", plot_state.plot_type),
+            MetadataRow("Points", f"{plot_state.point_count:,}"),
+            MetadataRow("Input rows", f"{plot_state.input_row_count:,}"),
+            MetadataRow("Excluded rows", f"{plot_state.excluded_row_count:,}"),
+            MetadataRow("Source", plot_state.source_name or "—"),
+        ]
     mesh_state = _coerce_mesh_state(state_or_data)
     if mesh_state is not None:
         return [
@@ -797,12 +815,20 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
                 "Lewiner marching cubes; level 0.5; full resolution",
             ),
             MetadataRow("Image border", mesh_state.boundary),
-            MetadataRow("Geometry processing", "; ".join(mesh_state.processing_history)
-                        or "None — original extracted geometry"),
+            MetadataRow(
+                "Geometry processing",
+                "; ".join(mesh_state.processing_history)
+                or "None — original extracted geometry",
+            ),
             MetadataRow("Coordinates", "ZYX voxel centres; carried image calibration"),
-            MetadataRow("Calibration", "; ".join(
-                f"{a.name.upper()}: scale {a.scale:g}, origin {a.translation:g} "
-                f"{a.unit or 'voxel'}" for a in mesh_state.spatial_axes)),
+            MetadataRow(
+                "Calibration",
+                "; ".join(
+                    f"{a.name.upper()}: scale {a.scale:g}, origin {a.translation:g} "
+                    f"{a.unit or 'voxel'}"
+                    for a in mesh_state.spatial_axes
+                ),
+            ),
             MetadataRow("Source", mesh_state.source_name or "—"),
         ]
     table_state = _coerce_table_state(state_or_data)
@@ -1007,6 +1033,9 @@ def _table_quality_rows(quality: TableQuality) -> list[MetadataRow]:
 
 def metadata_history_items(state_or_data) -> list[str]:
     """Return operation history entries for inspector display."""
+    plot_state = _coerce_plot_state(state_or_data)
+    if plot_state is not None:
+        return list(plot_state.history)
     mesh_state = _coerce_mesh_state(state_or_data)
     if mesh_state is not None:
         return list(mesh_state.history)
@@ -1022,10 +1051,12 @@ def metadata_history_items(state_or_data) -> list[str]:
 
 def format_detailed_metadata(state_or_data) -> str:
     """Multi-line metadata summary for the selected node inspector."""
-    if _coerce_mesh_state(state_or_data) is not None:
+    if (
+        _coerce_mesh_state(state_or_data) is not None
+        or _coerce_plot_state(state_or_data) is not None
+    ):
         return "\n".join(
-            f"{row.label}: {row.value}"
-            for row in metadata_table_rows(state_or_data)
+            f"{row.label}: {row.value}" for row in metadata_table_rows(state_or_data)
         )
     table_state = _coerce_table_state(state_or_data)
     if table_state is not None:
@@ -3327,6 +3358,18 @@ def _coerce_mesh_state(state_or_data):
     if isinstance(state_or_data, MeshState):
         return state_or_data
     return state_or_data.state if isinstance(state_or_data, MeshData) else None
+
+
+def _coerce_plot_state(state_or_data):
+    from napari_vipp.core.result_plots import PlotData, PlotState, plot_state_from_data
+
+    if isinstance(state_or_data, PlotState):
+        return state_or_data
+    return (
+        plot_state_from_data(state_or_data)
+        if isinstance(state_or_data, PlotData)
+        else None
+    )
 
 
 def _coerce_state(state_or_data) -> ImageState | None:

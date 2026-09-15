@@ -410,10 +410,23 @@ def load_workflow(path: str | Path) -> dict[str, Any]:
         raise ValueError("Workflow path cannot be blank.")
     source = Path(raw_path).expanduser()
     data = json.loads(source.read_text(encoding="utf-8"))
-    return deserialize_workflow(data)
+    restored = deserialize_workflow(data)
+    for node in restored["nodes"]:
+        if node.operation_id == "table_source":
+            dataset_path = node.params["dataset_path"]
+            if dataset_path:
+                resolved = Path(dataset_path).expanduser()
+                if not resolved.is_absolute():
+                    resolved = source.absolute().parent / resolved
+                node.params["dataset_path"] = str(resolved.absolute())
+    return restored
 
 
 def _node_to_dict(node: GraphNode) -> dict[str, Any]:
+    if node.operation_id == "table_source":
+        from napari_vipp.core.table_source import validate_table_source_reference
+
+        validate_table_source_reference(node.params)
     params = (
         canonicalize_source_item_params(node.params)
         if node.operation_id == "input"

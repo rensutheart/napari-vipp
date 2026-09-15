@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
@@ -154,8 +155,9 @@ class BatchBulkEditDialog(QDialog):
         self.apply_button.setAutoDefault(False)
         self.apply_button.setObjectName("BulkApplyChanges")
         self.apply_button.clicked.connect(self._apply_draft)
-        footer.addWidget(self.cancel_button)
-        footer.addWidget(self.apply_button)
+        add_dialog_buttons(
+            footer, actions=(self.apply_button,), dismiss=self.cancel_button
+        )
         layout.addLayout(footer)
         self.parameter_tree.itemChanged.connect(self._picks_changed)
         self.search.textChanged.connect(self._filter_parameters)

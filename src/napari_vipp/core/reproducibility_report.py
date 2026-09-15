@@ -182,6 +182,9 @@ def _repeat_note(data: dict) -> str:
 
 
 def _advanced_runner(data: dict, *, markdown: bool = False) -> str:
+    if data.get("python_runner_unavailable"):
+        message = data["python_runner_unavailable"]
+        return _markdown_text(message) if markdown else _text(message)
     command = (
         "python batch-runner.py --help"
         if _has_batch_workspace(data)

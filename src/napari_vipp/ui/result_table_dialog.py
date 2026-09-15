@@ -38,6 +38,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.tables import TableData, save_table_output
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 
 _NATURAL_TEXT_PART = re.compile(r"(\d+)")
@@ -45,8 +46,7 @@ _SORT_HINT = (
     "Click a column heading to sort ascending; click it again to sort descending."
 )
 _EXPORT_NOTE = (
-    "Sorting changes this view only; export preserves the workflow's exact "
-    "row order."
+    "Sorting changes this view only; export preserves the workflow's exact row order."
 )
 _BACKGROUND_TASK_ROW_THRESHOLD = 50_000
 
@@ -206,9 +206,7 @@ def _sorted_source_rows(
         # mixed-type column instead of letting a header click fail.
         ordered_present = sorted(
             present,
-            key=lambda row_index: _natural_text_key(
-                table.rows[row_index][int(column)]
-            ),
+            key=lambda row_index: _natural_text_key(table.rows[row_index][int(column)]),
             reverse=order == Qt.DescendingOrder,
         )
     present = ordered_present
@@ -345,17 +343,11 @@ class ResultTableModel(QAbstractTableModel):
         self.endResetModel()
 
     def rowCount(self, parent=None) -> int:  # noqa: N802
-        return (
-            0
-            if parent is not None and parent.isValid()
-            else self._table.row_count
-        )
+        return 0 if parent is not None and parent.isValid() else self._table.row_count
 
     def columnCount(self, parent=None) -> int:  # noqa: N802
         return (
-            0
-            if parent is not None and parent.isValid()
-            else self._table.column_count
+            0 if parent is not None and parent.isValid() else self._table.column_count
         )
 
     def source_row(self, displayed_row: int) -> int:
@@ -400,9 +392,7 @@ class ResultTableModel(QAbstractTableModel):
     def sort(self, column: int, order=Qt.AscendingOrder) -> None:
         if not 0 <= int(column) < self._table.column_count:
             return
-        self.apply_row_order(
-            _sorted_source_rows(self._table, int(column), order)
-        )
+        self.apply_row_order(_sorted_source_rows(self._table, int(column), order))
 
     def apply_row_order(self, row_order: list[int]) -> None:
         if len(row_order) != self._table.row_count:
@@ -481,16 +471,16 @@ class ResultTableDialog(QDialog):
         self.export_button = QPushButton("Export CSV/TSV…", self)
         self.export_button.setEnabled(False)
         self.export_button.setToolTip(
-            "Export the complete table using the same CSV/TSV writer as the "
-            "inspector."
+            "Export the complete table using the same CSV/TSV writer as the inspector."
         )
         self.close_button = QPushButton("Close", self)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addStretch(1)
-        buttons.addWidget(self.export_button)
-        buttons.addWidget(self.close_button)
+        add_dialog_buttons(
+            buttons, actions=(self.export_button,), dismiss=self.close_button
+        )
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
@@ -702,9 +692,7 @@ class ResultTableDialog(QDialog):
         self._active_sort_worker = worker
         self.table_view.horizontalHeader().setSectionsClickable(False)
         column_name = table.columns[int(column)]
-        self.sort_hint.setText(
-            f"Sorting {table.row_count:,} rows by “{column_name}”…"
-        )
+        self.sort_hint.setText(f"Sorting {table.row_count:,} rows by “{column_name}”…")
         self._worker_pool.start(worker)
 
     def _on_sort_finished(self, outcome: _SortOutcome) -> None:

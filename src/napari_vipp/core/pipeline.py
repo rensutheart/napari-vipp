@@ -175,6 +175,7 @@ from napari_vipp.core.operations import (
     yen_threshold,
 )
 from napari_vipp.core.progress import ProgressContext
+from napari_vipp.core.result_plots import PlotState, plot_results, plot_state_from_data
 from napari_vipp.core.source_items import SourceItem
 from napari_vipp.core.source_window import ExactSourceWindowData
 from napari_vipp.core.tables import TableState, table_state_from_data
@@ -1107,6 +1108,7 @@ SAFE_BYPASS_BOUNDARY_OPERATION_IDS = frozenset(
         "batch_output",
         "mask_to_3d_mesh",
         "labels_to_3d_mesh",
+        "plot_results",
     }
 )
 
@@ -1212,7 +1214,7 @@ class SourcePayload:
     data: Any
     metadata: dict | None = None
     name: str = ""
-    image_state: ImageState | None = None
+    image_state: ImageState | TableState | None = None
     revision_token: object | None = None
     axis_semantics_resolved: bool = False
     source_item: SourceItem | None = None
@@ -5625,6 +5627,111 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         execution_policy="manual",
     ),
     OperationSpec(
+        "table_source",
+        "Table Source",
+        MEASUREMENTS_CATEGORY,
+        None,
+        "table",
+        (
+            ParameterSpec(
+                "dataset_path",
+                "Results dataset",
+                "text",
+                "",
+                0,
+                0,
+                1,
+                tooltip="Open a collected .vipp-results.json measurement dataset.",
+            ),
+            ParameterSpec(
+                "dataset_sha256",
+                "Expected dataset SHA-256",
+                "text",
+                "",
+                0,
+                0,
+                1,
+                tooltip=(
+                    "Recorded when you choose the dataset. Changed files require "
+                    "explicit review; workflow JSON never embeds measurement rows."
+                ),
+            ),
+        ),
+        subcategory="Tables",
+    ),
+    OperationSpec(
+        "plot_results",
+        "Plot Results",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "plot",
+        (
+            ParameterSpec("recipe_version", "Recipe version", "int", 1, 1, 1, 1),
+            ParameterSpec(
+                "plot_type",
+                "Plot type",
+                "choice",
+                "Compare groups",
+                0,
+                0,
+                1,
+                choices=("Compare groups", "Distribution", "Scatter"),
+            ),
+            ParameterSpec("y_column", "Measurement (Y)", "text", "auto", 0, 0, 1),
+            ParameterSpec("x_column", "Measurement (X)", "text", "auto", 0, 0, 1),
+            ParameterSpec("group_column", "Group by", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "point_unit",
+                "Each point represents",
+                "choice",
+                "Objects",
+                0,
+                0,
+                1,
+                choices=("Objects", "Mean per image"),
+            ),
+            ParameterSpec("image_column", "Image identity", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "summary",
+                "Summary",
+                "choice",
+                "Mean",
+                0,
+                0,
+                1,
+                choices=("Mean", "Median", "None"),
+            ),
+            ParameterSpec(
+                "distribution",
+                "Distribution",
+                "choice",
+                "Histogram",
+                0,
+                0,
+                1,
+                choices=("Histogram", "Cumulative"),
+            ),
+            ParameterSpec("bins", "Histogram bins", "int", 20, 2, 512, 1),
+            ParameterSpec(
+                "normalization",
+                "Histogram Y",
+                "choice",
+                "Count",
+                0,
+                0,
+                1,
+                choices=("Count", "Percent"),
+            ),
+            ParameterSpec("log_x", "Logarithmic X", "bool", False, 0, 1, 1),
+            ParameterSpec("log_y", "Logarithmic Y", "bool", False, 0, 1, 1),
+            ParameterSpec("title", "Plot title", "text", "", 0, 0, 1),
+            ParameterSpec("point_size", "Point size", "float", 5.0, 1.0, 20.0, 0.5),
+            ParameterSpec("show_grid", "Show grid", "bool", True, 0, 1, 1),
+        ),
+        plot_results,
+        subcategory="Tables",
+    ),
+    OperationSpec(
         "merge_tables",
         "Merge Tables",
         MEASUREMENTS_CATEGORY,
@@ -6408,6 +6515,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "tsv",
                     "obj",
                     "3mf",
+                    "png",
+                    "svg",
+                    "pdf",
                 ),
             ),
             ParameterSpec("subfolder", "Subfolder", "text", "", 0, 0, 1),
@@ -6561,6 +6671,10 @@ def graph_node_from_persisted_params(
         raise ValueError(f"{context} requires non-empty 'id'.")
     if not isinstance(saved_params, dict):
         raise ValueError(f"Parameters for node {node_id!r} must be an object.")
+    if operation_id == "table_source":
+        from napari_vipp.core.table_source import validate_table_source_reference
+
+        validate_table_source_reference(saved_params)
     # The former public dropdown offered ImageJ Triangle. Keep that exact
     # serialized calculation loadable and visibly label it as legacy, while
     # preventing new nodes from authoring it through the Default-only spec.
@@ -6713,10 +6827,12 @@ class PrototypePipeline:
         self.nodes: dict[str, GraphNode] = {}
         self.connections: list[GraphConnection] = []
         self.outputs: dict[str, Any] = {}
-        self.output_states: dict[str, ImageState | TableState | MeshState | None] = {}
+        self.output_states: dict[
+            str, ImageState | TableState | MeshState | PlotState | None
+        ] = {}
         self.node_outputs: dict[str, list[Any]] = {}
         self.node_output_states: dict[
-            str, list[ImageState | TableState | MeshState | None]
+            str, list[ImageState | TableState | MeshState | PlotState | None]
         ] = {}
         self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
@@ -9482,8 +9598,20 @@ class PrototypePipeline:
         # An unmaterialized device value is no longer a reusable host result.
         self.completed_node_ids.discard(node_id)
 
-    def finish_execution(self, execution: PipelineRunState) -> dict[str, Any]:
+    def finish_execution(
+        self, execution: PipelineRunState, *, cancel_callback=None,
+    ) -> dict[str, Any]:
         """Apply final cache retention after all runnable nodes were committed."""
+        for node_id in self.completed_node_ids:
+            node = self.nodes[node_id]
+            if node.operation_id == "table_source":
+                from napari_vipp.core.table_source import resolve_table_source
+
+                try:
+                    resolve_table_source(node.params, cancellation=cancel_callback)
+                except Exception as exc:
+                    self.set_node_execution_error(node_id, str(exc))
+                    raise
         if execution.prune_unretained:
             self.prune_cached_outputs(execution.retained_node_ids)
         return self.outputs
@@ -9554,7 +9682,7 @@ class PrototypePipeline:
                 self.commit_node_results(execution, node_id, results)
                 if node_finished_callback is not None:
                     node_finished_callback(node_id)
-        return self.finish_execution(execution)
+        return self.finish_execution(execution, cancel_callback=cancel_callback)
 
     def preflight_axis_contract(
         self,
@@ -9663,7 +9791,7 @@ class PrototypePipeline:
                     f"unhandled multi-output image operation {node.title!r}."
                 )
             return [(None, None)] * max(call.output_port_count, 1)
-        if spec.output_type in {"table", "mesh"}:
+        if spec.output_type in {"table", "mesh", "plot"}:
             return [(None, None)] * max(call.output_port_count, 1)
         try:
             dtype_policies = (
@@ -10593,6 +10721,7 @@ class PrototypePipeline:
                 input_metadata,
                 input_name,
                 source_payloads,
+                cancellation=cancel_callback,
             )
 
         if self.node_is_bypassed(node_id):
@@ -10617,12 +10746,22 @@ class PrototypePipeline:
         source_payloads: Mapping[str, SourcePayload],
         *,
         defer_statistics: bool = False,
+        cancellation=None,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
         """Resolve one source boundary without invoking an operation callable."""
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
         if spec.has_input:
             raise ValueError(f"Node {node_id!r} is not a source boundary.")
+        if node.operation_id == "table_source":
+            from napari_vipp.core.table_source import resolve_table_source
+
+            return resolve_table_source(
+                node.params,
+                source_payloads.get(node_id),
+                metadata_only=defer_statistics,
+                cancellation=cancellation,
+            )
         payload = source_payloads.get(node_id)
         if payload is None:
             payload = SourcePayload(input_data, input_metadata, input_name)
@@ -11088,6 +11227,14 @@ class PrototypePipeline:
             )
         spec = self.operation_spec(node.operation_id)
         input_states = list(call.input_states)
+        if spec.output_type == "plot":
+            history = _combined_history(input_states) + (
+                f"{node.title}: {output.recipe.plot_type}; "
+                f"{output.counts.plotted_points} points; "
+                f"{output.counts.excluded_rows} excluded input rows; "
+                f"{output.recipe.point_unit}",
+            )
+            return [(output, plot_state_from_data(output, history=history))]
         if spec.output_type == "mesh" or (
             node.operation_id == "save_output" and is_mesh_data(output)
         ):

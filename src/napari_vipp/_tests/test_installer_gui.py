@@ -753,7 +753,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
     assert len(canvas.scrolls) == 6
 
 
-def test_advanced_toggle_reveals_console_after_idle_layout():
+def test_advanced_toggle_reveals_panel_without_moving_diagnostic_text():
     class _Flag:
         value = True
 
@@ -808,7 +808,7 @@ def test_advanced_toggle_reveals_console_after_idle_layout():
     delay, callback = window.root.timed.pop()
     assert delay == 75
     callback()
-    assert window._details.seen == ["end"]
+    assert window._details.seen == []
     assert window._content_canvas.moves == [1.0]
 
     window._show_advanced.value = False
@@ -906,3 +906,156 @@ def test_install_location_uses_variable_trace_not_key_release_only():
 
     assert 'self._install_root.trace_add("write"' in gui_source
     assert 'location.bind("<KeyRelease>"' not in gui_source
+
+
+def test_console_buffer_is_bounded_and_drains_in_order():
+    buffer = gui_module._ConsoleBuffer(limit=20)
+    buffer.push("first\n")
+    buffer.push("second\n")
+    assert buffer.drain(3) == "fir"
+    assert buffer.drain(30) == "st\nsecond\n"
+    assert buffer.drain() == ""
+    buffer.push("discarded\n")
+    buffer.push("newest output\n")
+    assert buffer.drain() == (
+        "[Some older live output omitted from this view.]\nnewest output\n"
+    )
+    buffer.push("x" * 100)
+    assert buffer.drain().endswith("x" * 20)
+    assert buffer.drain() == ""
+
+
+def test_elapsed_refresh_does_not_rewrite_diagnostics_or_console():
+    window = object.__new__(InstallerWindow)
+    window._state = _state(InstallerScreen.WORKING)
+    window._last_elapsed_second = 0
+    window._elapsed_seconds = lambda: 2
+    window._quiet_seconds = lambda: 1
+    window._status_history = ["Installing components…"]
+    window._activity = _Value()
+    window._replace_details = lambda *_: pytest.fail("Timer rewrote diagnostics")
+    window._append_console = lambda *_: pytest.fail("Timer rewrote console")
+
+    window._refresh_elapsed()
+
+    assert "Elapsed in this phase: 2s" in window._activity.get()
+
+
+@pytest.fixture
+def tk_log_window():
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    root.geometry("500x220")
+    # Exercise real Text widget scrolling, without showing a test window on
+    # Windows. Linux CI provides a virtual display for Tk/Qt tests.
+    if sys.platform == "win32":
+        root.attributes("-alpha", 0.0)
+    widget = tk.Text(root, height=8, width=50, wrap="word", state="disabled")
+    widget.pack(fill="both", expand=True)
+    root.deiconify()
+    root.update()
+    window = object.__new__(InstallerWindow)
+    window._console = widget
+    window._details = widget
+    window._details_text = ""
+    try:
+        yield window, root
+    finally:
+        root.destroy()
+
+
+def test_live_console_follows_bottom_but_keeps_scrolled_text(tk_log_window):
+    window, root = tk_log_window
+    window._append_console("".join(f"package {i:03d}\n" for i in range(100)))
+    root.update()
+    assert window._console.yview()[1] == pytest.approx(1.0)
+
+    window._console.yview("25.0")
+    root.update()
+    before = window._console.get("@0,0 linestart", "@0,0 lineend")
+    window._append_console("Downloading next-package.whl\n")
+    root.update()
+    assert window._console.get("@0,0 linestart", "@0,0 lineend") == before
+    assert window._console.yview()[1] < 1.0
+    assert "Downloading next-package.whl" in window._console.get("1.0", "end")
+
+    window._follow_console()
+    root.update()
+    window._append_console("Successfully installed next-package\n")
+    root.update()
+    assert window._console.yview()[1] == pytest.approx(1.0)
+    assert window._console.cget("state") == "disabled"
+
+
+def test_live_console_trim_keeps_reading_anchor_and_bounds_memory(
+    tk_log_window, monkeypatch
+):
+    window, root = tk_log_window
+    monkeypatch.setattr(gui_module, "_CONSOLE_LINE_LIMIT", 100)
+    monkeypatch.setattr(gui_module, "_CONSOLE_VISIBLE_LIMIT", 10000)
+    window._append_console("".join(f"package {i:03d}\n" for i in range(90)))
+    root.update()
+    window._console.yview("35.0")
+    root.update()
+    before = window._console.get("@0,0 linestart", "@0,0 lineend")
+    window._append_console("".join(f"package {i:03d}\n" for i in range(90, 110)))
+    root.update()
+    assert window._console.get("@0,0 linestart", "@0,0 lineend") == before
+    assert int(window._console.index("end-1c").split(".")[0]) <= 100
+    window._append_console("z" * 20000)
+    assert len(window._console.get("1.0", "end-1c")) <= 10000
+
+
+def test_diagnostic_changes_preserve_scroll_and_skip_identical_text(tk_log_window):
+    window, root = tk_log_window
+    details = "\n".join(f"diagnostic {i}" for i in range(100))
+    window._replace_details(details)
+    root.update()
+    window._details.yview_moveto(0.4)
+    root.update()
+    position = window._details.yview()[0]
+    window._details.tag_add("sel", "40.0", "40.end")
+    selected = window._details.tag_ranges("sel")
+    window._replace_details(details)
+    assert window._details.tag_ranges("sel") == selected
+    assert window._details.yview()[0] == pytest.approx(position)
+    window._replace_details(details.replace("diagnostic", "information"))
+    root.update()
+    assert window._details.yview()[0] == pytest.approx(position, abs=0.002)
+
+
+def test_complete_setup_window_streams_without_advanced_details(
+    tk_log_window, monkeypatch
+):
+    _, root = tk_log_window
+    for child in root.winfo_children():
+        child.destroy()
+    controller = _Controller()
+    controller.state = _state(InstallerScreen.CHECKING)
+    controller.cancel = lambda: None
+    listener = {}
+
+    def make_controller(backend, state_listener, *, console_listener):
+        listener["state"] = state_listener
+        listener["console"] = console_listener
+        return controller
+
+    monkeypatch.setattr(gui_module, "InstallerController", make_controller)
+    window = InstallerWindow(root, object())
+    root.update()
+    listener["state"](_state(InstallerScreen.WORKING))
+    listener["console"]("Downloading component.whl (25 MB)\n")
+    listener["console"]("Installing collected packages: component\n")
+    window._poll_states()
+    root.update()
+    assert not window._show_advanced.get()
+    assert window._console.winfo_ismapped()
+    assert "Downloading component.whl" in window._console.get("1.0", "end")
+    assert "Installing collected packages" in window._console.get("1.0", "end")
+    assert window._button_bar.winfo_y() + window._button_bar.winfo_height() <= (
+        window._button_bar.master.winfo_height()
+    )

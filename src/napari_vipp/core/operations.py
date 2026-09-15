@@ -3763,6 +3763,9 @@ def measure_overall_skeleton_network(
 
 
 IDENTITY_JOIN_COLUMNS = (
+    "_vipp_run_id",
+    "_vipp_item_key",
+    "_vipp_batch_id",
     "source_name",
     "sample_id",
     "sample",
@@ -3981,7 +3984,7 @@ SUMMARY_GROUP_COLUMN_PRIORITY = (
 )
 
 SUMMARY_EXCLUDED_VALUE_COLUMNS = frozenset(
-    set(IDENTITY_JOIN_COLUMNS) | set(SUMMARY_GROUP_COLUMN_PRIORITY)
+    set(IDENTITY_JOIN_COLUMNS) | set(SUMMARY_GROUP_COLUMN_PRIORITY) | {"_vipp_row"}
 )
 
 DEFAULT_SUMMARY_STATISTICS = (
@@ -6837,6 +6840,12 @@ def save_output(
 ):
     """Pipeline node that writes the current output and passes data downstream."""
     from napari_vipp.core.meshes import is_mesh_data, save_mesh_output
+    from napari_vipp.core.result_plots import is_plot_data
+
+    if is_plot_data(data):
+        raise TypeError(
+            "Save Image cannot save plots. Use Export figure or Batch Output."
+        )
 
     if is_mesh_data(data):
         if str(enabled).lower() == "on" and str(path).strip():

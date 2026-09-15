@@ -1067,8 +1067,11 @@ issue before coding. Source, memory, and reproducibility priorities still apply.
 
 The [detailed results proposal](measurement-plots-and-statistics-plan.md) records
 the 2026-09-10 request for a self-contained way to explore bioimage measurements
-and export useful figures. It complements the alignment scope above; this is
-planning only, not an implemented feature or a version bump.
+and export useful figures. It complements the alignment scope above. Plotting
+and expanded statistics remain planned; the
+[measurement collection foundation](measurement-collection.md) was approved
+for implementation on 2026-09-15 and is unreleased after 0.15.0a5. This is not
+a version bump.
 
 - **Plot Results:** table input, configurable plot families/fields, a preview,
   and an editable nonmodal pop-out sharing the inspector's saved settings.
@@ -1080,7 +1083,12 @@ planning only, not an implemented feature or a version bump.
 - **Across-image results:** explicitly collect and annotate batch measurement
   tables with image, condition, and independent-sample identities. Existing
   Merge Tables is not a batch-row collector. Per-image and post-batch analyses
-  must remain distinguishable and reproducible.
+  must remain distinguishable and reproducible. The initial implementation
+  verifies recorded table outputs, reviews missing/excluded/empty items, and
+  exports CSV/TSV or an Excel workbook directly, with image-summary records.
+  Saving a typed `.vipp-results.json` dataset and opening it through **Table
+  Source** are separate, optional steps that reuse existing table tools
+  without adding plots or inference.
 - **Scientific guardrails:** never confuse cell counts with independent
   replicates; declare aggregation/pairing, retain units, expose exclusions,
   and show observations alongside clearly defined summaries/uncertainty.

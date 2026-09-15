@@ -41,6 +41,7 @@ def make_sample_data():
         _measured_psf_3d_sample(),
         _gpu_segmentation_cleanup_sample(),
         _threshold_gallery_sample(),
+        _measurement_plot_sample(),
     ]
 
 
@@ -276,6 +277,65 @@ def _object_morphology_sample():
         },
     }
     return data, metadata, "image"
+
+
+def _measurement_plot_sample(
+    *, seed=20260915, object_count=60, size_factor=1.0, intensity_factor=1.0
+):
+    """Return 60 isolated ellipses with deliberately varied shape and signal.
+
+    This is a deterministic illustration, not biological observations. Larger
+    ellipses are deliberately brighter so area/intensity plots have an easily
+    checkable relationship; orientation and elongation vary independently.
+    """
+    if not 1 <= object_count <= 60 or not 0.5 <= size_factor <= 1.12:
+        raise ValueError("Plot sample requires 1–60 objects and size factor 0.5–1.12.")
+    if not 0.5 <= intensity_factor <= 1.3:
+        raise ValueError("Plot sample intensity factor must be 0.5–1.3.")
+    yy, xx = np.indices((384, 640), dtype=np.float32)
+    rng = np.random.default_rng(seed)
+    data = rng.integers(80, 240, size=yy.shape, dtype=np.uint16)
+    for index in range(object_count):
+        row, column = divmod(index, 10)
+        cy = 32 + row * 64 + rng.uniform(-3, 3)
+        cx = 32 + column * 64 + rng.uniform(-3, 3)
+        # Two overlapping size populations, mixed throughout the same image.
+        major_radius = rng.uniform(10, 15) if index % 2 else rng.uniform(18, 25)
+        major_radius *= size_factor
+        aspect_ratio = rng.uniform(1.05, 2.65)
+        minor_radius = major_radius / aspect_ratio
+        angle = rng.uniform(0, np.pi)
+        dx, dy = xx - cx, yy - cy
+        along = dx * np.cos(angle) + dy * np.sin(angle)
+        across = -dx * np.sin(angle) + dy * np.cos(angle)
+        radius_squared = (along / major_radius) ** 2 + (across / minor_radius) ** 2
+        mask = radius_squared <= 1
+        # Positive size/signal association is built in, not a fitted discovery.
+        level = (11_000 + 14 * np.pi * major_radius * minor_radius) * intensity_factor
+        texture = rng.normal(0, 320, int(mask.sum()))
+        data[mask] = np.rint(
+            level + 1500 * (1 - radius_squared[mask]) + texture
+        ).astype(np.uint16)
+    metadata = _ome_image_metadata("YX", data.shape)
+    metadata["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [0.5, 0.5]
+    return data, {
+        "name": "VIPP synthetic measurement plots",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                f"One synthetic 2D image containing {object_count} separated "
+                "ellipses at "
+                "0.5 micrometer/pixel. Size, elongation and orientation vary; "
+                "larger objects are deliberately brighter. Not biological data "
+                "or independent experimental replicates."
+            ),
+            **metadata,
+        },
+    }, "image"
 
 
 def _mesh_morphology_sample():

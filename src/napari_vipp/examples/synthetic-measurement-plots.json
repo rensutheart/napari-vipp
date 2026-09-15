@@ -1,0 +1,355 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "plot_area_intensity",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic measurement plots",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "threshold",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 1000,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "labels",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "morphology",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "include_shape_descriptors": true,
+        "include_axis_descriptors": true,
+        "include_2d_boundary_descriptors": true,
+        "include_derived_shape_ratios": true,
+        "include_2d_shape_moments": true
+      }
+    },
+    {
+      "id": "intensity",
+      "operation_id": "measure_objects_intensity",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "intensity_columns",
+      "operation_id": "select_table_columns",
+      "params": {
+        "columns": "label_id,intensity_mean,intensity_min,intensity_max"
+      }
+    },
+    {
+      "id": "merged",
+      "operation_id": "merge_tables",
+      "params": {
+        "input_count": 2,
+        "join_mode": "Left join",
+        "join_keys": "label_id"
+      }
+    },
+    {
+      "id": "annotated",
+      "operation_id": "add_metadata_columns",
+      "params": {
+        "metadata_columns": "image_id=synthetic_field_01, specimen=demonstration, condition=single image",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "plot_area",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Distribution",
+        "y_column": "area_physical",
+        "x_column": "auto",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "image_id",
+        "summary": "Median",
+        "distribution": "Histogram",
+        "bins": 16,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Object area distribution",
+        "point_size": 5,
+        "show_grid": true
+      }
+    },
+    {
+      "id": "plot_area_intensity",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Scatter",
+        "y_column": "intensity_mean",
+        "x_column": "area_physical",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "image_id",
+        "summary": "Median",
+        "distribution": "Histogram",
+        "bins": 16,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Larger objects were deliberately made brighter",
+        "point_size": 5,
+        "show_grid": true
+      }
+    },
+    {
+      "id": "plot_elongation",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Compare groups",
+        "y_column": "axis_ratio_major_minor",
+        "x_column": "auto",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "image_id",
+        "summary": "Median",
+        "distribution": "Histogram",
+        "bins": 16,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Object elongation · individual objects and median",
+        "point_size": 5,
+        "show_grid": true
+      }
+    },
+    {
+      "id": "plot_circularity",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Distribution",
+        "y_column": "circularity",
+        "x_column": "auto",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "image_id",
+        "summary": "Median",
+        "distribution": "Cumulative",
+        "bins": 16,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Cumulative distribution of object circularity",
+        "point_size": 5,
+        "show_grid": true
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "threshold",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "threshold",
+      "target": "labels",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "labels",
+      "target": "morphology",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "labels",
+      "target": "intensity",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input",
+      "target": "intensity",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Fluorescence"
+    },
+    {
+      "source": "intensity",
+      "target": "intensity_columns",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "morphology",
+      "target": "merged",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "intensity_columns",
+      "target": "merged",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "merged",
+      "target": "annotated",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "annotated",
+      "target": "plot_area",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "annotated",
+      "target": "plot_area_intensity",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "annotated",
+      "target": "plot_elongation",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "annotated",
+      "target": "plot_circularity",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      500
+    ],
+    "threshold": [
+      500,
+      500
+    ],
+    "labels": [
+      900,
+      500
+    ],
+    "morphology": [
+      1350,
+      280
+    ],
+    "intensity": [
+      1350,
+      900
+    ],
+    "intensity_columns": [
+      1770,
+      900
+    ],
+    "merged": [
+      2220,
+      500
+    ],
+    "annotated": [
+      2650,
+      500
+    ],
+    "plot_area": [
+      3100,
+      0
+    ],
+    "plot_area_intensity": [
+      3100,
+      460
+    ],
+    "plot_elongation": [
+      3100,
+      920
+    ],
+    "plot_circularity": [
+      3100,
+      1380
+    ]
+  },
+  "notes": [
+    {
+      "id": "intro",
+      "text": "1. ONE IMAGE, 60 OBJECTS\nSynthetic ellipses vary in size, elongation and brightness. Pixel size is 0.5 micrometer. The saved threshold of 1,000 separates all objects from background; no batch processing is needed.",
+      "position": [
+        0,
+        -240
+      ],
+      "width": 520
+    },
+    {
+      "id": "measure",
+      "text": "2. LABEL AND MEASURE\nEach label becomes one table row. Measure shape and intensity separately, then join by label_id. Area is in square micrometers; eccentricity and axis ratio describe elongation.",
+      "position": [
+        1100,
+        -240
+      ],
+      "width": 520
+    },
+    {
+      "id": "interpret",
+      "text": "3. KNOW WHAT THE POINTS MEAN\nEvery point is an object from this one image, not an independent biological sample. Larger objects were deliberately made brighter. The scatter relationship illustrates the controls, not a biological finding.",
+      "position": [
+        2140,
+        -240
+      ],
+      "width": 580
+    },
+    {
+      "id": "explore",
+      "text": "4. OPEN A PLOT AND EXPERIMENT\nCompare the area histogram, area/intensity scatter, elongation points and cumulative circularity. Open plot for a larger editable window; changing plot settings does not rerun the image. Export only when you choose.",
+      "position": [
+        3100,
+        -240
+      ],
+      "width": 620
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Fluorescence",
+      "source": "input",
+      "source_port": 0
+    }
+  ]
+}

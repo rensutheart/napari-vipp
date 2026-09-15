@@ -78,6 +78,9 @@ _RESERVED_FUNCTION_NAMES = {
     "batch_process",
     "is_table_data",
     "is_mesh_data",
+    "is_plot_data",
+    "save_plot_output",
+    "_plot_output_format",
     "save_mesh_output",
     "json",
     "load_image",
@@ -131,6 +134,12 @@ def export_pipeline_to_python(
     uses that authored request; callers and the generated CLI may supply an
     explicit run-only override without mutating the embedded workflow.
     """
+    if any(node.operation_id == "table_source" for node in pipeline.nodes.values()):
+        raise ValueError(
+            "Python export for Table Source results workflows is not available "
+            "yet. Save the workflow and its .vipp-results.json dataset separately, "
+            "then reopen the workflow in VIPP."
+        )
     if (
         not function_name.isidentifier()
         or keyword.iskeyword(function_name)
@@ -500,6 +509,8 @@ def _build_imports() -> str:
             ),
             "from napari_vipp.core.tables import is_table_data, save_table_output",
             "from napari_vipp.core.meshes import is_mesh_data, save_mesh_output",
+            "from napari_vipp.core.result_plots import is_plot_data",
+            "from napari_vipp.core.plot_rendering import save_plot_output",
             "from napari_vipp.core.workflow import deserialize_workflow",
         )
     )
@@ -1604,7 +1615,14 @@ def _write_output_uncommitted(
 ):
     """Write only inside a private publication directory."""
     try:
-        if is_mesh_data(data):
+        if is_plot_data(data):
+            plot_path = Path(path)
+            selected = _plot_output_format(output_node_id)
+            allowed = {".png", ".tif", ".tiff", ".svg", ".pdf"}
+            if plot_path.suffix.lower() not in allowed:
+                plot_path = plot_path.with_suffix("." + selected)
+            saved_path = save_plot_output(plot_path, data)
+        elif is_mesh_data(data):
             mesh_path = Path(path)
             if mesh_path.suffix.lower() not in {".obj", ".3mf"}:
                 mesh_path = mesh_path.with_suffix(
@@ -1871,10 +1889,25 @@ def _mesh_output_format(node_id):
     return selected
 
 
+def _plot_output_format(node_id):
+    """Preserve a Batch Output plot format, otherwise default to PNG."""
+    selected = "batch default"
+    for node in _workflow_document()["nodes"]:
+        if node["id"] == node_id and node["operation_id"] == "batch_output":
+            selected = node.get("params", {}).get("format", "batch default")
+            break
+    if selected == "batch default":
+        return "png"
+    if selected not in {"png", "tiff", "svg", "pdf"}:
+        raise ValueError(f"Plot output {node_id!r} requires PNG, TIFF, SVG or PDF.")
+    return selected
+
+
 def _automatic_output_path(directory, source_stem, node_id, data):
     """Name convenience-loop and multi-output CLI artifacts by output kind."""
     suffix = (
-        "." + _mesh_output_format(node_id) if is_mesh_data(data) else ".ome.tif"
+        "." + _plot_output_format(node_id) if is_plot_data(data)
+        else "." + _mesh_output_format(node_id) if is_mesh_data(data) else ".ome.tif"
     )
     return Path(directory) / f"{source_stem}__{node_id}{suffix}"
 

@@ -299,6 +299,197 @@ def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):
     assert controller.state.log_path == tmp_path / "setup.log"
 
 
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
+def test_console_chunks_do_not_publish_state_and_survive_terminal_outcomes(
+    tmp_path,
+    outcome,
+):
+    workers = []
+    states = []
+    console = []
+    chunks = ["Collecting dependencies\n", "Downloading ", "50%\r", "100%\r"]
+    chunks += ["same output\n"] * 3
+    chunks += [f"package {index}\n" for index in range(100)]
+    chunks += [f"subprocess {outcome}\n"]
+
+    class _LoggingBackend(_Backend):
+        def apply(self, prepared, *, confirmed, progress, cancellation):
+            self.apply_calls.append((prepared, confirmed))
+            self.progress_callback = progress
+            progress(
+                ProgressUpdate(
+                    "download",
+                    "Downloading packages…",
+                    1,
+                    4,
+                    unit=ProgressUnit.BYTES,
+                    log_path=tmp_path / "setup.log",
+                )
+            )
+            before = controller.state
+            published_count = len(states)
+            for chunk in chunks:
+                progress(ProgressUpdate("download", "", console_text=chunk))
+                assert controller.state is before
+                assert len(states) == published_count
+            assert before.progress_fraction == pytest.approx(0.25)
+            assert before.progress_stage == "download"
+            assert before.progress_unit is ProgressUnit.BYTES
+            assert before.status_message == "Downloading packages…"
+            assert before.log_path == tmp_path / "setup.log"
+            if outcome == "failure":
+                raise RuntimeError("dependency command failed")
+            if outcome == "cancelled":
+                raise InstallationCancelled(details="rollback completed")
+            return InstallOutcome(launcher=prepared.target / "Scripts/vipp-app.exe")
+
+    backend = _LoggingBackend(_prepared(TargetKind.NEW, tmp_path))
+    controller = InstallerController(
+        backend,
+        states.append,
+        console_listener=console.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    workers.pop(0)()
+
+    assert console == [
+        "Checking the installation…\n",
+        "Downloading packages…\n",
+        *chunks,
+    ]
+    assert (
+        controller.state.screen
+        is {
+            "success": InstallerScreen.SUCCESS,
+            "failure": InstallerScreen.FAILED,
+            "cancelled": InstallerScreen.CANCELLED,
+        }[outcome]
+    )
+    final = controller.state
+    count = len(console)
+    backend.progress_callback(
+        ProgressUpdate("download", "", console_text="late output\n")
+    )
+    backend.progress_callback(ProgressUpdate("completed", "Late milestone"))
+    assert len(console) == count
+    assert controller.state is final
+
+
+def test_console_milestones_emit_once_without_coalescing_raw_output(tmp_path):
+    workers = []
+    states = []
+    console = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        states.append,
+        console_listener=console.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    generation = controller._generation
+    for completed in (1, 2):
+        controller._on_progress(
+            generation,
+            ProgressUpdate(
+                "download",
+                "Downloading packages…\n",
+                completed,
+                4,
+                ProgressUnit.BYTES,
+            ),
+        )
+        controller._on_progress(
+            generation,
+            ProgressUpdate(
+                "download",
+                "",
+                console_text="same chunk\n",
+            ),
+        )
+    controller._on_progress(generation, ProgressUpdate("installing", "Installing…"))
+    assert console == [
+        "Downloading packages…\n",
+        "same chunk\n",
+        "same chunk\n",
+        "Installing…\n",
+    ]
+    download_states = [state for state in states if state.progress_stage == "download"]
+    assert [state.progress_fraction for state in download_states] == [0.25, 0.5]
+
+
+def test_console_and_milestones_from_stale_generation_are_dropped(tmp_path):
+    workers = []
+    states = []
+    console = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        states.append,
+        console_listener=console.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    stale_generation = controller._generation
+    changed = InstallerSelection(create_desktop_shortcut=False)
+    assert controller.invalidate_selection(changed)
+    controller.start(changed)
+    before = controller.state
+    assert controller.busy
+    published_count = len(states)
+    for update in (
+        ProgressUpdate("checking", "", console_text="old check output\n"),
+        ProgressUpdate("checking", "Old check milestone"),
+    ):
+        controller._on_progress(stale_generation, update)
+    assert console == []
+    assert len(states) == published_count
+    assert controller.state is before
+    controller._on_progress(
+        controller._generation,
+        ProgressUpdate(
+            "checking",
+            "",
+            console_text="current check output\n",
+        ),
+    )
+    assert console == ["current check output\n"]
+    assert controller.state is before
+
+
+def test_console_listener_is_optional_and_positional_progress_fields_still_work(
+    tmp_path,
+):
+    log_path = tmp_path / "setup.log"
+    milestone = ProgressUpdate(
+        "download", "Downloading…", 2, 4, ProgressUnit.BYTES, log_path
+    )
+    assert milestone.console_text == ""
+    workers = []
+    states = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        states.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    controller._on_progress(controller._generation, milestone)
+    before = controller.state
+    published_count = len(states)
+    controller._on_progress(
+        controller._generation,
+        ProgressUpdate(
+            "download",
+            "",
+            console_text="Output with no listener\n",
+        ),
+    )
+    assert controller.state is before
+    assert len(states) == published_count
+    assert before.progress_fraction == pytest.approx(0.5)
+
+
 def test_current_install_opens_or_prepares_explicit_repair(tmp_path):
     workers = []
     backend = _Backend(_prepared(TargetKind.CURRENT, tmp_path))

@@ -2,8 +2,9 @@
 
 The resulting graph is intentionally broad rather than a single linear
 analysis.  Each lane uses a small bundled sample that suits the represented
-operations, and every operation exposed in the node palette appears at least
-once. Long shared routes use named tunnels while nearby connections remain
+operations. Palette operations appear at least once except Table Source, which
+requires an authored external collection and has separate save/reopen coverage.
+Long shared routes use named tunnels while nearby connections remain
 visible, so the graph stays readable without hiding its processing structure.
 Keep this generator deterministic so the checked-in JSON remains easy to
 review and regenerate after the palette changes.
@@ -21,6 +22,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
 )
 from napari_vipp.core.workflow import save_workflow
+from napari_vipp.ui.examples import EXHAUSTIVE_EXTERNAL_SOURCE_IDS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATHS = (
@@ -1238,7 +1240,9 @@ def build_workflow() -> tuple[
     )
 
     operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
-    expected = {spec.id for spec in PALETTE_NODE_LIBRARY}
+    expected = (
+        {spec.id for spec in PALETTE_NODE_LIBRARY} - EXHAUSTIVE_EXTERNAL_SOURCE_IDS
+    )
     actual = set(operation_counts)
     if actual != expected:
         raise RuntimeError(

@@ -1,10 +1,39 @@
 # Measurement Plots And Statistics: 0.16 Plan
 
-Status: planned addition to the **0.16 release series**, not implemented.
+Status: the first **Plot Results** implementation was approved on 2026-09-15
+for the **0.16 release series** and is unreleased after 0.15.0a5. Expanded
+Statistics, inference and the later plot families below remain planned.
+The [batch measurement collection foundation](measurement-collection.md)
+is also implemented but unreleased.
 Requested and reviewed: 2026-09-10. No alpha milestone or release date assigned.
 This complements, rather than replaces, the
 [registration, comparison, and template-matching plan](registration-and-template-matching-plan.md).
 Use [active planning](planning.md) for release order.
+
+## Approved First Plotting Slice
+
+One **Plot Results** node accepts an ordinary measurement table or the output
+of Table Source. Initial families are Compare groups (points with optional
+mean/median), Distribution (shared-bin histogram or cumulative distribution),
+and Scatter. Users explicitly choose individual objects or a mean per image;
+image identity is required for image means. No batch collection or invented
+biological-replicate column is required for exploring one labelled image.
+
+The inspector and a nonmodal **Open plot** window edit the same saved recipe.
+There is no extra "Show workflow" analysis action: that button existed only
+to navigate the design mockup. The workflow stays open behind the plot window.
+Figure export is explicit and independent of on-screen window size. No tests,
+significance annotations, fitted relationships, count/fraction views, paired
+views or inferred biological independence belong to this first slice.
+
+The bundled `plot-morphology` example uses one deterministic calibrated image
+with 60 isolated ellipses, shape/intensity measurements joined by label ID,
+and four plot branches. Its size/intensity association is deliberately
+generated and is not biological evidence. A grouped development fixture uses
+several synthetic fields with unequal object counts to review object pooling
+versus equally weighted image means; these fields are not biological samples.
+User documentation belongs to the companion manual's Plot measurement results
+task page, not this planning document.
 
 ## Product Decision
 
@@ -54,8 +83,9 @@ unit for their question.
 
 Existing `TableData` provides immutable rows, column units, table kind, and
 source name. Existing tools select columns, add metadata, merge tables,
-and summarize groups. These are useful foundations, but there is not yet a
-formal experimental-design contract or a cross-item batch table collector.
+and summarize groups. The first
+[cross-item batch collector](measurement-collection.md) is implemented but unreleased;
+the formal experimental-design and plot/statistics contracts remain planned.
 **Merge Tables is a horizontal join, not vertical collection of batch rows.**
 
 Plan three explicit scopes:
@@ -65,15 +95,26 @@ Plan three explicit scopes:
    for each item; explicit Batch Output settings publish those results.
 3. **Across the batch:** an explicit **Collect measurement results** action in
    Run & results collects compatible tables into a reusable table dataset.
-   The user can annotate samples and conditions, then analyze that dataset
-   with the same two nodes in a results workflow. This is a post-run step,
-   not hidden cross-item execution inside a per-image node.
+   The user can annotate samples and conditions and export CSV/TSV or Excel
+   directly. Saving a native dataset and opening a results workflow are
+   separate, optional steps. That workflow can later use the same two planned
+   nodes. This is a post-run step, not hidden cross-item execution inside a
+   per-image node.
 
-Before implementing scope 3, settle the durable table-dataset source/open
-contract. Prefer extending existing data-opening/source affordances over a
-family of new analysis nodes. A results workflow must be able to reopen the
-collection, rerun without Qt, and report missing tables; an in-memory handoff
-alone is not sufficient.
+For scope 3, the approved initial contract is a typed, self-contained
+`.vipp-results.json` measurement dataset and one file-backed **Table Source**
+node. A results workflow saves its external path and expected hash, not the
+measurement rows. It must reopen and execute without Qt, and report missing or
+changed datasets; an in-memory handoff alone is not sufficient. Collection
+requires newly recorded typed output evidence, never guesses historical CSV
+types, and does not rerun images automatically.
+
+Direct collection export includes an optional image-summary companion for
+CSV/TSV, or **Measurements**, **Image summary** and **About this collection**
+sheets in Excel. Keep empty/excluded images, annotations, units and run
+information visible without inventing measurement rows. These exports are
+part of the unreleased collection foundation, not Plot Results or expanded
+Statistics. The native dataset remains the typed round-trip format.
 
 Collection must retain source item, source image, local object ID, measurement
 operation/settings, and available condition/sample/replicate/time annotations.

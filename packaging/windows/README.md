@@ -32,6 +32,16 @@ heartbeat leaves the latest concrete activity visible, while Advanced details
 retains the setup-log path and can open that exact log. Slowness alone is not
 reported as a stall or failure.
 
+Unreleased after `0.15.0a5`, **Installation log** shows redacted subprocess
+output as complete records arrive from stdout/stderr. Python child processes
+use unbuffered UTF-8 streams; the resolver's machine-readable JSON remains
+separate. A bounded, thread-safe queue feeds the Tk log without replacing phase
+status or touching widgets from worker threads. The recent view follows only
+at the bottom, preserves a reading anchor when older lines are trimmed, and
+offers **Jump to latest**. The timer no longer rewrites diagnostic text; genuine
+diagnostic changes retain the reader's scroll position. Full command results
+remain in the existing setup record, with cancellation and rollback unchanged.
+
 The release build embeds the exact `napari-vipp` wheel built from the same tag.
 The wheel SHA-256 is checked before the installer resolves dependencies and its
 path, digest, source commit, and version are retained in build/release manifests.

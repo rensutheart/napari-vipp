@@ -10,7 +10,6 @@ from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,6 +23,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp._theme import category_foreground, palette_is_dark
 from napari_vipp.core.operation_search import operation_search_aliases
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.example_chooser import ExampleWorkflowDialog
 from napari_vipp.ui.palette_roles import blend_colors, custom_paint_colors
 from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text

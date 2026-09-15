@@ -338,6 +338,12 @@ for the exact owning modules and limitations.
 5. Add focused component/controller tests and retain a small widget integration
    test for signal wiring. Preserve transitional imports only when a real caller
    still needs them.
+6. Use `ui/dialog_buttons.py` for dialog footers: `DialogButtonBox` for Qt
+   button roles, or `add_dialog_buttons` for custom rows. This keeps Windows
+   action-before-dismiss and macOS dismiss-before-action consistent even under
+   napari's theme. Keep auxiliary tools before the stretch and distinguish
+   Cancel/Close from Stop safely. Preserve safe defaults and cancellation
+   callbacks; native file and message dialogs retain their native behavior.
 
 ### Change Workflow Or Batch Persistence
 

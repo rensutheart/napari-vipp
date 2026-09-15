@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- Standardize dialog footer actions across plots, tables, examples, batch and
+  setup windows: on Windows, the main action precedes the rightmost
+  **Cancel**/**Close**; on macOS, dismissal precedes the main action. Keep
+  secondary utilities separate and distinguish stopping active work from
+  dismissing its window. Native file pickers retain their system conventions.
+
+- Add **Plot Results** for connected measurement tables: individual/grouped
+  points with mean or median, shared-bin histograms, cumulative distributions
+  and scatter plots. Distinguish objects from image means, retain units and
+  excluded-value counts, and open an editable plot window. Export sized
+  PNG/TIFF or vector SVG/PDF figures. Include **Morphology & Intensity Plots**,
+  a guided single-image example with 60 calibrated synthetic objects; plots
+  are descriptive and do not add statistical tests.
+
+- Add reviewed batch measurement collection: verify saved table outputs,
+  preserve typed values, units, image/object identity and existing annotations,
+  and keep empty, missing, failed or excluded items visible. Save a separate
+  `.vipp-results.json` measurement dataset and reopen it through **Table Source**
+  for the existing table tools. Historical outputs without typed records are
+  not guessed or silently recalculated. Workflow JSON references the dataset
+  by path and hash rather than embedding results. The collection itself does
+  not perform plotting or new statistical tests.
+
+- Export collected measurements directly as CSV, TSV or an Excel workbook,
+  without rerunning images or opening a results workflow. Offer an optional
+  image-summary companion for CSV/TSV; Excel includes **Measurements**, **Image
+  summary** and **About this collection** sheets with image outcomes,
+  annotations, units and run information. Keep **Save VIPP collection…**
+  separate, with opening a results workflow off by default; the native dataset
+  remains the typed round-trip format.
+
+- Separate workflow commands from the Settings gear in a three-dot **Workflow
+  actions** menu beside Save. Group **Open example**, **Save workflow as**, and
+  exports with separators; keep Save as easy to find and retain graph-action
+  overflow in this menu on narrow windows. Existing save shortcuts and export
+  behavior are unchanged.
+
+- Show live, redacted package download and installation output in the Windows
+  setup window's **Installation log**, separate from settings and diagnostic
+  details. Follow new output only while at the bottom; scrolling up holds the
+  reading position and **Jump to latest** resumes following. Bound the recent
+  on-screen log, retain the full setup record, and stop the elapsed-time refresh
+  from resetting the Advanced details scroll position. Installation approval,
+  hash checks, cancellation and rollback policies are unchanged.
+
 ## 0.15.0a5 - 2026-09-14
 
 - Temporarily constrain psygnal to `>=0.14,<0.16` after isolating a 0.16.0 event-callback regression affecting mesh transforms and crop overlays. Preserve real error reporting and scientific calculations; requalify newer versions before removing the constraint.

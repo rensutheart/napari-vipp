@@ -194,6 +194,37 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
             ),
             caution="These are 2D shape descriptors, not 3D surface measurements.",
         ),
+        "plot-morphology": ExampleGuidance(
+            purpose=(
+                "Turn measurements from one image into readable shape and "
+                "intensity plots."
+            ),
+            data=(
+                "One synthetic 2D image with 60 separated ellipses; "
+                "0.5 micrometer per pixel"
+            ),
+            explore=(
+                "Follow thresholding and labelling to one measurement row per object.",
+                "Compare the area histogram with individual elongation measurements.",
+                "Explore the designed relationship between area and brightness.",
+                "Open a plot window, change its settings and export a sized figure.",
+            ),
+            results=(
+                "60 labelled objects",
+                "Joined shape and intensity measurements",
+                "Histogram, scatter, individual-point and cumulative plots",
+            ),
+            try_this=(
+                "Select the area-intensity scatter node and choose Open plot. "
+                "Change the Y measurement to eccentricity to compare a different "
+                "relationship. The source image does not need recalculation."
+            ),
+            caution=(
+                "These are invented demonstration data. The 60 objects come from "
+                "one image, not 60 independent biological samples; size and "
+                "brightness were deliberately linked in the sample generator."
+            ),
+        ),
         "mesh-morphology": ExampleGuidance(
             purpose=(
                 "Measure 3D object shape using both voxels and reconstructed surfaces."
@@ -532,7 +563,8 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
         ),
         "exhaustive-inspector": ExampleGuidance(
             purpose=(
-                "Inspect every available node in one comprehensive testing workflow."
+                "Inspect image and measurement tools in one comprehensive "
+                "testing workflow."
             ),
             data=(
                 "Seven synthetic samples spanning images, volumes, skeletons and "
@@ -558,7 +590,8 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
             ),
             caution=(
                 "This is an interface-testing collection, not one recommended "
-                "analysis pipeline."
+                "analysis pipeline. Table Source needs a saved batch measurement "
+                "dataset and is reviewed separately."
             ),
             chooser_category="Developer & testing workflows",
         ),

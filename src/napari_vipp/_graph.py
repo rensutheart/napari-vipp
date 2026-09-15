@@ -506,6 +506,7 @@ class NodeCard(QFrame):
     selected = Signal(str)
     pin_requested = Signal(str)
     calculate_requested = Signal(str)
+    plot_requested = Signal(str)
 
     def __init__(
         self,
@@ -615,6 +616,9 @@ class NodeCard(QFrame):
             lambda: self.calculate_requested.emit(self.node_id)
         )
         self.calculate_button.setVisible(False)
+        self.plot_button = QPushButton("Open plot…", self)
+        self.plot_button.clicked.connect(lambda: self.plot_requested.emit(self.node_id))
+        self.plot_button.hide()
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
@@ -630,6 +634,7 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.metadata_label)
         self.card_layout.addWidget(self.execution_label)
         self.card_layout.addWidget(self.calculate_button)
+        self.card_layout.addWidget(self.plot_button)
         self._bypass_overlay = BypassCardOverlay(self)
         self._bypass_overlay.setGeometry(self.rect())
         self._bypass_overlay.hide()
@@ -1761,6 +1766,8 @@ class PortItem(QGraphicsEllipseItem):
             color = "#f472b6"
         elif self.data_type == "table":
             color = "#facc15"
+        elif self.data_type == "plot":
+            color = "#a78bfa"
         elif self.data_type == "mesh":
             color = "#2dd4bf"
         elif self.data_type in {"array", "array_or_mesh"}:
@@ -2597,6 +2604,7 @@ class PipelineGraphView(QGraphicsView):
     node_splice_requested = Signal(str, object, object, object)
     pin_requested = Signal(str)
     node_calculate_requested = Signal(str)
+    node_plot_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     node_append_requested = Signal(str, str, int, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
@@ -3414,6 +3422,8 @@ class PipelineGraphView(QGraphicsView):
         card.selected.connect(self._select_node_from_embedded_card)
         card.pin_requested.connect(self.pin_requested)
         card.calculate_requested.connect(self.node_calculate_requested)
+        card.plot_requested.connect(self.node_plot_requested)
+        card.plot_button.setVisible(node.operation_id == "plot_results")
         proxy = NodeProxy(
             node.id,
             node.operation_id,

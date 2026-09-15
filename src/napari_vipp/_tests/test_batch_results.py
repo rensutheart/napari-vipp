@@ -152,6 +152,51 @@ def _result(preview, records, *, timing=True):
     )
 
 
+def test_collect_measurements_uses_archived_run_and_forwards_saved_dataset(
+    qtbot, tmp_path, monkeypatch
+):
+    from qtpy.QtCore import Signal
+    from qtpy.QtWidgets import QDialog
+
+    from napari_vipp.ui import measurement_collection
+
+    opened = []
+
+    class CollectionDialog(QDialog):
+        collectionSaved = Signal(str)
+
+        def __init__(self, manifest, parent=None):
+            super().__init__(parent)
+            opened.append((manifest, self))
+
+    monkeypatch.setattr(
+        measurement_collection, "MeasurementCollectionDialog", CollectionDialog
+    )
+    preview = _preview(tmp_path, 1)
+    preview.config.output_dir.mkdir()
+    record = _record(preview.items[0], BatchStatus.COMPLETED)
+    record = replace(record, outputs=(replace(record.outputs[0], kind="table"),))
+    result = _result(preview, (record,))
+    archive = preview.config.output_dir / "archived-run.json"
+    archive.touch()
+    result = replace(result, manifest_archive_path=archive)
+    panel = BatchResultsPanel()
+    qtbot.addWidget(panel)
+    panel.set_plan(preview)
+    panel.finish_run(result)
+    assert panel.collect_results_button.isEnabled()
+    assert not panel.run_report.collection_actions.isHidden()
+    paths = []
+    panel.collectionSaved.connect(paths.append)
+    panel.collect_results_button.click()
+    assert opened[0][0] == archive
+    opened[0][1].collectionSaved.emit("measurements.vipp-results.json")
+    assert paths == ["measurements.vipp-results.json"]
+    opened[0][1].close()
+    panel.set_plan(preview)
+    assert not panel.collect_results_button.isEnabled()
+
+
 def test_review_shows_real_plan_and_full_collection_with_paging(qtbot, tmp_path):
     preview = _preview(tmp_path, 1200)
     panel = BatchResultsPanel()
