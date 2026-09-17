@@ -60,6 +60,7 @@ HISTOGRAM_THRESHOLD_OPERATIONS = {
     "minimum_threshold",
 }
 LABEL_OPERATIONS = {
+    "cellprofiler_propagation",
     "auto_watershed_from_mask",
     "expand_labels",
     "h_maxima_markers",
@@ -683,7 +684,11 @@ def transform_multi_input_image_state(
         axes=axes,
         metadata_source=metadata_source,
         source_name=first.source_name,
-        history=first.history
+        history=(
+            tuple(dict.fromkeys(item for state in states for item in state.history))
+            if operation_id == "cellprofiler_propagation"
+            else first.history
+        )
         + (_multi_input_history(states, operation_id, operation_title, params),),
         channels=_multi_input_channels(states, operation_id, params),
         acquisition=first.acquisition,
@@ -3072,6 +3077,16 @@ def _multi_input_history(
     if operation_id == "filter_labels_by_property":
         column = str(params.get("property_column", "auto")).strip() or "auto"
         return f"{operation_title}: filtered by {column}"
+    if operation_id == "cellprofiler_propagation":
+        from importlib.metadata import version
+
+        weight = _format_number(params.get("regularization", 0.05))
+        return (
+            f"{operation_title}: centrosome {version('centrosome')}, "
+            f"regularization {weight}, 2D YX, 8 neighbours; "
+            "unchanged guidance intensities, pixel-index distance; "
+            "outside-mask seeds retained without growth, unseeded regions 0"
+        )
     if operation_id == "marker_controlled_watershed":
         mode = str(params.get("image_mode", "Distance map (invert)"))
         spatial_mode = str(params.get("spatial_mode", "Auto from axes"))

@@ -29,6 +29,8 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Public data corpus](public-data-corpus.md)
 - [Source-aware loading qualification](source-aware-loading-0.14.0a1.md)
 - [Analytical phantom validation](analytical-phantom-validation.md)
+- [Seeded segmentation](seeded-segmentation.md): 2D CellProfiler Propagation,
+  acquired-image examples, existing 3D watershed and Random Walker evaluation.
 - [Richardson-Lucy TV validation](rl-tv-validation-report.md)
 - [Research and publication record](research-and-publication.md)
 

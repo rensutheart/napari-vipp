@@ -1,0 +1,596 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-09-17T17:44:42.860624+00:00",
+  "status": "passed",
+  "scope": "Exact Propagation parity on identical graph-generated inputs",
+  "not_claimed": [
+    "Full CellProfiler pipeline equivalence",
+    "Biological segmentation accuracy",
+    "Paper result reproduction",
+    "Timing or memory guarantees"
+  ],
+  "calibration": "Physical calibration unknown; spatial parameters are pixels.",
+  "parameter_policy": "One frozen parameter set used unchanged on four first fields; no tuning.",
+  "source_attribution": "IDR0139, Lawson et al., CC BY 4.0",
+  "source_study": "https://idr.openmicroscopy.org/study/idr0139/",
+  "script_sha256": "5bd17eef5e42a16108cd031b074ffe7c99f41a27360331c422e257a18b0cf0b5",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.9",
+  "packages": {
+    "napari-vipp": "0.15.0a5",
+    "centrosome": "1.3.4",
+    "numpy": "2.5.1",
+    "scipy": "1.18.0",
+    "scikit-image": "0.26.0",
+    "tifffile": "2026.7.14",
+    "psutil": "7.0.0",
+    "Pillow": "11.3.0"
+  },
+  "rss_caveat": "Total process RSS sampled every 10 ms; increments are per call. Sequential runs share caches; this is not isolated peak allocation. The sampler can miss short peaks or compiled calls holding the GIL.",
+  "fields": [
+    {
+      "field": "J05_F001",
+      "condition": "Untreated",
+      "author_image_number": "717",
+      "sources": {
+        "DNA": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_J05_T0001F001L01A01Z01C01.tif",
+          "sha256": "17fd2ebf6c176e7baf11dd39ebec54751563837ef9a84bdcfcbee2eb53babe04",
+          "original_channel_number": "01",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_J05_T0001F001L01A01Z01C01.tif",
+          "verified_sha256": "17fd2ebf6c176e7baf11dd39ebec54751563837ef9a84bdcfcbee2eb53babe04"
+        },
+        "Actin": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_J05_T0001F001L01A03Z01C04.tif",
+          "sha256": "cb4a19b0c0216c22f5520e9b4ab8e72b7eaa1c7fd154c6440c580b465e8d199c",
+          "original_channel_number": "04",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_J05_T0001F001L01A03Z01C04.tif",
+          "verified_sha256": "cb4a19b0c0216c22f5520e9b4ab8e72b7eaa1c7fd154c6440c580b465e8d199c"
+        }
+      },
+      "parameters": {
+        "input_channels": [
+          "DNA",
+          "Actin"
+        ],
+        "intensity_conversion": "Convert Dtype float32, preserve numeric values",
+        "intensity_scaling": {
+          "input": [
+            0,
+            65535
+          ],
+          "output": [
+            0,
+            1
+          ]
+        },
+        "gaussian_sigma_pixels": 0.851063829787234,
+        "seed_threshold": "Li, whole image",
+        "minimum_seed_area_pixels": 100,
+        "seed_holes": "fill all, face connectivity",
+        "seed_connectivity": "full (8 neighbors)",
+        "foreground_threshold": "Li on smoothed, explicitly scaled Actin",
+        "regularization": 0.05
+      },
+      "shape_yx": [
+        996,
+        996
+      ],
+      "positive_seed_ids": 289,
+      "positive_output_ids": 289,
+      "foreground_pixels": 612382,
+      "seed_pixels_outside_foreground": 4078,
+      "unreached_foreground_pixels": 1796,
+      "centrosome_mismatched_pixels": 0,
+      "generated_python_mismatched_pixels": 0,
+      "immutable_input_passed": true,
+      "canonical_file_source_exact_pixels": true,
+      "workflow_sha256": "26bfa9d4e3312e4e87fdf4a3f7e144b9365493df06ef230b9db28b166705607c",
+      "exported_python_sha256": "d89306139b8ae21a000efe9a590095918e9d135e6f6514537d91c5f6a7be7893",
+      "derived_input_sha256": "db4879180e594a7d3fc1f2d8f0dde753c0a1c50cdbace03563d45b85508b1f9a",
+      "shared_graph_performance": {
+        "seconds": 3.003167000017129,
+        "rss_baseline_bytes": 262205440,
+        "rss_peak_bytes": 341303296,
+        "rss_increment_bytes": 79097856,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "direct_centrosome_performance": {
+        "seconds": 2.50695939999423,
+        "rss_baseline_bytes": 306450432,
+        "rss_peak_bytes": 342331392,
+        "rss_increment_bytes": 35880960,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "generated_python_performance": {
+        "seconds": 3.374146300018765,
+        "rss_baseline_bytes": 318595072,
+        "rss_peak_bytes": 399515648,
+        "rss_increment_bytes": 80920576,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "output_history": [
+        "Extract Channel: selected channel 1",
+        "Convert Dtype: float32 via preserve",
+        "Rescale Intensity: explicit input values 0..65535; output 0..1",
+        "Gaussian Blur",
+        "Extract Channel: selected channel 0",
+        "Li Threshold: Stack histogram; raw finite-value iteration; non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Fill Holes",
+        "Label Connected Components",
+        "Grow Regions from Seeds \u2014 CellProfiler Propagation: centrosome 1.3.4, regularization 0.05, 2D YX, 8 neighbours; unchanged guidance intensities, pixel-index distance; outside-mask seeds retained without growth, unseeded regions 0"
+      ],
+      "artifacts": {
+        "guidance": {
+          "file": "guidance.npy",
+          "sha256": "f88103cb61c5f99d18034c76004b69764d6fe3a4361302edbc9854d4816acbd5",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "float32"
+        },
+        "seeds": {
+          "file": "seeds.npy",
+          "sha256": "3e999ff1fd9138c80888d9d7b9f463254cb01de730e7132a9c0ec85ed342ecbc",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "foreground": {
+          "file": "foreground.npy",
+          "sha256": "cbb33e0ad4f65501bbd943ead64a932b9d4eed7d127bf84ac9cf1f148913995a",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "bool"
+        },
+        "propagation": {
+          "file": "propagation.npy",
+          "sha256": "8e4b7b5452e481bdd010cdf6847eeeb83ecd38bd3e21cce94fd78219f0eb9026",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "centrosome_reference": {
+          "file": "centrosome_reference.npy",
+          "sha256": "8e4b7b5452e481bdd010cdf6847eeeb83ecd38bd3e21cce94fd78219f0eb9026",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        }
+      }
+    },
+    {
+      "field": "O02_F001",
+      "condition": "DMSO",
+      "author_image_number": "1145",
+      "sources": {
+        "DNA": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_O02_T0001F001L01A01Z01C01.tif",
+          "sha256": "25097be85c6e9cce4fe12d813ea3fdbe5df4ed44bf56c10e43b1063d6c609e9b",
+          "original_channel_number": "01",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_O02_T0001F001L01A01Z01C01.tif",
+          "verified_sha256": "25097be85c6e9cce4fe12d813ea3fdbe5df4ed44bf56c10e43b1063d6c609e9b"
+        },
+        "Actin": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_O02_T0001F001L01A03Z01C04.tif",
+          "sha256": "2ca62507f7dfdaacc1cc43a7c6b3e92652da01215de9c358ddb12f0cade85c9c",
+          "original_channel_number": "04",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_O02_T0001F001L01A03Z01C04.tif",
+          "verified_sha256": "2ca62507f7dfdaacc1cc43a7c6b3e92652da01215de9c358ddb12f0cade85c9c"
+        }
+      },
+      "parameters": {
+        "input_channels": [
+          "DNA",
+          "Actin"
+        ],
+        "intensity_conversion": "Convert Dtype float32, preserve numeric values",
+        "intensity_scaling": {
+          "input": [
+            0,
+            65535
+          ],
+          "output": [
+            0,
+            1
+          ]
+        },
+        "gaussian_sigma_pixels": 0.851063829787234,
+        "seed_threshold": "Li, whole image",
+        "minimum_seed_area_pixels": 100,
+        "seed_holes": "fill all, face connectivity",
+        "seed_connectivity": "full (8 neighbors)",
+        "foreground_threshold": "Li on smoothed, explicitly scaled Actin",
+        "regularization": 0.05
+      },
+      "shape_yx": [
+        996,
+        996
+      ],
+      "positive_seed_ids": 319,
+      "positive_output_ids": 319,
+      "foreground_pixels": 596558,
+      "seed_pixels_outside_foreground": 12523,
+      "unreached_foreground_pixels": 2224,
+      "centrosome_mismatched_pixels": 0,
+      "generated_python_mismatched_pixels": 0,
+      "immutable_input_passed": true,
+      "canonical_file_source_exact_pixels": true,
+      "workflow_sha256": "8e4267fb4ff67efacd54743dd58465bd9e2c69919649e29a7b6ace45fc8411c2",
+      "exported_python_sha256": "519189c0f7108d30fd03b228cebc8b4aeb13d0f89bc7c521ba0ff81133b1b329",
+      "derived_input_sha256": "4ac0c2b6dacb806afdb87478aa29bb93a93aff7612a90076ca72cefddeb4c201",
+      "shared_graph_performance": {
+        "seconds": 3.1145403000118677,
+        "rss_baseline_bytes": 272171008,
+        "rss_peak_bytes": 351715328,
+        "rss_increment_bytes": 79544320,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "direct_centrosome_performance": {
+        "seconds": 2.41282530000899,
+        "rss_baseline_bytes": 314859520,
+        "rss_peak_bytes": 351813632,
+        "rss_increment_bytes": 36954112,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "generated_python_performance": {
+        "seconds": 3.37825690000318,
+        "rss_baseline_bytes": 326713344,
+        "rss_peak_bytes": 408326144,
+        "rss_increment_bytes": 81612800,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "output_history": [
+        "Extract Channel: selected channel 1",
+        "Convert Dtype: float32 via preserve",
+        "Rescale Intensity: explicit input values 0..65535; output 0..1",
+        "Gaussian Blur",
+        "Extract Channel: selected channel 0",
+        "Li Threshold: Stack histogram; raw finite-value iteration; non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Fill Holes",
+        "Label Connected Components",
+        "Grow Regions from Seeds \u2014 CellProfiler Propagation: centrosome 1.3.4, regularization 0.05, 2D YX, 8 neighbours; unchanged guidance intensities, pixel-index distance; outside-mask seeds retained without growth, unseeded regions 0"
+      ],
+      "artifacts": {
+        "guidance": {
+          "file": "guidance.npy",
+          "sha256": "b1dd60f9048446cb2a6d83ace579591de9729dde563c6149643c831c6742f107",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "float32"
+        },
+        "seeds": {
+          "file": "seeds.npy",
+          "sha256": "ab54104e4b91fc951afb6d664d1b0d970ef8f966d90acd599cad66ec5388136f",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "foreground": {
+          "file": "foreground.npy",
+          "sha256": "2188f705901bace586853b0ab7e86286df5889f5b0ca75de8d8c4f58eb49cba0",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "bool"
+        },
+        "propagation": {
+          "file": "propagation.npy",
+          "sha256": "397e4b0ab59027bb645e01a944effa70cf793bdcacd2879c2fa0b4489eed645f",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "centrosome_reference": {
+          "file": "centrosome_reference.npy",
+          "sha256": "397e4b0ab59027bb645e01a944effa70cf793bdcacd2879c2fa0b4489eed645f",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        }
+      }
+    },
+    {
+      "field": "E22_F001",
+      "condition": "SN0212398523",
+      "author_image_number": "345",
+      "sources": {
+        "DNA": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_E22_T0001F001L01A01Z01C01.tif",
+          "sha256": "68d9ced00bf795599b8d5c8201cdb18b59d89c52e82a181e00ba9e492c8aec7f",
+          "original_channel_number": "01",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_E22_T0001F001L01A01Z01C01.tif",
+          "verified_sha256": "68d9ced00bf795599b8d5c8201cdb18b59d89c52e82a181e00ba9e492c8aec7f"
+        },
+        "Actin": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_E22_T0001F001L01A03Z01C04.tif",
+          "sha256": "0f48f86c77af1940718a807363447dad888881556a5d76b254ba9a7c55cf94b3",
+          "original_channel_number": "04",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_E22_T0001F001L01A03Z01C04.tif",
+          "verified_sha256": "0f48f86c77af1940718a807363447dad888881556a5d76b254ba9a7c55cf94b3"
+        }
+      },
+      "parameters": {
+        "input_channels": [
+          "DNA",
+          "Actin"
+        ],
+        "intensity_conversion": "Convert Dtype float32, preserve numeric values",
+        "intensity_scaling": {
+          "input": [
+            0,
+            65535
+          ],
+          "output": [
+            0,
+            1
+          ]
+        },
+        "gaussian_sigma_pixels": 0.851063829787234,
+        "seed_threshold": "Li, whole image",
+        "minimum_seed_area_pixels": 100,
+        "seed_holes": "fill all, face connectivity",
+        "seed_connectivity": "full (8 neighbors)",
+        "foreground_threshold": "Li on smoothed, explicitly scaled Actin",
+        "regularization": 0.05
+      },
+      "shape_yx": [
+        996,
+        996
+      ],
+      "positive_seed_ids": 199,
+      "positive_output_ids": 199,
+      "foreground_pixels": 711311,
+      "seed_pixels_outside_foreground": 9019,
+      "unreached_foreground_pixels": 1505,
+      "centrosome_mismatched_pixels": 0,
+      "generated_python_mismatched_pixels": 0,
+      "immutable_input_passed": true,
+      "canonical_file_source_exact_pixels": true,
+      "workflow_sha256": "d687dd327905712b06f877d9e6553e9ff8ea173053c3a67efbb650e237154e5c",
+      "exported_python_sha256": "5ecc2deb182964177b0237e96e50c84ad64eb1ae2d139efe8e35b4766ce757cc",
+      "derived_input_sha256": "87eb6fb74863c950a123f0b6571133c072d61828dad6dd02fcc5e5dfb2c6e5b6",
+      "shared_graph_performance": {
+        "seconds": 3.369966400001431,
+        "rss_baseline_bytes": 275132416,
+        "rss_peak_bytes": 350208000,
+        "rss_increment_bytes": 75075584,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "direct_centrosome_performance": {
+        "seconds": 2.8746100999996997,
+        "rss_baseline_bytes": 315224064,
+        "rss_peak_bytes": 349216768,
+        "rss_increment_bytes": 33992704,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "generated_python_performance": {
+        "seconds": 3.683967199991457,
+        "rss_baseline_bytes": 329428992,
+        "rss_peak_bytes": 406065152,
+        "rss_increment_bytes": 76636160,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "output_history": [
+        "Extract Channel: selected channel 1",
+        "Convert Dtype: float32 via preserve",
+        "Rescale Intensity: explicit input values 0..65535; output 0..1",
+        "Gaussian Blur",
+        "Extract Channel: selected channel 0",
+        "Li Threshold: Stack histogram; raw finite-value iteration; non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Fill Holes",
+        "Label Connected Components",
+        "Grow Regions from Seeds \u2014 CellProfiler Propagation: centrosome 1.3.4, regularization 0.05, 2D YX, 8 neighbours; unchanged guidance intensities, pixel-index distance; outside-mask seeds retained without growth, unseeded regions 0"
+      ],
+      "artifacts": {
+        "guidance": {
+          "file": "guidance.npy",
+          "sha256": "975dc1a0f0cf8d4912c9be15fa0574b6e79cb3b3302dd1690d0a42aa6c72dddf",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "float32"
+        },
+        "seeds": {
+          "file": "seeds.npy",
+          "sha256": "a769f1980910b7f7f7e4f4961e0afb8f8ca50f7bd334b222181a845a129c6784",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "foreground": {
+          "file": "foreground.npy",
+          "sha256": "75dd61540bd54b337268f2d1bd65fcf67f236f303ef7635f12a9f286b2b14515",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "bool"
+        },
+        "propagation": {
+          "file": "propagation.npy",
+          "sha256": "1bf4c78638589fd541c7f17c8aa4bf308249a377723e3aa9d77c4149a012f5b1",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "centrosome_reference": {
+          "file": "centrosome_reference.npy",
+          "sha256": "1bf4c78638589fd541c7f17c8aa4bf308249a377723e3aa9d77c4149a012f5b1",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        }
+      }
+    },
+    {
+      "field": "L08_F001",
+      "condition": "Leptomycin B",
+      "author_image_number": "905",
+      "sources": {
+        "DNA": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_L08_T0001F001L01A01Z01C01.tif",
+          "sha256": "fb89b9d70498e64a0fa5d63ade26f2af1b55a0543d25bc91fa1c82cc24a3e11a",
+          "original_channel_number": "01",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_L08_T0001F001L01A01Z01C01.tif",
+          "verified_sha256": "fb89b9d70498e64a0fa5d63ade26f2af1b55a0543d25bc91fa1c82cc24a3e11a"
+        },
+        "Actin": {
+          "path": "D:\\VIPP-paper-reproductions\\statistics\\idr0139\\raw\\1093711385_L08_T0001F001L01A03Z01C04.tif",
+          "sha256": "3c682ef98e92552dedde0f3471d7b7e60ae615ebf997ac0ea9789bb4a8341669",
+          "original_channel_number": "04",
+          "source_url": "https://ftp.ebi.ac.uk/pub/databases/IDR/idr0139-lawson-fascin/20220707-box/1093711385/1093711385_L08_T0001F001L01A03Z01C04.tif",
+          "verified_sha256": "3c682ef98e92552dedde0f3471d7b7e60ae615ebf997ac0ea9789bb4a8341669"
+        }
+      },
+      "parameters": {
+        "input_channels": [
+          "DNA",
+          "Actin"
+        ],
+        "intensity_conversion": "Convert Dtype float32, preserve numeric values",
+        "intensity_scaling": {
+          "input": [
+            0,
+            65535
+          ],
+          "output": [
+            0,
+            1
+          ]
+        },
+        "gaussian_sigma_pixels": 0.851063829787234,
+        "seed_threshold": "Li, whole image",
+        "minimum_seed_area_pixels": 100,
+        "seed_holes": "fill all, face connectivity",
+        "seed_connectivity": "full (8 neighbors)",
+        "foreground_threshold": "Li on smoothed, explicitly scaled Actin",
+        "regularization": 0.05
+      },
+      "shape_yx": [
+        996,
+        996
+      ],
+      "positive_seed_ids": 119,
+      "positive_output_ids": 119,
+      "foreground_pixels": 395820,
+      "seed_pixels_outside_foreground": 351,
+      "unreached_foreground_pixels": 3485,
+      "centrosome_mismatched_pixels": 0,
+      "generated_python_mismatched_pixels": 0,
+      "immutable_input_passed": true,
+      "canonical_file_source_exact_pixels": true,
+      "workflow_sha256": "266021a6561cd7a37cc032411fcc6c7cce792c46fa5112ab58c9b2a5b35f5162",
+      "exported_python_sha256": "bda2a7782a6addcb173215a2dcfe4f5dd255b8c269f666919ac4ca8bd683334c",
+      "derived_input_sha256": "448b136802b50483bd7943117542b8af81a54e969091b2fa5fec9cb5028a679f",
+      "shared_graph_performance": {
+        "seconds": 1.7875260000000708,
+        "rss_baseline_bytes": 274501632,
+        "rss_peak_bytes": 346206208,
+        "rss_increment_bytes": 71704576,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "direct_centrosome_performance": {
+        "seconds": 1.4403653999906965,
+        "rss_baseline_bytes": 316792832,
+        "rss_peak_bytes": 346230784,
+        "rss_increment_bytes": 29437952,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "generated_python_performance": {
+        "seconds": 2.238712700025644,
+        "rss_baseline_bytes": 329105408,
+        "rss_peak_bytes": 402374656,
+        "rss_increment_bytes": 73269248,
+        "rss_sampling_interval_seconds": 0.01
+      },
+      "output_history": [
+        "Extract Channel: selected channel 1",
+        "Convert Dtype: float32 via preserve",
+        "Rescale Intensity: explicit input values 0..65535; output 0..1",
+        "Gaussian Blur",
+        "Extract Channel: selected channel 0",
+        "Li Threshold: Stack histogram; raw finite-value iteration; non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Fill Holes",
+        "Label Connected Components",
+        "Grow Regions from Seeds \u2014 CellProfiler Propagation: centrosome 1.3.4, regularization 0.05, 2D YX, 8 neighbours; unchanged guidance intensities, pixel-index distance; outside-mask seeds retained without growth, unseeded regions 0"
+      ],
+      "artifacts": {
+        "guidance": {
+          "file": "guidance.npy",
+          "sha256": "6391b7666eb606ca70a4ffd4a7cd1335dcb1ddfb6a8aea843af08ec9ac23b989",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "float32"
+        },
+        "seeds": {
+          "file": "seeds.npy",
+          "sha256": "6a6e6e714f124e2c01ef2742f5d3a351e3b6af56838f17f81a5e08179dc37037",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "foreground": {
+          "file": "foreground.npy",
+          "sha256": "3b3a20344b6e0d4440cff9f773608e441f77785700063916ea16629f1d761736",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "bool"
+        },
+        "propagation": {
+          "file": "propagation.npy",
+          "sha256": "bac898b23b0381ef4b0cc2b53650d6a267900a989db47dad1b47706e5bb119bb",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        },
+        "centrosome_reference": {
+          "file": "centrosome_reference.npy",
+          "sha256": "bac898b23b0381ef4b0cc2b53650d6a267900a989db47dad1b47706e5bb119bb",
+          "shape": [
+            996,
+            996
+          ],
+          "dtype": "int32"
+        }
+      }
+    }
+  ]
+}

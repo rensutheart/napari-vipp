@@ -348,6 +348,7 @@ def _key(
 
 
 _DEPENDENCY_VERSIONS = {
+    "centrosome": "1.3.4",
     "napari-vipp": "0.12.0a3",
     "numpy": "2.3.2",
     "scipy": "1.16.0",
@@ -363,7 +364,8 @@ _DEPENDENCY_VERSIONS = {
 
 @pytest.mark.parametrize(
     ("operation_id", "dependency"),
-    [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib")],
+    [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib"),
+     ("cellprofiler_propagation", "centrosome")],
 )
 def test_mesh_provider_versions_are_required_in_scientific_result_keys(
     operation_id, dependency
@@ -382,7 +384,8 @@ def test_mesh_provider_versions_are_required_in_scientific_result_keys(
 
 @pytest.mark.parametrize(
     ("operation_id", "dependency"),
-    [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib")],
+    [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib"),
+     ("cellprofiler_propagation", "centrosome")],
 )
 def test_mesh_provider_upgrade_invalidates_structural_and_downstream_caches(
     monkeypatch, operation_id, dependency

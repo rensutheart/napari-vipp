@@ -5021,6 +5021,7 @@ def _batch_actual_compute_summary(
 
 def _runtime_versions() -> dict[str, object]:
     distributions = (
+        "centrosome",
         "napari-vipp",
         "numpy",
         "scipy",

@@ -558,6 +558,7 @@ def _portable_batch_config(
 def _environment() -> dict:
     packages = {"napari-vipp": __version__}
     for name in (
+        "centrosome",
         "numpy",
         "scipy",
         "scikit-image",

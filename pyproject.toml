@@ -34,6 +34,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 dependencies = [
+    "centrosome==1.3.4",
     "czifile>=2026.8.16,<2027",
     "dask[array]>=2025.2",
     "fast-simplification>=0.2.0,<0.3",

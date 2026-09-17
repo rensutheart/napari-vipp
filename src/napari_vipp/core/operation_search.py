@@ -12,6 +12,10 @@ from types import MappingProxyType
 
 OPERATION_SEARCH_ALIASES = MappingProxyType(
     {
+        "cellprofiler_propagation": (
+            "propagate labels", "seeded region growing", "cellprofiler",
+            "centrosome", "grow cells from nuclei", "propagation",
+        ),
         "dilate": ("dilate", "dilating", "grow mask", "expand foreground"),
         "erode": ("erode", "eroding", "shrink mask", "shrink foreground"),
         "opening": ("open mask", "binary opening", "morphological opening"),

@@ -213,6 +213,7 @@ _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
 _EXACT_HOST_IDENTITY_OPERATIONS = frozenset({"batch_output"})
 _EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES = MappingProxyType(
     {
+        "cellprofiler_propagation": "fixed:int32",
         "add_images": "fixed:float32",
         "calculate_weighted_image": "fixed:float32",
         "colocalization_mask": "fixed:bool",
@@ -234,6 +235,7 @@ _EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES = MappingProxyType(
 )
 _EXACT_HOST_MATCHING_INPUT_SHAPE_OPERATIONS = frozenset(
     {
+        "cellprofiler_propagation",
         "add_images",
         "calculate_weighted_image",
         "colocalization_mask",

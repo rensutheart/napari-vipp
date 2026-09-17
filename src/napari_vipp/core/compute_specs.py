@@ -1356,7 +1356,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         implementation_version="1",
         runtime_id="cpu-numpy",
         array_domain="host-numpy",
-        implementation_library_id="cpu",
+        implementation_library_id=(
+            "centrosome" if operation_id == "cellprofiler_propagation" else "cpu"
+        ),
         callable_ref=callable_ref,
         host_boundary=host_boundary,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
@@ -1382,7 +1384,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
             if operation.output_factory is not None
             else "static-v1"
         ),
-        supported_spatial_ndims=(1, 2, 3),
+        supported_spatial_ndims=(
+            (2,) if operation_id == "cellprofiler_propagation" else (1, 2, 3)
+        ),
         supports_device_residency=False,
     )
 

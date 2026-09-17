@@ -26,6 +26,9 @@ from skimage import (
     transform,
 )
 
+from napari_vipp.core.cellprofiler_propagation import (
+    cellprofiler_propagation as cellprofiler_propagation,
+)
 from napari_vipp.core.channel_colors import channel_color_table, color_value_to_rgb
 from napari_vipp.core.connected_components import (
     label_connected_components as label_connected_components,

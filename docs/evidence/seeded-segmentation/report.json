@@ -1,0 +1,902 @@
+{
+  "created_utc": "20260917T174020Z",
+  "script_sha256": "8925631b89925c2b7bd13000e072cca213fdedb05a15de751acf318db97a6e4c",
+  "git_head": "92795e55a042438d1c9f1f6a293f17c99bfaafbd",
+  "python": "3.12.9 (tags/v3.12.9:fdb8142, Feb  4 2025, 15:27:58) [MSC v.1942 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "Intel64 Family 6 Model 165 Stepping 3, GenuineIntel",
+  "logical_cpus": 12,
+  "total_ram_bytes": 34257100800,
+  "versions": {
+    "numpy": "2.5.1",
+    "scipy": "1.18.0",
+    "scikit-image": "0.26.0",
+    "tifffile": "2026.7.14",
+    "psutil": "7.0.0",
+    "napari-vipp": "0.15.0a5"
+  },
+  "acquisition_manifest_sha256": "47848f607e3f5162f28ba782f7545eb08c05aeba36cb15c63ec08c1a0f92763e",
+  "scope": "Implementation parity and feasibility; no acquired-image ground truth or Fiji validation",
+  "watershed": [
+    {
+      "name": "analytic-overlapping-spheres",
+      "source": null,
+      "shape_zyx": [
+        35,
+        49,
+        64
+      ],
+      "dtype": "float32",
+      "input_array_sha256": "eb33903202d3a2c3a4c9e798b4eaf4c9c9421d2a8562938101f007aa80acd480",
+      "spacing_zyx_um": [
+        2.0,
+        0.5,
+        0.5
+      ],
+      "workflow_sha256": "1f4dce64d2089663f005b1cf278b0e185f09b22c327c2b1af2c2a288e84053ec",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 0.08590840001124889,
+        "baseline_process_rss_bytes": 252248064,
+        "peak_sampled_process_rss_bytes": 260513792,
+        "peak_increment_over_baseline_bytes": 8265728,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.0076135999988764524,
+        "baseline_process_rss_bytes": 256933888,
+        "peak_sampled_process_rss_bytes": 257581056,
+        "peak_increment_over_baseline_bytes": 647168,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.006167199986521155,
+        "baseline_process_rss_bytes": 257576960,
+        "peak_sampled_process_rss_bytes": 257961984,
+        "peak_increment_over_baseline_bytes": 385024,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 25770,
+      "seed_label_count": 2,
+      "output_label_count": 2,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 24532,
+      "label_array_sha256": "1101e90b0afbbd05b06cf12daa6131a5053faeee7bf5e0682605b551bd2e7ee0",
+      "label_history": [
+        "Binary Threshold: Foreground Above, strict cutoff 0.5; equal values and NaN are background",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "synthetic_truth_voxel_accuracy_in_foreground": 1.0,
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 0.12098239999613725,
+        "baseline_process_rss_bytes": 259444736,
+        "peak_sampled_process_rss_bytes": 266706944,
+        "peak_increment_over_baseline_bytes": 7262208,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "7bc58b055bde854c6d9dd4f507e644c7aebca60cdae3f2d09c92f2fa95e6263b",
+      "review_workflow_sha256": "130baf288d6c060e7eb838fcf55bac5742361c41347d671a9d2c83e486d2d2d8"
+    },
+    {
+      "name": "nellie-yeast-t000",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\derived\\nellie_yeast_t000_ZYX.ome.tif",
+        "sha256": "65dc2dd6f731cba0020660345ec26d5d4091a14557ac1b16f8d090fb54835545"
+      },
+      "shape_zyx": [
+        17,
+        192,
+        279
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "4e397b25acf65efd8df3759e0d6fac6a3987985a646d2ec1fcdb210066b66f90",
+      "spacing_zyx_um": [
+        0.25,
+        0.0655,
+        0.0655
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 0.5784855000092648,
+        "baseline_process_rss_bytes": 302227456,
+        "peak_sampled_process_rss_bytes": 391827456,
+        "peak_increment_over_baseline_bytes": 89600000,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.0161865999980364,
+        "baseline_process_rss_bytes": 323559424,
+        "peak_sampled_process_rss_bytes": 327204864,
+        "peak_increment_over_baseline_bytes": 3645440,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.01646939999773167,
+        "baseline_process_rss_bytes": 327200768,
+        "peak_sampled_process_rss_bytes": 330850304,
+        "peak_increment_over_baseline_bytes": 3649536,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 8642,
+      "seed_label_count": 5,
+      "output_label_count": 5,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 6783,
+      "label_array_sha256": "0b3617d1c34a71db31bac099d2d7efda276327b17bb0fbe2023db9e2e85937bf",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 0.5732985000067856,
+        "baseline_process_rss_bytes": 337207296,
+        "peak_sampled_process_rss_bytes": 417361920,
+        "peak_increment_over_baseline_bytes": 80154624,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "a487b654691b8be7c2a54902b17dbcde617a27d1455dda0e6908679224645691",
+      "review_workflow_sha256": "f7b3bf9c59d19d173407220d6b74308601e3e48114ec126ad570b48ed266abf4"
+    },
+    {
+      "name": "nellie-yeast-t000-center96",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\derived\\nellie_yeast_t000_ZYX.ome.tif",
+        "sha256": "65dc2dd6f731cba0020660345ec26d5d4091a14557ac1b16f8d090fb54835545",
+        "crop_zyx": [
+          [
+            0,
+            17
+          ],
+          [
+            48,
+            144
+          ],
+          [
+            91,
+            187
+          ]
+        ]
+      },
+      "shape_zyx": [
+        17,
+        96,
+        96
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "7e869044866b11abe79c1b127195890303e629c9bdaa278694c6614ea27b5f05",
+      "spacing_zyx_um": [
+        0.25,
+        0.0655,
+        0.0655
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 0.1010011000034865,
+        "baseline_process_rss_bytes": 335216640,
+        "peak_sampled_process_rss_bytes": 344510464,
+        "peak_increment_over_baseline_bytes": 9293824,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.0029294999840203673,
+        "baseline_process_rss_bytes": 337170432,
+        "peak_sampled_process_rss_bytes": 337174528,
+        "peak_increment_over_baseline_bytes": 4096,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.003136799990897998,
+        "baseline_process_rss_bytes": 337170432,
+        "peak_sampled_process_rss_bytes": 338235392,
+        "peak_increment_over_baseline_bytes": 1064960,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 6052,
+      "seed_label_count": 4,
+      "output_label_count": 4,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 4919,
+      "label_array_sha256": "67bac3a08a6591ff26c4adfbcefb0f8aa95df2bfbd1143ba340cc4b8d009129d",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 0.11379309999756515,
+        "baseline_process_rss_bytes": 339136512,
+        "peak_sampled_process_rss_bytes": 350171136,
+        "peak_increment_over_baseline_bytes": 11034624,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "b580b020874295fab4be5dbc8d8ecaa4d72194e97b289e28a52bacb436f9149d",
+      "review_workflow_sha256": "99e6df429c3e67a69e3039a5ac41918c87fedc8ced5a3a4c097862b26cc275e5"
+    },
+    {
+      "name": "Drp1_B4_hmec1_0_w1MCherry_CAM_000",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\Drp1_B4_hmec1_0_w1MCherry CAM_000.tif",
+        "sha256": "d656ddd04dc47d7db94eed2387ff4f2a57ae2c6e5c961f8ba4e732dfafc5cc12"
+      },
+      "shape_zyx": [
+        26,
+        512,
+        512
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "bd8c9018800758d470793491f92b297119435197face9d4df11dcacb9e4b29ac",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 5.235291599994525,
+        "baseline_process_rss_bytes": 340754432,
+        "peak_sampled_process_rss_bytes": 981245952,
+        "peak_increment_over_baseline_bytes": 640491520,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.13510100002167746,
+        "baseline_process_rss_bytes": 491941888,
+        "peak_sampled_process_rss_bytes": 635731968,
+        "peak_increment_over_baseline_bytes": 143790080,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.1296779999975115,
+        "baseline_process_rss_bytes": 519897088,
+        "peak_sampled_process_rss_bytes": 691867648,
+        "peak_increment_over_baseline_bytes": 171970560,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 90829,
+      "seed_label_count": 18,
+      "output_label_count": 18,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 77853,
+      "label_array_sha256": "b895b0a72e8bcaa4b11f36a758d3f5d8649248beeaca2c7b351b31b2b4859b94",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 5.760603400005493,
+        "baseline_process_rss_bytes": 589279232,
+        "peak_sampled_process_rss_bytes": 1227542528,
+        "peak_increment_over_baseline_bytes": 638263296,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "c4d55a2d380298ab726b2df8c4257a3046d74899c043c114d517df4b68086c4c",
+      "review_workflow_sha256": "c3d97b1dfc2f674c58a6afd536b7157769f79ff49fd940f1d5e2c462efbb5526"
+    },
+    {
+      "name": "Drp1_B4_hmec1_0_w1MCherry_CAM_001",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\Drp1_B4_hmec1_0_w1MCherry CAM_001.tif",
+        "sha256": "8ead903a2d34b9ee68b8dcc826f4f2ed21655682a65ca7120af76744c957f7bf"
+      },
+      "shape_zyx": [
+        26,
+        512,
+        512
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "be0a9c26362e01bf328e170d73b8675a2bad83c55f35e3bad9632feb72ee4679",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 5.363166700000875,
+        "baseline_process_rss_bytes": 502444032,
+        "peak_sampled_process_rss_bytes": 1140842496,
+        "peak_increment_over_baseline_bytes": 638398464,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.12482090000412427,
+        "baseline_process_rss_bytes": 652767232,
+        "peak_sampled_process_rss_bytes": 776216576,
+        "peak_increment_over_baseline_bytes": 123449344,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.14071300000068732,
+        "baseline_process_rss_bytes": 680034304,
+        "peak_sampled_process_rss_bytes": 830750720,
+        "peak_increment_over_baseline_bytes": 150716416,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 89089,
+      "seed_label_count": 41,
+      "output_label_count": 41,
+      "unseeded_foreground_voxels": 18,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 78301,
+      "label_array_sha256": "dd2af684f50ee477c25fec55cb368a4becdec71a51c9c7a1bae38ca5c2dc7809",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 5.572922899998957,
+        "baseline_process_rss_bytes": 748290048,
+        "peak_sampled_process_rss_bytes": 1386549248,
+        "peak_increment_over_baseline_bytes": 638259200,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "f2eeb22de0e4b63d817a1896d94877e505ac7bc68c51da352166783db89116c0",
+      "review_workflow_sha256": "f8d9c4cbdb3660ba0f46b10faecb5b6b750e35c4b27088936ac5990f3d622026"
+    },
+    {
+      "name": "Drp1_B4_hmec1_1_w1MCherry_CAM_002",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\Drp1_B4_hmec1_1_w1MCherry CAM_002.tif",
+        "sha256": "bb70ed377ff1b54018d18825694029ce52f48546a75beff36da25982904c6dd1"
+      },
+      "shape_zyx": [
+        24,
+        512,
+        512
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "2d4208535b2d5e3a0167f5500d29f7dbbc36908ace0720c41e6634d9cf82904b",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 4.640760300011607,
+        "baseline_process_rss_bytes": 516722688,
+        "peak_sampled_process_rss_bytes": 1108574208,
+        "peak_increment_over_baseline_bytes": 591851520,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.10748900001635775,
+        "baseline_process_rss_bytes": 655179776,
+        "peak_sampled_process_rss_bytes": 792854528,
+        "peak_increment_over_baseline_bytes": 137674752,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.11144099998637103,
+        "baseline_process_rss_bytes": 680349696,
+        "peak_sampled_process_rss_bytes": 838299648,
+        "peak_increment_over_baseline_bytes": 157949952,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 66860,
+      "seed_label_count": 37,
+      "output_label_count": 37,
+      "unseeded_foreground_voxels": 105,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 60586,
+      "label_array_sha256": "29b1aac548954408b7ced22897034a49da9d9f79f003230f58ee5ecadc70e767",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 4.903240200015716,
+        "baseline_process_rss_bytes": 743858176,
+        "peak_sampled_process_rss_bytes": 1335922688,
+        "peak_increment_over_baseline_bytes": 592064512,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "d405a293bf4769578515c406df8ee4c12048c23a7522e279812545f021baaa29",
+      "review_workflow_sha256": "4f04b14f7800f80565bea749909d2ff2661701415f9daaa8a7d2319cbc32b15d"
+    },
+    {
+      "name": "WT_hmec1_3_w1MCherry_CAM_026",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\WT_hmec1_3_w1MCherry CAM_026.tif",
+        "sha256": "9593b81a5140c094d7e831c7dd6f84f64589a6a804fd3350eaa5cf86443dccfa"
+      },
+      "shape_zyx": [
+        26,
+        512,
+        512
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "1d631978abb5b65e56d5a4dd819645a82d26a4e179d39c1c5cf2a9df4b60ca01",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 4.79204510001,
+        "baseline_process_rss_bytes": 520900608,
+        "peak_sampled_process_rss_bytes": 1159843840,
+        "peak_increment_over_baseline_bytes": 638943232,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.14491229999111965,
+        "baseline_process_rss_bytes": 671657984,
+        "peak_sampled_process_rss_bytes": 821510144,
+        "peak_increment_over_baseline_bytes": 149852160,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.14620210000430234,
+        "baseline_process_rss_bytes": 698929152,
+        "peak_sampled_process_rss_bytes": 872611840,
+        "peak_increment_over_baseline_bytes": 173682688,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 158935,
+      "seed_label_count": 59,
+      "output_label_count": 59,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 143953,
+      "label_array_sha256": "2caab04d2377dfb65cb8a0ce75d44890f732731837683e30426301012cd61ee9",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 4.854354199982481,
+        "baseline_process_rss_bytes": 765853696,
+        "peak_sampled_process_rss_bytes": 1405865984,
+        "peak_increment_over_baseline_bytes": 640012288,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "152f6c701c3f25a969d45d6695b73957555e56ad770be1a538eb0718e9beff45",
+      "review_workflow_sha256": "1d27538451cd458e4cfea8f57877bb49232540abc5f85884bdb427ac05f7c6ed"
+    },
+    {
+      "name": "WT_hmec1_3_w1MCherry_CAM_026-center96",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\WT_hmec1_3_w1MCherry CAM_026.tif",
+        "sha256": "9593b81a5140c094d7e831c7dd6f84f64589a6a804fd3350eaa5cf86443dccfa",
+        "crop_zyx": [
+          [
+            0,
+            26
+          ],
+          [
+            208,
+            304
+          ],
+          [
+            208,
+            304
+          ]
+        ]
+      },
+      "shape_zyx": [
+        26,
+        96,
+        96
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "84fa3722bd1442cc9c206b1f33b24f0eafb826d157d390f6ef6aec9b1df2520c",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 0.16158349998295307,
+        "baseline_process_rss_bytes": 537411584,
+        "peak_sampled_process_rss_bytes": 555151360,
+        "peak_increment_over_baseline_bytes": 17739776,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.008051400014664978,
+        "baseline_process_rss_bytes": 543346688,
+        "peak_sampled_process_rss_bytes": 543350784,
+        "peak_increment_over_baseline_bytes": 4096,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.009897500014631078,
+        "baseline_process_rss_bytes": 543346688,
+        "peak_sampled_process_rss_bytes": 545267712,
+        "peak_increment_over_baseline_bytes": 1921024,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 36833,
+      "seed_label_count": 17,
+      "output_label_count": 17,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 33909,
+      "label_array_sha256": "5bfab31d80955eb0daa58b64b10df315414258941ad63811f520ab62f5da722a",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 0.16869709998718463,
+        "baseline_process_rss_bytes": 546803712,
+        "peak_sampled_process_rss_bytes": 563064832,
+        "peak_increment_over_baseline_bytes": 16261120,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "2e5cd20730bebde72f9de2400e5a6c8e1dc892f1a67c998ea020369922c8bcad",
+      "review_workflow_sha256": "d34a9f8c5482b8bbeb9ee2c1412190a934abac2ad794fffb91c25c79d4d156d3"
+    },
+    {
+      "name": "WT_hmec1_5_w1MCherry_CAM_030",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\WT_hmec1_5_w1MCherry CAM_030.tif",
+        "sha256": "881f678020d54f6fd8e9c73276c2f9410fba8766ad8556e307831e58c0f3a6c2"
+      },
+      "shape_zyx": [
+        21,
+        512,
+        512
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "31288b4f486dbb69f4bc6da31a9ceda5ee5aab823c44ae474f7a5c0d2f4c5e1a",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 3.7019479000009596,
+        "baseline_process_rss_bytes": 561643520,
+        "peak_sampled_process_rss_bytes": 1084026880,
+        "peak_increment_over_baseline_bytes": 522383360,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.10752409999258816,
+        "baseline_process_rss_bytes": 684052480,
+        "peak_sampled_process_rss_bytes": 786182144,
+        "peak_increment_over_baseline_bytes": 102129664,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.1162723999877926,
+        "baseline_process_rss_bytes": 706076672,
+        "peak_sampled_process_rss_bytes": 829132800,
+        "peak_increment_over_baseline_bytes": 123056128,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 121532,
+      "seed_label_count": 89,
+      "output_label_count": 89,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 107326,
+      "label_array_sha256": "b3e6c23c29eab721436dcc90f6462d8fd9152023759ac7b3d818dab2a12bc287",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 4.007033900008537,
+        "baseline_process_rss_bytes": 762470400,
+        "peak_sampled_process_rss_bytes": 1285238784,
+        "peak_increment_over_baseline_bytes": 522768384,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "613769e208cd7893feefda7a42dd9cc84f272318faf594f7ee05579e3ec1cd9a",
+      "review_workflow_sha256": "41d495c1a19551de06a5c02ef16b0079613e58bcbd7af7ebd435f3daf4ab6461"
+    },
+    {
+      "name": "WT_hmec1_7_w1MCherry_CAM_032",
+      "source": {
+        "path": "D:\\VIPP-paper-reproductions\\mitochondria\\raw\\mitograph-mammalian\\WT_hmec1_7_w1MCherry CAM_032.tif",
+        "sha256": "3360ea7bbe023872d46a1c3109597eb1e117cf716b26eececf106d95e9dbf558"
+      },
+      "shape_zyx": [
+        19,
+        512,
+        512
+      ],
+      "dtype": "uint16",
+      "input_array_sha256": "194a5b73dca0751632bc0b08c4527d452dc8e81e83ceecba03795e18443daf2c",
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "workflow_sha256": "0dd17cc381c1ebbac4c808b64b214cc12eb2a59329f876f83425ffc133e78851",
+      "algorithm_spacing": "voxel-index EDT and watershed; physical calibration carried only",
+      "full_workflow": {
+        "elapsed_seconds": 5.95619369999622,
+        "baseline_process_rss_bytes": 547852288,
+        "peak_sampled_process_rss_bytes": 1023680512,
+        "peak_increment_over_baseline_bytes": 475828224,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_skimage_watershed": {
+        "elapsed_seconds": 0.17794430002686568,
+        "baseline_process_rss_bytes": 657514496,
+        "peak_sampled_process_rss_bytes": 759762944,
+        "peak_increment_over_baseline_bytes": 102248448,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "direct_vipp_watershed_repeat": {
+        "elapsed_seconds": 0.18484089997946285,
+        "baseline_process_rss_bytes": 677425152,
+        "peak_sampled_process_rss_bytes": 796401664,
+        "peak_increment_over_baseline_bytes": 118976512,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "mask_voxels": 117997,
+      "seed_label_count": 39,
+      "output_label_count": 39,
+      "unseeded_foreground_voxels": 0,
+      "exact_skimage_parity": true,
+      "exact_direct_repeat": true,
+      "input_unchanged": true,
+      "calibration_preserved": true,
+      "seed_ids_preserved": true,
+      "slice_vs_volume_different_voxels": 107838,
+      "label_array_sha256": "0a23e6d71d896607fd595a98d3f31d56f3e08ac9232c1aa5d624596d319c71bc",
+      "label_history": [
+        "Convert Dtype: float32 via preserve",
+        "Gaussian Blur 3D",
+        "Otsu Threshold: Stack histogram; 256 equal-width float bins (float32); non-finite values excluded and set to background",
+        "Remove Small Objects",
+        "Euclidean Distance Transform: 3D ZYX",
+        "Marker-Controlled Watershed: Distance map (invert), 3D ZYX"
+      ],
+      "exact_file_workflow_repeat": true,
+      "file_workflow_repeat": {
+        "elapsed_seconds": 4.698278299998492,
+        "baseline_process_rss_bytes": 727273472,
+        "peak_sampled_process_rss_bytes": 1203634176,
+        "peak_increment_over_baseline_bytes": 476360704,
+        "rss_sample_interval_seconds": 0.01
+      },
+      "review_input_sha256": "188b70c84c4211253a79b1655bd0402dc965a12286bd417d2c2ff58bcd5922cb",
+      "review_workflow_sha256": "d5a1208e9f29a1ad150a3ce2b1479f454b134ee99d148df8e942f482fe5555ad"
+    }
+  ],
+  "random_walker": [
+    {
+      "name": "analytic-overlapping-spheres",
+      "shape_zyx": [
+        35,
+        49,
+        64
+      ],
+      "seed_label_count": 2,
+      "active_voxels": 25770,
+      "status": "completed",
+      "wall_seconds_including_imports_and_io": 1.2245553999964613,
+      "peak_worker_process_tree_rss_bytes_including_imports_and_io": 102764544,
+      "wall_time_limit_seconds": 45,
+      "process_tree_rss_limit_bytes": 3221225472,
+      "rss_sample_interval_seconds": 0.01,
+      "mode": "cg_j",
+      "beta": 130,
+      "tol": 0.001,
+      "spacing_zyx_um": [
+        2.0,
+        0.5,
+        0.5
+      ],
+      "input_intensity": "float32 preserving native values",
+      "inactive_policy": "-1 wherever watershed is zero; remap seeds densely and restore IDs after solve",
+      "return_code": 0,
+      "solve": {
+        "elapsed_seconds": 0.24925729999085888,
+        "baseline_process_rss_bytes": 66236416,
+        "peak_sampled_process_rss_bytes": 84426752,
+        "peak_increment_over_baseline_bytes": 18190336,
+        "rss_sample_interval_seconds": 0.01,
+        "warnings": [],
+        "output_sha256": "659f0f6586e3e8ad98ae7d9f458d559e3571c58bead23a31cf4a97787f746d21"
+      },
+      "different_from_watershed_voxels": 0,
+      "seed_ids_preserved": true,
+      "unassigned_active_voxels": 0,
+      "synthetic_truth_voxel_accuracy_in_foreground": 1.0
+    },
+    {
+      "name": "nellie-yeast-t000-center96",
+      "shape_zyx": [
+        17,
+        96,
+        96
+      ],
+      "seed_label_count": 4,
+      "active_voxels": 6052,
+      "status": "completed",
+      "wall_seconds_including_imports_and_io": 1.5129473000124563,
+      "peak_worker_process_tree_rss_bytes_including_imports_and_io": 99954688,
+      "wall_time_limit_seconds": 45,
+      "process_tree_rss_limit_bytes": 3221225472,
+      "rss_sample_interval_seconds": 0.01,
+      "mode": "cg_j",
+      "beta": 130,
+      "tol": 0.001,
+      "spacing_zyx_um": [
+        0.25,
+        0.0655,
+        0.0655
+      ],
+      "input_intensity": "float32 preserving native values",
+      "inactive_policy": "-1 wherever watershed is zero; remap seeds densely and restore IDs after solve",
+      "return_code": 0,
+      "solve": {
+        "elapsed_seconds": 0.46552849997533485,
+        "baseline_process_rss_bytes": 66584576,
+        "peak_sampled_process_rss_bytes": 82186240,
+        "peak_increment_over_baseline_bytes": 15601664,
+        "rss_sample_interval_seconds": 0.01,
+        "warnings": [],
+        "output_sha256": "3764340025e6ce955c3477f6842fa23c642624a8af0d0f8dc789671d9b693c79"
+      },
+      "different_from_watershed_voxels": 4673,
+      "seed_ids_preserved": true,
+      "unassigned_active_voxels": 0
+    },
+    {
+      "name": "nellie-yeast-t000-full",
+      "shape_zyx": [
+        17,
+        192,
+        279
+      ],
+      "seed_label_count": 5,
+      "active_voxels": 8642,
+      "status": "completed",
+      "wall_seconds_including_imports_and_io": 1.9919640999869443,
+      "peak_worker_process_tree_rss_bytes_including_imports_and_io": 197984256,
+      "wall_time_limit_seconds": 45,
+      "process_tree_rss_limit_bytes": 3221225472,
+      "rss_sample_interval_seconds": 0.01,
+      "mode": "cg_j",
+      "beta": 130,
+      "tol": 0.001,
+      "spacing_zyx_um": [
+        0.25,
+        0.0655,
+        0.0655
+      ],
+      "input_intensity": "float32 preserving native values",
+      "inactive_policy": "-1 wherever watershed is zero; remap seeds densely and restore IDs after solve",
+      "return_code": 0,
+      "solve": {
+        "elapsed_seconds": 0.982089500001166,
+        "baseline_process_rss_bytes": 66551808,
+        "peak_sampled_process_rss_bytes": 186007552,
+        "peak_increment_over_baseline_bytes": 119455744,
+        "rss_sample_interval_seconds": 0.01,
+        "warnings": [],
+        "output_sha256": "79ac9e131420eafb6c00579c10c95352eca97693dd770c744c2e042f16d4edc0"
+      },
+      "different_from_watershed_voxels": 4995,
+      "seed_ids_preserved": true,
+      "unassigned_active_voxels": 0
+    },
+    {
+      "name": "WT_hmec1_3_w1MCherry_CAM_026-center96",
+      "shape_zyx": [
+        26,
+        96,
+        96
+      ],
+      "seed_label_count": 17,
+      "active_voxels": 36833,
+      "status": "wall_time_limit",
+      "wall_seconds_including_imports_and_io": 45.01915330000338,
+      "peak_worker_process_tree_rss_bytes_including_imports_and_io": 117338112,
+      "wall_time_limit_seconds": 45,
+      "process_tree_rss_limit_bytes": 3221225472,
+      "rss_sample_interval_seconds": 0.01,
+      "mode": "cg_j",
+      "beta": 130,
+      "tol": 0.001,
+      "spacing_zyx_um": [
+        0.2,
+        0.1667,
+        0.1667
+      ],
+      "input_intensity": "float32 preserving native values",
+      "inactive_policy": "-1 wherever watershed is zero; remap seeds densely and restore IDs after solve",
+      "return_code": 1
+    }
+  ]
+}

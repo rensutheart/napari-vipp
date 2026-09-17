@@ -72,6 +72,7 @@ from napari_vipp.core.operations import (
     born_wolf_psf_outputs,
     calculate_weighted_image,
     canny_edges,
+    cellprofiler_propagation,
     clear_border_objects,
     clip_intensity,
     closing,
@@ -1405,6 +1406,7 @@ LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
     "object_colocalization_metrics",
 }
 SAME_SHAPE_GRID_OPERATIONS = {
+    "cellprofiler_propagation",
     "add_images",
     "calculate_weighted_image",
     "colocalization_mask",
@@ -3657,6 +3659,49 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             InputSpec("mask", "array", "Mask"),
         ),
         subcategory=OBJECT_SEPARATION_GROUP,
+    ),
+    OperationSpec(
+        "cellprofiler_propagation",
+        "Grow Regions from Seeds — CellProfiler Propagation",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "labels",
+        (
+            ParameterSpec(
+                "regularization",
+                "Distance regularization",
+                "float",
+                0.05,
+                0.0,
+                1000000.0,
+                0.01,
+                5,
+                slider_minimum=0.0,
+                slider_maximum=1.0,
+                tooltip=(
+                    "Balances travel distance against local intensity differences. "
+                    "Larger values make growth more dependent on distance. "
+                    "The guidance image is not normalized: its intensity scale "
+                    "affects this balance. Zero uses intensity differences alone."
+                ),
+            ),
+        ),
+        cellprofiler_propagation,
+        max_inputs=3,
+        inputs=(
+            InputSpec("image", "array", "Guidance image"),
+            InputSpec("seeds", "labels", "Seed labels"),
+            InputSpec("mask", "mask", "Foreground mask"),
+        ),
+        execution_policy="manual",
+        subcategory=OBJECT_SEPARATION_GROUP,
+        stack_processing_note=(
+            "CPU, one 2D YX image only. Select a plane and channel explicitly "
+            "before connecting a stack. Uses the CellProfiler Centrosome kernel "
+            "with unchanged intensities and pixel distances. Seed labels outside "
+            "the mask remain in the output but do not grow. Cancellation is "
+            "checked before and after the native calculation."
+        ),
     ),
     OperationSpec(
         "expand_labels",
@@ -10729,6 +10774,21 @@ class PrototypePipeline:
         kwargs = self._operation_kwargs(node)
         primary_state = resolved_states[0] if resolved_states else None
         primary_input = resolved_inputs[0]
+        if node.operation_id == "cellprofiler_propagation":
+            for state in resolved_states:
+                if (
+                    not isinstance(state, ImageState)
+                    or len(state.shape) != 2
+                    or len(state.axes) != 2
+                    or tuple(axis.name.casefold() for axis in state.axes) != ("y", "x")
+                    or any(axis.type != "space" for axis in state.axes)
+                ):
+                    raise ValueError(
+                        f"{node.title} requires one 2D YX image on every input. "
+                        "Use Select Axis Slice / Extract Channel to select a "
+                        "plane explicitly; use Reorder Axes for non-YX input. "
+                        "For volumetric growth use Marker-Controlled Watershed."
+                    )
         if node.operation_id == "colocalization_mask":
             _validate_colocalization_mask_scalar_inputs(node, resolved_states)
             if not axis_contract_only:

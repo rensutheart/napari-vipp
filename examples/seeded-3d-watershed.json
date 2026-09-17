@@ -1,0 +1,194 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic volume",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "convert_dtype_1",
+      "operation_id": "convert_dtype",
+      "params": {
+        "output_dtype": "float32",
+        "scaling": "preserve"
+      }
+    },
+    {
+      "id": "gaussian_blur_3d_1",
+      "operation_id": "gaussian_blur_3d",
+      "params": {
+        "sigma_z": 0.5,
+        "sigma_y": 1.0,
+        "sigma_x": 1.0,
+        "lock_xy": true,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "threshold",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "remove_small_objects_1",
+      "operation_id": "remove_small_objects",
+      "params": {
+        "min_size": 16,
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "euclidean_distance_transform_1",
+      "operation_id": "euclidean_distance_transform",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "h_maxima_markers_1",
+      "operation_id": "h_maxima_markers",
+      "params": {
+        "h": 1.0,
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "marker_controlled_watershed_1",
+      "operation_id": "marker_controlled_watershed",
+      "params": {
+        "image_mode": "Distance map (invert)",
+        "compactness": 0.0,
+        "watershed_line": false,
+        "spatial_mode": "3D ZYX"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "convert_dtype_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "convert_dtype_1",
+      "target": "gaussian_blur_3d_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_blur_3d_1",
+      "target": "threshold",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "threshold",
+      "target": "remove_small_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "euclidean_distance_transform_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "euclidean_distance_transform_1",
+      "target": "h_maxima_markers_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "euclidean_distance_transform_1",
+      "target": "marker_controlled_watershed_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "h_maxima_markers_1",
+      "target": "marker_controlled_watershed_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "remove_small_objects_1",
+      "target": "marker_controlled_watershed_1",
+      "target_port": 2,
+      "source_port": 0
+    }
+  ],
+  "tunnels": [],
+  "positions": {
+    "input": [
+      0.0,
+      100.0
+    ],
+    "convert_dtype_1": [
+      390.0,
+      100.0
+    ],
+    "gaussian_blur_3d_1": [
+      780.0,
+      100.0
+    ],
+    "threshold": [
+      1170.0,
+      100.0
+    ],
+    "remove_small_objects_1": [
+      1560.0,
+      100.0
+    ],
+    "euclidean_distance_transform_1": [
+      1950.0,
+      100.0
+    ],
+    "h_maxima_markers_1": [
+      2340.0,
+      460.0
+    ],
+    "marker_controlled_watershed_1": [
+      2730.0,
+      100.0
+    ]
+  },
+  "notes": [
+    {
+      "id": "scientific-contract",
+      "text": "3D seeded watershed demonstration (CPU). Convert to float32 preserves native intensity values; Gaussian sigma is Z/Y/X = 0.5/1/1 voxels. One stack-wide Otsu histogram; remove components <16 voxels (face connectivity); EDT and H-Maxima h=1 use voxel-index distances, not physical micrometers. Watershed uses 3D face connectivity and no watershed line. Physical calibration is carried unchanged but does not weight EDT or watershed. This demonstrates segmentation, not the complete mitochondria paper or Fiji parity.",
+      "position": [
+        0.0,
+        -500.0
+      ],
+      "width": 720.0
+    }
+  ],
+  "execution": {
+    "compute": {
+      "mode": "cpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  }
+}

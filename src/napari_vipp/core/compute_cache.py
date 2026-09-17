@@ -50,6 +50,7 @@ _RESULT_CONTRACT_TAG = "vipp-result-v1"
 _MISSING = object()
 _ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION = MappingProxyType(
     {
+        "cellprofiler_propagation": ("centrosome",),
         "simplify_mesh": ("fast-simplification",),
         # These colours are carried output data, not an inspector-only LUT.
         "color_mesh_objects": ("matplotlib",),
@@ -507,7 +508,7 @@ def cached_node_provenance_matches(
 
 
 def _additional_dependency_versions(spec):
-    """Read mesh-kernel/LUT identities without importing their native modules."""
+    """Read additional scientific libraries without importing native modules."""
     if spec.runtime_id != _CPU_RUNTIME_ID:
         return ()
     versions = []

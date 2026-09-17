@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add **Grow Regions from Seeds — CellProfiler Propagation**, a manual CPU node
+  using Centrosome 1.3.4 for faithful 2D label propagation from a guidance image,
+  seed labels and Boolean foreground mask. Preserve intensity scale and label
+  IDs, require aligned YX inputs, and record the backend version in scientific
+  history, caches and batch provenance. Volumes require an explicit plane
+  selection; the existing Marker-Controlled Watershed remains the 3D method.
+
+- Add reproducible acquired-image checks for Propagation and 3D watershed, a
+  portable synthetic watershed workflow, and a bounded Random Walker benchmark.
+  Evidence records exact backend agreement, parameters, source hashes and runtime
+  limits; biological accuracy and complete paper/Fiji reproduction remain separate.
+
 ## 0.15.0a5 - 2026-09-14
 
 - Temporarily constrain psygnal to `>=0.14,<0.16` after isolating a 0.16.0 event-callback regression affecting mesh transforms and crop overlays. Preserve real error reporting and scientific calculations; requalify newer versions before removing the constraint.
