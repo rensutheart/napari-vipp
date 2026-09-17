@@ -180,6 +180,7 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
     def version(distribution):
         requested_distributions.append(distribution)
         return {
+            "centrosome": "1.3.4",
             "numpy": "2.5.1",
             "scipy": "1.18.0",
             "scikit-image": "0.26.0",
@@ -192,6 +193,7 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
     result = plan_compute_decisions(ComputeRequest(mode="cpu"), (_workload(),))
 
     assert dict(result.environment.scientific_stack_versions) == {
+        "centrosome": "1.3.4",
         "numpy": "2.5.1",
         "scipy": "1.18.0",
         "scikit-image": "0.26.0",
@@ -199,6 +201,7 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
         "matplotlib": "3.10.8",
     }
     assert requested_distributions == [
+        "centrosome",
         "numpy",
         "scipy",
         "scikit-image",
@@ -1026,6 +1029,7 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
     )
     registry = ComputeRegistry()
     scientific_stack = {
+        "centrosome": "1.3.4",
         "numpy": "2.5.1",
         "scipy": "1.18.0",
         "scikit-image": "0.26.0",

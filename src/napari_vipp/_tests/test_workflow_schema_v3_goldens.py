@@ -16,10 +16,10 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Add the binary colocalization branch. The regression below also pins
-    # the preceding mask-free and boundary-free analysis hashes.
+    # Add an independent, genuine YX Propagation lane. The regression below
+    # also pins every preceding scientific graph unchanged after its removal.
     "exhaustive-inspector-showcase.json": (
-        "73c0d4bdec149820aa62922d30d4e22b3f34b1769661e465e6b0686d75180a58"
+        "8ae1b99c0c19585c6e6d5b28b0a62312f65b95379caf198294d7f6f2eeea6f7d"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -207,10 +207,31 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
 
 def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
     document = _load_example("exhaustive-inspector-showcase.json")
+    propagation_lane = {
+        "input_8",
+        "h_maxima_markers_2",
+        "binary_threshold_2",
+        "cellprofiler_propagation_1",
+    }
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in propagation_lane
+    ]
+    document["connections"] = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] not in propagation_lane
+        and edge["target"] not in propagation_lane
+    ]
+    for identifier in propagation_lane:
+        document["positions"].pop(identifier)
+    assert scientific_workflow_hash(document) == (
+        "73c0d4bdec149820aa62922d30d4e22b3f34b1769661e465e6b0686d75180a58"
+    )
     mask_id = "colocalization_mask_1"
     document["nodes"] = [node for node in document["nodes"] if node["id"] != mask_id]
     document["connections"] = [
-        edge for edge in document["connections"]
+        edge
+        for edge in document["connections"]
         if mask_id not in (edge["source"], edge["target"])
     ]
     document["positions"].pop(mask_id)

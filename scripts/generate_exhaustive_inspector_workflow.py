@@ -1237,6 +1237,41 @@ def build_workflow() -> tuple[
         tunnel_name=generated_psf_tunnel,
     )
 
+    # Lane 8 stays genuinely 2D; the preceding 3D labels cannot be silently
+    # sliced into CellProfiler Propagation. Only its two preparation operations
+    # intentionally recur in the exhaustive palette demonstration.
+    lane_note(
+        "lane_propagation",
+        "8. GROW REGIONS FROM SEEDS — CELLPROFILER PROPAGATION\n"
+        "A native YX image supplies guidance, H-Maxima seeds, and a Boolean "
+        "foreground mask. Intensities remain uint16 (0–65535); regularization "
+        "3276.75 is 0.05 × 65535. No normalization or volume slicing is hidden.",
+        -440,
+        9450,
+    )
+    propagation_source = source("VIPP synthetic deconvolution image", 0, 9490)
+    propagation_markers = place(
+        "h_maxima_markers",
+        340,
+        9490,
+        h=10000.0,
+        spatial_mode="2D YX",
+        connectivity="Full connectivity",
+    )
+    propagation_mask = place(
+        "binary_threshold",
+        340,
+        9810,
+        threshold=8000.0,
+        channel_axis=-1,
+    )
+    propagation = place("cellprofiler_propagation", 680, 9490, regularization=3276.75)
+    wire(propagation_source, propagation_markers)
+    wire(propagation_source, propagation_mask)
+    wire(propagation_source, propagation, target_port=0)
+    wire(propagation_markers, propagation, target_port=1)
+    wire(propagation_mask, propagation, target_port=2)
+
     operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
     expected = {spec.id for spec in PALETTE_NODE_LIBRARY}
     actual = set(operation_counts)
@@ -1251,13 +1286,13 @@ def build_workflow() -> tuple[
         for operation_id, count in operation_counts.items()
         if operation_id != "input" and count != 1
     }
-    if duplicates:
+    if duplicates != {"binary_threshold": 2, "h_maxima_markers": 2}:
         raise RuntimeError(f"Non-source operation duplicates: {duplicates}")
     if set(positions) != set(pipeline.nodes):
         raise RuntimeError("Every showcase node must have a canvas position.")
 
     # The authored 340-unit logical grid predates the wider multi-input cards
-    # and named channel badges. Keep the seven conceptual lanes and ordering,
+    # and named channel badges. Keep the eight conceptual lanes and ordering,
     # but reserve horizontal room for both cards and their tunnel labels.
     positions = {node_id: (x * 1.9, y) for node_id, (x, y) in positions.items()}
 

@@ -535,12 +535,12 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "Inspect every available node in one comprehensive testing workflow."
             ),
             data=(
-                "Seven synthetic samples spanning images, volumes, skeletons and "
+                "Eight synthetic samples spanning images, volumes, skeletons and "
                 "deconvolution"
             ),
             explore=(
                 (
-                    "Browse the seven labelled lanes to find different types of "
+                    "Browse the eight labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",

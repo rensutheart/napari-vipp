@@ -5,9 +5,14 @@ import math
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
+
+from napari_vipp._sample_data import _deconvolution_image_sample
 from napari_vipp.core.pipeline import (
     PALETTE_HIDDEN_OPERATION_IDS,
     PALETTE_NODE_LIBRARY,
+    PrototypePipeline,
+    SourcePayload,
 )
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
@@ -48,7 +53,7 @@ def test_exhaustive_inspector_showcase_is_current_and_canonical():
     assert canonical_workflow_document(canonical) == canonical
 
 
-def test_exhaustive_inspector_showcase_covers_every_palette_operation_once():
+def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
     snapshot = workflow_snapshot_from_document(_showcase_document())
     operation_counts = Counter(node.operation_id for node in snapshot.graph.nodes)
     palette_ids = {operation.id for operation in PALETTE_NODE_LIBRARY}
@@ -60,7 +65,7 @@ def test_exhaustive_inspector_showcase_covers_every_palette_operation_once():
         operation_id: count
         for operation_id, count in operation_counts.items()
         if operation_id != "input" and count != 1
-    } == {}
+    } == {"binary_threshold": 2, "h_maxima_markers": 2}
 
 
 def test_exhaustive_inspector_showcase_places_and_connects_every_node():
@@ -209,7 +214,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         }
     )
     assert sum(tunnel_counts.values()) == 64
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 91
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 96
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:
@@ -249,3 +254,45 @@ def test_exhaustive_inspector_showcase_cannot_auto_save_to_disk():
     assert len(save_nodes) == 1
     assert save_nodes[0].params["enabled"] == "off"
     assert save_nodes[0].params["path"] == ""
+
+
+def test_showcase_propagation_lane_executes_on_real_yx_inputs():
+    from centrosome.propagate import propagate
+
+    snapshot = workflow_snapshot_from_document(_showcase_document())
+    graph = snapshot.graph.to_pipeline()
+    node_ids = {
+        "input_8",
+        "h_maxima_markers_2",
+        "binary_threshold_2",
+        "cellprofiler_propagation_1",
+    }
+    branch = PrototypePipeline()
+    branch.restore_graph(
+        [node for node in graph.nodes.values() if node.id in node_ids],
+        [
+            edge
+            for edge in graph.connections
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ],
+    )
+    image, kwargs, _kind = _deconvolution_image_sample()
+    before = image.copy()
+    image.setflags(write=False)
+    outputs = branch.run(
+        image,
+        source_payloads={
+            "input_8": SourcePayload(image, kwargs["metadata"], kwargs["name"]),
+        },
+    )
+    labels = outputs["cellprofiler_propagation_1"]
+    seeds = outputs["h_maxima_markers_2"]
+    mask = outputs["binary_threshold_2"]
+    assert image.ndim == seeds.ndim == mask.ndim == 2
+    assert seeds.dtype == np.int32 and mask.dtype == bool
+    assert int(seeds.max()) == 4
+    assert np.count_nonzero(labels) > np.count_nonzero(seeds)
+    reference, _distances = propagate(image, seeds, mask, 3276.75)
+    np.testing.assert_array_equal(labels, reference)
+    np.testing.assert_array_equal(image, before)
+    assert branch.output_states["cellprofiler_propagation_1"].axis_order == "YX"

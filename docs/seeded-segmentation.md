@@ -74,6 +74,8 @@ for Propagation or claim improvement without evidence.
 
 ## Reproducible evidence
 
+- [Development qualification](evidence/seeded-segmentation/qualification.md):
+  clean installed-wheel checks, source regressions and full-suite limitations.
 - `test_cellprofiler_propagation.py`: analytical assignments, direct Centrosome
   parity, ties/borders/masks, dtype/range, immutable buffers and cancellation.
 - `test_cellprofiler_propagation_integration.py`: graph/roundtrip/export/reference

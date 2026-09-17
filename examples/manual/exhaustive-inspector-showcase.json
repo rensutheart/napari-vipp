@@ -1211,6 +1211,47 @@
         "filter_epsilon": 1e-12,
         "denominator_floor": 0.05
       }
+    },
+    {
+      "id": "input_8",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic deconvolution image",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "h_maxima_markers_2",
+      "operation_id": "h_maxima_markers",
+      "params": {
+        "h": 10000.0,
+        "spatial_mode": "2D YX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "binary_threshold_2",
+      "operation_id": "binary_threshold",
+      "params": {
+        "foreground": "Above",
+        "threshold": 8000.0,
+        "low_threshold": 0.25,
+        "high_threshold": 0.75,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "cellprofiler_propagation_1",
+      "operation_id": "cellprofiler_propagation",
+      "params": {
+        "regularization": 3276.75
+      }
     }
   ],
   "connections": [
@@ -2207,6 +2248,36 @@
       "target_port": 1,
       "source_port": 0,
       "tunnel": "Born-Wolf PSF"
+    },
+    {
+      "source": "input_8",
+      "target": "h_maxima_markers_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_8",
+      "target": "binary_threshold_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_8",
+      "target": "cellprofiler_propagation_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "h_maxima_markers_2",
+      "target": "cellprofiler_propagation_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_2",
+      "target": "cellprofiler_propagation_1",
+      "target_port": 2,
+      "source_port": 0
     }
   ],
   "tunnels": [
@@ -2776,6 +2847,22 @@
     "richardson_lucy_tv_deconvolution_1": [
       1938.0,
       8690.0
+    ],
+    "input_8": [
+      0.0,
+      9490.0
+    ],
+    "h_maxima_markers_2": [
+      646.0,
+      9490.0
+    ],
+    "binary_threshold_2": [
+      646.0,
+      9810.0
+    ],
+    "cellprofiler_propagation_1": [
+      1292.0,
+      9490.0
     ]
   },
   "notes": [
@@ -2848,6 +2935,15 @@
       "position": [
         -440.0,
         8650.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_propagation",
+      "text": "8. GROW REGIONS FROM SEEDS \u2014 CELLPROFILER PROPAGATION\nA native YX image supplies guidance, H-Maxima seeds, and a Boolean foreground mask. Intensities remain uint16 (0\u201365535); regularization 3276.75 is 0.05 \u00d7 65535. No normalization or volume slicing is hidden.",
+      "position": [
+        -440.0,
+        9450.0
       ],
       "width": 360.0
     }

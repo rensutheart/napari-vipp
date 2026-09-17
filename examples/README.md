@@ -61,7 +61,7 @@ example...**. Its actively maintained source also remains under
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
-| `exhaustive-inspector-showcase.json` | Seven bundled VIPP synthetic samples | Seven-lane comprehensive review graph containing every operation currently exposed in the node palette, representative connections and tunnels, canvas notes, and saved inspector display settings. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
+| `exhaustive-inspector-showcase.json` | Eight bundled VIPP synthetic samples | Eight-lane comprehensive review graph containing every operation currently exposed in the node palette, including a 2D CellProfiler Propagation lane with separate seed and mask preparation, representative connections and tunnels, canvas notes, and saved inspector display settings. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
 | `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, checking one-step undo/redo, and using **Add conversion** to make a `uint16` Gaussian input GPU eligible on a qualified GPU setup. It opens with Auto compute intent so that qualified systems can show the real tip; CPU-only systems continue normally without it. Open it as `graph-authoring`. |
 | `responsive-volume-crop-acceptance.json` | `VIPP synthetic time-lapse multichannel` | Numbered acceptance path for the responsive TCZYX Crop Stack. It verifies explicit-Z controls, an immediate constant-size crop box and current-slice outline during rapid slider movement, one committed calculation and undo after release or idle, exact T/C preservation and physical-origin shifts, draft flushing before calculation/save/export/batch/tab/close boundaries, inferred-QYX rejection, and the explained CPU assignment under Prefer GPU. The authored margins crop `(5, 3, 12, 96, 128)` to `(5, 3, 9, 87, 115)`. Open it as `responsive-crop`. |
 | `safe-node-bypass-acceptance.json` | `VIPP synthetic volume` | Focused Crop Stack acceptance path for the exact scientific alias, would-run card thumbnail, bypass styling, undo/save/export, GPU-neutral status, and batch Run/Bypass profile. Open it as `safe-node-bypass`. |
@@ -85,6 +85,13 @@ example...**. Its actively maintained source also remains under
 | `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with one shared, visible `float32` Preserve conversion feeding matched 25-iteration RL/RL-TV branches, a matched ZYX PSF, the authored `1e-12` filter epsilon, and conservative `0.002` TV regularization. The conversion does not rescale intensity. GPU agreement is a backend check, not proof that the PSF, iteration count, or restored structures are scientifically valid. |
 
 ## Validation Expectations
+
+The standalone [validation/seeded-3d-watershed.json](validation/seeded-3d-watershed.json)
+uses the bundled `VIPP synthetic volume` for the seeded 3D watershed acceptance
+path. Open this file directly; it is separate from the packaged example chooser.
+Its focused acceptance tests check volumetric execution and exported-Python
+equality. The associated [validation record](../docs/evidence/seeded-segmentation/README.md)
+also covers an analytical phantom and acquired mitochondrial volumes.
 
 `synthetic-mesh-objects.json` is the manually authored **Mesh Objects, Colours &
 Refinement** example (`mesh-objects`, under **3D Meshes**). It

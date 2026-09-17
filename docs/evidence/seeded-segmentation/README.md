@@ -30,7 +30,7 @@ contains `workflow.json`, `review-workflow.json`, exported `workflow.py`,
 pixel equality against its source. `review-workflow.json` is ready to open locally
 in VIPP; its absolute paths intentionally refer to that run's HDD artifacts.
 
-The distributable [seeded-3d-watershed.json](../../../examples/seeded-3d-watershed.json)
+The distributable [seeded-3d-watershed.json](../../../examples/validation/seeded-3d-watershed.json)
 uses VIPP's bundled synthetic volume and requires no acquired pixels. The focused
 tests execute that graph, restore its persisted form, and execute its generated
 Python through the shared runtime. The separate sphere test checks analytical

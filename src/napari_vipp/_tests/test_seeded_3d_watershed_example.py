@@ -43,7 +43,7 @@ def test_shared_3d_workflow_matches_analytic_truth_and_preserves_calibration():
 
 
 def test_shipped_example_roundtrip_and_export_run_real_shared_nodes():
-    workflow = load_workflow(ROOT / "examples/seeded-3d-watershed.json")
+    workflow = load_workflow(ROOT / "examples/validation/seeded-3d-watershed.json")
     graph = PrototypePipeline()
     graph.restore_graph(workflow["nodes"], workflow["connections"])
     image, layer, _kind = make_sample_data()[0]
