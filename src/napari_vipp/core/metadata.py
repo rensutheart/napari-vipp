@@ -8,6 +8,9 @@ from typing import Any
 
 import numpy as np
 
+from napari_vipp.core.cellprofiler_contracts import (
+    CELLPROFILER_COMPARTMENT_OPERATION_IDS,
+)
 from napari_vipp.core.channel_colors import (
     DEFAULT_CHANNEL_COLOR_NAMES,
     channel_color_int,
@@ -60,6 +63,10 @@ HISTOGRAM_THRESHOLD_OPERATIONS = {
     "minimum_threshold",
 }
 LABEL_OPERATIONS = {
+    "cellprofiler_primary_objects",
+    "cellprofiler_propagation_seeds",
+    "cellprofiler_finish_cells",
+    "cellprofiler_cytoplasm",
     "cellprofiler_propagation",
     "auto_watershed_from_mask",
     "expand_labels",
@@ -686,7 +693,8 @@ def transform_multi_input_image_state(
         source_name=first.source_name,
         history=(
             tuple(dict.fromkeys(item for state in states for item in state.history))
-            if operation_id == "cellprofiler_propagation"
+            if operation_id
+            in CELLPROFILER_COMPARTMENT_OPERATION_IDS | {"cellprofiler_propagation"}
             else first.history
         )
         + (_multi_input_history(states, operation_id, operation_title, params),),
@@ -2624,12 +2632,44 @@ def _composite_manual_colour_table_history(
     return "manual additive colour table " + ", ".join(entries)
 
 
+_CELLPROFILER_HISTORY_PARAMETERS = {
+    "cellprofiler_smooth": ("artifact_diameter",),
+    "cellprofiler_threshold": ("smoothing_scale",),
+    "cellprofiler_primary_objects": (
+        "min_diameter",
+        "max_diameter",
+        "threshold_smoothing",
+    ),
+    "cellprofiler_propagation_seeds": (),
+    "cellprofiler_finish_cells": ("fill_holes",),
+    "cellprofiler_cytoplasm": ("shrink_nuclei",),
+}
+
+
+def _cellprofiler_compartment_history(operation_id, operation_title, params):
+    from importlib.metadata import version
+
+    # Multi-input execution also supplies runtime context and input objects.
+    # Only authored scientific settings belong in stable result provenance.
+    settings = ", ".join(
+        f"{name}={params[name]}"
+        for name in sorted(_CELLPROFILER_HISTORY_PARAMETERS[operation_id])
+        if name in params
+    )
+    return (
+        f"{operation_title}: CellProfiler 4.2.6 compartment algorithm profile; "
+        f"centrosome {version('centrosome')}; 2D YX, pixel units; {settings}"
+    )
+
+
 def _operation_history(
     input_state: ImageState,
     operation_id: str,
     operation_title: str,
     params: dict[str, Any],
 ) -> str:
+    if operation_id in CELLPROFILER_COMPARTMENT_OPERATION_IDS:
+        return _cellprofiler_compartment_history(operation_id, operation_title, params)
     if operation_id in HISTOGRAM_THRESHOLD_OPERATIONS | {"li_threshold"}:
         return _automatic_threshold_history(
             input_state,
@@ -3077,6 +3117,8 @@ def _multi_input_history(
     if operation_id == "filter_labels_by_property":
         column = str(params.get("property_column", "auto")).strip() or "auto"
         return f"{operation_title}: filtered by {column}"
+    if operation_id in CELLPROFILER_COMPARTMENT_OPERATION_IDS:
+        return _cellprofiler_compartment_history(operation_id, operation_title, params)
     if operation_id == "cellprofiler_propagation":
         from importlib.metadata import version
 

@@ -81,6 +81,7 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "labels_to_3d_mesh",
         "analyze_skeleton",
         "born_wolf_psf",
+        "cellprofiler_primary_objects",
         "colocalization_metrics",
         "event_localization",
         "intensity_histogram",

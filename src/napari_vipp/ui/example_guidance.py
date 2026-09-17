@@ -540,7 +540,7 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
             ),
             explore=(
                 (
-                    "Browse the eight labelled lanes to find different types of "
+                    "Browse the nine labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",

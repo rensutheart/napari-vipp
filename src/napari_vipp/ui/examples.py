@@ -36,7 +36,7 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
             "VIPP synthetic 3D measured PSF",
             "VIPP synthetic deconvolution image",
         ),
-        "Inspect every palette operation in one eight-lane workflow with "
+        "Inspect every palette operation in one nine-lane workflow with "
         "representative synthetic inputs, curated tunnels, canvas notes, "
         "and saved inspector display settings.",
     ),

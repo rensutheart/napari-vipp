@@ -1272,6 +1272,70 @@ def build_workflow() -> tuple[
     wire(propagation_markers, propagation, target_port=1)
     wire(propagation_mask, propagation, target_port=2)
 
+    # Lane 9 exercises the explicit CP compartment stages on a second 2D source.
+    # One synthetic image serves both roles here; this is a wiring demonstration,
+    # not a claim that the bead image is a biological nuclear/cell benchmark.
+    lane_note(
+        "lane_compartments",
+        "9. CELLPROFILER COMPARTMENT PROFILE\n"
+        "Explicit float32 conversion and fixed 0–65535 to 0–1 scaling precede "
+        "Gaussian smoothing. Both nucleus outputs feed seed preparation; "
+        "Propagation then feeds cell finishing and cytoplasm extraction. "
+        "This synthetic image supplies both nucleus and cell guidance to "
+        "exercise wiring; nucleus diameters are 8–40 pixels.",
+        -440,
+        10360,
+    )
+    compartment_source = source("VIPP synthetic deconvolution image", 0, 10690)
+    compartment_float = place(
+        "convert_dtype", 340, 10690, output_dtype="float32", scaling="preserve"
+    )
+    compartment_normalized = place(
+        "rescale_intensity",
+        680,
+        10690,
+        cutoff_mode="Values",
+        in_low_value=0.0,
+        in_high_value=65535.0,
+        out_min=0.0,
+        out_max=1.0,
+        invert_intensity=False,
+    )
+    compartment_smooth = place(
+        "cellprofiler_smooth", 1020, 10690, artifact_diameter=2.0
+    )
+    compartment_nuclei = place(
+        "cellprofiler_primary_objects",
+        1360,
+        10400,
+        min_diameter=8,
+        max_diameter=40,
+        threshold_smoothing=1.3488,
+    )
+    compartment_mask = place("cellprofiler_threshold", 1360, 11000, smoothing_scale=0.0)
+    compartment_seeds = place("cellprofiler_propagation_seeds", 1700, 10400)
+    compartment_grown = place(
+        "cellprofiler_propagation", 2040, 10700, regularization=0.05
+    )
+    compartment_cells = place("cellprofiler_finish_cells", 2380, 10700, fill_holes=True)
+    compartment_cytoplasm = place(
+        "cellprofiler_cytoplasm", 2720, 10700, shrink_nuclei=True
+    )
+    wire(compartment_source, compartment_float)
+    wire(compartment_float, compartment_normalized)
+    wire(compartment_normalized, compartment_smooth)
+    wire(compartment_smooth, compartment_nuclei)
+    wire(compartment_smooth, compartment_mask)
+    wire(compartment_nuclei, compartment_seeds, source_port=1)
+    wire(compartment_nuclei, compartment_seeds, target_port=1)
+    wire(compartment_smooth, compartment_grown)
+    wire(compartment_seeds, compartment_grown, target_port=1)
+    wire(compartment_mask, compartment_grown, target_port=2)
+    wire(compartment_grown, compartment_cells)
+    wire(compartment_nuclei, compartment_cells, target_port=1)
+    wire(compartment_cells, compartment_cytoplasm)
+    wire(compartment_nuclei, compartment_cytoplasm, target_port=1)
+
     operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
     expected = {spec.id for spec in PALETTE_NODE_LIBRARY}
     actual = set(operation_counts)
@@ -1286,13 +1350,19 @@ def build_workflow() -> tuple[
         for operation_id, count in operation_counts.items()
         if operation_id != "input" and count != 1
     }
-    if duplicates != {"binary_threshold": 2, "h_maxima_markers": 2}:
+    if duplicates != {
+        "binary_threshold": 2,
+        "h_maxima_markers": 2,
+        "convert_dtype": 2,
+        "rescale_intensity": 2,
+        "cellprofiler_propagation": 2,
+    }:
         raise RuntimeError(f"Non-source operation duplicates: {duplicates}")
     if set(positions) != set(pipeline.nodes):
         raise RuntimeError("Every showcase node must have a canvas position.")
 
     # The authored 340-unit logical grid predates the wider multi-input cards
-    # and named channel badges. Keep the eight conceptual lanes and ordering,
+    # and named channel badges. Keep the nine conceptual lanes and ordering,
     # but reserve horizontal room for both cards and their tunnel labels.
     positions = {node_id: (x * 1.9, y) for node_id, (x, y) in positions.items()}
 

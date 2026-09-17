@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add six CPU nodes for the recorded CellProfiler 4.2.6 nuclear/cellular
+  compartment profile: normalized Gaussian smoothing, Li thresholding,
+  shape-based nuclei, propagation-seed preparation, cell-region finishing,
+  and cytoplasm extraction. Preserve both retained and unfiltered nuclei,
+  require aligned 2D YX inputs, and validate against an independent CellProfiler
+  executable. Include a saveable statistics-paper workflow and a reproducible
+  comparison runner; published-data agreement is reported separately from
+  algorithm agreement.
+
 - Add **Grow Regions from Seeds — CellProfiler Propagation**, a manual CPU node
   using Centrosome 1.3.4 for faithful 2D label propagation from a guidance image,
   seed labels and Boolean foreground mask. Preserve intensity scale and label

@@ -15,6 +15,15 @@ import numpy as np
 
 from napari_vipp.core import metadata as _metadata
 from napari_vipp.core import operations as _operations
+from napari_vipp.core.cellprofiler_compartments import (
+    cellprofiler_cytoplasm,
+    cellprofiler_finish_cells,
+    cellprofiler_primary_objects,
+    cellprofiler_propagation_seeds,
+    cellprofiler_smooth,
+    cellprofiler_threshold,
+)
+from napari_vipp.core.cellprofiler_contracts import CELLPROFILER_2D_OPERATION_IDS
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
@@ -1406,6 +1415,9 @@ LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
     "object_colocalization_metrics",
 }
 SAME_SHAPE_GRID_OPERATIONS = {
+    "cellprofiler_cytoplasm",
+    "cellprofiler_finish_cells",
+    "cellprofiler_propagation_seeds",
     "cellprofiler_propagation",
     "add_images",
     "calculate_weighted_image",
@@ -3701,6 +3713,163 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             "with unchanged intensities and pixel distances. Seed labels outside "
             "the mask remain in the output but do not grow. Cancellation is "
             "checked before and after the native calculation."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_smooth",
+        "Smooth — CellProfiler Gaussian",
+        "Filtering",
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "artifact_diameter",
+                "Artifact diameter (pixels)",
+                "float",
+                2.0,
+                0.0,
+                100.0,
+                0.1,
+                4,
+            ),
+        ),
+        cellprofiler_smooth,
+        stack_processing_note=(
+            "One 2D YX float32 image in 0–1. CellProfiler 4.2.6 Gaussian: "
+            "sigma = diameter / 2.35, normalized constant borders; float32 output. "
+            "Convert and scale original intensities explicitly before this node."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_threshold",
+        "Threshold — CellProfiler Minimum Cross-Entropy",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec(
+                "smoothing_scale",
+                "Threshold smoothing scale",
+                "float",
+                0.0,
+                0.0,
+                100.0,
+                0.1,
+                4,
+            ),
+        ),
+        cellprofiler_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+        stack_processing_note=(
+            "One 2D YX float32 image in 0–1. Global Li threshold is computed "
+            "before smoothing and applied with >= after normalized Gaussian "
+            "smoothing (sigma = scale / 1.3488). Correction 1, bounds 0–1, no log."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_primary_objects",
+        "Segment Nuclei — CellProfiler Shape",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "labels",
+        (
+            ParameterSpec(
+                "min_diameter", "Minimum diameter (pixels)", "int", 15, 1, 1000, 1
+            ),
+            ParameterSpec(
+                "max_diameter", "Maximum diameter (pixels)", "int", 50, 1, 10000, 1
+            ),
+            ParameterSpec(
+                "threshold_smoothing",
+                "Threshold smoothing scale",
+                "float",
+                1.3488,
+                0.0,
+                100.0,
+                0.1,
+                4,
+            ),
+        ),
+        cellprofiler_primary_objects,
+        outputs=(
+            OutputSpec("retained", "labels", "Retained nuclei"),
+            OutputSpec("unedited", "labels", "Before filtering"),
+        ),
+        execution_policy="manual",
+        subcategory=OBJECT_SEPARATION_GROUP,
+        stack_processing_note=(
+            "CellProfiler 4.2.6 shape/shape profile on one 2D YX float32 image "
+            "in 0–1: global Li, automatic maxima suppression, reduced-resolution "
+            "maxima, hole filling, size and image-border exclusion. Local fixed "
+            "random seed 0. Keep both outputs for faithful cell propagation."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_propagation_seeds",
+        "Prepare Seeds — CellProfiler Propagation",
+        SEGMENTATION_CATEGORY,
+        "labels",
+        "labels",
+        (),
+        cellprofiler_propagation_seeds,
+        max_inputs=2,
+        inputs=(
+            InputSpec("unedited", "labels", "Before filtering"),
+            InputSpec("retained", "labels", "Retained nuclei"),
+        ),
+        subcategory=OBJECT_SEPARATION_GROUP,
+        stack_processing_note=(
+            "One aligned 2D YX grid. Retains unedited nuclei touching the image "
+            "border as competing seeds. Removes excluded interior nuclei. "
+            "Use the paired outputs of Segment Nuclei — CellProfiler Shape."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_finish_cells",
+        "Finish Cell Regions — CellProfiler",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (ParameterSpec("fill_holes", "Fill labelled holes", "bool", True, 0, 1, 1),),
+        cellprofiler_finish_cells,
+        max_inputs=2,
+        inputs=(
+            InputSpec("grown", "labels", "Grown regions"),
+            InputSpec("retained", "labels", "Retained nuclei"),
+        ),
+        stack_processing_note=(
+            "One aligned 2D YX grid. Fills labelled holes with Centrosome, then "
+            "maps regions to their retained nucleus IDs. Regions grown solely "
+            "from excluded border nuclei are removed; other border cells remain."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_cytoplasm",
+        "Extract Cytoplasm — CellProfiler",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (
+            ParameterSpec(
+                "shrink_nuclei",
+                "Shrink nuclei before subtraction",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        cellprofiler_cytoplasm,
+        max_inputs=2,
+        inputs=(
+            InputSpec("cells", "labels", "Cell labels"),
+            InputSpec("nuclei", "labels", "Nucleus labels"),
+        ),
+        stack_processing_note=(
+            "One aligned 2D YX grid. CellProfiler tertiary-object subtraction "
+            "preserves cell IDs. Shrinking keeps the one-pixel Centrosome nuclear "
+            "outline in cytoplasm; disabling it removes every nuclear pixel."
         ),
     ),
     OperationSpec(
@@ -9733,6 +9902,33 @@ class PrototypePipeline:
         node = self.nodes[call.node_id]
         operation_id = call.operation_id
         input_state = call.input_states[0] if call.input_states else None
+        if operation_id == "cellprofiler_primary_objects":
+            if not isinstance(input_state, ImageState):
+                return [(None, None)] * call.output_port_count
+            # Both label ports preserve the sampled grid. Predict them without
+            # executing segmentation or inspecting a proxy's pixel values.
+            dtype = np.dtype(np.int32)
+            proxy = self._axis_contract_proxy(input_state.shape, dtype)
+            return [
+                (
+                    proxy,
+                    self._axis_contract_replaced_state(
+                        input_state,
+                        input_state.shape,
+                        input_state.axes,
+                        dtype,
+                        operation_id=operation_id,
+                        history_item=_metadata._operation_history(
+                            input_state,
+                            operation_id,
+                            f"{node.title} ({port.label})",
+                            self._public_params(node.params),
+                        ),
+                        channels=input_state.channels,
+                    ),
+                )
+                for port in self.output_ports(node.id)
+            ]
         channel_collapse = (
             operation_id in _metadata.CHANNEL_COLLAPSE_OPERATIONS
             and call.kwargs.get("channel_axis") is not None
@@ -10774,7 +10970,7 @@ class PrototypePipeline:
         kwargs = self._operation_kwargs(node)
         primary_state = resolved_states[0] if resolved_states else None
         primary_input = resolved_inputs[0]
-        if node.operation_id == "cellprofiler_propagation":
+        if node.operation_id in CELLPROFILER_2D_OPERATION_IDS:
             for state in resolved_states:
                 if (
                     not isinstance(state, ImageState)
@@ -11493,14 +11689,23 @@ class PrototypePipeline:
             params = self._public_params(node.params)
             if node.operation_id == "born_wolf_psf":
                 params = self._born_wolf_output_transform_params(node, index)
-            state = transform_split_output_state(
-                data,
-                input_state,
-                operation_id=node.operation_id,
-                operation_title=node.title,
-                port_name=port.label,
-                params=params,
-            )
+            if node.operation_id == "cellprofiler_primary_objects":
+                state = transform_image_state(
+                    data,
+                    input_state,
+                    operation_id=node.operation_id,
+                    operation_title=f"{node.title} ({port.label})",
+                    params=params,
+                )
+            else:
+                state = transform_split_output_state(
+                    data,
+                    input_state,
+                    operation_id=node.operation_id,
+                    operation_title=node.title,
+                    port_name=port.label,
+                    params=params,
+                )
             results.append((data, state))
         return results
 

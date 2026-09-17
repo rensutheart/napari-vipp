@@ -1252,6 +1252,91 @@
       "params": {
         "regularization": 3276.75
       }
+    },
+    {
+      "id": "input_9",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic deconvolution image",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "convert_dtype_2",
+      "operation_id": "convert_dtype",
+      "params": {
+        "output_dtype": "float32",
+        "scaling": "preserve"
+      }
+    },
+    {
+      "id": "rescale_intensity_2",
+      "operation_id": "rescale_intensity",
+      "params": {
+        "cutoff_mode": "Values",
+        "in_low_value": 0.0,
+        "in_high_value": 65535.0,
+        "in_low_percentile": 0.0,
+        "in_high_percentile": 100.0,
+        "out_min": 0.0,
+        "out_max": 1.0,
+        "invert_intensity": false
+      }
+    },
+    {
+      "id": "cellprofiler_smooth_1",
+      "operation_id": "cellprofiler_smooth",
+      "params": {
+        "artifact_diameter": 2.0
+      }
+    },
+    {
+      "id": "cellprofiler_primary_objects_1",
+      "operation_id": "cellprofiler_primary_objects",
+      "params": {
+        "min_diameter": 8,
+        "max_diameter": 40,
+        "threshold_smoothing": 1.3488
+      }
+    },
+    {
+      "id": "cellprofiler_threshold_1",
+      "operation_id": "cellprofiler_threshold",
+      "params": {
+        "smoothing_scale": 0.0
+      }
+    },
+    {
+      "id": "cellprofiler_propagation_seeds_1",
+      "operation_id": "cellprofiler_propagation_seeds",
+      "params": {}
+    },
+    {
+      "id": "cellprofiler_propagation_2",
+      "operation_id": "cellprofiler_propagation",
+      "params": {
+        "regularization": 0.05
+      }
+    },
+    {
+      "id": "cellprofiler_finish_cells_1",
+      "operation_id": "cellprofiler_finish_cells",
+      "params": {
+        "fill_holes": true
+      }
+    },
+    {
+      "id": "cellprofiler_cytoplasm_1",
+      "operation_id": "cellprofiler_cytoplasm",
+      "params": {
+        "shrink_nuclei": true
+      }
     }
   ],
   "connections": [
@@ -2278,6 +2363,90 @@
       "target": "cellprofiler_propagation_1",
       "target_port": 2,
       "source_port": 0
+    },
+    {
+      "source": "input_9",
+      "target": "convert_dtype_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "convert_dtype_2",
+      "target": "rescale_intensity_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "rescale_intensity_2",
+      "target": "cellprofiler_smooth_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_smooth_1",
+      "target": "cellprofiler_primary_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_smooth_1",
+      "target": "cellprofiler_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_primary_objects_1",
+      "target": "cellprofiler_propagation_seeds_1",
+      "target_port": 0,
+      "source_port": 1
+    },
+    {
+      "source": "cellprofiler_primary_objects_1",
+      "target": "cellprofiler_propagation_seeds_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_smooth_1",
+      "target": "cellprofiler_propagation_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_propagation_seeds_1",
+      "target": "cellprofiler_propagation_2",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_threshold_1",
+      "target": "cellprofiler_propagation_2",
+      "target_port": 2,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_propagation_2",
+      "target": "cellprofiler_finish_cells_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_primary_objects_1",
+      "target": "cellprofiler_finish_cells_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_finish_cells_1",
+      "target": "cellprofiler_cytoplasm_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "cellprofiler_primary_objects_1",
+      "target": "cellprofiler_cytoplasm_1",
+      "target_port": 1,
+      "source_port": 0
     }
   ],
   "tunnels": [
@@ -2863,6 +3032,46 @@
     "cellprofiler_propagation_1": [
       1292.0,
       9490.0
+    ],
+    "input_9": [
+      0.0,
+      10690.0
+    ],
+    "convert_dtype_2": [
+      646.0,
+      10690.0
+    ],
+    "rescale_intensity_2": [
+      1292.0,
+      10690.0
+    ],
+    "cellprofiler_smooth_1": [
+      1938.0,
+      10690.0
+    ],
+    "cellprofiler_primary_objects_1": [
+      2584.0,
+      10400.0
+    ],
+    "cellprofiler_threshold_1": [
+      2584.0,
+      11000.0
+    ],
+    "cellprofiler_propagation_seeds_1": [
+      3230.0,
+      10400.0
+    ],
+    "cellprofiler_propagation_2": [
+      3876.0,
+      10700.0
+    ],
+    "cellprofiler_finish_cells_1": [
+      4522.0,
+      10700.0
+    ],
+    "cellprofiler_cytoplasm_1": [
+      5168.0,
+      10700.0
     ]
   },
   "notes": [
@@ -2944,6 +3153,15 @@
       "position": [
         -440.0,
         9450.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_compartments",
+      "text": "9. CELLPROFILER COMPARTMENT PROFILE\nExplicit float32 conversion and fixed 0\u201365535 to 0\u20131 scaling precede Gaussian smoothing. Both nucleus outputs feed seed preparation; Propagation then feeds cell finishing and cytoplasm extraction. This synthetic image supplies both nucleus and cell guidance to exercise wiring; nucleus diameters are 8\u201340 pixels.",
+      "position": [
+        -440.0,
+        10360.0
       ],
       "width": 360.0
     }

@@ -2762,6 +2762,7 @@ def test_fresh_intensity_example_builds_exact_numeric_downstream_workloads(
         ("euclidean_distance_transform", np.dtype(bool), np.dtype(np.float32)),
         ("h_maxima_markers", np.dtype(np.float32), np.dtype(np.int32)),
         ("save_output", np.dtype(np.uint16), np.dtype(np.uint16)),
+        ("cellprofiler_primary_objects", np.dtype(np.float32), np.dtype(np.int32)),
     ),
 )
 def test_exact_host_shape_dtype_operations_project_without_running_kernel(
@@ -2791,12 +2792,14 @@ def test_exact_host_shape_dtype_operations_project_without_running_kernel(
     )
 
     assert projected is not None
-    ((description, output_state),) = projected
-    assert description.shape == data.shape
-    assert description.dtype == output_dtype
-    assert output_state is not None
-    assert output_state.shape == data.shape
-    assert output_state.dtype == output_dtype.name
+    expected_ports = 2 if operation_id == "cellprofiler_primary_objects" else 1
+    assert len(projected) == expected_ports
+    for description, output_state in projected:
+        assert description.shape == data.shape
+        assert description.dtype == output_dtype
+        assert output_state is not None
+        assert output_state.shape == data.shape
+        assert output_state.dtype == output_dtype.name
 
 
 def test_every_cpu_only_image_transform_has_a_planning_contract():
@@ -2821,7 +2824,8 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
         | set(execution_module._EXACT_HOST_IDENTITY_OPERATIONS)
         | set(execution_module._EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES)
         | set(_EXACT_AXIS_CONTRACT_OPERATIONS)
-        | {"prepare_validate_psf"}
+        # Dedicated projections include both primary-object label ports.
+        | {"prepare_validate_psf", "cellprofiler_primary_objects"}
     )
 
     assert cpu_only - handled == set()

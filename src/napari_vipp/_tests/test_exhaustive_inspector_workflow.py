@@ -65,7 +65,13 @@ def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
         operation_id: count
         for operation_id, count in operation_counts.items()
         if operation_id != "input" and count != 1
-    } == {"binary_threshold": 2, "h_maxima_markers": 2}
+    } == {
+        "binary_threshold": 2,
+        "h_maxima_markers": 2,
+        "convert_dtype": 2,
+        "rescale_intensity": 2,
+        "cellprofiler_propagation": 2,
+    }
 
 
 def test_exhaustive_inspector_showcase_places_and_connects_every_node():
@@ -214,7 +220,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         }
     )
     assert sum(tunnel_counts.values()) == 64
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 96
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 110
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:
@@ -296,3 +302,59 @@ def test_showcase_propagation_lane_executes_on_real_yx_inputs():
     np.testing.assert_array_equal(labels, reference)
     np.testing.assert_array_equal(image, before)
     assert branch.output_states["cellprofiler_propagation_1"].axis_order == "YX"
+
+
+def test_showcase_compartment_lane_explicitly_scales_and_connects_both_nucleus_ports():
+    snapshot = workflow_snapshot_from_document(_showcase_document())
+    graph = snapshot.graph.to_pipeline()
+    node_ids = {
+        "input_9",
+        "convert_dtype_2",
+        "rescale_intensity_2",
+        "cellprofiler_smooth_1",
+        "cellprofiler_primary_objects_1",
+        "cellprofiler_threshold_1",
+        "cellprofiler_propagation_seeds_1",
+        "cellprofiler_propagation_2",
+        "cellprofiler_finish_cells_1",
+        "cellprofiler_cytoplasm_1",
+    }
+    branch = PrototypePipeline()
+    branch.restore_graph(
+        [node for node in graph.nodes.values() if node.id in node_ids],
+        [
+            edge
+            for edge in graph.connections
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ],
+    )
+    image, kwargs, _kind = _deconvolution_image_sample()
+    before = image.copy()
+    image.setflags(write=False)
+    sources = {"input_9": SourcePayload(image, kwargs["metadata"], kwargs["name"])}
+    branch.preflight_axis_contract(sources)
+    outputs = branch.run(None, source_payloads=sources)
+    normalized = outputs["rescale_intensity_2"]
+    assert normalized.dtype == np.float32
+    np.testing.assert_array_equal(
+        normalized, image.astype(np.float32) / np.float32(65535)
+    )
+    nuclei, unedited = branch.node_outputs["cellprofiler_primary_objects_1"]
+    cells = outputs["cellprofiler_finish_cells_1"]
+    cytoplasm = outputs["cellprofiler_cytoplasm_1"]
+    assert (
+        nuclei.shape == unedited.shape == cells.shape == cytoplasm.shape == image.shape
+    )
+    assert nuclei.max() > 0
+    assert np.count_nonzero(cytoplasm) > 0
+    assert set(np.unique(cytoplasm)) <= set(np.unique(cells))
+    assert branch.output_states["cellprofiler_cytoplasm_1"].axis_order == "YX"
+    np.testing.assert_array_equal(image, before)
+    assert {
+        (edge.source_id, edge.source_port, edge.target_port)
+        for edge in branch.connections
+        if edge.target_id == "cellprofiler_propagation_seeds_1"
+    } == {
+        ("cellprofiler_primary_objects_1", 1, 0),
+        ("cellprofiler_primary_objects_1", 0, 1),
+    }

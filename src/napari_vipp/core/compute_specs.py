@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
+from napari_vipp.core.cellprofiler_contracts import CELLPROFILER_2D_OPERATION_IDS
 from napari_vipp.core.compute_contracts import AdmissionTier as AdmissionTier
 from napari_vipp.core.compute_contracts import (
     ComputePortContract as ComputePortContract,
@@ -1357,7 +1358,7 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         runtime_id="cpu-numpy",
         array_domain="host-numpy",
         implementation_library_id=(
-            "centrosome" if operation_id == "cellprofiler_propagation" else "cpu"
+            "centrosome" if operation_id in CELLPROFILER_2D_OPERATION_IDS else "cpu"
         ),
         callable_ref=callable_ref,
         host_boundary=host_boundary,
@@ -1385,7 +1386,7 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
             else "static-v1"
         ),
         supported_spatial_ndims=(
-            (2,) if operation_id == "cellprofiler_propagation" else (1, 2, 3)
+            (2,) if operation_id in CELLPROFILER_2D_OPERATION_IDS else (1, 2, 3)
         ),
         supports_device_residency=False,
     )

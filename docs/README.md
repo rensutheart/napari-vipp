@@ -31,6 +31,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Analytical phantom validation](analytical-phantom-validation.md)
 - [Seeded segmentation](seeded-segmentation.md): 2D CellProfiler Propagation,
   acquired-image examples, existing 3D watershed and Random Walker evaluation.
+- [Statistics-paper reproduction](validation/statistics-paper-reproduction.md):
+  the recorded CellProfiler compartment profile, independent executable checks,
+  acquired-input provenance and comparison with archived paper measurements.
 - [Richardson-Lucy TV validation](rl-tv-validation-report.md)
 - [Research and publication record](research-and-publication.md)
 

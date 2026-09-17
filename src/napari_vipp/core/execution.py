@@ -155,6 +155,8 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
 )
 _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
     {
+        "cellprofiler_smooth": "fixed:float32",
+        "cellprofiler_threshold": "fixed:bool",
         # Shape preserving and exact concrete dtype, including byte order.
         "assign_channel_colors": "same",
         "bilateral_filter": "same",
@@ -213,6 +215,9 @@ _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
 _EXACT_HOST_IDENTITY_OPERATIONS = frozenset({"batch_output"})
 _EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES = MappingProxyType(
     {
+        "cellprofiler_cytoplasm": "fixed:int32",
+        "cellprofiler_finish_cells": "fixed:int32",
+        "cellprofiler_propagation_seeds": "fixed:int32",
         "cellprofiler_propagation": "fixed:int32",
         "add_images": "fixed:float32",
         "calculate_weighted_image": "fixed:float32",
@@ -235,6 +240,9 @@ _EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES = MappingProxyType(
 )
 _EXACT_HOST_MATCHING_INPUT_SHAPE_OPERATIONS = frozenset(
     {
+        "cellprofiler_cytoplasm",
+        "cellprofiler_finish_cells",
+        "cellprofiler_propagation_seeds",
         "cellprofiler_propagation",
         "add_images",
         "calculate_weighted_image",
@@ -1000,6 +1008,7 @@ class PipelineNodeResult:
         ResidentThumbnailStatisticsObservation,
         ...,
     ] = ()
+
     def __post_init__(self) -> None:
         object.__setattr__(
             self,

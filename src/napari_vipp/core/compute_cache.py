@@ -23,6 +23,7 @@ from types import MappingProxyType, MemberDescriptorType
 
 import numpy as np
 
+from napari_vipp.core.cellprofiler_contracts import CELLPROFILER_2D_OPERATION_IDS
 from napari_vipp.core.compute import (
     CacheAdmissibility,
     ComputeMode,
@@ -50,7 +51,10 @@ _RESULT_CONTRACT_TAG = "vipp-result-v1"
 _MISSING = object()
 _ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION = MappingProxyType(
     {
-        "cellprofiler_propagation": ("centrosome",),
+        **{
+            operation_id: ("centrosome",)
+            for operation_id in CELLPROFILER_2D_OPERATION_IDS
+        },
         "simplify_mesh": ("fast-simplification",),
         # These colours are carried output data, not an inspector-only LUT.
         "color_mesh_objects": ("matplotlib",),

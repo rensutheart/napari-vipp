@@ -16,10 +16,10 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Add an independent, genuine YX Propagation lane. The regression below
+    # Add an independent, genuine YX compartment lane. The regression below
     # also pins every preceding scientific graph unchanged after its removal.
     "exhaustive-inspector-showcase.json": (
-        "8ae1b99c0c19585c6e6d5b28b0a62312f65b95379caf198294d7f6f2eeea6f7d"
+        "7bb4f6d979326096689b726d18e5273d14562fa3f68dbba9bc8d744d9aa2b5c7"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -207,6 +207,32 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
 
 def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
     document = _load_example("exhaustive-inspector-showcase.json")
+    compartment_lane = {
+        "input_9",
+        "convert_dtype_2",
+        "rescale_intensity_2",
+        "cellprofiler_smooth_1",
+        "cellprofiler_primary_objects_1",
+        "cellprofiler_threshold_1",
+        "cellprofiler_propagation_seeds_1",
+        "cellprofiler_propagation_2",
+        "cellprofiler_finish_cells_1",
+        "cellprofiler_cytoplasm_1",
+    }
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in compartment_lane
+    ]
+    document["connections"] = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] not in compartment_lane
+        and edge["target"] not in compartment_lane
+    ]
+    for identifier in compartment_lane:
+        document["positions"].pop(identifier)
+    assert scientific_workflow_hash(document) == (
+        "8ae1b99c0c19585c6e6d5b28b0a62312f65b95379caf198294d7f6f2eeea6f7d"
+    )
     propagation_lane = {
         "input_8",
         "h_maxima_markers_2",
