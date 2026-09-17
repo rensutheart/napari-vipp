@@ -5424,10 +5424,28 @@ def _canonical_scientific_node(value: object) -> dict[str, object]:
             "high_threshold": 0.75,
         },
         "rescale_intensity": {"invert_intensity": False},
+        "plot_results": {"x_tick_interval": "Auto", "y_tick_interval": "Auto"},
     }
     for name, default in legacy_defaults.get(operation_id, {}).items():
         if params.get(name) == default:
             params.pop(name, None)
+    if (
+        operation_id == "summarize_measurements"
+        and params.get("summary_version", 1) == 1
+    ):
+        # Restoring an old summary must not detach its recorded batch identity.
+        # V2 is an explicit scientific upgrade, so none of its fields are elided.
+        summary_defaults = {
+            "summary_version": 1,
+            "summary_level": "Objects",
+            "image_column": "",
+            "sample_column": "",
+            "sample_weighting": "Equal images",
+            "missing_policy": "Exclude and report",
+        }
+        for name, default in summary_defaults.items():
+            if params.get(name) == default:
+                params.pop(name, None)
     threshold_mode = str(params.get("threshold_mode", "Manual")).casefold()
     source_item = source_item_from_params(params) if operation_id == "input" else None
     source_item_bound = source_item is not None

@@ -1,305 +1,189 @@
-# Measurement Plots And Statistics: 0.16 Plan
+# Measurement Plots And Statistics: 0.16 Scope
 
-Status: the first **Plot Results** implementation was approved on 2026-09-15
-for the **0.16 release series** and is unreleased after 0.15.0a5. Expanded
-Statistics, inference and the later plot families below remain planned.
-The [batch measurement collection foundation](measurement-collection.md)
-is also implemented but unreleased.
-Requested and reviewed: 2026-09-10. No alpha milestone or release date assigned.
-This complements, rather than replaces, the
-[registration, comparison, and template-matching plan](registration-and-template-matching-plan.md).
-Use [active planning](planning.md) for release order.
-
-## Approved First Plotting Slice
-
-One **Plot Results** node accepts an ordinary measurement table or the output
-of Table Source. Initial families are Compare groups (points with optional
-mean/median), Distribution (shared-bin histogram or cumulative distribution),
-and Scatter. Users explicitly choose individual objects or a mean per image;
-image identity is required for image means. No batch collection or invented
-biological-replicate column is required for exploring one labelled image.
-
-The inspector and a nonmodal **Open plot** window edit the same saved recipe.
-There is no extra "Show workflow" analysis action: that button existed only
-to navigate the design mockup. The workflow stays open behind the plot window.
-Figure export is explicit and independent of on-screen window size. No tests,
-significance annotations, fitted relationships, count/fraction views, paired
-views or inferred biological independence belong to this first slice.
-
-The bundled `plot-morphology` example uses one deterministic calibrated image
-with 60 isolated ellipses, shape/intensity measurements joined by label ID,
-and four plot branches. Its size/intensity association is deliberately
-generated and is not biological evidence. A grouped development fixture uses
-several synthetic fields with unequal object counts to review object pooling
-versus equally weighted image means; these fields are not biological samples.
-User documentation belongs to the companion manual's Plot measurement results
-task page, not this planning document.
+Status: **batch measurement collection**, the first **Plot Results** slice
+and descriptive **Statistics** are implemented and unreleased after
+**0.15.0a5**. The approved **Results Workspace** joins their interfaces;
+Statistics remains descriptive summaries only. This boundary supersedes the
+earlier proposal's inference and uncertainty phases; they are not promised next steps.
+Use [active planning](planning.md) for release order and the
+[Statistics contract](statistics.md) for exact calculation and compatibility
+rules. No release date or version bump is implied.
 
 ## Product Decision
 
-VIPP should help a biologist go from measured objects to an understandable
-figure and a small, explicit statistical summary without leaving the workflow.
-It should not become a general replacement for Prism, R, Python, or a
-statistician. Make exploration, experimental-unit awareness, and reproducible
-presentation the core; add a bounded set of inferential methods only after
-their scientific contracts are qualified.
+Help a user explore measured objects, compare clearly defined descriptive
+summaries, and export results without losing units, identity or the recipe.
+Keep two general-purpose nodes under **Measurements -> Tables**:
 
-The requested interface is **two general-purpose nodes**, not one node per
-plot or statistical test:
-
-| Node | Input and output | Role |
+| Node | Input and output | Approved role |
 | --- | --- | --- |
-| **Plot Results** | Measurement or summary table -> typed plot result | Choose fields and a plot family, inspect the figure, open an editable pop-out, and export it. |
-| **Statistics** | Measurement table -> results table | Choose measurements, groups, independent samples, summaries, and supported comparisons. Its output can feed Plot Results or ordinary table export. |
+| **Plot Results** | Measurement or summary table -> typed plot result | Grouped points, histograms, cumulative distributions and scatter; editable pop-out and sized figure export. |
+| **Statistics** | Measurement table -> ordinary summary table | Counts, mean, median, sample SD, quartiles, IQR, min/max and sum at a declared observational level. |
 
-Place both under **Measurements -> Tables**, beside the existing table tools.
-Statistics should expand the existing **Summarize Measurements** node, not
-compete with it. Preserve its saved operation identity and older calculations;
-new scientific semantics need a versioned recipe and deliberate migration.
-No new top-level category or extra node for each export format is needed.
+Statistics expands **Summarize Measurements** in place. The saved operation ID
+remains `summarize_measurements`. New nodes use a versioned descriptive recipe;
+old workflows and direct calls retain version 1 until explicitly upgraded.
+There is no new result type or separate node per statistic.
 
-## Scientific Rationale
+## Results Workspace: One Interface, Existing Nodes
 
-[Senft et al. (2023), *A biologist's guide to planning and performing
-quantitative bioimaging experiments*](https://doi.org/10.1371/journal.pbio.3002167)
-emphasizes choosing measurements and statistical analysis for the biological
-question, stating the level of comparison, and showing individual observations
-alongside useful summaries. This is the basis for the safeguards below, not a
-claim that the paper prescribes this UI or a universal test menu.
+The approved nonmodal **Results Workspace** opens from a table-producing,
+Statistics or Plot Results node. **Data**, **Summary** and **Plots** place
+controls beside the relevant table or figure. The inspector and ordinary
+table/plot windows remain available; this is not a new all-in-one operation.
 
-[Lord et al. (2020), *SuperPlots: Communicating reproducibility and variability
-in cell biology*](https://rupress.org/jcb/article/219/6/e202001064/151717/SuperPlots-Communicating-reproducibility-and)
-provides a useful model for showing both within-sample variation and variation
-between independent experiments. Plotting every cell does not make every cell
-an independent experimental replicate.
+- Start from one table. Merge matching measurements or collect batch rows
+  upstream; the workspace must not guess which relationship the user means.
+- **Data source** browses exact table outputs, including filtered/merged tables
+  and named ports. Viewing a summary scopes **Plots** to its direct connections;
+  no connected plot is an empty state, not a fallback to another summary.
+  **Plots for** switches this browsing context without editing the graph.
+- Opening/browsing creates no nodes. **Add summary** and **Add plot** are
+  explicit, undoable creation of ordinary Statistics/Plot Results nodes.
+  Existing related nodes can be selected without copying their settings.
+- All views of the same node edit one saved recipe and refresh together.
+  Independent nodes sharing an input stay independent. Updates invalidate
+  the changed node and its descendants, not cached upstream measurements.
+- Plot input explicitly distinguishes original measurements from a summary
+  table. **Change plot input** changes the graph connection, not a private window
+  dataset. State the input row count and the meaning of the plotted values;
+  summary rows must not masquerade as individual objects or be implicitly
+  averaged again by image.
+- Searching a table and hiding columns only change its view. They do not
+  exclude observations, change Statistics/Plot Results inputs or silently
+  narrow exported scientific data.
+- Table export uses the existing full-table CSV/TSV path; figure export uses
+  the current saved plot recipe and existing PNG/TIFF/SVG/PDF controls.
+  Neither calculation nor opening a window writes data to disk.
+- Keep a reserved activity area and show stale/failed state explicitly.
+  Current-result export stays unavailable while results are out of date.
 
-The following feature choices are VIPP design proposals. A workflow with 1,000
-cells from three independent experiments must not silently become a test with
-1,000 independent replicates. Conversely, VIPP must not assume that every
-experiment has the same hierarchy: the user declares the relevant independent
-unit for their question.
+Numeric plot axes add **Auto** (default) or custom positive major tick
+intervals. Grid lines follow the same ticks in all views and exports. This
+does not change bins, measurements, summaries or categorical group spacing;
+integer count-axis semantics remain intact. `x_tick_interval` and
+`y_tick_interval` are saved PlotRecipe parameters. Log axes and categorical X
+require Auto. Custom values must be finite and positive, integral for count
+axes, and produce no more than 200 major ticks across the padded plot range.
+Sub-precision or overly dense intervals fail explicitly rather than being
+rounded, clamped or silently replaced by Auto.
 
-## Data And Batch Collection Come First
+## Explicit Boundary
 
-Existing `TableData` provides immutable rows, column units, table kind, and
-source name. Existing tools select columns, add metadata, merge tables,
-and summarize groups. The first
-[cross-item batch collector](measurement-collection.md) is implemented but unreleased;
-the formal experimental-design and plot/statistics contracts remain planned.
-**Merge Tables is a horizontal join, not vertical collection of batch rows.**
+The 0.16 scope stops at descriptive summaries. No inferential tests, p-values,
+ANOVA, significance labels, confidence intervals, bootstrap uncertainty,
+automatic test selection, or statistical-assumption diagnostics are included.
+Do not add hidden test APIs or disabled test-menu scaffolding in anticipation
+of a later phase. Any reconsideration requires a separate deliberate product
+and scientific review; it is not a committed follow-up release.
 
-Plan three explicit scopes:
+Counts describe eligible observations, images and declared samples. Declaring
+a sample ID does not establish biological independence. Neither a thousand
+cells nor a hundred fields automatically means that many independent
+experiments. Users can export the table and recipe for external analysis.
 
-1. **One image:** connect its measurement table directly to either node.
-2. **Each batch item:** the same graph calculates a separate figure/summary
-   for each item; explicit Batch Output settings publish those results.
-3. **Across the batch:** an explicit **Collect measurement results** action in
-   Run & results collects compatible tables into a reusable table dataset.
-   The user can annotate samples and conditions and export CSV/TSV or Excel
-   directly. Saving a native dataset and opening a results workflow are
-   separate, optional steps. That workflow can later use the same two planned
-   nodes. This is a post-run step, not hidden cross-item execution inside a
-   per-image node.
+## Implemented Results Foundation
 
-For scope 3, the approved initial contract is a typed, self-contained
-`.vipp-results.json` measurement dataset and one file-backed **Table Source**
-node. A results workflow saves its external path and expected hash, not the
-measurement rows. It must reopen and execute without Qt, and report missing or
-changed datasets; an in-memory handoff alone is not sufficient. Collection
-requires newly recorded typed output evidence, never guesses historical CSV
-types, and does not rerun images automatically.
+The [collection contract](measurement-collection.md) covers the explicit
+**Collect measurement results** post-run action. It verifies recorded typed
+outputs, preserves source/image/object identity, annotations and units, and
+retains failed, missing, empty and excluded items in its review inventory.
+Collection does not rerun measurements or guess historical CSV types.
 
-Direct collection export includes an optional image-summary companion for
-CSV/TSV, or **Measurements**, **Image summary** and **About this collection**
-sheets in Excel. Keep empty/excluded images, annotations, units and run
-information visible without inventing measurement rows. These exports are
-part of the unreleased collection foundation, not Plot Results or expanded
-Statistics. The native dataset remains the typed round-trip format.
+Direct collection export supports CSV/TSV with an optional image-summary
+companion, or Excel with **Measurements**, **Image summary** and **About this
+collection** sheets. Saving a typed `.vipp-results.json` dataset and opening it
+through **Table Source** are separate optional actions. The workflow stores the
+external dataset path/hash, not its rows. These collection-specific Excel
+exports do not imply Excel support for ordinary result tables.
 
-Collection must retain source item, source image, local object ID, measurement
-operation/settings, and available condition/sample/replicate/time annotations.
-Use composite object identities: label 1 in different images is not the same
-object. Offer a reviewable annotation grid (and optional imported metadata)
-instead of expecting users to edit JSON. Never infer biological replicates
-from filenames without an explicit, saved mapping.
+**Merge Tables** is a horizontal join, not vertical collection. A single
+image's measurement table can feed either results node directly; a batch
+collection is not required. Across-batch analysis remains an explicit
+post-run workflow, never hidden execution across per-image nodes.
 
-Check schemas and units before collection; do not silently mix pixel and
-micrometer measurements or coerce incompatible columns. Freeze the exact
-included result revisions and identify failed, missing, skipped, stale, or
-excluded items. Collection after a resumed run must not duplicate completed
-items. Do not silently recalculate images just to open a collected table.
+The first **Plot Results** implementation provides Compare groups (points with
+optional mean/median), Distribution (shared-bin histogram or cumulative
+distribution), and Scatter. It distinguishes objects from equally weighted
+image means. Inspector and nonmodal pop-out edit the same saved recipe, and
+headless export produces sized PNG/TIFF or SVG/PDF figures. Display choices do
+not rerun upstream segmentation, change measurements or establish independence.
+Stale/failed figures cannot be exported as current results.
 
-## Shared Analysis Controls
+The bundled `plot-morphology` example contains one calibrated synthetic image
+with 60 ellipses and four plot branches. Its designed area/intensity association
+is demonstration data, not biological evidence. Paired/time-course,
+count/fraction, violin and uncertainty views are not commitments of this scope.
 
-Use column pickers populated from the connected table, with names, units, and
-small example values. Keep the ordinary path simple; reveal design controls
-when grouping, replicate summaries, or inference needs them:
+## Approved Descriptive Statistics
 
-- **Measurements:** one or more numeric columns; categorical IDs are not
-  automatically offered as measurements simply because they contain numbers.
-- **Groups / conditions:** optional categorical columns and a saved order.
-- **Independent sample:** a column identifying the independently sampled or
-  treated unit. Explain with examples such as animal, culture, or experiment.
-- **Within each sample:** explicit aggregation across cells and, when present,
-  images. Make pooling cells versus first summarizing images distinguishable;
-  unequal cell yield must not silently weight experimental replicates.
-- **Paired by:** required identity for paired comparisons, not table row order.
-- **Missing or invalid values:** an explicit policy with included/excluded
-  counts and reasons. Never silently interpret missing measurements as zero.
+Users choose measurements, optional group columns, statistics and an explicit
+missing-value policy using connected-table controls. Numeric identifiers are
+not automatically treated as measurements. Keep ordinary object exploration
+possible without inventing image or biological-sample IDs.
 
-Allow descriptive, object-level exploration without inventing replicate IDs.
-Label it clearly and withhold replicate-level confidence intervals and tests
-until the user declares independence or explicitly confirms that rows are
-independent. A declaration is recorded user input, not an automatic guarantee.
-Show object/image counts and independent-sample counts separately.
-
-No implicit outlier removal, normalization, unit conversion, or analysis on
-log-transformed values just because a plot axis uses a logarithmic scale.
-Any supported analytical transformation must be explicit, saved, and reflected
-in results and labels. Leave general data wrangling outside this initial scope.
-
-## Plot Results
-
-### Initial plot families
-
-One plot-type selector should cover the following, with only relevant controls
-visible. Start with a single figure and optional facets, not a full poster editor.
-
-| Family | Typical bioimage use | Important controls |
+| Level | Values summarized within each group | Weighting |
 | --- | --- | --- |
-| Grouped points with summaries | Area or intensity across conditions | Individual points, replicate identity, mean/median; optional box-and-whisker summary with its definition stated. |
-| Distribution: histogram or ECDF | Object sizes, intensities, distances | Shared bins/range across groups; count versus proportion/density with units; ECDF avoids a bin-width choice. |
-| Scatter | Area versus intensity, morphology relationships | X/Y columns, group colour, optional facets; no automatic regression or significance claim. |
-| Paired points / ordered lines | Matched samples or measurements over time | Pair/trajectory ID and explicit X/time column; no invented pairing, sorting, or interpolation. |
-| Counts / fractions | Objects in defined categories | Explicit category and denominator, with per-sample versus pooled counts distinguished. |
+| Objects | Eligible input measurement rows | Every object contributes equally. |
+| Image means | Arithmetic mean of eligible objects in each image | Every contributing image mean contributes equally. |
+| Sample means: equal images | Mean of image means within each declared sample | Images have equal weight within a sample; sample means have equal weight in the final summary. |
+| Sample means: equal objects | Mean of all eligible objects within each declared sample | Objects have equal weight within a sample; sample means have equal weight in the final summary. |
 
-Prefer visible observations and replicate summaries over mean-only bar charts.
-Offer a **Show independent samples** presentation inspired by SuperPlots; this
-does not imply that every plot requires inference. Violin plots can follow once
-bandwidth, sample-size limitations, and small-group handling are explicit.
+Require explicit relevant identities and reject ambiguous identity/group
+relationships. Missing measurements can be excluded and counted or cause an
+error, according to the saved policy. Never turn missing values into zeros,
+silently parse numeric strings, remove outliers, normalize, transform or
+convert units. An empty image contributes no invented object or mean; its
+collection inventory remains the place to review it.
 
-### Inspector and pop-out
+Expose object totals, included/excluded measurements and exclusion reasons,
+available image/sample counts, and the actual number of summarized units.
+Sample SD is undefined with fewer than two eligible units in version 2; keep
+that distinct from zero spread in a constant group. Quartiles use the explicit
+linear method. The [implementation contract](statistics.md) fixes formulas,
+empty-input behavior, output names and recipe migration.
 
-The node inspector selects plot type, fields, groups, and basic appearance and
-shows a real plot preview once available. **Open plot...** opens a nonmodal,
-resizable window. Its settings remain editable there: titles/axis labels,
-units, axis scale/limits, group order, colours, point size/opacity, legend,
-summary/error-bar choice, facets, and export size. Disabled options explain
-what is missing instead of producing a blank plot.
+## Persistence, Export And Execution
 
-Inspector and pop-out edit **one saved recipe**, including undo/redo and
-save/reopen. Presentation edits apply immediately to cached measurements, with
-no upstream segmentation rerun. Changes to bins, aggregation, selection, or
-statistical methods invalidate the appropriate derived result. Stale results
-remain visibly stale; asynchronous work supports cancellation and cannot
-overwrite a newer recipe. Reuse histogram/colocalization pop-out interaction
-patterns, not an independent settings store.
+All scientific choices belong to node parameters and the cache identity.
+Store the recipe and counts in the result as well. Output remains wide
+`TableData`, preserving distinct measurement units and ordinary table
+composition, inspection, CSV/TSV export and Plot Results compatibility.
+Calculating the node never writes files. Existing explicit batch publication
+and export paths remain responsible for overwrite and atomic-write policies.
 
-Use accessible palettes, distinguish groups with more than colour where
-practical, preserve meaningful channel/condition names, and keep units in axis
-labels. Large scatter/point displays may use deterministic display sampling,
-but must show displayed/eligible counts and record the seed. Scientific
-summaries always use the full eligible data, not a display sample.
+The implementation is Qt-free CPU calculation behind the shared operation
+registry. Interactive, batch, workflow reopen and generated-Python routes must
+use the same versioned rules. No new GPU capability or statistics dependency
+is needed. Reproducibility packages retain the workflow recipe, not measurement
+tables or figures automatically.
 
-## Statistics
+## Acceptance
 
-### Core: descriptive results
+- Independently check known-answer counts/reductions, linear quartiles and
+  sample SD; include signed, constant, tied and very small populations.
+- Exercise unequal objects per image and unequal images per sample so pooling
+  and equal-image weighting demonstrably differ.
+- Verify empty/all-invalid/singleton groups, nonnumeric values, numeric
+  strings, non-finite floats and integers unsafe to convert to float64.
+- Reject absent/ambiguous required identities and conflicting groups; preserve
+  repeated local object IDs in different images without using them as image IDs.
+- Verify mixed measurement units, immutable inputs, deterministic results,
+  explicit exclusion counts, missing-column errors and collision handling.
+- Preserve unversioned/version-1 workflow, direct-call and generated behavior;
+  test explicit upgrade, undo/redo and save/reopen of version 2.
+- Check the actual inspector controls, result table, ordinary export and
+  downstream plotting. Exercise batch/headless execution and stale results.
+- Check workspace node creation/reuse, source switching, undo/redo,
+  save/reopen, workflow-tab isolation and synchronized inspectors/windows.
+  Opening a workspace must not create a node or recalculate an upstream image.
+- Check automatic/custom tick intervals in interactive and headless rendering,
+  including count, categorical, logarithmic and invalid/dense interval cases.
+- Keep the companion manual concise, mark behavior unreleased after 0.15.0a5,
+  and document exact evidence without claiming biological validation.
 
-Provide a friendly multi-select of count, mean, median, sample SD, quartiles,
-IQR, min/max, and sum where meaningful. Report total rows, valid values,
-excluded values, and independent-sample n separately. Preserve units and
-group/measurement identity in a typed, exportable results table.
+## Further Work Requires A New Decision
 
-Existing Summarize Measurements already provides many of these reductions.
-Do not blindly inherit its edge cases: it currently drops values that cannot
-become finite floats and returns sample SD = 0 at n = 1. New recipes should
-report exclusions and undefined SD with a clear insufficient-data reason;
-older saved workflows must retain deliberately versioned behavior.
-
-Uncertainty is optional, never an unlabeled error bar. Distinguish spread
-(SD/IQR) from uncertainty in an estimate (confidence interval). A bounded
-bootstrap CI may be added with its method, confidence level, iteration count,
-seed, and independent resampling unit recorded. Paired samples stay paired;
-nested cells are not independently resampled as experimental replicates.
-
-### Bounded inference: only after design and validation gates
-
-Candidate first comparisons are **Welch's two-sample t-test** for two independent
-groups and **paired t-test** for declared pairs. Pearson/Spearman association
-is useful for measurement relationships, with observational level stated and
-no object-level p-value pretending to describe independent experiments.
-Rank-based two-group alternatives can follow with their assumptions and null
-hypotheses explained; they are not universal assumption-free median tests.
-
-Select a question/method explicitly. Do not choose tests automatically from a
-normality test, try every test, or default to significance stars. Show group
-estimates, an appropriate effect estimate and available uncertainty, effective
-n, method/options, exact p-value when applicable, and useful diagnostics.
-Reject or mark undefined insufficient samples, constant inputs, and incomplete
-or duplicated pairs according to a declared policy. Multiple emitted tests
-need an explicit comparison family and reviewed multiplicity adjustment.
-
-Inferential methods are **not a reason to delay the useful descriptive/plotting
-foundation**. Review their exact menu before coding that phase. Mixed-effects
-models, general ANOVA/post-hoc suites, survival analysis, power/sample-size
-planning, Bayesian models, and automatic statistical advice are out of scope.
-Export tidy data and methods so specialists can continue elsewhere.
-
-## Rendering, Export, And Reproducibility
-
-Matplotlib and SciPy are already dependencies. Prefer a shared Matplotlib
-renderer and bounded SciPy statistics over adding a large plotting/statistics
-framework. Existing histogram/scatter exports render Qt widgets: their export
-code alone does not provide headless or vector figures.
-
-Introduce versioned, serializable, **Qt-free** analysis/plot recipes and result
-contracts. Retain the exact data revision and derived table, not a live Figure,
-widget, or pickled runtime object. A plot is not an image with pretend spatial
-axes. Render the same recipe in the pop-out and through headless export.
-
-Plan explicit **PNG/TIFF and SVG/PDF** export with physical/pixel size, DPI,
-background, and fonts controlled independently of the current window size.
-Offer the plotted/summary data as CSV/TSV and a compact methods/recipe sidecar.
-Explain units, n, exclusions, transformations, aggregation, and error bars
-without requiring a technical README to interpret the figure.
-
-Calculating a node does not write a file. Inspector export and explicitly
-configured Batch Output publication should use the same figure artifact
-contract, format filtering, cancellation, overwrite, and atomic-publication
-rules. Plot ports, cache accounting, history, workflow persistence, generated
-Python/CLI, and Batch Output support are real implementation work, not assumed
-to exist already. Statistics stays compatible with ordinary table export.
-
-Reproducibility packages retain plot/statistics recipes, workflow notes,
-software versions, and appropriate provenance. Do **not** start bundling raw
-measurement tables, source images, generated figures, or other result files
-by default; the author still shares those separately. Missing externally
-shared table collections must have a clear reconnect/verification path.
-
-## Delivery And Acceptance
-
-Recommended incremental delivery within 0.16:
-
-1. Versioned design/recipe contracts, migration rules, and a reopenable,
-   identity-preserving batch-results collection/annotation path.
-2. Statistics descriptive mode and Plot Results grouped points, distributions,
-   and scatter; shared inspector/pop-out state and headless/raster/vector export.
-3. Paired/time/count views, replicate-aware uncertainty, documentation, and
-   end-to-end collection examples. Gate individual modes on their contracts.
-4. Review and qualify bounded inference; defer any unqualified method rather
-   than suggesting that a p-value proves a biological conclusion.
-
-Acceptance must include unequal cells/images per replicate; repeated local
-object IDs across images; missing/duplicated pairs; mixed units/schemas;
-empty, nonnumeric, NaN, constant, tied, and very small groups; reproducible
-jitter/CI seeds; and visible excluded/failed batch items. Verify collection
-after resume, workflow reopening, input immutability, stale/cancel behavior,
-and that display sampling never changes statistical results.
-
-Review known-answer summaries/comparisons independently, not just against the
-same library call. Visually review small/large figures, light/dark themes,
-overlapping groups, colour accessibility, and exported sizes across desktop,
-plugin, and headless paths. Include a guided synthetic example with objects
-nested in images and independent samples, plus the same data exported for
-external analysis. User review of the column/sample selectors and pop-out is
-required before considering this workflow complete.
+This scope is complete when the descriptive path is useful, tested and
+documented. Additional plot families or inferential analysis may be discussed
+separately, but there is no inference phase to proceed into automatically.

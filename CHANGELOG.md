@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+- Add a **Results Workspace** with Data, Summary and Plots views, keeping
+  controls beside the table or figure. Open existing Statistics/Plot Results
+  nodes or explicitly add ordinary nodes; edits stay synchronized with their
+  inspectors and plot windows. Distinguish original measurement inputs from
+  summary-table inputs, keep browsing separate from analysis, and retain the
+  existing table/figure export paths. No new statistical methods are added.
+
+- Make Results Workspace navigation clearer with full-width icon tabs,
+  readable input and node labels, and **Show node** beside the editing heading.
+  Adding a summary-based plot now waits for an explicit measurement choice
+  before calculating, with a concise setup prompt instead of duplicate errors.
+  Add **Select all** and **Select none** above the visible-columns list;
+  these change the table view without affecting calculations or exports.
+  Summary meanings and scientific validation are unchanged.
+
+- Keep Results Workspace's **Data source → Statistics node → Plot** selection
+  bar visible above every tab, with bold headings, thicker cyan arrows, a
+  restrained accent border and compact add actions. Browse exact table
+  outputs and named ports; **None — use input data** selects direct plots.
+  Tabs change only the view, and plots never fall back to another branch.
+  Keep deliberate rewiring under **Change plot input…**;
+  node settings remain shared and **Show node** targets the selected node.
+
+- Keep the blue-bordered Results Workspace input card visible with a clickable
+  header and outlined cyan chevron; **Input details** start collapsed inside
+  it. Distinguish grey interpretation notes, orange data/display cautions and
+  red calculation errors. Notes can be dismissed and reopened per plot/window;
+  new data or analysis choices bring them back. Errors, setup and stale-result
+  messages remain visible. Scientific results and exports are unchanged.
+
+- Add automatic or custom major tick intervals for numeric Plot Results axes,
+  shared by the inspector, plot window, Results Workspace and figure exports.
+  Grid lines follow the major ticks; count axes retain whole-number ticks.
+
+- Fit the Results Workspace plot preview to its available area, keeping the
+  axes visible while settings scroll independently. Use consistent
+  **Plot settings** and **Appearance** section headings with regular field
+  labels and a theme-aware outlined Appearance chevron across all plot editors.
+  Resizing the preview changes neither the data nor the saved recipe;
+  exported figure dimensions remain controlled by the export dialog.
+
+- Keep Plot Results warnings readable in light and dark themes and give
+  wrapped messages enough height in narrow inspectors. Warning meanings,
+  calculations and export behavior are unchanged.
+
+- Add plain-language help to Statistics fields and choices, explaining image
+  and sample identities, multi-column grouping and optional counts. Separate
+  explanatory text and result-inclusion details for easier reading; summary
+  calculations and saved analysis semantics are unchanged.
+
+- Clarify **Auto-select measurements** and add **Select all / Select none**
+  to the shared Statistics inspector/workspace controls. Automatic selection
+  tracks eligible numeric measurements; Select all saves the current eligible
+  names as a manual selection, while Select none clears it without reverting
+  to automatic mode. Both leave recognized IDs, grouping fields and text out
+  of bulk selection; an empty selection must be completed before calculation.
+
+- Organize Statistics controls into clearly separated measurement, grouping,
+  observation-unit and statistic sections, with backgrounds matching the
+  surrounding inspector or Results Workspace. Show concise help for the
+  selected missing-value policy and a compact **Result overview** with
+  per-measurement inclusion counts. Calculations, selections and exports are
+  unchanged.
+
+- Expand **Summarize Measurements** as **Statistics**, retaining its saved
+  operation identity and legacy calculations until explicit upgrade. New
+  recipes provide descriptive summaries of objects, image means or sample
+  means, with explicit equal-image/equal-object weighting, exclusions, counts
+  and retained units. Sample SD is undefined for fewer than two eligible
+  summarized units. Results remain ordinary tables for CSV/TSV export and
+  plotting; no inferential tests, p-values or confidence intervals are added.
+
 - Keep the Plot Results activity row reserved while idle so updates do not move
   the plot or controls. Preserve the surrounding summary, hint, warning and
   opened data-view space while replacing an out-of-date result.

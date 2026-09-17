@@ -2174,8 +2174,14 @@ class VippWidget(QWidget):
 
         self._table_sources = TableSourceController(self)
         from napari_vipp.ui.result_plot_controller import ResultPlotController
+        from napari_vipp.ui.results_workspace_controller import (
+            ResultsWorkspaceController,
+        )
+        from napari_vipp.ui.statistics_controller import StatisticsController
 
         self._result_plots = ResultPlotController(self)
+        self._statistics = StatisticsController(self)
+        self._results_workspace = ResultsWorkspaceController(self)
         self._workflow_tab_loading_visible = False
         self._active_parameter_slider_scrub: (
             tuple[str, str, str, weakref.ReferenceType] | None
@@ -3154,6 +3160,11 @@ class VippWidget(QWidget):
         self.table_popout_button.setToolTip(
             "Open the complete result table in a separate sortable window."
         )
+        self.results_workspace_button = QPushButton("Open Results Workspace…")
+        self.results_workspace_button.setToolTip(
+            "Explore this table, edit Statistics summaries and make plots in one "
+            "window. Settings belong to the same saved workflow nodes."
+        )
         self.table_preview = QTableWidget(0, 0)
         self.table_preview.verticalHeader().setVisible(False)
         self.table_preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -3845,7 +3856,9 @@ class VippWidget(QWidget):
             return
         self._closing = True
         self._table_sources.close()
+        self._results_workspace.close()
         self._result_plots.close()
+        self._statistics.close()
         self._mesh_measurement_diagnostics.close()
         self.object_filter_feedback.diagnostics.close()
         self.version_label.shutdown()
@@ -6011,6 +6024,11 @@ class VippWidget(QWidget):
         open_example_action.triggered.connect(
             lambda _checked=False: self.open_example_button.click()
         )
+        workspace_action = menu.addAction("Open Results Workspace…")
+        workspace_action.setEnabled(
+            self._results_workspace.can_open(self._selected_node_id)
+        )
+        workspace_action.triggered.connect(self._open_results_workspace)
         menu.addSeparator()
         self.save_workflow_as_action.setIcon(self.save_workflow_button.icon())
         menu.addAction(self.save_workflow_as_action)
@@ -6623,6 +6641,7 @@ class VippWidget(QWidget):
             Qt.AlignLeft,
         )
         table_layout.addWidget(table_actions_widget)
+        table_layout.addWidget(self.results_workspace_button, 0, Qt.AlignLeft)
         table_layout.addWidget(self.table_preview)
         self._sync_inspector_responsive_layout()
 
@@ -6862,6 +6881,7 @@ class VippWidget(QWidget):
             self._open_colocalization_scatter_dialog
         )
         self.table_popout_button.clicked.connect(self._open_result_table_dialog)
+        self.results_workspace_button.clicked.connect(self._open_results_workspace)
         self.table_calculate_button.clicked.connect(self._calculate_selected_node)
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
         self.auto_saturation_control.valueChanged.connect(
@@ -23055,8 +23075,18 @@ class VippWidget(QWidget):
 
         if expected_table:
             summary = self._table_result_summary_text(data, state)
-            self.table_summary.setText(summary)
             self.table_group.setSummary(summary)
+            if (
+                node is not None
+                and node.operation_id == "summarize_measurements"
+                and is_table_data(data)
+                and "summary_version" in data.columns
+            ):
+                summary += (
+                    ". Preview shows summaries and valid n. Open the full table "
+                    "for inclusion counts and calculation settings."
+                )
+            self.table_summary.setText(summary)
             if is_table_data(data):
                 if state == EXECUTION_READY:
                     popout_tooltip = (
@@ -23121,6 +23151,8 @@ class VippWidget(QWidget):
         self._sync_table_result_attention()
         self._sync_result_table_dialog_attention()
         self._result_plots.refresh()
+        self._statistics.refresh()
+        self._results_workspace.refresh()
         self._sync_isolated_tuning_ui()
         if hasattr(self, "object_filter_feedback"):
             self._update_object_filter_feedback()
@@ -23463,6 +23495,9 @@ class VippWidget(QWidget):
             return
         if node.operation_id == "plot_results":
             self._result_plots.render_parameters(node_id)
+            return
+        if node.operation_id == "summarize_measurements":
+            self._statistics.render_parameters(node_id)
             return
         specs = self.pipeline.node_parameter_specs(node_id)
         stack_note = self._stack_processing_note(node_id)
@@ -33720,7 +33755,9 @@ class VippWidget(QWidget):
                 # and detach it now so no subsequent repaint can mix retired
                 # controls with a newly selected node's header or sections.
                 widget.hide()
-                if widget.property("vippPersistentPlotPanel"):
+                if widget.property("vippPersistentPlotPanel") or widget.property(
+                    "vippPersistentStatisticsPanel"
+                ):
                     widget.setParent(self)
                     continue
                 widget.setParent(None)
@@ -34680,6 +34717,26 @@ class VippWidget(QWidget):
                 dirty_node_ids = set(manual_node_ids)
             else:
                 dirty_node_ids.update(manual_node_ids)
+        if not (workflow_parameter_overrides or workflow_node_execution_overrides):
+            # Summary plots need an explicit measurement choice. Leave these
+            # unfinished editors (and their consumers) out of interactive
+            # automatic runs, including unrelated edits while a draft exists.
+            # The graph stays connected; batch/headless validation stays strict.
+            pending_plots = self._results_workspace.pending_plot_setup_node_ids(
+                source_payloads=source_payloads
+            )
+            if pending_plots:
+                blocked = self.pipeline.descendants_inclusive(pending_plots)
+                self.pipeline.mark_nodes_stale(
+                    blocked,
+                    message="Choose the plot measurements to update this result.",
+                )
+                target_node_ids = (
+                    set(self.pipeline.nodes)
+                    if target_node_ids is None
+                    else target_node_ids
+                ) - blocked
+                manual_node_ids.difference_update(blocked)
         compute_request = self._current_compute_request()
         if workflow_parameter_overrides or workflow_node_execution_overrides:
             # A per-item workflow is deliberately never installed into the live
@@ -34976,7 +35033,15 @@ class VippWidget(QWidget):
         snapshots_pinned: bool,
     ) -> None:
         """Report successful calculation without turning it into an instruction."""
-        message = "Workflow calculations complete."
+        pending_plots = self._results_workspace.pending_plot_setup_node_ids()
+        pending_label = "plot needs" if len(pending_plots) == 1 else "plots need"
+        message = (
+            "Available results updated. "
+            f"{len(pending_plots)} {pending_label} "
+            "a measurement selection in Results Workspace."
+            if pending_plots
+            else "Workflow calculations complete."
+        )
         wrapped_sources = textwrap.fill(
             source_label,
             width=76,
@@ -34992,7 +35057,7 @@ class VippWidget(QWidget):
             )
         self._set_status(
             message,
-            severity=MessageSeverity.SUCCESS,
+            severity=MessageSeverity.INFO if pending_plots else MessageSeverity.SUCCESS,
             detail=detail,
         )
 
@@ -37143,6 +37208,8 @@ class VippWidget(QWidget):
         else:
             self.pipeline_busy_label.setText("Processing graph")
             self._result_plots.refresh()
+            self._statistics.refresh()
+            self._results_workspace.refresh()
         self._sync_run_activity_button()
 
     def _report_result_display_error(
@@ -38288,6 +38355,8 @@ class VippWidget(QWidget):
         self._render_history_rows(history)
         self._update_table_preview()
         self._result_plots.refresh()
+        self._statistics.refresh()
+        self._results_workspace.refresh()
 
     def _selected_output_metadata_rows(
         self,
@@ -41919,6 +41988,9 @@ class VippWidget(QWidget):
         self._update_histogram()
         self._sync_inspector_presentation()
 
+    def _open_results_workspace(self) -> None:
+        self._results_workspace.open_node(self._selected_node_id)
+
     def _open_result_table_dialog(self) -> None:
         """Open the selected complete table in a reusable nonmodal window."""
 
@@ -42118,16 +42190,39 @@ class VippWidget(QWidget):
 
         self.table_popout_button.setEnabled(True)
         shown_rows = min(data.row_count, row_limit)
-        self.table_preview.setColumnCount(data.column_count)
+        shown_columns = tuple(range(data.column_count))
+        statistics_preview = False
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is not None and node.operation_id == "summarize_measurements":
+            from napari_vipp.ui.statistics import (
+                statistics_preview_columns,
+                statistics_preview_header,
+            )
+
+            projection = statistics_preview_columns(data)
+            if projection is not None:
+                shown_columns = projection
+                statistics_preview = True
+        self.table_preview.setColumnCount(len(shown_columns))
         self.table_preview.setRowCount(shown_rows)
         headers = [
-            f"{column}\n({unit})" if (unit := data.unit_for(column)) else column
-            for column in data.columns
+            statistics_preview_header(data, column)
+            if statistics_preview
+            else (f"{column}\n({unit})" if (unit := data.unit_for(column)) else column)
+            for index in shown_columns
+            for column in (data.columns[index],)
         ]
         self.table_preview.setHorizontalHeaderLabels(headers)
         for row_index, row in enumerate(data.rows[:shown_rows]):
-            for column_index, value in enumerate(row):
-                item = QTableWidgetItem(str(value))
+            for column_index, source_index in enumerate(shown_columns):
+                value = row[source_index]
+                undefined = statistics_preview and value is None
+                item = QTableWidgetItem("—" if undefined else str(value))
+                if undefined:
+                    item.setToolTip(
+                        "Undefined. See the inclusion and status columns in the "
+                        "complete result table."
+                    )
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table_preview.setItem(row_index, column_index, item)
         self.table_preview.resizeColumnsToContents()

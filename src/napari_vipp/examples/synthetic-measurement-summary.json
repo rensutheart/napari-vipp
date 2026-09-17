@@ -63,9 +63,63 @@
       "id": "summarize_measurements_1",
       "operation_id": "summarize_measurements",
       "params": {
-        "group_by": "auto",
+        "summary_version": 2,
+        "group_by": "condition,replicate,t_index",
         "value_columns": "area_pixels",
-        "statistics": "count,mean,min,max"
+        "statistics": "count,mean,std,min,max",
+        "summary_level": "Objects",
+        "image_column": "",
+        "sample_column": "",
+        "sample_weighting": "Equal images",
+        "missing_policy": "Exclude and report"
+      }
+    },
+    {
+      "id": "plot_objects",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Compare groups",
+        "y_column": "area_pixels",
+        "x_column": "auto",
+        "group_column": "t_index",
+        "point_unit": "Objects",
+        "image_column": "",
+        "summary": "Mean",
+        "title": "Original object areas by timepoint",
+        "distribution": "Histogram",
+        "bins": 20,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "point_size": 5.0,
+        "show_grid": true,
+        "x_tick_interval": "Auto",
+        "y_tick_interval": "10"
+      }
+    },
+    {
+      "id": "plot_summary",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Compare groups",
+        "y_column": "area_pixels_mean",
+        "x_column": "auto",
+        "group_column": "t_index",
+        "point_unit": "Objects",
+        "image_column": "",
+        "summary": "None",
+        "title": "Summary: one mean area per timepoint",
+        "distribution": "Histogram",
+        "bins": 20,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "point_size": 5.0,
+        "show_grid": true,
+        "x_tick_interval": "Auto",
+        "y_tick_interval": "10"
       }
     }
   ],
@@ -99,6 +153,18 @@
       "target": "summarize_measurements_1",
       "target_port": 0,
       "source_port": 0
+    },
+    {
+      "source": "add_metadata_columns_1",
+      "target": "plot_objects",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "summarize_measurements_1",
+      "target": "plot_summary",
+      "target_port": 0,
+      "source_port": 0
     }
   ],
   "positions": {
@@ -107,15 +173,31 @@
     "label_connected_components_1": [720.0, 160.0],
     "measure_objects_1": [1080.0, 160.0],
     "add_metadata_columns_1": [1440.0, 160.0],
-    "summarize_measurements_1": [1800.0, 160.0]
+    "summarize_measurements_1": [1800.0, 160.0],
+    "plot_objects": [1800.0, 560.0],
+    "plot_summary": [2200.0, 160.0]
   },
   "notes": [
     {
       "id": "note_1",
-      "text": "Summary output groups inferred metadata/time; validation expects object counts 2, 3, and 1.",
-      "position": [1800.0, 30.0],
-      "width": 270.0,
+      "text": "DESCRIPTIVE STATISTICS\nExplicit groups: condition, replicate and timepoint. Object counts are 2, 3 and 1; mean areas are 27, 20 and 40 pixels. Standard deviation is undefined for the single-object group. Review the inclusion counts; no significance tests are performed.",
+      "position": [1800.0, -140.0],
+      "width": 300.0,
       "attached_node": "summarize_measurements_1"
+    },
+    {
+      "id": "note_workspace",
+      "text": "RESULTS WORKSPACE\nSelect Add Metadata Columns or Statistics, then Open Results Workspace. Inspect the table, change a summary and view plots in one window. Edits update these same workflow nodes.",
+      "position": [1080.0, 440.0],
+      "width": 300.0,
+      "attached_node": "add_metadata_columns_1"
+    },
+    {
+      "id": "note_plot_sources",
+      "text": "TWO DIFFERENT PLOT INPUTS\nThe lower plot shows all 6 original object rows, with a mean line per timepoint. The upper plot receives the 3 summary rows: one mean area per timepoint. Summary rows are not independent samples; SD is not automatically plotted as an error bar.",
+      "position": [2200.0, 470.0],
+      "width": 330.0,
+      "attached_node": "plot_summary"
     }
   ]
 }

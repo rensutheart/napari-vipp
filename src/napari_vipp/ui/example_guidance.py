@@ -150,30 +150,46 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
             ),
         ),
         "summary-table": ExampleGuidance(
-            purpose="Summarise object counts and areas across timepoints.",
+            purpose=(
+                "Explore measurements, summaries and plots together in the "
+                "Results Workspace."
+            ),
             data=(
                 "Synthetic measurement-summary sample with known object counts and "
                 "areas"
             ),
             explore=(
-                "Inspect the measured area of each object at each timepoint.",
-                "Review the experiment information added as table columns.",
                 (
-                    "Group the rows to calculate object counts and mean, minimum and "
-                    "maximum areas."
+                    "Select Add Metadata Columns or Statistics, then open the "
+                    "Results Workspace to see the table beside its controls."
+                ),
+                (
+                    "Group the six object rows across three timepoints to "
+                    "calculate counts and mean, minimum and maximum areas."
+                ),
+                (
+                    "Check included values and see why one object cannot define "
+                    "a standard deviation."
+                ),
+                (
+                    "Compare the original-data plot, with six object points, "
+                    "with the summary plot, with one mean per timepoint."
                 ),
             ),
             results=(
                 "Object-level measurements",
                 "Grouped summary table",
+                "Original-object and summary-mean plots",
             ),
             try_this=(
-                "Compare the object rows for one timepoint with its summary row. "
-                "Check how its object count and mean area were formed."
+                "In the workspace's Plots tab, switch between the original "
+                "measurements and summary table. Check which rows each point "
+                "represents. In Appearance, try a Y axis label interval of 5."
             ),
             caution=(
-                "Grouping summarises the rows; it does not establish independent "
-                "biological replicates."
+                "Neither object rows nor summary rows automatically represent "
+                "independent biological replicates. A summary's SD column does "
+                "not automatically add error bars to a plot."
             ),
         ),
         "derived-morphology": ExampleGuidance(

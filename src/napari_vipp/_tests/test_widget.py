@@ -24252,8 +24252,9 @@ def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, wi
     menu = widget.workflow_actions_menu
     actions = menu.actions()
     labels = [None if action.isSeparator() else action.text() for action in actions]
-    assert labels[:7] == [
+    assert labels[:8] == [
         "Open example…",
+        "Open Results Workspace…",
         None,
         "Save workflow as…",
         None,
@@ -24261,13 +24262,13 @@ def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, wi
         "Export reproducibility package…",
         "Export OME dataset…",
     ]
-    assert actions[2] is widget.save_workflow_as_action
+    assert actions[3] is widget.save_workflow_as_action
     assert not actions[0].icon().isNull()
-    assert not actions[2].icon().isNull()
+    assert not actions[3].icon().isNull()
     if width == 640:
-        assert labels[7:] == [None, "Auto Arrange graph", "Tunnels…"]
+        assert labels[8:] == [None, "Auto Arrange graph", "Tunnels…"]
     else:
-        assert len(actions) == 7
+        assert len(actions) == 8
     assert not set(labels) & {
         action.text() for action in widget.settings_menu.actions()
     }

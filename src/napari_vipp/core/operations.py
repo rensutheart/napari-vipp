@@ -4004,8 +4004,35 @@ def summarize_measurements(
     group_by: str = "auto",
     value_columns: str = "auto",
     statistics: str = "count,mean,median,std,min,max,q25,q75",
+    summary_version: int = 1,
+    summary_level: str = "Objects",
+    image_column: str = "",
+    sample_column: str = "",
+    sample_weighting: str = "Equal images",
+    missing_policy: str = "Exclude and report",
+    *,
+    progress: ProgressContext | None = None,
 ) -> TableData:
-    """Summarize measurement columns by metadata or axis-index groups."""
+    """Versioned descriptive summary; direct calls retain the legacy default."""
+    from napari_vipp.core.statistics import _validate_version, summarize_statistics
+
+    _validate_version(summary_version)
+    if summary_version == 2:
+        return summarize_statistics(
+            data,
+            summary_version=summary_version,
+            group_by=group_by,
+            value_columns=value_columns,
+            statistics=statistics,
+            summary_level=summary_level,
+            image_column=image_column,
+            sample_column=sample_column,
+            sample_weighting=sample_weighting,
+            missing_policy=missing_policy,
+            progress=progress,
+        )
+    if progress is not None:
+        progress.check_cancelled()
     table = _validated_table(data)
     group_columns = _summary_group_columns(table, group_by)
     numeric_columns = _summary_value_columns(table, value_columns, group_columns)

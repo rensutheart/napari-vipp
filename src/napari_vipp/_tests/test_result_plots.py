@@ -401,6 +401,18 @@ def test_pipeline_edit_invalidates_only_plot_and_bypass_forbidden(plot_pipeline)
     assert not pipeline.connect(plot, image.id).success
 
 
+def test_axis_interval_edit_reuses_the_upstream_measurements(plot_pipeline):
+    pipeline, source, plot = plot_pipeline
+    pipeline.run(None)
+    original = pipeline.outputs[source]
+    original_series = pipeline.outputs[plot].series
+    pipeline.set_param(plot, "y_tick_interval", "2")
+    pipeline.run(None, dirty_node_ids={plot})
+    assert pipeline.outputs[source] is original
+    assert pipeline.outputs[plot].recipe.y_tick_interval == "2"
+    assert pipeline.outputs[plot].series == original_series
+
+
 @pytest.fixture
 def image_plot_pipeline():
     pipeline = PrototypePipeline()
@@ -460,12 +472,14 @@ def test_generated_python_executes_plot_and_writes_vector_output(
     from napari_vipp.core.export import export_pipeline_to_python
 
     pipeline, plot, output, image = image_plot_pipeline
+    pipeline.set_param(plot, "y_tick_interval", "5")
     pipeline.set_param(output, "format", "svg")
     code = export_pipeline_to_python(pipeline)
     namespace = {"__name__": "exported_plot_test"}
     exec(compile(code, "<exported>", "exec"), namespace)
     results = namespace["run_pipeline"](image)
     assert isinstance(results[plot], PlotData)
+    assert results[plot].recipe.y_tick_interval == "5"
     assert results[output].counts.plotted_points == 3
     path = namespace["_automatic_output_path"](
         tmp_path, "image", output, results[output]

@@ -7,10 +7,23 @@ parameters, and set_state applies its prepared result without emitting edits.
 from __future__ import annotations
 
 from pathlib import Path
+from textwrap import fill
 from threading import Event
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from qtpy.QtCore import QAbstractTableModel, QObject, Qt, QThread, Signal, Slot
+from matplotlib.ticker import MaxNLocator
+from qtpy.QtCore import (
+    QAbstractTableModel,
+    QEvent,
+    QObject,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
+)
+from qtpy.QtGui import QPalette
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -21,7 +34,6 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -46,10 +58,12 @@ from napari_vipp.core.plot_rendering import (
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.result_plots import (
     PlotRecipe,
+    is_summary_table,
     measurement_label,
     numeric_columns,
 )
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+from napari_vipp.ui.iconography import interface_icon, palette_branch_color
 from napari_vipp.ui.palette_roles import theme_colors
 
 
@@ -103,12 +117,101 @@ def _set_plot_warnings(widget, result, *, stale=False):
     policy.setRetainSizeWhenHidden(bool(warnings))
     widget.setSizePolicy(policy)
     widget.setVisible(bool(warnings))
-    colors = theme_colors(widget.palette()).warning
-    widget.setStyleSheet(
-        f"QLabel {{ background-color: {colors.surface.name()}; "
-        f"color: {colors.foreground.name()}; "
-        f"border-left: 3px solid {colors.accent.name()}; padding: 8px; }}"
-    )
+    widget.refresh_theme()
+
+
+class _PlotWarningLabel(QLabel):
+    """Readable wrapped warning, including inside the fixed-height inspector form."""
+
+    layout_changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._styling = False
+        self._fitting = False
+        self._theme_owner = None
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.PlainText)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setMargin(8)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.refresh_theme()
+
+    def refresh_theme(self):
+        if self._styling:
+            return
+        self._styling = True
+        try:
+            # A stylesheet changes this label's palette. Blending that palette
+            # again on every refresh eventually turns the whole box bright orange.
+            owner = self.parentWidget()
+            if owner is not self._theme_owner:
+                if self._theme_owner is not None:
+                    self._theme_owner.removeEventFilter(self)
+                self._theme_owner = owner
+                if owner is not None:
+                    owner.installEventFilter(self)
+            colors = theme_colors(owner.palette() if owner else QApplication.palette())
+            tone = colors.warning
+            style = (
+                f"QLabel {{ background-color: {tone.surface.name()}; "
+                f"color: {colors.text.name()}; "
+                f"border-left: 3px solid {tone.accent.name()}; padding: 0; }}"
+            )
+            if self.styleSheet() != style:
+                self.setStyleSheet(style)
+        finally:
+            self._styling = False
+        self._fit_height()
+
+    def _fit_height(self):
+        if not self.wordWrap() or self._fitting:
+            return
+        previous = self.minimumHeight()
+        self._fitting = True
+        try:
+            # QLabel's heightForWidth includes its existing minimum. Reset it
+            # before measuring so widening the inspector can shrink the box too.
+            self.setMinimumHeight(0)
+            height = self.heightForWidth(max(1, self.width())) if self.text() else 0
+            self.setMinimumHeight(max(0, height))
+        finally:
+            self._fitting = False
+        if self.minimumHeight() != previous:
+            self.updateGeometry()
+            self.layout_changed.emit()
+
+    def setText(self, text):  # noqa: N802
+        super().setText(text)
+        self.setAccessibleDescription(text)
+        self._fit_height()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self._fit_height()
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        # Once styled, a QLabel may no longer inherit its parent's palette-change
+        # event. Observe the unstyled owner explicitly for live theme changes.
+        if watched is self._theme_owner and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.StyleChange,
+        ):
+            self.refresh_theme()
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if getattr(self, "_styling", True):
+            return
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            self.refresh_theme()
+        elif event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._fit_height()
 
 
 class _PlotBusyIndicator(QWidget):
@@ -142,6 +245,77 @@ class _PlotBusyIndicator(QWidget):
         self.setVisible(busy)
 
 
+class _AxisIntervalControl(QWidget):
+    """No spin-box clamping: preserve explicit decimal/scientific notation."""
+
+    changed = Signal()
+
+    def __init__(self, axis, parent=None):
+        super().__init__(parent)
+        self._updating = False
+        self._manual_allowed = True
+        self.axis = axis
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        row = QHBoxLayout()
+        self.auto = QCheckBox("Auto", self)
+        self.auto.setAccessibleName(f"Automatic {axis} axis label interval")
+        self.edit = QLineEdit("1", self)
+        self.edit.setMinimumWidth(0)
+        self.edit.setPlaceholderText("e.g. 10 or 0.5")
+        self.edit.setAccessibleName(f"{axis} axis label interval")
+        row.addWidget(self.auto)
+        row.addWidget(self.edit, 1)
+        layout.addLayout(row)
+        self.hint = _label("")
+        layout.addWidget(self.hint)
+        self.auto.toggled.connect(self._changed)
+        self.edit.editingFinished.connect(self._changed)
+        tooltip = (
+            "Auto chooses readable axis labels for the current range. Turn it "
+            "off to enter the numeric gap between labels and major grid lines, "
+            "for example 10 gives 0, 10, 20, … . Decimal and scientific notation "
+            "are accepted. Use a positive finite number; integer counts require "
+            "whole-number intervals. This changes display only, not histogram "
+            "bins or measurements, and is also used for exported figures."
+        )
+        self.setToolTip(tooltip)
+        self.auto.setToolTip(tooltip)
+        self.edit.setToolTip(tooltip)
+        self.setValue("Auto")
+
+    def value(self):
+        return "Auto" if self.auto.isChecked() else self.edit.text().strip()
+
+    def setValue(self, value):  # noqa: N802
+        self._updating = True
+        try:
+            automatic = isinstance(value, str) and value.strip().lower() == "auto"
+            self.auto.setChecked(automatic)
+            if not automatic:
+                self.edit.setText(str(value))
+            self._enabled_state()
+        finally:
+            self._updating = False
+
+    def set_axis_info(self, *, manual_allowed, hint):
+        self._manual_allowed = manual_allowed
+        self.hint.setText(hint)
+        self._enabled_state()
+
+    def _enabled_state(self):
+        # Imported incompatible recipes remain visible and can be repaired by
+        # explicitly checking Auto, rather than being silently rewritten.
+        self.auto.setEnabled(self._manual_allowed or not self.auto.isChecked())
+        self.edit.setEnabled(self._manual_allowed and not self.auto.isChecked())
+
+    def _changed(self, *_args):
+        self._enabled_state()
+        if not self._updating:
+            self.changed.emit()
+
+
 class PlotRecipeControls(QWidget):
     """Narrow-friendly mappings and appearance editor without calculations."""
 
@@ -152,16 +326,39 @@ class PlotRecipeControls(QWidget):
         super().__init__(parent)
         self._updating = False
         self._params = PlotRecipe().to_params()
+        self._table = None
+        self.setObjectName("PlotRecipeControls")
+        # Let these controls sit naturally on the inspector or workspace
+        # sidebar. Editors retain their normal themed input surfaces.
+        self.setStyleSheet(
+            "QWidget#PlotRecipeControls, QWidget#PlotAppearance, "
+            "QWidget#PlotAxisInterval, QLabel, QCheckBox { background: transparent; }"
+            "QPushButton#PlotAppearanceHeading { text-align: left; "
+            "background: transparent; border: none; "
+            "border-top: 1px solid palette(button); padding: 8px 0 2px 0; }"
+            "QPushButton#PlotAppearanceHeading:hover { color: palette(highlight); }"
+            "QPushButton#PlotAppearanceHeading:focus { "
+            "border-bottom: 1px solid palette(highlight); }"
+        )
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.form = QFormLayout()
-        self.form.setRowWrapPolicy(QFormLayout.WrapAllRows)
-        self.form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.settings_heading = _label("Plot settings", self)
+        heading_font = self.settings_heading.font()
+        heading_font.setBold(True)
+        self.settings_heading.setFont(heading_font)
+        layout.addWidget(self.settings_heading)
+        # Each label uses the full sidebar width. QFormLayout constrains
+        # wrapped labels to a short size hint even with WrapAllRows enabled.
+        self.form = QVBoxLayout()
+        self.form.setContentsMargins(0, 0, 0, 0)
+        self.form.setSpacing(6)
+        self.form.setAlignment(Qt.AlignTop)
         layout.addLayout(self.form)
         self.controls = {}
         self._labels = {}
+        self._appearance_labels = {}
         options = (
             ("plot_type", "Plot type", ("Compare groups", "Distribution", "Scatter")),
             ("y_column", "Measurement", ()),
@@ -203,18 +400,26 @@ class PlotRecipeControls(QWidget):
             "samples. These plots describe the connected measurements."
         )
         layout.addWidget(self.note)
-        self.appearance_button = QPushButton("Appearance ▸", self)
+        self.appearance_button = QPushButton("Appearance", self)
+        self.appearance_button.setIconSize(QSize(18, 18))
+        self.appearance_button.setObjectName("PlotAppearanceHeading")
+        self.appearance_button.setFont(heading_font)
         self.appearance_button.setCheckable(True)
+        self.appearance_button.setToolTip(
+            "Show or hide the plot title, point size, grid and axis settings."
+        )
         layout.addWidget(self.appearance_button)
-        appearance = QGroupBox(self)
-        appearance_layout = QFormLayout(appearance)
-        appearance_layout.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        appearance = QWidget(self)
+        appearance.setObjectName("PlotAppearance")
+        appearance_layout = QVBoxLayout(appearance)
+        appearance_layout.setContentsMargins(0, 0, 0, 0)
+        appearance_layout.setSpacing(6)
         title_edit = QLineEdit(self)
         title_edit.setPlaceholderText("Automatic title")
         title_edit.setMaxLength(200)
         title_edit.editingFinished.connect(self._changed)
         self.controls["title"] = title_edit
-        appearance_layout.addRow("Title", title_edit)
+        self._add_appearance_control(appearance_layout, "title", "Title", title_edit)
         size = QDoubleSpinBox(self)
         size.setRange(1, 20)
         size.setSingleStep(0.5)
@@ -222,7 +427,9 @@ class PlotRecipeControls(QWidget):
         size.setKeyboardTracking(False)
         size.valueChanged.connect(self._changed)
         self.controls["point_size"] = size
-        appearance_layout.addRow("Point size", size)
+        self._add_appearance_control(
+            appearance_layout, "point_size", "Point size", size
+        )
         for key, title in (
             ("log_x", "Log X axis"),
             ("log_y", "Log Y axis"),
@@ -231,37 +438,91 @@ class PlotRecipeControls(QWidget):
             checkbox = QCheckBox(title, self)
             checkbox.toggled.connect(self._changed)
             self.controls[key] = checkbox
-            appearance_layout.addRow(checkbox)
+            appearance_layout.addWidget(checkbox)
         self.controls["log_x"].setToolTip(
             "A log axis excludes non-positive values. Exclusions are reported."
         )
         self.controls["log_y"].setToolTip(
             "Log measurements exclude non-positive values. Exclusions are reported."
         )
+        for axis in ("x", "y"):
+            interval = _AxisIntervalControl(axis.upper(), self)
+            interval.setObjectName("PlotAxisInterval")
+            interval.changed.connect(self._changed)
+            self.controls[f"{axis}_tick_interval"] = interval
+            self._add_appearance_control(
+                appearance_layout,
+                f"{axis}_tick_interval",
+                f"{axis.upper()} axis label interval",
+                interval,
+            )
+        self.controls["show_grid"].setToolTip(
+            "Grid lines follow major axis labels. Use the X/Y axis label "
+            "interval controls to set their spacing on linear numeric axes. "
+            "Histogram bin width is a separate calculation setting."
+        )
         layout.addWidget(appearance)
         appearance.hide()
         self.appearance_button.toggled.connect(appearance.setVisible)
-        self.appearance_button.toggled.connect(
-            lambda expanded: self.appearance_button.setText(
-                "Appearance ▾" if expanded else "Appearance ▸"
-            )
-        )
+        self.appearance_button.toggled.connect(self._refresh_appearance_icon)
         self.appearance_button.toggled.connect(
             lambda _expanded: self.layout_changed.emit()
         )
         layout.addStretch(1)
         self.set_state(None, self._params)
+        self._refresh_appearance_icon()
+
+    def _refresh_appearance_icon(self, *_args):
+        if not hasattr(self, "appearance_button"):
+            return
+        expanded = self.appearance_button.isChecked()
+        # Transparent Qt stylesheet backgrounds can report transparent black
+        # as Base even in light mode. Resolve the actual surrounding surface.
+        owner = self
+        while owner is not None and owner.palette().color(QPalette.Base).alpha() == 0:
+            owner = owner.parentWidget()
+        palette = owner.palette() if owner is not None else QApplication.palette()
+        icon_palette = QPalette(palette)
+        icon_palette.setColor(
+            QPalette.ButtonText, palette_branch_color("Image Data", palette)
+        )
+        self.appearance_button.setIcon(
+            interface_icon(
+                "chevron-down" if expanded else "chevron-right", icon_palette, 18
+            )
+        )
+        self.appearance_button.setAccessibleName(
+            "Collapse Appearance" if expanded else "Expand Appearance"
+        )
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+            self._refresh_appearance_icon()
 
     def _add_control(self, key, title, widget):
         label = _label(title)
-        label.setWordWrap(False)
+        font = label.font()
+        font.setBold(False)
+        label.setFont(font)
         self._labels[key] = label
         self.controls[key] = widget
-        self.form.addRow(label, widget)
+        self.form.addWidget(label)
+        self.form.addWidget(widget)
+
+    def _add_appearance_control(self, layout, key, title, widget):
+        label = _label(title)
+        font = label.font()
+        font.setBold(False)
+        label.setFont(font)
+        self._appearance_labels[key] = label
+        layout.addWidget(label)
+        layout.addWidget(widget)
 
     def set_state(self, table, params):
         self._updating = True
         try:
+            self._table = table
             self._params = {**PlotRecipe().to_params(), **(params or {})}
             numeric = tuple(numeric_columns(table)) if table is not None else ()
             columns = table.columns if table is not None else ()
@@ -269,7 +530,12 @@ class PlotRecipeControls(QWidget):
                 combo = self.controls[key]
                 combo.clear()
                 if key in {"y_column", "x_column"}:
-                    combo.addItem("Automatic measurement", "auto")
+                    combo.addItem(
+                        "Choose a summary measurement"
+                        if is_summary_table(table)
+                        else "Automatic measurement",
+                        "auto",
+                    )
                     candidates = numeric
                 else:
                     combo.addItem(
@@ -283,6 +549,17 @@ class PlotRecipeControls(QWidget):
                 selected = self._params[key]
                 if combo.findData(selected) < 0 and selected:
                     combo.addItem(f"Unavailable: {selected}", selected)
+            point_unit = self.controls["point_unit"]
+            summary_input = is_summary_table(table)
+            point_unit.setItemText(0, "One summary row" if summary_input else "Objects")
+            point_unit.model().item(1).setEnabled(not summary_input)
+            point_unit.setItemData(
+                1,
+                "Already summarized: connect the original measurements for image means."
+                if summary_input
+                else "Average the eligible rows within each image.",
+                Qt.ToolTipRole,
+            )
             for key, widget in self.controls.items():
                 value = self._params.get(key)
                 if isinstance(widget, QComboBox):
@@ -311,6 +588,17 @@ class PlotRecipeControls(QWidget):
                 params[key] = widget.text()
             else:
                 params[key] = widget.value()
+        # Switching plot/scale is an explicit edit: those axes now use Auto.
+        # Keep the last numeric text in the control for an easy switch back.
+        for axis in ("x", "y"):
+            changed_scale = params[f"log_{axis}"] != self._params[f"log_{axis}"]
+            changed_type = params["plot_type"] != self._params["plot_type"]
+            incompatible = params[f"log_{axis}"] or (
+                axis == "x" and params["plot_type"] == "Compare groups"
+            )
+            if incompatible and (changed_scale or changed_type):
+                params[f"{axis}_tick_interval"] = "Auto"
+                self.controls[f"{axis}_tick_interval"].setValue("Auto")
         self._params = params
         self._update_visibility()
         self._update_point_unit_note()
@@ -319,6 +607,22 @@ class PlotRecipeControls(QWidget):
         self.params_changed.emit(params)
 
     def _update_point_unit_note(self):
+        if is_summary_table(self._table):
+            self.note.setText(
+                "Input: summary table. Each point is one summary row, not an "
+                "original object or independent sample. Counts do not recreate "
+                "the original observations; SD is not automatically an error bar."
+                if self._params["point_unit"] == "Objects"
+                else "This table is already summarized. Choose One summary row, "
+                "or connect original measurements to calculate image means."
+            )
+            self.controls["point_unit"].setToolTip(self.note.text())
+            return
+        self.controls["point_unit"].setToolTip(
+            "Objects uses one measurement row per point. Mean per image gives "
+            "each image equal weight, after averaging its eligible rows. Neither "
+            "choice automatically establishes independent biological samples."
+        )
         if self._params["point_unit"] == "Mean per image":
             self.note.setText(
                 "Choose the image identity column to prepare one mean per image."
@@ -352,7 +656,56 @@ class PlotRecipeControls(QWidget):
             self._labels[key].setVisible(visible)
         self.controls["log_x"].setVisible(mode != "Compare groups")
         self.controls["point_size"].setEnabled(mode != "Distribution")
+        self._update_interval_controls()
         self.layout_changed.emit()
+
+    def _update_interval_controls(self):
+        mode = self._params["plot_type"]
+        for axis in ("x", "y"):
+            categorical = axis == "x" and mode == "Compare groups"
+            logarithmic = self._params[f"log_{axis}"]
+            if categorical:
+                hint = "Category labels are automatic; there is no numeric X interval."
+            elif logarithmic:
+                hint = (
+                    "Log axis: automatic labels. Use a linear axis for fixed intervals."
+                )
+            elif mode == "Distribution" and axis == "y":
+                count = (
+                    self._params["distribution"] == "Histogram"
+                    and self._params["normalization"] == "Count"
+                )
+                hint = (
+                    "Count: whole-number intervals only."
+                    if count
+                    else "Interval in percent (%)."
+                )
+            else:
+                column = self.controls[
+                    "x_column" if axis == "x" and mode == "Scatter" else "y_column"
+                ].currentData()
+                table = self._table
+                if (
+                    table is not None
+                    and column in {"", "auto"}
+                    and not is_summary_table(table)
+                ):
+                    columns = numeric_columns(table)
+                    if axis == "x" and mode == "Scatter" and columns:
+                        y_column = self.controls["y_column"].currentData()
+                        if y_column in {"", "auto"}:
+                            y_column = columns[0]
+                        columns = tuple(name for name in columns if name != y_column)
+                    column = columns[0] if columns else ""
+                units = table.unit_for(column) if table is not None and column else ""
+                hint = (
+                    f"Interval in {units}."
+                    if units
+                    else "Interval in measurement units."
+                )
+            self.controls[f"{axis}_tick_interval"].set_axis_info(
+                manual_allowed=not categorical and not logarithmic, hint=hint
+            )
 
 
 class _PreparedTableModel(QAbstractTableModel):
@@ -387,9 +740,13 @@ class _PreparedTableModel(QAbstractTableModel):
 class ResultPlotCanvas(QWidget):
     point_selected = Signal(str)
 
-    def __init__(self, parent=None, *, compact=False):
+    def __init__(self, parent=None, *, compact=False, fit_viewport=False):
         super().__init__(parent)
         self.compact = compact
+        self.fit_viewport = fit_viewport
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._fit_preview_text)
         self.result = None
         self.canvas = None
         self.layout = QVBoxLayout(self)
@@ -432,9 +789,12 @@ class ResultPlotCanvas(QWidget):
         self.error_view.setWidget(error_content)
         self.error_view.hide()
         self.layout.addWidget(self.error_view, 1)
-        self.setMinimumHeight(260 if compact else 320)
+        self.setMinimumHeight(0 if fit_viewport else 260 if compact else 320)
         self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Ignored if fit_viewport else QSizePolicy.Expanding,
+        )
 
     def set_result(self, result):
         self.error_view.hide()
@@ -452,22 +812,78 @@ class ResultPlotCanvas(QWidget):
         if result is None:
             return
         colors = theme_colors(self.palette())
-        figure = build_plot_figure(
-            result,
-            display_only=True,
-            compact=self.compact,
-            size_inches=(4, 3) if self.compact else (7, 5),
-            colors={
-                "background": colors.surface.name(),
-                "text": colors.text.name(),
-                "grid": colors.border.name(),
-            },
-        )
+        try:
+            figure = build_plot_figure(
+                result,
+                display_only=True,
+                compact=self.compact,
+                size_inches=(4, 3) if self.compact else (7, 5),
+                colors={
+                    "background": colors.surface.name(),
+                    "text": colors.text.name(),
+                    "grid": colors.border.name(),
+                },
+            )
+        except ValueError as exc:
+            self.set_error(str(exc))
+            return
         self.canvas = FigureCanvasQTAgg(figure)
         self.canvas.setMinimumWidth(0)
-        self.canvas.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self.canvas.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Ignored if self.fit_viewport else QSizePolicy.Expanding,
+        )
         self.canvas.mpl_connect("pick_event", self._picked)
+        if self.fit_viewport:
+            self.canvas.installEventFilter(self)
+            self._preview_title = figure.axes[0].get_title()
         self.layout.addWidget(self.canvas)
+        self.canvas.draw_idle()
+        if self.fit_viewport:
+            self._fit_timer.start(0)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.canvas and event.type() in (QEvent.Resize, QEvent.Show):
+            self._fit_timer.start(0)
+        return super().eventFilter(watched, event)
+
+    def _fit_preview_text(self):
+        """Adapt only on-screen typography; the exporter builds its own figure."""
+        if not self.fit_viewport or self.canvas is None or self.result is None:
+            return
+        width, height = self.canvas.width(), self.canvas.height()
+        scale = max(0.55, min(1.0, width / 620, height / 340))
+        size = (8 if self.compact else 10) * scale
+        axes = self.canvas.figure.axes[0]
+        axes.tick_params(labelsize=size)
+        # Wrap long labels rather than cutting them off at the figure edges.
+        # Qt reports logical pixels; the preview uses Matplotlib's logical DPI.
+        pixels_per_point = self.canvas.figure.dpi / self.canvas.devicePixelRatioF() / 72
+        for text, original, extent, font_size in (
+            (axes.title, self._preview_title, width * 0.9, size * 1.2),
+            (axes.xaxis.label, self.result.x_label, width * 0.8, size),
+            (axes.yaxis.label, self.result.y_label, height * 0.85, size),
+        ):
+            chars = max(12, int(extent / (font_size * pixels_per_point * 0.58)))
+            text.set_text(
+                "\n".join(
+                    fill(line, width=chars, break_long_words=False)
+                    for line in original.splitlines()
+                )
+            )
+            text.set_fontsize(font_size)
+        for axis, extent in ((axes.xaxis, width), (axes.yaxis, height)):
+            locator = axis.get_major_locator()
+            if isinstance(locator, MaxNLocator):
+                # Do not touch explicit axis intervals, log locators or category
+                # positions. Integer-count locator settings are preserved.
+                locator.set_params(nbins=max(2, min(6, int(extent / 65))))
+        legend = axes.get_legend()
+        if legend is not None:
+            for text in legend.get_texts():
+                text.set_fontsize(size)
+        for text in self.canvas.figure.texts:
+            text.set_fontsize(max(5, size - 1))
         self.canvas.draw_idle()
 
     def set_error(self, message):
@@ -560,7 +976,9 @@ class ResultPlotCanvas(QWidget):
 def _result_summary(result):
     count = result.counts
     unit = (
-        "individual measurements"
+        "summary rows"
+        if is_summary_table(result.source_table)
+        else "individual measurements"
         if result.recipe.point_unit == "Objects"
         else "image means"
     )
@@ -626,7 +1044,8 @@ class PlotResultsPanel(QWidget):
         self.plot.setFixedHeight(280)
         layout.addWidget(self.plot)
         self.summary, self._summary_reserve = _summary_slot(layout)
-        self.warning = _label("")
+        self.warning = _PlotWarningLabel(self)
+        self.warning.layout_changed.connect(self.layout_changed.emit)
         layout.addWidget(self.warning)
         self.open_button = QPushButton("Open plot…", self)
         self.open_button.clicked.connect(self.open_plot)
@@ -763,13 +1182,13 @@ class PlotResultsDialog(QDialog):
         self.summary, self._summary_reserve = _summary_slot(layout)
         self.busy_indicator = _PlotBusyIndicator(self)
         layout.addWidget(self.busy_indicator)
-        self.warning = _label("")
+        self.warning = _PlotWarningLabel(self)
         layout.addWidget(self.warning)
         splitter = QSplitter(Qt.Horizontal, self)
         plot_side = QWidget(self)
         plot_layout = QVBoxLayout(plot_side)
         plot_layout.setContentsMargins(0, 0, 0, 0)
-        self.plot = ResultPlotCanvas(self)
+        self.plot = ResultPlotCanvas(self, fit_viewport=True)
         plot_layout.addWidget(self.plot, 1)
         self.point_label = _label(
             "Click a point to identify its object label or source image."

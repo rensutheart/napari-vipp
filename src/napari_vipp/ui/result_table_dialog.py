@@ -405,22 +405,19 @@ class ResultTableModel(QAbstractTableModel):
         self.endResetModel()
 
 
-class ResultTableDialog(QDialog):
-    """Nonmodal full-table viewer shared by every table-producing node."""
-
-    exportCompleted = Signal(str)
-    sortCompleted = Signal(int, object)
-    recalculationRequested = Signal()
+class _ResultTableView:
+    """Shared table content for standalone dialogs and embedded workspaces."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("VippResultTableDialog")
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setWindowTitle("Result table")
-        self.setWindowModality(Qt.NonModal)
-        self.setSizeGripEnabled(True)
-        self.setMinimumSize(420, 280)
-        self.resize(1000, 650)
+        if isinstance(self, QDialog):
+            self.setWindowModality(Qt.NonModal)
+            self.setSizeGripEnabled(True)
+            self.setMinimumSize(420, 280)
+            self.resize(1000, 650)
 
         self.summary_label = QLabel("No table output is available.", self)
         self.summary_label.setWordWrap(True)
@@ -493,6 +490,9 @@ class ResultTableDialog(QDialog):
         self._table: TableData | None = None
         self._context_key: tuple[str, int] | None = None
         self._default_export_name = "result-table.csv"
+        # Integrated owners can require a current node revision. The standalone
+        # viewer intentionally also supports explicitly inspecting retained rows.
+        self.export_guard = None
         self._sort_column: int | None = None
         self._sort_order = Qt.AscendingOrder
         # Use the shared pool so destroying or hiding a dialog never waits for
@@ -730,8 +730,11 @@ class ResultTableDialog(QDialog):
         self._restore_committed_sort_indicator()
 
     def request_export(self) -> None:
-        if self._table is None:
+        if self._table is None or (
+            self.export_guard is not None and not self.export_guard()
+        ):
             return
+        table = self._table
         request = choose_table_export_target(
             self,
             default_name=self._default_export_name,
@@ -739,8 +742,13 @@ class ResultTableDialog(QDialog):
         )
         if request is None:
             return
+        # A native file dialog runs its own event loop: the workflow may have
+        # changed, failed or become stale while the destination was chosen.
+        if self.export_guard is not None and (
+            table is not self._table or not self.export_guard()
+        ):
+            return
         requested, format = request
-        table = self._table
         self._start_background_export(table, requested, format=format)
 
     def _start_background_export(
@@ -784,6 +792,10 @@ class ResultTableDialog(QDialog):
     def export_table(self, path: str | Path, *, format: str = "auto") -> Path:
         if self._table is None:
             raise ValueError("No table output is available to export.")
+        if self.export_guard is not None and not self.export_guard():
+            raise ValueError(
+                "The result is not current. Calculate again before exporting."
+            )
         return save_table_output(
             self._table,
             path,
@@ -851,6 +863,26 @@ class ResultTableDialog(QDialog):
         super().closeEvent(event)
 
 
+class ResultTablePanel(_ResultTableView, QWidget):
+    """Embeddable full-table viewer retaining asynchronous sort and export."""
+
+    exportCompleted = Signal(str)
+    sortCompleted = Signal(int, object)
+    recalculationRequested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.close_button.hide()
+
+
+class ResultTableDialog(_ResultTableView, QDialog):
+    """Nonmodal full-table viewer shared by every table-producing node."""
+
+    exportCompleted = Signal(str)
+    sortCompleted = Signal(int, object)
+    recalculationRequested = Signal()
+
+
 def choose_table_export_target(
     parent: QWidget,
     *,
@@ -891,6 +923,7 @@ def choose_table_export_target(
 
 __all__ = [
     "ResultTableDialog",
+    "ResultTablePanel",
     "ResultTableModel",
     "choose_table_export_target",
 ]

@@ -471,6 +471,14 @@ def _draw_glyph(painter: QPainter, kind: str, color: QColor) -> None:
         painter.drawLine(QPointF(6.5, 3.5), QPointF(6.5, 10.5))
         painter.drawLine(QPointF(11.5, 13.5), QPointF(17.5, 13.5))
         return
+    if kind == "statistics":
+        path.moveTo(16, 4)
+        path.lineTo(4, 4)
+        path.lineTo(10, 10)
+        path.lineTo(4, 16)
+        path.lineTo(16, 16)
+        painter.drawPath(path)
+        return
     if kind == "search":
         painter.drawEllipse(QRectF(3.0, 3.0, 10.5, 10.5))
         painter.drawLine(QPointF(12.0, 12.0), QPointF(17.0, 17.0))

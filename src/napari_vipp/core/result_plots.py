@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields, replace
+from fractions import Fraction
 from numbers import Real
 
 import numpy as np
@@ -19,6 +20,58 @@ from napari_vipp.core.tables import TableData
 
 DISPLAY_POINT_LIMIT = 10_000
 NUMERIC_GROUP_WARNING_LIMIT = 12
+MAX_MAJOR_TICKS = 200
+
+
+def parse_tick_interval(value: object, *, axis: str) -> float | None:
+    """Auto or a positive display interval; never clamp or round user intent."""
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return None
+    try:
+        if isinstance(value, bool) or not isinstance(value, (str, Real)):
+            raise ValueError
+        interval = float(value)
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError
+    except (ValueError, OverflowError, TypeError):
+        raise ValueError(
+            f"{axis.upper()} axis label interval must be Auto or a positive finite "
+            "number, for example 10 or 0.5."
+        ) from None
+    return interval
+
+
+def interval_ticks(low: float, high: float, interval: float, *, axis: str):
+    """Bound exact tick-index arithmetic before allocating any display arrays.
+
+    Fractions avoid overflowing low/interval and losing steps at large offsets.
+    The interval is the entered floating-point value, not a rounded nice number.
+    """
+    low, high = sorted((float(low), float(high)))
+    if not math.isfinite(low) or not math.isfinite(high):
+        raise ValueError(f"{axis.upper()} axis range must be finite.")
+    step = Fraction(interval)
+    first = math.floor(Fraction(low) / step)
+    last = math.ceil(Fraction(high) / step)
+    if last - first + 1 > MAX_MAJOR_TICKS:
+        raise ValueError(
+            f"{axis.upper()} axis label interval is too small for this range "
+            f"(more than {MAX_MAJOR_TICKS} ticks). Increase the interval or "
+            "choose Auto."
+        )
+    ticks = []
+    for index in range(first, last + 1):
+        try:
+            tick = float(index * step)
+        except OverflowError:
+            continue  # An outside-range end tick can exceed float64.
+        if ticks and tick <= ticks[-1]:
+            raise ValueError(
+                f"{axis.upper()} axis label interval is below plotting precision "
+                "at these values. Increase the interval or choose Auto."
+            )
+        ticks.append(tick)
+    return tuple(ticks)
 
 
 @dataclass(frozen=True)
@@ -41,6 +94,8 @@ class PlotRecipe:
     title: str = ""
     point_size: float = 5.0
     show_grid: bool = True
+    x_tick_interval: str | float = "Auto"
+    y_tick_interval: str | float = "Auto"
 
     def __post_init__(self) -> None:
         if self.recipe_version != 1 or isinstance(self.recipe_version, bool):
@@ -71,6 +126,23 @@ class PlotRecipe:
         for key in ("log_x", "log_y", "show_grid"):
             if not isinstance(getattr(self, key), bool):
                 raise ValueError(f"{key} must be true or false.")
+        for axis in ("x", "y"):
+            interval = parse_tick_interval(
+                getattr(self, f"{axis}_tick_interval"), axis=axis
+            )
+            if interval is None:
+                continue
+            if axis == "x" and self.plot_type == "Compare groups":
+                raise ValueError(
+                    "X axis label interval must be Auto for Compare groups: "
+                    "its X axis contains categories, not numeric distances. "
+                    "Use Scatter for two numeric measurements."
+                )
+            if getattr(self, f"log_{axis}"):
+                raise ValueError(
+                    f"{axis.upper()} axis label interval must be Auto on a "
+                    "logarithmic axis. Turn off Log axis to use a fixed interval."
+                )
         for key in ("y_column", "x_column", "group_column", "image_column", "title"):
             if not isinstance(getattr(self, key), str):
                 raise ValueError(f"{key} must be text.")
@@ -183,6 +255,83 @@ def is_plot_data(value: object) -> bool:
     return isinstance(value, PlotData)
 
 
+def is_summary_table(table: TableData | None) -> bool:
+    return table is not None and table.table_kind in {
+        "Descriptive Statistics v2",
+        "Grouped measurement summary",
+    }
+
+
+def plot_count_axes(result: PlotData) -> tuple[bool, bool]:
+    """Identify actual count coordinates, not fractional aggregates or names."""
+    recipe = result.recipe
+    count_x = False
+    count_y = (
+        recipe.plot_type == "Distribution"
+        and recipe.distribution == "Histogram"
+        and recipe.normalization == "Count"
+    )
+
+    def discrete(column, coordinate):
+        return result.source_table.unit_for(column) == "count" and all(
+            float(value).is_integer()
+            for series in result.series
+            for value in getattr(series, coordinate)
+        )
+
+    if recipe.point_unit == "Objects":
+        if discrete(recipe.y_column, "y"):
+            if recipe.plot_type == "Distribution":
+                count_x = True
+            else:
+                count_y = True
+        if recipe.plot_type == "Scatter" and discrete(recipe.x_column, "x"):
+            count_x = True
+    return count_x, count_y
+
+
+def validate_plot_intervals(result: PlotData) -> None:
+    """Reject invalid intervals in preparation as well as in figure rendering."""
+    recipe = result.recipe
+    counts = plot_count_axes(result)
+    for axis, is_count in zip(("x", "y"), counts, strict=True):
+        interval = parse_tick_interval(
+            getattr(recipe, f"{axis}_tick_interval"), axis=axis
+        )
+        if interval is None:
+            continue
+        if is_count and not interval.is_integer():
+            raise ValueError(
+                f"{axis.upper()} axis shows counts: its label interval must be a "
+                "whole number (1, 2, 5, …) or Auto."
+            )
+        coordinate = axis
+        if recipe.plot_type == "Distribution":
+            coordinate = (
+                ("bin_edges" if axis == "x" else "histogram_values")
+                if recipe.distribution == "Histogram"
+                else f"ecdf_{axis}"
+            )
+        values = [
+            value for series in result.series for value in getattr(series, coordinate)
+        ]
+        if axis == "y" and recipe.plot_type == "Distribution":
+            values.append(0.0)
+        if values:
+            low, high = min(values), max(values)
+            # Match the ordinary five-percent plot margins (including the
+            # initial expansion of a constant range). Reject before a GUI draw
+            # callback rather than handing it an unrenderable prepared result.
+            if low == high:
+                delta = abs(low) / 20 if low else 0.05
+                low, high = low - delta, high + delta
+            margin = high / 20 - low / 20
+            low, high = low - margin, high + margin
+            if axis == "y" and recipe.plot_type == "Distribution":
+                low = 0.0
+            interval_ticks(low, high, interval, axis=axis)
+
+
 def plot_state_from_data(data: PlotData, *, history: tuple[str, ...] = ()) -> PlotState:
     return PlotState(
         data.recipe.plot_type,
@@ -291,6 +440,13 @@ def build_plot_result(
     if recipe is not None and params:
         raise ValueError("Supply either a PlotRecipe or parameter values, not both.")
     recipe = recipe or PlotRecipe.from_params(params)
+    if is_summary_table(table) and recipe.point_unit == "Mean per image":
+        raise ValueError(
+            "This input is already a summary table. Set Each point represents "
+            "to One summary row, or connect the original measurements to "
+            "calculate image means. Summary rows do not restore the original "
+            "objects or independent samples."
+        )
 
     def cancelled() -> None:
         if cancel_callback is not None and cancel_callback():
@@ -314,8 +470,16 @@ def build_plot_result(
     )
     candidates = numeric_columns(table)
 
-    def resolve(column: str, *, exclude: str = "") -> str:
+    def resolve(column: str, *, exclude: str = "", axis: str = "Y") -> str:
         if column in ("", "auto"):
+            if is_summary_table(table):
+                raise ValueError(
+                    f"Choose a summary measurement for the {axis} axis.\n\n"
+                    "Select the mean, median, count or other summary column you "
+                    "want to plot. Automatic selection is disabled for summary "
+                    "tables so saved settings and inclusion counts are not "
+                    "mistaken for the intended measurement."
+                )
             eligible = tuple(name for name in candidates if name != exclude)
             if not eligible:
                 raise ValueError(
@@ -329,9 +493,11 @@ def build_plot_result(
             )
         return column
 
-    y_column = resolve(recipe.y_column)
+    y_column = resolve(
+        recipe.y_column, axis="X" if recipe.plot_type == "Distribution" else "Y"
+    )
     x_column = (
-        resolve(recipe.x_column, exclude=y_column)
+        resolve(recipe.x_column, exclude=y_column, axis="X")
         if recipe.plot_type == "Scatter"
         else recipe.x_column
     )
@@ -357,7 +523,13 @@ def build_plot_result(
     for row_index, row in enumerate(table.rows):
         if row_index % 1024 == 0:
             cancelled()
-        group = row[group_index] if group_index is not None else "All objects"
+        group = (
+            row[group_index]
+            if group_index is not None
+            else "All summary rows"
+            if is_summary_table(table)
+            else "All objects"
+        )
         image = row[image_index] if image_index is not None else ""
         raw = [row[y_index]] + ([row[x_index]] if x_index is not None else [])
         required = (
@@ -535,6 +707,8 @@ def build_plot_result(
         else (
             measurement_label(table, recipe.group_column)
             if recipe.group_column
+            else "Summary rows"
+            if is_summary_table(table)
             else "Objects"
         )
     )
@@ -598,6 +772,12 @@ def build_plot_result(
             "eligible rows are absent, not zero. An image is not automatically "
             "an independent biological sample."
         )
+    elif is_summary_table(table):
+        warnings.append(
+            "Each point represents one summary row, not an original object or "
+            "independent sample. Summary counts do not recreate the original "
+            "observations, and SD columns are not automatically used as error bars."
+        )
     else:
         warnings.append(
             "Each point represents one table row/object, not necessarily "
@@ -608,7 +788,7 @@ def build_plot_result(
             "No eligible values for this plot. Check the selected fields and scale."
         )
     cancelled()
-    return PlotData(
+    result = PlotData(
         recipe,
         table,
         TableData(
@@ -648,6 +828,8 @@ def build_plot_result(
         y_label,
         tuple(warnings),
     )
+    validate_plot_intervals(result)
+    return result
 
 
 def plot_results(

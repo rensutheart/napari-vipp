@@ -5727,6 +5727,28 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("title", "Plot title", "text", "", 0, 0, 1),
             ParameterSpec("point_size", "Point size", "float", 5.0, 1.0, 20.0, 0.5),
             ParameterSpec("show_grid", "Show grid", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "x_tick_interval",
+                "X axis label interval",
+                "text",
+                "Auto",
+                0,
+                0,
+                1,
+                tooltip="Auto or a positive numeric interval on a linear X axis.",
+            ),
+            ParameterSpec(
+                "y_tick_interval",
+                "Y axis label interval",
+                "text",
+                "Auto",
+                0,
+                0,
+                1,
+                tooltip=(
+                    "Auto or a positive numeric interval; counts need whole numbers."
+                ),
+            ),
         ),
         plot_results,
         subcategory="Tables",
@@ -5815,16 +5837,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "summarize_measurements",
-        "Summarize Measurements",
+        "Statistics",
         MEASUREMENTS_CATEGORY,
         "table",
         "table",
         (
+            ParameterSpec("summary_version", "Summary version", "int", 2, 1, 2, 1),
             ParameterSpec(
                 "group_by",
-                "Group by columns (auto or comma-separated)",
+                "Show separate results for",
                 "text",
-                "auto",
+                "",
                 0,
                 0,
                 1,
@@ -5842,10 +5865,42 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 "statistics",
                 "Statistics",
                 "text",
-                "count,mean,median,std,min,max,q25,q75",
+                "count,mean,std",
                 0,
                 0,
                 1,
+            ),
+            ParameterSpec(
+                "summary_level",
+                "Summarize using",
+                "choice",
+                "Objects",
+                0,
+                0,
+                1,
+                choices=("Objects", "Image averages", "Sample averages"),
+            ),
+            ParameterSpec("image_column", "Image identity", "text", "", 0, 0, 1),
+            ParameterSpec("sample_column", "Sample identity", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "sample_weighting",
+                "Within each sample",
+                "choice",
+                "Equal images",
+                0,
+                0,
+                1,
+                choices=("Equal images", "Equal objects"),
+            ),
+            ParameterSpec(
+                "missing_policy",
+                "Missing or invalid measurements",
+                "choice",
+                "Exclude and report",
+                0,
+                0,
+                1,
+                choices=("Exclude and report", "Stop and review"),
             ),
         ),
         summarize_measurements,
@@ -6724,6 +6779,34 @@ def graph_node_from_persisted_params(
         saved_params.setdefault("high_percentile", 99.0)
         saved_params.setdefault("reference_mean", 0.0)
         saved_params.setdefault("reference_standard_deviation", 1.0)
+    elif operation_id == "plot_results":
+        # Axis spacing was originally automatic. Old workflows, history,
+        # generated execution and batch restores keep exactly that default.
+        saved_params = dict(saved_params)
+        saved_params.setdefault("x_tick_interval", "Auto")
+        saved_params.setdefault("y_tick_interval", "Auto")
+    elif operation_id == "summarize_measurements":
+        # V2 makes aggregation/exclusions explicit and leaves singleton SD
+        # undefined. Old workflows must not silently acquire those semantics.
+        saved_params = dict(saved_params)
+        legacy_summary = (
+            "summary_version" not in saved_params
+            or saved_params.get("summary_version") == 1
+        )
+        if legacy_summary:
+            saved_params.setdefault("summary_version", 1)
+            saved_params.setdefault("summary_level", "Objects")
+            saved_params.setdefault("image_column", "")
+            saved_params.setdefault("sample_column", "")
+            saved_params.setdefault("sample_weighting", "Equal images")
+            saved_params.setdefault("missing_policy", "Exclude and report")
+        version = saved_params.get("summary_version")
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, Integral)
+            or version not in (1, 2)
+        ):
+            raise ValueError(f"Node {node_id!r} has an unsupported Statistics version.")
 
     required_params = {parameter.name for parameter in spec.parameters}
     missing_params = required_params - saved_params.keys()

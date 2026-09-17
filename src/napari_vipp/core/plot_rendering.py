@@ -29,6 +29,7 @@ from matplotlib.ticker import (
     LogLocator,
     MaxNLocator,
     NullLocator,
+    ScalarFormatter,
     StrMethodFormatter,
 )
 
@@ -37,6 +38,12 @@ from napari_vipp.core.measurement_export import (
     _publish,
     _RecoveryFailed,
     measurement_export_destination_revisions,
+)
+from napari_vipp.core.result_plots import (
+    interval_ticks,
+    parse_tick_interval,
+    plot_count_axes,
+    validate_plot_intervals,
 )
 
 PLOT_COLORS = ("#278AC7", "#D88027", "#289D8F", "#AA6BC4", "#CB536C", "#80733D")
@@ -71,13 +78,20 @@ def _set_count_axis(axis, *, logarithmic, compact):
     axis.set_minor_locator(NullLocator())
 
 
-def _is_discrete_count_measurement(result, *, column, coordinate):
-    """Count units are required; inherited units on fractional aggregates are not."""
-    return result.source_table.unit_for(column) == "count" and all(
-        float(value).is_integer()
-        for series in result.series
-        for value in getattr(series, coordinate)
-    )
+class _FixedIntervalLocator(Locator):
+    """A bounded numeric major interval, shared by labels and grid lines."""
+
+    def __init__(self, interval, axis_name):
+        self.interval = interval
+        self.axis_name = axis_name
+
+    def tick_values(self, vmin, vmax):
+        return np.asarray(
+            interval_ticks(vmin, vmax, self.interval, axis=self.axis_name), dtype=float
+        )
+
+    def __call__(self):
+        return self.tick_values(*self.axis.get_view_interval())
 
 
 def _group_tick_labels(result):
@@ -248,6 +262,7 @@ def build_plot_figure(
     A light publication background overrides that palette. Pickable scatter
     artists carry ``vipp_source_rows`` for object identity inspection.
     """
+    validate_plot_intervals(result)
     palette = {"background": "#FFFFFF", "text": "#273644", "grid": "#D3DBE0"}
     if colors and not publication:
         palette.update(colors)
@@ -263,7 +278,12 @@ def build_plot_figure(
         spine.set_color(palette["grid"])
     axes.set_axisbelow(True)
     if recipe.show_grid:
-        axes.grid(axis="y", color=palette["grid"], linewidth=0.6, alpha=0.6)
+        axes.grid(
+            axis="y" if recipe.plot_type == "Compare groups" else "both",
+            color=palette["grid"],
+            linewidth=0.6,
+            alpha=0.6,
+        )
 
     for index, series in enumerate(result.series):
         color = PLOT_COLORS[index % len(PLOT_COLORS)]
@@ -356,30 +376,25 @@ def build_plot_figure(
         axes.yaxis.set_major_locator(MaxNLocator(nbins=4 if compact else 6))
     if recipe.plot_type == "Distribution" and not recipe.log_y:
         axes.set_ylim(bottom=0)
-    if (
-        recipe.plot_type == "Distribution"
-        and recipe.distribution == "Histogram"
-        and recipe.normalization == "Count"
+    for name, axis, is_count in zip(
+        ("x", "y"), (axes.xaxis, axes.yaxis), plot_count_axes(result), strict=True
     ):
-        _set_count_axis(axes.yaxis, logarithmic=recipe.log_y, compact=compact)
-    if recipe.point_unit == "Objects":
-        # Only explicit count units carry this meaning. Integer-valued data,
-        # column names and count/length densities do not establish count axes;
-        # per-image means of counts may legitimately be fractional. Fractional
-        # upstream aggregates also veto this policy even if count units remain.
-        if _is_discrete_count_measurement(
-            result, column=recipe.y_column, coordinate="y"
-        ):
-            distribution = recipe.plot_type == "Distribution"
+        if is_count:
             _set_count_axis(
-                axes.xaxis if distribution else axes.yaxis,
-                logarithmic=recipe.log_x if distribution else recipe.log_y,
-                compact=compact,
+                axis, logarithmic=getattr(recipe, f"log_{name}"), compact=compact
             )
-        if recipe.plot_type == "Scatter" and _is_discrete_count_measurement(
-            result, column=recipe.x_column, coordinate="x"
-        ):
-            _set_count_axis(axes.xaxis, logarithmic=recipe.log_x, compact=compact)
+        interval = parse_tick_interval(
+            getattr(recipe, f"{name}_tick_interval"), axis=name
+        )
+        if interval is not None:
+            locator = _FixedIntervalLocator(interval, name)
+            # Validate the auto-padded visible range before handing off to the
+            # Qt draw callback. This also keeps exporters bounded before save.
+            locator.tick_values(*axis.get_view_interval())
+            axis.set_major_locator(locator)
+            axis.set_minor_locator(NullLocator())
+            if not is_count:
+                axis.set_major_formatter(ScalarFormatter(useOffset=False))
     title = (
         recipe.title
         or {

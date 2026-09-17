@@ -37,8 +37,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Batch measurement collection](measurement-collection.md): unreleased
   collection/export contract, typed datasets, Table Source, and validation record.
 - [Measurement plots and statistics](measurement-plots-and-statistics-plan.md):
-  planned 0.16 results workflow with two general-purpose nodes, batch-table
-  collection, independent-sample safeguards, editable pop-outs, and figure export.
+  approved descriptive-only 0.16 scope; implemented, unreleased collection and
+  plotting plus versioned object/image/sample summaries. No inference phase.
+- [Statistics contract](statistics.md): descriptive methods, weighting,
+  exclusions, output counts/units, and explicit legacy-recipe migration.
 - [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
   planned 0.16 scope for 2D/3D alignment, SSIM and related comparisons, template
   detection, and transform contracts; drift/rigid/affine follow-ups are separate.

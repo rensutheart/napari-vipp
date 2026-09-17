@@ -42,6 +42,15 @@ class ResultPlotController(QObject):
         return self.widget._workflow_tabs.current.session_id, node_id
 
     def render_parameters(self, node_id):
+        panel = self.panel_for(node_id)
+        self.widget.parameter_group.show()
+        self.widget.parameter_form.addRow(panel)
+        panel.show()
+
+    def panel_for(self, node_id):
+        """Bind the shared editor without changing the inspector selection."""
+        from qtpy.QtWidgets import QPushButton
+
         from napari_vipp.ui.result_plots import PlotResultsPanel
 
         if not self._debounce_connected:
@@ -61,11 +70,19 @@ class ResultPlotController(QObject):
             panel.layout_changed.connect(
                 lambda: QTimer.singleShot(0, self.widget._sync_parameter_form_height)
             )
+            panel.workspace_button = QPushButton("Open Results Workspace…", panel)
+            panel.workspace_button.clicked.connect(
+                lambda _checked=False, context=key: (
+                    self.widget._results_workspace.open_node(context[1])
+                    if context[0] == self.widget._workflow_tabs.current.session_id
+                    else None
+                )
+            )
+            panel.layout().addWidget(panel.workspace_button)
             self.panels[key] = panel
-        self.widget.parameter_group.show()
-        self.widget.parameter_form.addRow(panel)
-        panel.show()
+            panel.hide()
         self._refresh_panel(key, panel, force=True)
+        return panel
 
     def _commit(self, context, values):
         widget = self.widget
@@ -94,7 +111,8 @@ class ResultPlotController(QObject):
             widget._sync_current_workflow_tab_state()
             # The graph retains upstream measurements. Only the plot frontier
             # and its consumers are invalidated by a recipe edit.
-            widget._debounce_timer.start()
+            if not widget._results_workspace.plot_setup_message(node_id):
+                widget._debounce_timer.start()
             self._refresh_panel(context, self.panels[context], force=True)
         except (ValueError, TypeError) as exc:
             widget.status_label.setText(f"Plot settings: {exc}")
@@ -104,6 +122,8 @@ class ResultPlotController(QObject):
         """Describe real scheduled work, never infer progress from stale alone."""
         widget = self.widget
         if widget._closing or widget._compute_runtime_quarantined_reason:
+            return False, ""
+        if widget._results_workspace.plot_setup_message(node_id):
             return False, ""
         run_id = widget._active_pipeline_run_id
         if (
@@ -173,7 +193,8 @@ class ResultPlotController(QObject):
         ancestors = widget.pipeline.ancestors_inclusive({node.id})
         dirty = bool(ancestors & widget._pending_dirty_node_ids)
         busy, busy_message = self._busy_state(node.id, ancestors, execution)
-        stale = execution != EXECUTION_READY or dirty
+        setup_message = widget._results_workspace.plot_setup_message(node.id)
+        stale = execution != EXECUTION_READY or dirty or bool(setup_message)
         stamp = (
             id(result),
             id(table),
@@ -183,6 +204,7 @@ class ResultPlotController(QObject):
             message,
             busy,
             busy_message,
+            setup_message,
         )
         if force or self._keys.get(context) != stamp:
             self._keys[context] = stamp
@@ -210,7 +232,7 @@ class ResultPlotController(QObject):
                 busy=busy,
                 busy_message=busy_message,
                 protected_paths=protected,
-                message=message
+                message=setup_message or message
                 or (
                     "Settings or inputs changed; waiting for the updated plot."
                     if stale and result is not None
