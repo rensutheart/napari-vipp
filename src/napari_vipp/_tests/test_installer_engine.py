@@ -1348,6 +1348,194 @@ print(json.dumps(document, ensure_ascii=False))
     ]
 
 
+def test_live_subprocess_delivers_output_before_exit_and_keeps_full_capture(tmp_path):
+    acknowledged = tmp_path / "output-received"
+    events = []
+    script = r"""
+import os
+import sys
+import time
+from pathlib import Path
+
+print('Collecting example-package', flush=True)
+deadline = time.monotonic() + 5
+while not Path(sys.argv[1]).exists():
+    if time.monotonic() >= deadline:
+        raise SystemExit(99)
+    time.sleep(0.01)
+os.write(sys.stdout.fileno(), b'\xe2')
+os.write(sys.stdout.fileno(), b'\x8f\xb1 downloaded\rInstalling\n')
+print('Downloading https://user:private@packages.example/private/wheel.whl?token=abc',
+      flush=True)
+sys.stderr.write('Authorization: Bearer confidential\n')
+sys.stderr.flush()
+for i in range(128):
+    sys.stdout.write('out-' + str(i) + '-' + 'x' * 1024 + '\n')
+    sys.stderr.write('err-' + str(i) + '-' + 'y' * 1024 + '\n')
+raise SystemExit(7)
+"""
+
+    def receive(stream, text):
+        events.append((stream, text))
+        if "Collecting example-package" in text:
+            acknowledged.touch()
+
+    result = engine_module.SubprocessCommandRunner().run(
+        (sys.executable, "-c", script, str(acknowledged)),
+        output=receive,
+    )
+
+    assert result.returncode == 7, result.stderr
+    assert acknowledged.exists()
+    assert "⏱ downloaded\nInstalling\n" in result.stdout
+    assert "user:private@" in result.stdout  # Machine/full capture is untouched.
+    assert "Authorization: Bearer confidential" in result.stderr
+    assert "out-127-" in result.stdout and "err-127-" in result.stderr
+    text = "".join(text for _stream, text in events)
+    assert "https://packages.example/wheel.whl" in text
+    assert "private" not in text and "confidential" not in text
+    assert "?token=abc" not in text
+    assert {stream for stream, _text in events} == {"stdout", "stderr"}
+    assert "out-127-" in text and "err-127-" in text
+
+
+def test_live_subprocess_cancellation_keeps_partial_output():
+    token = CancellationToken()
+    events = []
+
+    def receive(_stream, text):
+        events.append(text)
+        if "ready to cancel" in text:
+            token.cancel()
+
+    with pytest.raises(engine_module.InstallCancelled) as caught:
+        engine_module.SubprocessCommandRunner().run(
+            (
+                sys.executable,
+                "-c",
+                "import time; print('ready to cancel', flush=True); time.sleep(10)",
+            ),
+            output=receive,
+            cancellation=token,
+        )
+
+    assert "ready to cancel" in "".join(events)
+    assert "ready to cancel" in caught.value.__cause__.stdout
+
+
+def test_live_subprocess_observer_failure_does_not_abort_command():
+    def broken_observer(_stream, _text):
+        raise RuntimeError("closed GUI")
+
+    result = engine_module.SubprocessCommandRunner().run(
+        (sys.executable, "-c", "print('still completed')"),
+        output=broken_observer,
+    )
+    assert result == CommandResult(0, "still completed\n", "")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Downloading https://user:credential@packages.example/private/a.whl?secret=hide",
+        "Authorization: Bearer credential",
+        "Password=credential",
+        '"token": "credential"',
+        '"password": "credential secondword thirdword"',
+        "secret='credential secondword thirdword'",
+        "\x1b[31msecret=credential\x1b[0m",
+        "Downloading https://[invalid/credential",
+    ],
+)
+def test_console_redacts_credentials_at_every_possible_chunk_split(line):
+    for split in range(len(line) + 1):
+        events = []
+        records = engine_module._ConsoleRecords(events.append)
+        records.feed(line[:split])
+        assert not events  # No partial URL/token can escape before its boundary.
+        records.feed(line[split:] + "\r\n")
+        assert len(events) == 1
+        assert "credential" not in events[0]
+        assert "secondword" not in events[0]
+        assert "thirdword" not in events[0]
+        assert "\x1b" not in events[0]
+        assert "private" not in events[0]
+
+
+def test_console_record_buffer_is_bounded_without_releasing_partial_secrets():
+    events = []
+    records = engine_module._ConsoleRecords(events.append)
+    for _ in range(20):
+        records.feed("x" * 4096)
+        assert len(records._pending) <= engine_module._MAX_CONSOLE_RECORD_CHARS
+    records.feed("password=credential\nnext useful line", final=True)
+    assert events == [
+        "[Long console line omitted from live view]\n",
+        "next useful line\n",
+    ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_engine_console_is_separate_from_progress_and_machine_json(tmp_path, streaming):
+    class LegacyOutputRunner(_FakeRunner):
+        def run(self, argv, *, cancellation=None, env=None, cwd=None):
+            result = super().run(argv, cancellation=cancellation, env=env, cwd=cwd)
+            return CommandResult(
+                result.returncode,
+                result.stdout if "--dry-run" in argv else "Installed component\n",
+                "Package notice secret=credential\n",
+            )
+
+    class StreamingOutputRunner(LegacyOutputRunner):
+        supports_live_output = True
+
+        def run(self, argv, *, cancellation=None, env=None, cwd=None, output=None):
+            result = super().run(argv, cancellation=cancellation, env=env, cwd=cwd)
+            if output is not None:
+                for stream in ("stdout", "stderr"):
+                    records = engine_module._ConsoleRecords(
+                        lambda text, stream=stream: output(stream, text),
+                    )
+                    records.feed(getattr(result, stream), final=True)
+            return result
+
+    runner = StreamingOutputRunner() if streaming else LegacyOutputRunner()
+    engine = _engine(tmp_path, runner)
+    events = []
+    prepared = engine.prepare(
+        _plan(tmp_path / "managed", _release()),
+        progress=events.append,
+    )
+    assert prepared.resolution_complete
+    console = [event for event in events if event.console_text]
+    assert console and all(event.stage is ProgressStage.RESOLVING for event in console)
+    assert all("install" not in event.console_text for event in console)
+    assert all("credential" not in event.console_text for event in console)
+    events.clear()
+
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+
+    assert result.succeeded
+    console = [event for event in events if event.console_text]
+    assert {event.stage for event in console} == {
+        ProgressStage.CREATING_ENVIRONMENT,
+        ProgressStage.INSTALLING,
+        ProgressStage.VERIFYING,
+    }
+    assert all(
+        event.message == "" and event.completed == event.total == 0 for event in console
+    )
+    assert all("credential" not in event.console_text for event in console)
+    assert events[-1].stage is ProgressStage.COMPLETED and not events[-1].console_text
+    assert result.log_path is not None
+    log = result.log_path.read_text(encoding="utf-8")
+    assert "Installed component" in log and "credential" not in log
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows creation flags only")
 def test_installer_subprocesses_do_not_open_a_console(monkeypatch):
     real_popen = engine_module.subprocess.Popen

@@ -21,6 +21,7 @@ from napari_vipp.core.workflow import (
     workflow_document_from_snapshot,
     workflow_snapshot_from_document,
 )
+from napari_vipp.ui.examples import EXHAUSTIVE_EXTERNAL_SOURCE_IDS
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW_PATH = REPO_ROOT / "examples" / "exhaustive-inspector-showcase.json"
@@ -56,7 +57,10 @@ def test_exhaustive_inspector_showcase_is_current_and_canonical():
 def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
     snapshot = workflow_snapshot_from_document(_showcase_document())
     operation_counts = Counter(node.operation_id for node in snapshot.graph.nodes)
-    palette_ids = {operation.id for operation in PALETTE_NODE_LIBRARY}
+    palette_ids = (
+        {operation.id for operation in PALETTE_NODE_LIBRARY}
+        - EXHAUSTIVE_EXTERNAL_SOURCE_IDS
+    )
 
     assert set(operation_counts) == palette_ids
     assert not (set(operation_counts) & PALETTE_HIDDEN_OPERATION_IDS)
@@ -72,6 +76,15 @@ def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
         "rescale_intensity": 2,
         "cellprofiler_propagation": 2,
     }
+
+
+def test_showcase_external_data_exception_cannot_hide_processing_nodes():
+    excluded = [
+        spec for spec in PALETTE_NODE_LIBRARY
+        if spec.id in EXHAUSTIVE_EXTERNAL_SOURCE_IDS
+    ]
+    assert {spec.id for spec in excluded} == {"table_source"}
+    assert all(not spec.has_input and spec.output_type == "table" for spec in excluded)
 
 
 def test_exhaustive_inspector_showcase_places_and_connects_every_node():
@@ -220,7 +233,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         }
     )
     assert sum(tunnel_counts.values()) == 64
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 110
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 111
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:

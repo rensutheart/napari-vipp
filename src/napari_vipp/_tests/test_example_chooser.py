@@ -14,6 +14,7 @@ from qtpy.QtGui import (
 )
 from qtpy.QtWidgets import QDialog, QDialogButtonBox, QStyle, QWidget
 
+import napari_vipp.ui.dialog_buttons as dialog_buttons
 from napari_vipp.ui.dialogs import ExampleWorkflowDialog
 from napari_vipp.ui.example_guidance import ExampleGuidance
 from napari_vipp.ui.examples import EXAMPLE_WORKFLOWS, ExampleWorkflowSpec
@@ -71,8 +72,8 @@ def test_chooser_prioritizes_analysis_and_collapses_developer_workflows(qtbot):
     qtbot.addWidget(dialog)
     assert dialog.tree.columnCount() == 1
     assert dialog.tree.wordWrap()
-    assert len(list(_items(dialog))) == len(EXAMPLE_WORKFLOWS) == 22
-    assert "22" in dialog.count_label.text()
+    assert len(list(_items(dialog))) == len(EXAMPLE_WORKFLOWS) == 23
+    assert "23" in dialog.count_label.text()
     first_category = dialog.tree.topLevelItem(0)
     last_category = dialog.tree.topLevelItem(dialog.tree.topLevelItemCount() - 1)
     assert "segmentation" in first_category.text(0).lower()
@@ -160,6 +161,9 @@ def test_return_opens_the_selected_example(qtbot, focus_widget):
 
 @pytest.mark.parametrize("width", [720, 1180])
 @pytest.mark.parametrize(
+    "chosen_layout", [QDialogButtonBox.WinLayout, QDialogButtonBox.MacLayout]
+)
+@pytest.mark.parametrize(
     "platform_layout",
     [
         QDialogButtonBox.WinLayout,
@@ -169,9 +173,14 @@ def test_return_opens_the_selected_example(qtbot, focus_widget):
     ],
     ids=["windows", "macos", "kde", "gnome"],
 )
-def test_chooser_renders_cancel_left_of_default_open_button(
-    qtbot, qapp, width, platform_layout
+def test_chooser_uses_platform_order_for_default_open_button(
+    qtbot, qapp, monkeypatch, width, platform_layout, chosen_layout
 ):
+    monkeypatch.setattr(
+        dialog_buttons,
+        "dialog_button_layout",
+        lambda platform=None: getattr(chosen_layout, "value", chosen_layout),
+    )
     parent = QWidget()
     qtbot.addWidget(parent)
     parent.setStyleSheet(
@@ -194,12 +203,17 @@ def test_chooser_renders_cancel_left_of_default_open_button(
     cancel_button = dialog.buttons.button(QDialogButtonBox.Cancel)
     assert cancel_button.isVisible()
     assert dialog.open_button.isVisible()
-    assert cancel_button.geometry().right() < dialog.open_button.geometry().left()
+    if chosen_layout == QDialogButtonBox.MacLayout:
+        left, right = cancel_button, dialog.open_button
+    else:
+        left, right = dialog.open_button, cancel_button
+    assert left.geometry().right() < right.geometry().left()
     assert cancel_button.geometry().center().y() == (
         dialog.open_button.geometry().center().y()
     )
     assert dialog.open_button.isDefault()
     assert not cancel_button.isDefault()
+    assert not cancel_button.autoDefault()
     # Consistent action order must not reverse the rest of the chooser.
     assert dialog.layoutDirection() == Qt.LeftToRight
     assert dialog.filter_edit.layoutDirection() == Qt.LeftToRight

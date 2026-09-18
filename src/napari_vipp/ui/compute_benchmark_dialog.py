@@ -39,6 +39,7 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkUnavailable,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 
 
@@ -364,9 +365,12 @@ class NodeBenchmarkDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        buttons.addWidget(self.apply_button)
-        buttons.addWidget(self.cancel_button)
-        buttons.addWidget(self.close_button)
+        add_dialog_buttons(
+            buttons,
+            actions=(self.apply_button,),
+            dismiss=self.close_button,
+            stop_actions=(self.cancel_button,),
+        )
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.progress_label)

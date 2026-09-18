@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.ui.controls import _configure_numeric_spin_box
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_COLORMAPS,
@@ -173,8 +174,9 @@ class ColocalizationScatterDialog(QDialog):
             button.setDefault(False)
         button_row = QHBoxLayout()
         button_row.addWidget(self.export_hint, 1)
-        button_row.addWidget(self.export_button)
-        button_row.addWidget(self.close_button)
+        add_dialog_buttons(
+            button_row, actions=(self.export_button,), dismiss=self.close_button
+        )
 
         layout = QVBoxLayout(self)
         layout.addWidget(settings_group)
@@ -200,9 +202,7 @@ class ColocalizationScatterDialog(QDialog):
         self._colocalized_voxels = 0
         self._range_percentile = 100.0
         self._display_note = ""
-        self._threshold_layout_lock: tuple[
-            tuple[QWidget, int, int], ...
-        ] = ()
+        self._threshold_layout_lock: tuple[tuple[QWidget, int, int], ...] = ()
         self._threshold_layout_was_enabled: bool | None = None
         self._density_settings_timer = QTimer(self)
         self._density_settings_timer.setSingleShot(True)
@@ -212,18 +212,12 @@ class ColocalizationScatterDialog(QDialog):
         self.plot.thresholdCommitted.connect(self._on_threshold_changed)
         self.plot.gestureStarted.connect(self._begin_threshold_gesture)
         self.plot.gestureFinished.connect(self._end_threshold_gesture)
-        self.colormap_combo.currentTextChanged.connect(
-            self.colormapChanged.emit
-        )
-        self.density_bins_spin.valueChanged.connect(
-            self._queue_density_settings_change
-        )
+        self.colormap_combo.currentTextChanged.connect(self.colormapChanged.emit)
+        self.density_bins_spin.valueChanged.connect(self._queue_density_settings_change)
         self.populated_range_spin.valueChanged.connect(
             self._queue_density_settings_change
         )
-        self._density_settings_timer.timeout.connect(
-            self._emit_density_settings_change
-        )
+        self._density_settings_timer.timeout.connect(self._emit_density_settings_change)
         self.log_density_checkbox.toggled.connect(self._on_log_density_changed)
         self.zoom_to_data_checkbox.toggled.connect(self._on_zoom_changed)
         self.equal_axes_checkbox.toggled.connect(self._on_equal_axes_changed)
@@ -316,9 +310,7 @@ class ColocalizationScatterDialog(QDialog):
             self.axis_range_label.setText("View ranges unavailable.")
             return
         mode = (
-            "Populated view"
-            if self.zoom_to_data_checkbox.isChecked()
-            else "Full view"
+            "Populated view" if self.zoom_to_data_checkbox.isChecked() else "Full view"
         )
         self.axis_range_label.setText(
             f"{mode}: Ch 1 {_format_range(ranges[0], ranges[1])} · "
@@ -714,10 +706,9 @@ def render_widget_image(
     original_size = widget.size()
     original_minimum = widget.minimumSize()
     original_maximum = widget.maximumSize()
-    resize_for_render = (
-        requested_width != int(widget.width())
-        or requested_height != int(widget.height())
-    )
+    resize_for_render = requested_width != int(
+        widget.width()
+    ) or requested_height != int(widget.height())
     if resize_for_render:
         widget.setMinimumSize(0, 0)
         widget.setMaximumSize(16_777_215, 16_777_215)
@@ -749,8 +740,12 @@ def qimage_rgb_array(image: QImage) -> np.ndarray:
         pointer.setsize(byte_count)
     raw = np.frombuffer(pointer, dtype=np.uint8, count=byte_count)
     rows = raw.reshape(int(rgb.height()), int(rgb.bytesPerLine()))
-    return rows[:, : int(rgb.width()) * 3].reshape(
-        int(rgb.height()),
-        int(rgb.width()),
-        3,
-    ).copy()
+    return (
+        rows[:, : int(rgb.width()) * 3]
+        .reshape(
+            int(rgb.height()),
+            int(rgb.width()),
+            3,
+        )
+        .copy()
+    )

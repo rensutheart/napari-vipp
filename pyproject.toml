@@ -58,6 +58,7 @@ dependencies = [
     "scikit-image>=0.21",
     "scipy>=1.10",
     "tifffile>=2023.8",
+    "xlsxwriter>=3.2,<4",
     "zarr>=3.0",
 ]
 

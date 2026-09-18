@@ -96,10 +96,12 @@ from napari_vipp.core.pipeline import (
 )
 from napari_vipp.core.presentation import crop_stack_presentation_view
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.result_plots import PlotData
 from napari_vipp.core.source_identity import (
     is_vipp_owned_immutable_source_revision,
 )
 from napari_vipp.core.source_window import ExactSourceWindowData
+from napari_vipp.core.tables import TableData
 from napari_vipp.core.thumbnail_statistics import (
     EXACT_FLOAT32_MINMAX_GPU_ALGORITHM_ID,
     EXACT_FLOAT32_PERCENTILE_GPU_ALGORITHM_ID,
@@ -2592,7 +2594,7 @@ def _execute_accelerated_pipeline(
                 state_by_port[OutputPortKey(node_id, port_index)] = state
             if node_finished_callback is not None:
                 node_finished_callback(node_id)
-        pipeline.finish_execution(execution)
+        pipeline.finish_execution(execution, cancel_callback=cancel_callback)
 
         actual_decisions = _actual_execution_decisions(
             tuple(decisions_by_node.values()),
@@ -3264,6 +3266,7 @@ def _initial_transaction_values(
             request.input_metadata,
             request.input_name,
             request.source_payloads,
+            cancellation=request.cancel_event,
         )
         source_results[node_id] = results
         for port_index, (value, state) in enumerate(results):
@@ -5590,6 +5593,7 @@ def _capture_source_scientific_contexts(
             request.input_metadata,
             request.input_name,
             request.source_payloads,
+            cancellation=cancel_callback,
         )
         payload = request.source_payloads.get(node_id)
         if payload is None:
@@ -5881,6 +5885,33 @@ def _scientific_array_identity(
     *,
     cancel_callback: Callable[[], bool] | None,
 ) -> object:
+    if isinstance(value, PlotData):
+        return {
+            "schema_id": "vipp-exact-plot-v1",
+            "recipe": value.recipe.to_params(),
+            "source": _scientific_array_identity(
+                value.source_table, cancel_callback=cancel_callback
+            ),
+        }
+    if isinstance(value, TableData):
+        # Preserve exact typed values without constructing a second full-sized
+        # JSON tree for a potentially large collection. Row order is scientific.
+        digest = sha256()
+        for row in value.rows:
+            _check_scientific_context_cancelled(cancel_callback)
+            digest.update(
+                canonical_digest(
+                    _scientific_identity_value(row, cancel_callback=cancel_callback)
+                ).encode("ascii")
+            )
+        return {
+            "schema_id": "vipp-exact-table-source-v1",
+            "metadata": _scientific_identity_value(
+                replace(value, rows=()), cancel_callback=cancel_callback
+            ),
+            "row_count": value.row_count,
+            "rows_sha256": digest.hexdigest(),
+        }
     if isinstance(value, ExactSourceWindowData):
         return {
             "schema_id": "vipp-exact-source-window-array-v1",
@@ -5917,6 +5948,8 @@ def _scientific_array_identity(
 
 
 def _scientific_array_reuse_envelope(value: object) -> object:
+    if isinstance(value, (TableData, PlotData)):
+        return _scientific_array_identity(value, cancel_callback=None)
     if isinstance(value, ExactSourceWindowData):
         return {
             "schema_id": "vipp-exact-source-window-array-header-v1",

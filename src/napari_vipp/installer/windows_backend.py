@@ -1107,6 +1107,7 @@ def _progress_update(event: object) -> ProgressUpdate:
         total=None if indeterminate else total,
         unit=ProgressUnit.ACTIVITY if indeterminate else raw_unit,
         log_path=getattr(event, "log_path", None),
+        console_text=getattr(event, "console_text", ""),
     )
 
 

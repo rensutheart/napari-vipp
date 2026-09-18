@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-10
+Last reviewed: 2026-09-17
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -36,8 +36,10 @@ The planned **0.16** scope combines
 [registration, image comparison, and template matching](registration-and-template-matching-plan.md)
 with [measurement plots and statistics](measurement-plots-and-statistics-plan.md).
 The latter adds a focused results workflow, not a general statistical package:
-two configurable nodes, explicit independent samples, batch-table collection,
-editable plot pop-outs, and reproducible figure export.
+two configurable nodes, explicit object/image/sample aggregation, batch-table
+collection, editable plot pop-outs, and reproducible figure export. Statistics
+stops at descriptive summaries: inferential tests, p-values, ANOVA,
+significance labels and confidence intervals are outside 0.16 scope.
 Model-backed segmentation, stitching,
 tracking, AI-assisted graph authoring, and custom code remain possible future
 directions. The [AI authoring plan](ai-assisted-authoring-plan.md) connects
@@ -47,23 +49,28 @@ not an addition to the committed 0.16 scope. These ideas are recorded
 in [product ideas](product-ideas.md) and do not displace the active source,
 scale, interactivity, and reproducibility foundations below.
 
+The proposed **0.17** direction is
+[reproducibility and publication support](#planned-017-reproducibility-and-publication-support).
+VIPP is intended for an eventual journal paper: retain primary references and
+the evidence supporting each claim in the
+[research and publication record](research-and-publication.md). Additional
+study documentation must remain optional so simple analyses stay accessible.
+
 ## Current Baseline
 
-The published `0.15.0a3` is the baseline for the narrow `0.15.0a4` release,
-authorized on 2026-09-10. The a3 official
-[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a3),
-checksum sidecars,
-[PyPI package](https://pypi.org/project/napari-vipp/0.15.0a3/), and
-[numbered manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a3/) establish
-that released baseline. Version a4 changes graph-wire routing and detailed
-multichannel histogram presentation, including PNG/TIFF export. Scientific
-calculations, schemas, GPU algorithms, dependencies and installer code are
-unchanged. Affected evidence and bounded carry-forward rules are recorded in the
+The published `0.15.0a5` is the released baseline. Its official
+[GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a5),
+checksum sidecars, [PyPI package](https://pypi.org/project/napari-vipp/0.15.0a5/),
+and [numbered manual](https://rensutheart.github.io/vipp-mkdocs/0.15.0a5/)
+identify that release. Batch measurement collection, Table Source, Plot Results
+and the versioned descriptive Statistics work below are **unreleased after
+0.15.0a5**, not capabilities of its numbered package. Affected evidence and
+bounded carry-forward rules are recorded in the
 [qualification baseline](release-qualification-baseline.md); a version change
 alone does not qualify or invalidate a domain. The current line provides:
 
 - SourceItem v1 through workflow schema 6, batch config 6, and manifest schema 6
-  in a3/a4 (manifest schema 5 in a2),
+  in a3/a4/a5 (manifest schema 5 in a2),
   with stable selected-item identity, reader evidence, source revision, axes,
   metadata, checkpoints, manifests, and exact implementation provenance;
 - shared execution across interactive, batch, generated Python/CLI, and export;
@@ -118,7 +125,9 @@ threshold ranges, explicit intensity inversion, convex hulls and object-aware
 reproducibility packages and original-input checks, label boundaries and filter
 diagnostics, broader RL GPU execution with advisories, and desktop/workflow
 presentation fixes. The narrow `0.15.0a4` release improves wire routing and
-histogram overlap visibility; see the [release notes](../release-notes.md).
+histogram overlap visibility. Released `0.15.0a5` adds guided examples,
+Colocalization Mask, single-launcher desktop/update changes and presentation
+repairs; see the [changelog](../CHANGELOG.md).
 Qualification and publication follow the iterative-alpha
 [release runbook](release-runbook.md), with the complete tag-to-tag delta and
 unchanged-domain carry-forward declared in the
@@ -133,9 +142,15 @@ GPU or installer lifecycle matrices.
 The next planned feature series is **0.16: alignment and measurement results**.
 See the [registration/comparison/detection scope](#planned-016-registration-image-comparison-and-template-matching)
 and the [measurement plots/statistics scope](#planned-016-measurement-plots-and-statistics).
-This records intent, not completed implementation, a version bump, or a release
-date. Existing correctness and qualification gates remain mandatory. The
+Collection, initial plotting and descriptive Statistics are implemented but
+unreleased. The approved Results Workspace combines their interfaces while
+keeping the descriptive-only boundary. This is not a version bump
+or a release date. Existing correctness and qualification gates remain mandatory. The
 implementation records below retain their original 0.14 and 0.13 versions.
+
+After 0.16, tentatively target the reproducibility and publication additions
+below for **0.17**. This is a planning direction, not an implemented capability,
+release date, or requirement to expand 0.16.
 
 ### Delivered in 0.15.0a2: 3D surface output
 
@@ -1065,31 +1080,131 @@ issue before coding. Source, memory, and reproducibility priorities still apply.
 
 ## Planned 0.16: Measurement Plots And Statistics
 
-The [detailed results proposal](measurement-plots-and-statistics-plan.md) records
-the 2026-09-10 request for a self-contained way to explore bioimage measurements
-and export useful figures. It complements the alignment scope above; this is
-planning only, not an implemented feature or a version bump.
+The [approved results scope](measurement-plots-and-statistics-plan.md) provides
+a self-contained way to explore measurements and export figures. It
+complements the alignment scope above. The
+[measurement collection foundation](measurement-collection.md) and initial
+Plot Results implementation and descriptive Statistics are unreleased after
+0.15.0a5. The [Statistics contract](statistics.md) fixes the versioned
+calculation and migration behavior. The approved Results Workspace combines
+their existing controls without introducing new analysis methods. This is
+not a version bump.
 
 - **Plot Results:** table input, configurable plot families/fields, a preview,
   and an editable nonmodal pop-out sharing the inspector's saved settings.
   Export PNG/TIFF and SVG/PDF at explicit dimensions, with headless parity.
-- **Statistics:** expand **Summarize Measurements** rather than adding a
-  competing node. Descriptive summaries first; bounded comparisons only after
-  experimental-design and numerical-validation gates. Keep both nodes under
-  **Measurements -> Tables**.
+  Numeric axes offer Auto or custom major tick intervals, with matching grid
+  spacing and count-axis integer safeguards.
+- **Statistics:** expand **Summarize Measurements** in place, keeping operation
+  ID `summarize_measurements`. Summarize objects, image means or sample means
+  with explicit equal-image/equal-object weighting. Version 2 records counts,
+  exclusions and methods; version 1 preserves saved and direct-call behavior
+  until explicit upgrade. Keep both nodes under **Measurements -> Tables**.
+- **Results Workspace:** one nonmodal Data/Summary/Plots window opened from
+  an existing table or results node. Keep controls beside their current table
+  or figure, with explicit original-measurement versus summary-table plot
+  inputs. Adding a summary or plot creates an ordinary graph node; editing
+  the same node in any view stays synchronized. Opening or browsing creates
+  no hidden analysis, and different nodes retain independent recipes. Keep
+  source merging/collection upstream, view-only search/column visibility
+  separate from analysis, and existing table/figure export contracts intact.
 - **Across-image results:** explicitly collect and annotate batch measurement
   tables with image, condition, and independent-sample identities. Existing
   Merge Tables is not a batch-row collector. Per-image and post-batch analyses
-  must remain distinguishable and reproducible.
+  must remain distinguishable and reproducible. The initial implementation
+  verifies recorded table outputs, reviews missing/excluded/empty items, and
+  exports CSV/TSV or an Excel workbook directly, with image-summary records.
+  Saving a typed `.vipp-results.json` dataset and opening it through **Table
+  Source** are separate, optional steps that reuse existing table tools
+  without adding plots or inference.
 - **Scientific guardrails:** never confuse cell counts with independent
-  replicates; declare aggregation/pairing, retain units, expose exclusions,
-  and show observations alongside clearly defined summaries/uncertainty.
-  Advanced statistical modeling remains external.
+  replicates; declare aggregation, retain units, expose exclusions, and keep
+  missing/empty observations distinct from zero. No inferential tests,
+  p-values, ANOVA, significance labels or confidence intervals in 0.16.
 
-Deliver collection/design contracts and descriptive plots before extending the
-test menu. Matplotlib/SciPy are existing dependencies; no new heavyweight
-statistics library is planned. Review the selector/pop-out workflow with the
-user and qualify complete interactive, batch, and export examples.
+Stop at the approved descriptive boundary. Any later inference discussion
+requires a deliberate new decision; no test-menu phase is promised. No new
+heavyweight statistics library is needed. Review the selectors and qualify
+interactive, batch, workflow-reopen, generated-Python and export behavior.
+
+## Planned 0.17: Reproducibility And Publication Support
+
+Planning decision: 2026-09-17. Tentatively target these additions for 0.17,
+building on the 0.16 collection, descriptive Statistics and Plot Results work.
+The intended outcome is better documented and independently checkable analysis
+with a straightforward path for users who only need simple processing.
+
+The motivating reference is Marcotti, Gerontogianni, Kelly and Barry (2026),
+*Practical statistics for bioimage analysis - a guide to experimental design
+and data interpretation*, [doi:10.1242/jcs.264367](https://doi.org/10.1242/jcs.264367),
+and its [companion repository](https://github.com/FrancisCrickInstitute/Enhancing-Reproducibility).
+The [publication record](research-and-publication.md) retains the full citation,
+reviewed code revision, interpretation and limits for the eventual VIPP paper.
+Cite the primary work for its concepts and the exact software/data revisions
+when adapting examples; external references do not validate VIPP's outputs.
+
+### Optional documentation must not block processing
+
+Experimental context, control descriptions, exclusion reasons, reviewer details
+and publication notes are optional. Users must be able to run simple analyses,
+collect results, save workflows and export tables, figures or reproducibility
+packages without completing a study-design form or supplying these explanations.
+Missing optional information must not introduce a blocking dialog, mandatory
+acknowledgement, disabled action or requirement to invent a justification.
+
+Record an omission explicitly and neutrally as **"User did not specify"** in
+the relevant report or inventory field, for example **"Exclusion reason: User
+did not specify"**. Preserve the actual inclusion/exclusion decision and all
+automatically available execution evidence. Do not infer a reason, replace an
+unknown with "none", or treat missing documentation as a processing failure.
+Offer unobtrusive opportunities to add context later; completeness is descriptive,
+not a pass/fail score or a prerequisite for successful processing.
+
+This optionality concerns explanatory documentation. Inputs mathematically
+required by a selected calculation still apply: sample aggregation needs a
+sample identity, while ordinary object-level analysis does not. Do not invent
+identities or silently change the requested calculation. Existing input-integrity,
+type, axis, numerical and file-publication checks retain their normal meaning;
+an omitted explanation must not be confused with an invalid calculation.
+
+### Proposed additions
+
+- **Optional experimental context:** extend existing annotations with what a
+  sample represents, image-to-sample relationships, experimental repeat or
+  acquisition batch, control roles and the primary measurement. Distinguish
+  experimental batches from VIPP processing runs. Authored labels document a
+  design; they do not establish biological independence.
+- **Optional exclusion rationale:** add per-item scientific reasons and optional
+  criterion references or decision details to the existing collection inventory.
+  Retain missing, failed, empty and deliberately excluded items as distinct.
+  A reason may remain unspecified without preventing collection or export.
+- **Descriptive superplots:** show individual observations with sample summaries,
+  stable authored repeat identities and explicit object/image/sample counts.
+  Record aggregation and weighting; do not imply that cells are independent
+  experimental repeats or that matching colours establish pairing.
+- **Worked external-analysis handoff:** provide a reviewed example carrying VIPP
+  measurements, units, identities, inventory and recipe references into an
+  adapted companion notebook. Keep exploratory sampling-stability work external
+  initially; document sampling units, actual counts, seeds and band definitions.
+- **Independent rerun evidence:** prepare a public frozen workflow/data example,
+  reconstructable environment and original outputs for another person to rerun
+  on a second machine. Define exact comparisons and numerical tolerances before
+  comparison, record deviations and cite the resulting evidence. This is a
+  project/publication evaluation, not a prerequisite for ordinary user runs.
+
+These additions preserve the descriptive scope. Inferential tests, automatic
+test selection, confidence intervals and statistical adequacy thresholds are
+not implied by assigning this work to 0.17. Keep recipe preservation, verified
+inputs, recorded execution, demonstrated output agreement and biological
+validation as separate claims, each tied to its actual evidence.
+
+Acceptance should include a workflow with every optional documentation field
+left blank that still processes and exports successfully, preserving omissions
+as unspecified. Also verify that adding explanatory notes does not change
+calculations, identities used for aggregation or inclusion decisions; authored
+context and omissions survive save/reopen and relevant exports. A selected
+calculation that lacks an essential input must still explain that specific
+problem without demanding unrelated study documentation.
 
 ## Future Direction: AI-Assisted Nodes And Workflows
 

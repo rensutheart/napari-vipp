@@ -1313,6 +1313,7 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
     host_boundary = operation.function is None or operation_id in {
         "save_output",
         "batch_output",
+        "plot_results",
     }
     if operation.function is None:
         callable_ref = ""
@@ -1348,6 +1349,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
                 _value_kind(item.output_type),
                 port_name=item.name,
                 shape_policy_id="cpu-reference-v1",
+                schema_id=(
+                    "plot-results-v1" if item.output_type == "plot" else "array-v1"
+                ),
             )
             for index, item in enumerate(operation.output_ports)
         )
@@ -1401,6 +1405,7 @@ def _value_kind(value: str) -> ValueKind:
         "mask": ValueKind.MASK,
         "mesh": ValueKind.MESH,
         "table": ValueKind.TABLE,
+        "plot": ValueKind.PLOT,
         "scalar": ValueKind.SCALAR,
     }
     return aliases.get(normalized, ValueKind.ANY)

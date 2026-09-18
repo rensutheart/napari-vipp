@@ -7,6 +7,7 @@ report, the target ownership snapshot, and any bundled wheel digest.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -73,6 +74,7 @@ _MAX_RUN_DIRECTORIES = 25
 _MAX_STALE_LOCKS = 10
 _WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32, 33})
 _ATOMIC_REPLACE_RETRY_DELAYS = (0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.0, 1.0)
+_MAX_CONSOLE_RECORD_CHARS = 16_384
 _SHORTCUT_SCRIPT = r"""param(
     [Parameter(Mandatory=$true)][string]$Destination,
     [Parameter(Mandatory=$true)][string]$Target,
@@ -444,6 +446,7 @@ class InstallProgress:
     total: int
     unit: str = "steps"
     log_path: Path | None = None
+    console_text: str = ""
 
     def __post_init__(self) -> None:
         if self.log_path is not None:
@@ -451,6 +454,7 @@ class InstallProgress:
 
 
 ProgressCallback = Callable[[InstallProgress], None]
+CommandOutputCallback = Callable[[str, str], None]
 CancellationSource = "CancellationToken | Callable[[], bool] | object | None"
 
 
@@ -505,6 +509,8 @@ class _RegistryPlanLike(Protocol):
 class SubprocessCommandRunner:
     """Cancellation-aware argv-only subprocess runner (never invokes a shell)."""
 
+    supports_live_output = True
+
     def run(
         self,
         argv: Sequence[str],
@@ -512,6 +518,7 @@ class SubprocessCommandRunner:
         cancellation: object | None = None,
         env: Mapping[str, str] | None = None,
         cwd: Path | None = None,
+        output: CommandOutputCallback | None = None,
     ) -> CommandResult:
         creationflags = 0
         if os.name == "nt":
@@ -539,6 +546,8 @@ class SubprocessCommandRunner:
                 except Exception:
                     _cancel_process(process)
                     raise
+            if output is not None:
+                return _communicate_live(process, output, cancellation, job)
             while True:
                 try:
                     stdout, stderr = process.communicate(timeout=0.2)
@@ -556,6 +565,122 @@ class SubprocessCommandRunner:
         finally:
             if job is not None:
                 job.close()
+
+
+class _ConsoleRecords:
+    """Redact whole lines, never arbitrary chunks that could split a secret.
+
+    Only the presentation buffer is bounded. Full command capture is untouched.
+    Oversized unterminated records are omitted rather than released piecemeal.
+    """
+
+    def __init__(self, output: Callable[[str], None]) -> None:
+        self._output = output
+        self._pending = ""
+        self._omitting = False
+
+    def feed(self, text: str, *, final: bool = False) -> None:
+        parts = re.split(r"[\r\n]", text)
+        for index, part in enumerate(parts):
+            terminated = index < len(parts) - 1 or final
+            if not self._omitting:
+                self._pending += part
+                if len(self._pending) > _MAX_CONSOLE_RECORD_CHARS:
+                    self._pending = ""
+                    self._omitting = True
+                    self._send("[Long console line omitted from live view]\n")
+            if terminated:
+                if self._pending:
+                    # Pipe progress uses carriage returns, not separate GUI rows.
+                    # Show each actual emitted record; never invent percentages.
+                    self._send(_redact_text(self._pending) + "\n")
+                self._pending = ""
+                self._omitting = False
+
+    def _send(self, text: str) -> None:
+        try:
+            self._output(text)
+        except Exception:
+            # A disappearing GUI must not abort package installation.
+            pass
+
+
+def _communicate_live(
+    process: subprocess.Popen[str],
+    output: CommandOutputCallback,
+    cancellation: object | None,
+    job: _WindowsKillOnCloseJob | None,
+) -> CommandResult:
+    """Drain both pipes concurrently while preserving cancellation/Job ownership."""
+
+    captured: dict[str, list[str]] = {"stdout": [], "stderr": []}
+    reader_errors: list[Exception] = []
+    callback_lock = threading.Lock()
+
+    def emit(stream: str, text: str) -> None:
+        with callback_lock:
+            output(stream, text)
+
+    def read(stream: str) -> None:
+        pipe = getattr(process, stream)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        records = _ConsoleRecords(lambda text: emit(stream, text))
+        try:
+            while chunk := pipe.buffer.read1(4096):
+                text = decoder.decode(chunk)
+                captured[stream].append(text)
+                records.feed(text)
+            final_text = decoder.decode(b"", final=True)
+            captured[stream].append(final_text)
+            records.feed(final_text, final=True)
+        except Exception as exc:
+            reader_errors.append(exc)
+        finally:
+            pipe.close()
+
+    readers = [
+        threading.Thread(target=read, args=(stream,), daemon=True)
+        for stream in captured
+    ]
+    for reader in readers:
+        reader.start()
+    cancelled = False
+    try:
+        while True:
+            if _is_cancelled(cancellation):
+                cancelled = True
+                if job is not None:
+                    job.close()
+                else:
+                    _cancel_process(process)
+                process.wait()
+                break
+            if reader_errors:
+                raise reader_errors[0]
+            try:
+                process.wait(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if job is not None:
+            job.close()
+        elif process.poll() is None:
+            _cancel_process(process)
+        for reader in readers:
+            reader.join()
+    if reader_errors:
+        raise reader_errors[0]
+    # Match communicate(text=True)'s universal-newline capture contract.
+    stdout, stderr = (
+        "".join(captured[stream]).replace("\r\n", "\n").replace("\r", "\n")
+        for stream in ("stdout", "stderr")
+    )
+    if cancelled:
+        raise InstallCancelled(
+            "The VIPP installation was cancelled."
+        ) from _CancelledCommandOutput(stdout, stderr)
+    return CommandResult(process.returncode, stdout, stderr)
 
 
 class _CancelledCommandOutput(Exception):
@@ -1012,6 +1137,11 @@ class ManagedInstallerEngine:
             _resolution_argv(plan, index_url=self._index_url),
             cancellation=cancellation,
             env=_pip_environment(),
+            output=_console_callback(
+                progress,
+                ProgressStage.RESOLVING,
+                stdout=False,
+            ),
         )
         if result.returncode:
             detail = _redact_text(result.stderr.strip() or result.stdout.strip())
@@ -1251,12 +1381,22 @@ class ManagedInstallerEngine:
                     log=log,
                     cancellation=cancellation,
                     env=child_environment,
+                    output=_console_callback(
+                        progress,
+                        ProgressStage.CREATING_ENVIRONMENT,
+                        log_path=log_path,
+                    ),
                 )
                 self._run_checked(
                     (str(target_python), "-m", "ensurepip", "--upgrade"),
                     log=log,
                     cancellation=cancellation,
                     env=child_environment,
+                    output=_console_callback(
+                        progress,
+                        ProgressStage.CREATING_ENVIRONMENT,
+                        log_path=log_path,
+                    ),
                 )
                 lock_path = run_directory / "requirements.lock"
                 _write_lock_file(lock_path, prepared.packages)
@@ -1292,6 +1432,11 @@ class ManagedInstallerEngine:
                     log=log,
                     cancellation=cancellation,
                     env=child_environment,
+                    output=_console_callback(
+                        progress,
+                        ProgressStage.INSTALLING,
+                        log_path=log_path,
+                    ),
                 )
                 _emit(
                     progress,
@@ -1306,6 +1451,11 @@ class ManagedInstallerEngine:
                         log=log,
                         cancellation=cancellation,
                         env=child_environment,
+                        output=_console_callback(
+                            progress,
+                            ProgressStage.VERIFYING,
+                            log_path=log_path,
+                        ),
                     )
                 try:
                     pip_temp.rmdir()
@@ -2018,14 +2168,30 @@ class ManagedInstallerEngine:
         *,
         cancellation: object | None,
         env: Mapping[str, str] | None = None,
+        output: CommandOutputCallback | None = None,
     ) -> CommandResult:
         _checkpoint(cancellation)
+        # Optional capability keeps existing injected/custom runners compatible.
+        # Older runners still expose their captured output after completion.
+        streaming = output is not None and getattr(
+            self._runner,
+            "supports_live_output",
+            False,
+        )
+        options = {"output": output} if streaming else {}
         result = self._runner.run(
             tuple(str(value) for value in argv),
             cancellation=cancellation,
             env=env,
             cwd=None,
+            **options,
         )
+        if output is not None and not streaming:
+            for stream in ("stdout", "stderr"):
+                records = _ConsoleRecords(
+                    lambda text, stream=stream: output(stream, text),
+                )
+                records.feed(getattr(result, stream), final=True)
         _checkpoint(cancellation)
         return result
 
@@ -2036,9 +2202,10 @@ class ManagedInstallerEngine:
         log: _RunLog,
         cancellation: object | None,
         env: Mapping[str, str] | None = None,
+        output: CommandOutputCallback | None = None,
     ) -> CommandResult:
         log.write("command_started", argv=_redacted_argv(argv))
-        result = self._run(argv, cancellation=cancellation, env=env)
+        result = self._run(argv, cancellation=cancellation, env=env, output=output)
         log.write(
             "command_finished",
             argv=_redacted_argv(argv),
@@ -4235,6 +4402,7 @@ def _pip_environment(
         "PYTHONIOENCODING",
         "PYTHONPATH",
         "PYTHONUTF8",
+        "PYTHONUNBUFFERED",
     }
     environment = {
         key: value
@@ -4251,6 +4419,7 @@ def _pip_environment(
     # entries on Windows.
     environment["PYTHONUTF8"] = "1"
     environment["PYTHONIOENCODING"] = "utf-8"
+    environment["PYTHONUNBUFFERED"] = "1"
     # PIP_CONFIG_FILE provides a second defence for pip versions that read a
     # site-level config even in isolated mode. All policy comes from argv.
     environment["PIP_CONFIG_FILE"] = os.devnull
@@ -4308,6 +4477,42 @@ def _emit(
     except Exception:
         # A display callback cannot corrupt an installation transaction.
         return
+
+
+def _console_callback(
+    callback: ProgressCallback | None,
+    stage: ProgressStage,
+    *,
+    stdout: bool = True,
+    log_path: Path | None = None,
+) -> CommandOutputCallback | None:
+    """Make output-only events, without altering step/status progress.
+
+    Resolver stdout is its machine-readable pip report, not a console log.
+    Display callbacks must marshal events to their UI thread, just as progress.
+    """
+
+    if callback is None:
+        return None
+
+    def emit(stream: str, text: str) -> None:
+        if stream == "stdout" and not stdout:
+            return
+        try:
+            callback(
+                InstallProgress(
+                    stage,
+                    "",
+                    0,
+                    0,
+                    log_path=log_path,
+                    console_text=text,
+                )
+            )
+        except Exception:
+            pass
+
+    return emit
 
 
 def _cancel_process(process: subprocess.Popen[str]) -> None:
@@ -4551,14 +4756,27 @@ def _redact_url(value: str) -> str:
 
 
 def _redact_text(value: str) -> str:
+    # Remove terminal controls before matching credentials; they have no useful
+    # meaning in the plain-text setup console or structured persistent log.
+    value = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", value)
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", value)
+
+    def public_url(match: re.Match[str]) -> str:
+        try:
+            return _redact_url(match.group(0))
+        except ValueError:
+            return "[redacted URL]"
+
     value = re.sub(
         r"https?://[^\s\"'<>]+",
-        lambda match: _redact_url(match.group(0)),
+        public_url,
         value,
         flags=re.IGNORECASE,
     )
     return re.sub(
-        r"(?i)\b(token|password|secret|authorization)(\s*[:=]\s*)\S+",
+        r"(?i)\b(token|password|secret|authorization)([\"']?\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|(?:(?:Bearer|Basic)\s+)?[^\s\"']+)",
         lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
         value,
     )

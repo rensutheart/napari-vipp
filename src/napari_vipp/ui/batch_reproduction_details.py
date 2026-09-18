@@ -10,7 +10,6 @@ from qtpy.QtGui import QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
-    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,6 +21,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.reproduction import ReproductionCheck, versions_match
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import theme_colors
 
 _DIFFERENCE_LABELS = {

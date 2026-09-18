@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +51,33 @@ def _dialog(qtbot, **kwargs):
 def _prepare(dialog, qtbot):
     dialog.prepare_report()
     qtbot.waitUntil(lambda: dialog.prepared_package is not None)
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_footer_keeps_prepare_separate_and_orders_export_close(
+    qtbot, monkeypatch, service, platform
+):
+    from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+
+    monkeypatch.setattr(
+        module, "add_dialog_buttons", partial(add_dialog_buttons, platform=platform)
+    )
+    dialog = _dialog(qtbot, workflow={})
+    dialog.show()
+    dialog.layout().activate()
+
+    completion = [dialog.export_button, dialog.close_button]
+    if platform == "darwin":
+        completion.reverse()
+    ordered = [dialog.prepare_button, *completion]
+    assert ordered == sorted(ordered, key=lambda button: button.x())
+    assert all(
+        left.geometry().right() < right.x()
+        for left, right in zip(ordered, ordered[1:], strict=False)
+    )
+    assert not dialog.close_button.autoDefault()
+    assert not dialog.export_button.isEnabled()
+    assert dialog.prepare_button.isEnabled()
 
 
 def test_requires_exactly_one_evidence_source(qtbot, service):

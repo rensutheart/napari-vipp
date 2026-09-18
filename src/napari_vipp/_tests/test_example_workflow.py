@@ -16,9 +16,7 @@ from napari_vipp.core.thumbnail_statistics import (
 from napari_vipp.core.workflow import load_workflow
 
 EXAMPLE_WORKFLOW = (
-    Path(__file__).resolve().parents[3]
-    / "examples"
-    / "otsu-red-channel-labels.json"
+    Path(__file__).resolve().parents[3] / "examples" / "otsu-red-channel-labels.json"
 )
 INTENSITY_EXAMPLE_WORKFLOW = (
     Path(__file__).resolve().parents[3]
@@ -46,9 +44,7 @@ MESH_MORPHOLOGY_EXAMPLE_WORKFLOW = (
     / "synthetic-3d-mesh-morphology.json"
 )
 SKELETON_QC_EXAMPLE_WORKFLOW = (
-    Path(__file__).resolve().parents[3]
-    / "examples"
-    / "synthetic-skeleton-qc.json"
+    Path(__file__).resolve().parents[3] / "examples" / "synthetic-skeleton-qc.json"
 )
 ADVANCED_SKELETON_EXAMPLE_WORKFLOW = (
     Path(__file__).resolve().parents[3]
@@ -81,14 +77,10 @@ DECONVOLUTION_3D_EXAMPLE_WORKFLOW = (
     / "synthetic-3d-deconvolution-rl-tv.json"
 )
 BATCH_PROVENANCE_EXAMPLE_WORKFLOW = (
-    Path(__file__).resolve().parents[3]
-    / "examples"
-    / "synthetic-batch-provenance.json"
+    Path(__file__).resolve().parents[3] / "examples" / "synthetic-batch-provenance.json"
 )
 GRAPH_AUTHORING_EXAMPLE_WORKFLOW = (
-    Path(__file__).resolve().parents[3]
-    / "examples"
-    / "graph-authoring-acceptance.json"
+    Path(__file__).resolve().parents[3] / "examples" / "graph-authoring-acceptance.json"
 )
 GPU_SEGMENTATION_EXAMPLE_WORKFLOW = (
     Path(__file__).resolve().parents[3]
@@ -190,8 +182,7 @@ def test_responsive_volume_crop_example_is_annotated_and_scientifically_exact():
     assert workflow["compute_request"].mode is ComputeMode.PREFER_GPU
     assert workflow["compute_request"].fallback_policy.value == "visible"
     assert [
-        pipeline.nodes[node_id].operation_id
-        for node_id in pipeline.topological_order()
+        pipeline.nodes[node_id].operation_id for node_id in pipeline.topological_order()
     ] == ["input", "crop_stack"]
 
     source = pipeline.nodes["input"]
@@ -240,8 +231,7 @@ def test_responsive_volume_crop_example_is_annotated_and_scientifically_exact():
         "micrometer",
     ]
     assert state.history[-1] == (
-        "Crop Stack: cropped Z start=2, Z end=1, top=4, bottom=5, "
-        "left=6, right=7"
+        "Crop Stack: cropped Z start=2, Z end=1, top=4, bottom=5, left=6, right=7"
     )
 
     note_text = " ".join(note["text"] for note in workflow["notes"])
@@ -260,8 +250,7 @@ def test_safe_node_bypass_example_is_explicit_and_annotated():
 
     assert workflow["compute_request"].mode is ComputeMode.PREFER_GPU
     assert [
-        pipeline.nodes[node_id].operation_id
-        for node_id in pipeline.topological_order()
+        pipeline.nodes[node_id].operation_id for node_id in pipeline.topological_order()
     ] == ["input", "gaussian_blur", "crop_stack", "gaussian_blur"]
     crop = pipeline.nodes["crop_stack_bypass"]
     assert crop.execution_mode == "bypass"
@@ -279,10 +268,7 @@ def test_safe_node_bypass_example_is_explicit_and_annotated():
         input_metadata=layer_kwargs["metadata"],
         input_name=layer_kwargs["name"],
     )
-    assert (
-        pipeline.outputs["crop_stack_bypass"]
-        is pipeline.outputs["gaussian_before"]
-    )
+    assert pipeline.outputs["crop_stack_bypass"] is pipeline.outputs["gaussian_before"]
     assert (
         pipeline.output_states["crop_stack_bypass"]
         is pipeline.output_states["gaussian_before"]
@@ -384,8 +370,7 @@ def test_gpu_segmentation_bridge_is_portable_annotated_and_scientifically_stable
     assert workflow["compute_request"].mode is ComputeMode.PREFER_GPU
     assert workflow["compute_request"].fallback_policy.value == "visible"
     assert [
-        pipeline.nodes[node_id].operation_id
-        for node_id in pipeline.topological_order()
+        pipeline.nodes[node_id].operation_id for node_id in pipeline.topological_order()
     ] == [
         "input",
         "extract_channel",
@@ -716,16 +701,18 @@ def test_synthetic_measurement_summary_workflow_loads_and_runs():
     records = summary.records()
 
     assert measurements.row_count == 6
-    assert summary.columns == (
-        "condition",
-        "replicate",
-        "t_index",
+    assert summary.columns[:3] == ("condition", "replicate", "t_index")
+    assert {
+        "summary_version",
         "row_count",
         "area_pixels_count",
         "area_pixels_mean",
         "area_pixels_min",
         "area_pixels_max",
-    )
+        "area_pixels_object_excluded",
+        "area_pixels_std",
+        "area_pixels_status",
+    } <= set(summary.columns)
     assert summary.row_count == 3
     assert [record["row_count"] for record in records] == [2, 3, 1]
     assert [record["area_pixels_count"] for record in records] == [2, 3, 1]
@@ -733,6 +720,29 @@ def test_synthetic_measurement_summary_workflow_loads_and_runs():
     assert [record["area_pixels_min"] for record in records] == [24.0, 12.0, 40.0]
     assert [record["area_pixels_max"] for record in records] == [30.0, 28.0, 40.0]
     assert all(record["condition"] == "summary_validation" for record in records)
+    assert all(record["summary_version"] == 2 for record in records)
+    assert all(record["area_pixels_object_excluded"] == 0 for record in records)
+    assert records[-1]["area_pixels_std"] is None
+
+    raw_plot = outputs["plot_objects"]
+    summary_plot = outputs["plot_summary"]
+    assert raw_plot.source_table is outputs["add_metadata_columns_1"] or (
+        raw_plot.source_table == outputs["add_metadata_columns_1"]
+    )
+    assert raw_plot.counts.input_rows == raw_plot.counts.plotted_points == 6
+    assert [len(series.y) for series in raw_plot.series] == [2, 3, 1]
+    assert [series.mean for series in raw_plot.series] == [27.0, 20.0, 40.0]
+    assert raw_plot.recipe.y_column == "area_pixels"
+    assert summary_plot.source_table == summary
+    assert summary_plot.counts.input_rows == summary_plot.counts.plotted_points == 3
+    assert [series.y for series in summary_plot.series] == [(27.0,), (20.0,), (40.0,)]
+    assert summary_plot.recipe.y_column == "area_pixels_mean"
+    assert raw_plot.recipe.group_column == summary_plot.recipe.group_column == "t_index"
+    assert (
+        raw_plot.recipe.y_tick_interval == summary_plot.recipe.y_tick_interval == "10"
+    )
+    assert summary_plot.recipe.point_unit == "Objects"
+    assert summary_plot.recipe.summary == "None"
 
 
 def test_synthetic_derived_object_morphology_workflow_loads_and_runs():
@@ -801,9 +811,7 @@ def test_synthetic_3d_mesh_morphology_workflow_loads_and_runs():
     merged = outputs["merge_tables_1"]
     selected = outputs["select_table_columns_1"]
     mesh_records = mesh.records()
-    ok_records = [
-        record for record in mesh_records if record["mesh_status"] == "ok"
-    ]
+    ok_records = [record for record in mesh_records if record["mesh_status"] == "ok"]
 
     assert labels.max() == 5
     assert measurements.row_count == 5
@@ -814,8 +822,7 @@ def test_synthetic_3d_mesh_morphology_workflow_loads_and_runs():
     assert "mesh_surface_area_physical" in mesh.columns
     assert "convex_hull_volume_physical" in mesh.columns
     assert any(
-        record["mesh_status"] == "skipped_too_few_voxels"
-        for record in mesh_records
+        record["mesh_status"] == "skipped_too_few_voxels" for record in mesh_records
     )
     assert len(ok_records) == 4
     assert all(record["mesh_volume_physical"] > 0 for record in ok_records)
@@ -965,9 +972,10 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
     assert sum(record["branch_count"] for record in branch_summary.records()) == (
         branch_table.row_count
     )
-    assert sum(
-        record["branch_count"] for record in pruned_branch_summary.records()
-    ) == pruned_branch_table.row_count
+    assert (
+        sum(record["branch_count"] for record in pruned_branch_summary.records())
+        == pruned_branch_table.row_count
+    )
     assert "branches_per_skeleton_length" in summary.columns
     assert "branches_per_physical_length" in summary.columns
     assert sum(record["cycle_count"] for record in summary_records) >= 3
@@ -1035,12 +1043,10 @@ def test_synthetic_colocalization_overlap_workflow_loads_and_runs(monkeypatch):
     assert costes_calls == 2
 
     assert (
-        pipeline.input_ports("colocalization_metrics_1")[0].label
-        == "Channel 1 image"
+        pipeline.input_ports("colocalization_metrics_1")[0].label == "Channel 1 image"
     )
     assert (
-        pipeline.input_ports("masked_colocalization_metrics_1")[2].label
-        == "ROI mask"
+        pipeline.input_ports("masked_colocalization_metrics_1")[2].label == "ROI mask"
     )
     assert overlay.shape == data.shape[1:] + (3,)
     assert overlay.dtype == np.float32
@@ -1078,9 +1084,7 @@ def test_synthetic_colocalization_overlap_workflow_loads_and_runs(monkeypatch):
         35,
     )
     assert not np.isclose(
-        pipeline.nodes["masked_colocalization_metrics_1"].params[
-            "channel_1_threshold"
-        ],
+        pipeline.nodes["masked_colocalization_metrics_1"].params["channel_1_threshold"],
         35,
     )
 
@@ -1096,9 +1100,13 @@ def test_synthetic_colocalization_overlap_workflow_loads_and_runs(monkeypatch):
     )
     assert int(unfiltered["label_connected_components_1"].max()) == 4
     assert unfiltered["measure_objects_1"].row_count == 4
-    assert sum(
-        record["volume_voxels"] for record in unfiltered["measure_objects_1"].records()
-    ) == 1153
+    assert (
+        sum(
+            record["volume_voxels"]
+            for record in unfiltered["measure_objects_1"].records()
+        )
+        == 1153
+    )
 
 
 def test_focused_racc_workflow_loads_and_runs_without_costes(monkeypatch):
@@ -1106,8 +1114,11 @@ def test_focused_racc_workflow_loads_and_runs_without_costes(monkeypatch):
     pipeline = PrototypePipeline()
     _restore_workflow(pipeline, workflow)
     assert set(pipeline.nodes) == {
-        "input", "split_channels_1", "binary_threshold_1",
-        "racc_index_1", "masked_racc_index_1",
+        "input",
+        "split_channels_1",
+        "binary_threshold_1",
+        "racc_index_1",
+        "masked_racc_index_1",
     }
     for node_id in ("racc_index_1", "masked_racc_index_1"):
         assert pipeline.tunnel_connection_for_input(node_id, 0)
@@ -1118,7 +1129,8 @@ def test_focused_racc_workflow_loads_and_runs_without_costes(monkeypatch):
 
     monkeypatch.setattr(operations_module, "_costes_thresholds", forbidden_costes)
     data, layer_kwargs, _layer_type = next(
-        sample for sample in make_sample_data()
+        sample
+        for sample in make_sample_data()
         if sample[1]["name"] == "VIPP synthetic colocalization"
     )
     outputs = pipeline.run(
@@ -1203,18 +1215,14 @@ def test_synthetic_object_colocalization_workflow_loads_and_runs():
     assert object_metrics.table_kind == "per-object colocalization metrics"
     assert object_metrics.row_count == 3
     assert "manders_m1" in object_metrics.columns
-    assert all(
-        record["object_voxels"] > 0 for record in object_metrics.records()
-    )
+    assert all(record["object_voxels"] > 0 for record in object_metrics.records())
     assert overlaps.table_kind == "label overlap association"
     assert overlaps.row_count == 2
     assert all(record["overlap_voxels"] > 0 for record in overlaps.records())
     assert distances.table_kind == "nearest object distance"
     assert distances.row_count == 3
     assert "centroid_distance_physical" in distances.columns
-    assert all(
-        record["nearest_label_id"] > 0 for record in distances.records()
-    )
+    assert all(record["nearest_label_id"] > 0 for record in distances.records())
     assert localization.table_kind == "event localization"
     assert localization.row_count == 3
     assert any(record["in_region"] is True for record in localization.records())
@@ -1354,24 +1362,32 @@ def test_synthetic_3d_deconvolution_workflow_loads_and_runs():
     tv_state = pipeline.output_states["richardson_lucy_tv_deconvolution_1"]
     center = tuple(size // 2 for size in prepared_psf.shape)
 
-    assert pipeline.nodes["richardson_lucy_deconvolution_1"].params[
-        "resolved_spatial_ndim"
-    ] == 3
-    assert pipeline.nodes["richardson_lucy_tv_deconvolution_1"].params[
-        "resolved_spatial_ndim"
-    ] == 3
+    assert (
+        pipeline.nodes["richardson_lucy_deconvolution_1"].params[
+            "resolved_spatial_ndim"
+        ]
+        == 3
+    )
+    assert (
+        pipeline.nodes["richardson_lucy_tv_deconvolution_1"].params[
+            "resolved_spatial_ndim"
+        ]
+        == 3
+    )
     assert prepared_psf.dtype == np.float32
     assert prepared_psf.shape == psf.shape
     assert np.isclose(float(prepared_psf.sum()), 1.0)
     assert prepared_psf[center] == prepared_psf.max()
     assert converted.dtype == np.float32
     assert np.array_equal(converted, image.astype(np.float32))
-    assert pipeline.nodes["richardson_lucy_deconvolution_1"].params[
-        "filter_epsilon"
-    ] == 1e-12
-    assert pipeline.nodes["richardson_lucy_tv_deconvolution_1"].params[
-        "filter_epsilon"
-    ] == 1e-12
+    assert (
+        pipeline.nodes["richardson_lucy_deconvolution_1"].params["filter_epsilon"]
+        == 1e-12
+    )
+    assert (
+        pipeline.nodes["richardson_lucy_tv_deconvolution_1"].params["filter_epsilon"]
+        == 1e-12
+    )
     assert rl.shape == image.shape
     assert tv.shape == image.shape
     assert rl.dtype == np.float32

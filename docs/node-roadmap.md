@@ -2,7 +2,7 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-09-10
+Last reviewed: 2026-09-16
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -25,8 +25,8 @@ specialist docs for implementation detail:
 - [registration-and-template-matching-plan.md](registration-and-template-matching-plan.md):
   planned 0.16 alignment/comparison/detection nodes, transform contracts, and gates.
 - [measurement-plots-and-statistics-plan.md](measurement-plots-and-statistics-plan.md):
-  planned 0.16 table-driven figures, descriptive statistics, independent-sample
-  safeguards, batch-results collection, and editable/exportable plot pop-outs.
+  descriptive-only 0.16 scope, including implemented/unreleased batch-results
+  collection and initial editable/exportable plots, plus versioned summaries.
 - [ome-io-plan.md](ome-io-plan.md) and
   [cache-and-memory.md](cache-and-memory.md): I/O, lazy data, preview, cache,
   and memory policy.
@@ -56,9 +56,10 @@ PSF generation, deconvolution foundations, and optional microscope-reader
 routing are implemented foundations. Their remaining work is real-data
 validation, metadata coverage, and performance polish. Registration and template
 matching, with image comparison, form one part of the planned 0.16 scope;
-table-driven measurement plots and statistics form the other. The new features
-are not implemented; their detailed proposals define release gates. Existing
-table summaries will be extended, not duplicated. Model-backed
+table-driven measurement plots and statistics form the other. Collection and
+initial Plot Results are implemented but unreleased after 0.15.0a5; Statistics
+extends existing summaries with versioned descriptive rules, not inferential
+tests. Their detailed contracts define release gates. Model-backed
 segmentation, stitching, object tracking, and specialist mitochondrial indices
 remain later work unless a current validation or publication workflow needs them.
 
@@ -244,14 +245,16 @@ as separate nodes. See the [detailed plan](measurement-plots-and-statistics-plan
 | Node | Suggested backend | Prerequisite |
 | --- | --- | --- |
 | Plot Results | Existing Matplotlib dependency; shared Qt-free recipe/renderer | Table columns/units, explicit grouping and independent samples, typed plot output, editable inspector/pop-out, headless PNG/TIFF/SVG/PDF export. |
-| Statistics | Existing summary reductions and bounded SciPy statistics | Compatible expansion of Summarize Measurements, not a duplicate node; versioned missing-data/insufficient-n rules, declared aggregation/pairing, qualified method menu. |
+| Statistics | Existing CPU descriptive reductions | Compatible expansion of Summarize Measurements; versioned exclusions/singleton-SD rules, objects/image means/sample means and explicit weighting. No inference or confidence intervals. |
 
 An explicit batch-results collection and annotation path must retain source,
 object, condition, and replicate identities for across-image analyses. Existing
 Merge Tables joins columns; it does not supply this row-collection capability.
-Descriptive plots/summaries come first. Do not silently count nested cells as
-independent replicates, select tests automatically, or recreate general
-statistical modeling software.
+Collection and initial Plot Results are implemented but unreleased after
+0.15.0a5. Statistics stops at descriptive summaries in 0.16; inference requires
+a separate deliberate future decision, not an automatic next phase. Do not
+silently count nested cells as independent replicates. See the
+[Statistics contract](statistics.md) for versioned methods and migration.
 
 ### Geometry And Sampling
 

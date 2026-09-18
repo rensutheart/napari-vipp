@@ -845,13 +845,32 @@ user-supplied `name=value` columns, intended for treatment, replicate, batch,
 condition, or source annotations before export. Existing columns are protected
 unless the node's overwrite parameter is explicitly set to `yes`.
 
-`Summarize Measurements` accepts one `table` input and emits grouped summary
-statistics. Auto grouping prefers metadata and leading index columns such as
-`condition`, `replicate`, `source_name`, and `t_index`; users can also enter
-explicit group, value, and statistic lists. Numeric value columns are summarized
-with count, mean, median, standard deviation, min/max, sum when requested, and
-quartiles. Unit metadata is propagated to summary columns when the statistic
-retains the source measurement unit.
+`Summarize Measurements` retains the saved operation ID
+`summarize_measurements`; unreleased **Statistics** uses version-2 recipes for
+object, image-mean or sample-mean summaries with explicit weighting, counts,
+exclusions and units. Old workflows/direct calls retain version 1 until
+explicit upgrade. See the [Statistics contract](statistics.md) for exact
+population, identity, numeric and migration invariants.
+
+The unreleased **Results Workspace** is a nonmodal editor over ordinary table,
+Statistics and Plot Results nodes, not a separate scientific result type or
+hidden execution graph. Opening/browsing is read-only; explicit add actions
+create ordinary saved nodes. All editors for a node share its recipe, undo
+history and stale/result lifecycle. Data navigation identifies an exact node
+output and port, not an inferred earliest ancestor; transformed and merged
+tables remain distinct inputs. One persistent selection bar binds **Data
+source → Statistics node → Plot** across all three views. Selecting Statistics
+scopes plots to direct connections from that summary; **None — use input data**
+scopes them to the exact root table output. Neither empty plot scopes nor tab
+switches fall back to sibling branches. The three selectors are presentation
+state; adjacent add actions explicitly create saved nodes, and **Change plot
+input…** exposes explicit graph connection edits. Removed
+selections retain their identity
+for undo rather than silently retargeting edits. Search and visible
+columns do not change scientific inputs or the full table export. Upstream
+collection/joining remains explicit. Workspace/inspector/plot-window views
+share the renderer and persisted numeric-axis tick spacing; presentation
+intervals change ticks and grid lines, never the measured values or bins.
 
 `Skeletonize` accepts masks and produces a binary skeleton mask in metadata-aware
 2D or 3D spatial blocks. `Analyze Skeleton` accepts a skeleton mask and outputs

@@ -40,6 +40,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+
 
 def build_reproducibility_package(*args, **kwargs):
     """Resolve the Qt-free builder lazily; importing this dialog never builds."""
@@ -265,8 +267,9 @@ class ReproducibilityDialog(QDialog):
         self.close_button = QPushButton("Close")
         buttons.addWidget(self.prepare_button)
         buttons.addStretch(1)
-        buttons.addWidget(self.export_button)
-        buttons.addWidget(self.close_button)
+        add_dialog_buttons(
+            buttons, actions=(self.export_button,), dismiss=self.close_button
+        )
         layout.addLayout(buttons)
 
         self.title_edit.textChanged.connect(self._invalidate)

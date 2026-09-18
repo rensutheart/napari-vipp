@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-08-07
+Last reviewed: 2026-09-17
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -29,6 +29,53 @@ should eventually extract selectable high-dimensional object, intensity,
 surface, and network features, merge them into one per-object table, and support
 downstream analyses such as PCA or treatment-group separation. The detailed
 roadmap is tracked in [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
+
+## Publication Intent And Citation Practice
+
+An eventual VIPP paper remains an explicit project goal. Preserve the sources,
+design rationale, limitations, and versioned evidence needed to write it as
+development proceeds; a planned feature is not a demonstrated paper result.
+Use primary methodological and software references, cite the original datasets
+and their licenses, and identify the exact versions or commits actually used.
+Credit conceptual inspiration separately from borrowed or adapted code. Verify
+publication details and prefer a final published paper over an earlier preprint
+when it supports the claim; keep attribution and license records for reuse.
+
+A relevant conceptual reference is:
+
+- Marcotti S, Gerontogianni L, Kelly G, Barry DJ (2026). **Practical statistics
+  for bioimage analysis – a guide to experimental design and data
+  interpretation.** *Journal of Cell Science* **139**(10), jcs264367.
+  [doi:10.1242/jcs.264367](https://doi.org/10.1242/jcs.264367)
+  ([published full text](https://pmc.ncbi.nlm.nih.gov/articles/PMC13286366/)).
+- Companion code: FrancisCrickInstitute, **Enhancing-Reproducibility**, reviewed
+  at commit [`a81d20c9393485e57395cd4a1be9e7ff83c7f11d`](https://github.com/FrancisCrickInstitute/Enhancing-Reproducibility/tree/a81d20c9393485e57395cd4a1be9e7ff83c7f11d).
+
+The paper motivates explicit experimental units, appropriate controls,
+independent repetition, effect sizes, and uncertainty alongside computational
+traceability. It does not validate VIPP, its statistical implementations, or any
+VIPP workflow. Claims about VIPP still need release-specific tests, independent
+reruns and, where relevant, assay validation. The case-specific sample sizes
+are not universal acquisition thresholds or stopping rules.
+
+Review source behavior before adapting the illustrative notebooks: the
+[effect-size sampling code](https://github.com/FrancisCrickInstitute/Enhancing-Reproducibility/blob/a81d20c9393485e57395cd4a1be9e7ff83c7f11d/notebooks/utility_functions.py#L335-L362)
+uses repeated sampling without replacement and plots median/25th–75th percentile
+bands (IQR, not confidence intervals); its
+[dependencies](https://github.com/FrancisCrickInstitute/Enhancing-Reproducibility/blob/a81d20c9393485e57395cd4a1be9e7ff83c7f11d/requirements.txt)
+are unpinned. Cite the originating method, document adaptations, and validate
+experimental-unit assumptions and interval semantics in any VIPP implementation.
+
+The [tentative 0.17 plan](planning.md#planned-017-reproducibility-and-publication-support)
+tracks possible support for these practices. This is future planning, not
+implemented behavior or a release promise. Additional study-design metadata,
+decision reasons, and publication notes must remain optional and must never
+block processing, saving, collecting results, exporting, or ordinary workflow
+use, and must not require an acknowledgement. Show missing reasons as
+**User did not specify**; do not invent them or silently imply review. Preserve
+the actual decisions and execution evidence even when a reason is absent.
+This documentation principle does not relax existing scientific input checks
+or supply missing information needed for a requested statistical calculation.
 
 ## Design Principles To Evaluate
 

@@ -8,7 +8,6 @@ from qtpy.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,6 +23,7 @@ from napari_vipp.core.reproducibility_install import (
     installation_guidance,
 )
 from napari_vipp.core.reproduction import versions_match
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import blend_colors, theme_colors
 
 

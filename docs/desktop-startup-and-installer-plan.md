@@ -18,6 +18,16 @@ provenance, and rollback details remain available under **Advanced details**
 and in the retained log, but understanding them is never a prerequisite for a
 normal managed installation.
 
+Unreleased after `0.15.0a5`, a read-only **Installation log** also exposes live
+package download/install output without requiring **Advanced details**. It
+streams redacted complete subprocess records through a bounded GUI buffer,
+separate from phase/approval state. The resolver's JSON stdout is not console
+text. The log follows only while the user is at its bottom; scrolling up holds
+the reading anchor and **Jump to latest** resumes following. Advanced details
+retains settings/support information, but elapsed-time refresh no longer
+replaces its text or resets its scroll. These are presentation changes, not
+changes to approval, hash locking, cancellation or rollback.
+
 ## Source-Current Startup Foundation
 
 The packaged launcher provides the same branded startup window on Windows,

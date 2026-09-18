@@ -436,7 +436,9 @@ def _portable_workflow(
                 "rename it explicitly before export."
             )
         for key, value in original.get("params", {}).items():
-            if key in {"file_path", "path", "layer_name", "_vipp_source_item"}:
+            if key in {"file_path", "path", "layer_name", "_vipp_source_item"} or (
+                original["operation_id"] == "table_source" and key == "dataset_path"
+            ):
                 continue
             if sanitized.get("params", {}).get(key) != value:
                 raise ReproducibilityError(
@@ -685,14 +687,39 @@ def build_reproducibility_package(
     from napari_vipp.core.workflow import deserialize_workflow
 
     request = deserialize_workflow(portable)["compute_request"]
-    members["runner.py"] = export_pipeline_to_python(
-        pipeline, compute_request=request
-    ).encode("utf-8")
-    descriptions["runner.py"] = (
-        "Generated base-workflow Python using VIPP's shared executor; recorded "
-        "batch overrides require batch-runner.py with batch-config.json."
+    has_table_sources = any(
+        node.operation_id == "table_source" for node in pipeline.nodes.values()
     )
+    if has_table_sources:
+        report["python_runner_unavailable"] = (
+            "Python export for Table Source results workflows is not available "
+            "yet. Open workflow.json in VIPP and reconnect the separately shared "
+            ".vipp-results.json dataset; its recorded hash must match."
+        )
+        report["limitations"].append(report["python_runner_unavailable"])
+        privacy.omit(
+            "Measurement datasets are result files and are not read or included. "
+            "Their recorded hashes remain in the workflow."
+        )
+    else:
+        members["runner.py"] = export_pipeline_to_python(
+            pipeline, compute_request=request
+        ).encode("utf-8")
+        descriptions["runner.py"] = (
+            "Generated base-workflow Python using VIPP's shared executor; recorded "
+            "batch overrides require batch-runner.py with batch-config.json."
+        )
     for node in portable["nodes"]:
+        if node["operation_id"] == "table_source":
+            params = node.get("params", {})
+            report["sources"].append(
+                {
+                    "id": node["id"],
+                    "name": privacy.name(params.get("dataset_path", "")) or node["id"],
+                    "selector": None,
+                    "sha256": params.get("dataset_sha256", ""),
+                }
+            )
         if node["operation_id"] == "input":
             params = node.get("params", {})
             item = params.get("_vipp_source_item", {})

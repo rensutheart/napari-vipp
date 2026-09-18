@@ -12,8 +12,10 @@ import os
 import queue
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 
@@ -43,6 +45,10 @@ _HEADER_LEFT_PADDING = 22
 _HEADER_INLINE_GAP = 14
 _HEADER_RIGHT_PADDING = 18
 _STATUS_HISTORY_LIMIT = 12
+_CONSOLE_PENDING_LIMIT = 256 * 1024
+_CONSOLE_VISIBLE_LIMIT = 256 * 1024
+_CONSOLE_LINE_LIMIT = 4000
+_CONSOLE_POLL_LIMIT = 32 * 1024
 _INSTALLED_APPS_URI = "ms-settings:appsfeatures"
 _STAGE_LABELS = {
     InstallerScreen.CHECKING: "Checking this computer",
@@ -77,6 +83,47 @@ _PHASE_LABELS = {
     "cancelled": "Cancelled",
     "failed": "Failed",
 }
+
+
+class _ConsoleBuffer:
+    """Bound worker output without blocking installation or touching Tk."""
+
+    def __init__(self, limit: int = _CONSOLE_PENDING_LIMIT) -> None:
+        self._limit = limit
+        self._chunks: deque[str] = deque()
+        self._size = 0
+        self._omitted = False
+        self._lock = threading.Lock()
+
+    def push(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            if len(text) > self._limit:
+                text = text[-self._limit :]
+                self._omitted = True
+            self._chunks.append(text)
+            self._size += len(text)
+            while self._size > self._limit:
+                self._size -= len(self._chunks.popleft())
+                self._omitted = True
+
+    def drain(self, limit: int = _CONSOLE_POLL_LIMIT) -> str:
+        with self._lock:
+            parts = []
+            if self._omitted:
+                parts.append("[Some older live output omitted from this view.]\n")
+                self._omitted = False
+            remaining = limit
+            while self._chunks and remaining > 0:
+                chunk = self._chunks.popleft()
+                part, rest = chunk[:remaining], chunk[remaining:]
+                parts.append(part)
+                self._size -= len(part)
+                remaining -= len(part)
+                if rest:
+                    self._chunks.appendleft(rest)
+            return "".join(parts)
 
 
 def _format_size(size_bytes: int) -> str:
@@ -282,7 +329,10 @@ class InstallerWindow:
         self._state: InstallerViewState | None = None
         self._selection = initial_selection or InstallerSelection()
         self._existing_python: Path | None = self._selection.existing_python
-        self._controller = InstallerController(backend, self._state_queue.put)
+        self._console_buffer = _ConsoleBuffer()
+        self._controller = InstallerController(
+            backend, self._state_queue.put, console_listener=self._console_buffer.push
+        )
 
         self._headline = tk.StringVar()
         self._message = tk.StringVar()
@@ -313,6 +363,7 @@ class InstallerWindow:
         self._stage_started_at = time.monotonic()
         self._last_activity_at = self._stage_started_at
         self._last_elapsed_second = -1
+        self._details_text = ""
         self._development_build = _is_development_build()
 
         self._configure_root()
@@ -329,7 +380,7 @@ class InstallerWindow:
         self.root.title(
             _window_title(_installed_version(), development=self._development_build)
         )
-        self.root.geometry(self._bounded_geometry(760, 660))
+        self.root.geometry(self._bounded_geometry(800, 780))
         self.root.minsize(_HEADER_MIN_WIDTH, _HEADER_MIN_HEIGHT)
         self.root.configure(background="#f4f7fb")
         self.root.bind("<Return>", lambda _event: self._primary_requested())
@@ -494,6 +545,8 @@ class InstallerWindow:
         )
         self._activity_label.pack(anchor="w", fill="x", pady=(4, 0))
 
+        self._build_console(outer)
+
         advanced_toggle = ttk.Checkbutton(
             outer,
             text="Advanced details",
@@ -550,6 +603,87 @@ class InstallerWindow:
                 self._tagline_label.winfo_reqwidth(),
             )
         )
+
+    def _build_console(self, parent) -> None:
+        tk, ttk = self._tk, self._ttk
+        panel = ttk.Frame(parent)
+        panel.pack(fill="both", expand=True, pady=(14, 0))
+        heading = ttk.Frame(panel)
+        heading.pack(fill="x", pady=(0, 5))
+        ttk.Label(
+            heading, text="Installation log", font=("Segoe UI Semibold", 10)
+        ).pack(side="left")
+        ttk.Button(heading, text="Jump to latest", command=self._follow_console).pack(
+            side="right"
+        )
+        self._console_hint = ttk.Label(
+            panel,
+            text=(
+                "Recent package output. Scroll up to pause following; select text "
+                "to copy. The full setup log is under Advanced details."
+            ),
+            font=("Segoe UI", 9),
+            wraplength=650,
+        )
+        self._console_hint.pack(fill="x", pady=(0, 5))
+        content = ttk.Frame(panel)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+        self._console = tk.Text(
+            content,
+            height=11,
+            width=1,
+            wrap="word",
+            font=("Consolas", 9),
+            relief="flat",
+            background="#10202e",
+            foreground="#e5edf4",
+            selectbackground="#315873",
+            selectforeground="#ffffff",
+            padx=10,
+            pady=8,
+            state="disabled",
+        )
+        self._console.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            content, orient="vertical", command=self._console.yview
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self._console.configure(yscrollcommand=scrollbar.set)
+        self._console_buffer.push(
+            "Starting VIPP Setup…\n"
+            "Checking packages can be quiet. Download/install messages appear "
+            "here as the tools report them.\n"
+        )
+
+    def _append_console(self, text: str) -> None:
+        if not text:
+            return
+        console = self._console
+        follow = console.yview()[1] >= 0.999
+        # A mark follows the same text when old lines are trimmed; a fractional
+        # scroll position would drift as the log grows underneath the reader.
+        console.mark_set("vipp_view_anchor", "@0,0")
+        console.mark_gravity("vipp_view_anchor", "left")
+        console.configure(state="normal")
+        console.insert("end-1c", text)
+        lines = int(console.index("end-1c").split(".")[0])
+        if lines > _CONSOLE_LINE_LIMIT:
+            console.delete("1.0", f"{lines - _CONSOLE_LINE_LIMIT + 1}.0")
+        count = console.count("1.0", "end-1c", "chars")
+        characters = count[0] if count else 0
+        if characters > _CONSOLE_VISIBLE_LIMIT:
+            console.delete("1.0", f"1.0 + {characters - _CONSOLE_VISIBLE_LIMIT} chars")
+        console.configure(state="disabled")
+        if follow:
+            console.see("end")
+        else:
+            console.yview("vipp_view_anchor")
+        self._last_activity_at = time.monotonic()
+
+    def _follow_console(self) -> None:
+        self._console.see("end")
 
     def _set_header_layout(self, *, stacked: bool) -> None:
         if self._header_stacked is stacked:
@@ -718,6 +852,7 @@ class InstallerWindow:
             pass
         if latest is not None:
             self._render(latest)
+        self._append_console(self._console_buffer.drain())
         self._refresh_elapsed()
         if self.root.winfo_exists():
             self.root.after(self.POLL_MS, self._poll_states)
@@ -846,7 +981,7 @@ class InstallerWindow:
             )
         )
         if state.technical_details:
-            facts.extend(("", "Live technical details:", state.technical_details))
+            facts.extend(("", "Diagnostic details:", state.technical_details))
         facts.extend(("", "Recent activity:"))
         facts.extend(
             f"  {index}. {message}"
@@ -881,7 +1016,8 @@ class InstallerWindow:
                 quiet_seconds=self._quiet_seconds(),
             )
         )
-        self._replace_details(self._rendered_details(state))
+        # The timer belongs to the progress summary, not the diagnostic text.
+        # Replacing the latter every second used to reset the user's scroll.
 
     def _record_status(self, message: str) -> None:
         normalized = " ".join(message.split())
@@ -898,10 +1034,15 @@ class InstallerWindow:
         return max(0, int(time.monotonic() - last_activity))
 
     def _replace_details(self, details: str) -> None:
+        if details == self._details_text:
+            return
+        self._details_text = details
+        position = self._details.yview()[0]
         self._details.configure(state="normal")
         self._details.delete("1.0", "end")
         self._details.insert("1.0", details)
         self._details.configure(state="disabled")
+        self._details.yview_moveto(position)
 
     def _load_brand_image(self):
         try:
@@ -930,7 +1071,6 @@ class InstallerWindow:
             return
         self.root.update_idletasks()
         self._refresh_scroll_region()
-        self._details.see("end")
         self._content_canvas.yview_moveto(1.0)
 
     def _refresh_scroll_region(self) -> None:
@@ -943,7 +1083,7 @@ class InstallerWindow:
         self._refresh_scroll_region()
 
     def _content_mousewheel(self, event):
-        if event.widget is self._details:
+        if event.widget in (self._details, getattr(self, "_console", None)):
             return None
         delta = int(getattr(event, "delta", 0))
         if delta == 0:
@@ -974,6 +1114,8 @@ class InstallerWindow:
         self._message_label.configure(wraplength=wrap)
         self._status_label.configure(wraplength=wrap)
         self._activity_label.configure(wraplength=wrap)
+        if hasattr(self, "_console_hint"):
+            self._console_hint.configure(wraplength=wrap)
         self._refresh_scroll_region()
 
     def _toggle_advanced_from_key(self) -> None:

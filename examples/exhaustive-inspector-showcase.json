@@ -854,9 +854,39 @@
       "id": "summarize_measurements_1",
       "operation_id": "summarize_measurements",
       "params": {
+        "summary_version": 1,
         "group_by": "auto",
         "value_columns": "auto",
-        "statistics": "count,mean,median,std,min,max,q25,q75"
+        "statistics": "count,mean,median,std,min,max,q25,q75",
+        "summary_level": "Objects",
+        "image_column": "",
+        "sample_column": "",
+        "sample_weighting": "Equal images",
+        "missing_policy": "Exclude and report"
+      }
+    },
+    {
+      "id": "plot_results_1",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Distribution",
+        "y_column": "intensity_mean",
+        "x_column": "auto",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "",
+        "summary": "Mean",
+        "distribution": "Histogram",
+        "bins": 20,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Object mean intensity distribution",
+        "point_size": 5.0,
+        "show_grid": true,
+        "x_tick_interval": "Auto",
+        "y_tick_interval": "Auto"
       }
     },
     {
@@ -1986,6 +2016,12 @@
     },
     {
       "source": "select_table_columns_1",
+      "target": "plot_results_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "select_table_columns_1",
       "target": "summarize_measurements_1",
       "target_port": 0,
       "source_port": 0
@@ -2868,6 +2904,10 @@
     "summarize_measurements_1": [
       9690.0,
       5750.0
+    ],
+    "plot_results_1": [
+      9690.0,
+      6350.0
     ],
     "batch_output_1": [
       10336.0,

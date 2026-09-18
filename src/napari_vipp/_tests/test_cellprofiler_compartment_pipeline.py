@@ -22,6 +22,8 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
 )
+from napari_vipp.core.result_plots import PlotData
+from napari_vipp.core.tables import TableData
 from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 
@@ -187,6 +189,47 @@ def test_native_graph_matches_official_cp_fixture_preserves_sources_and_port_met
         assert state.axes == sources["input"].image_state.axes
         assert "pixel units" in state.history[-1]
         assert any("Before filtering" in item for item in state.history)
+
+
+def test_compartment_measurements_feed_statistics_and_plot_without_changing_labels(
+    reference,
+):
+    graph, ids = _workflow()
+    measurements = graph.add_node("measure_objects_intensity")
+    summary = graph.add_node("summarize_measurements")
+    summary.params.update(
+        value_columns="intensity_mean", statistics="count,mean,std", group_by=""
+    )
+    plot = graph.add_node("plot_results")
+    plot.params.update(y_column="intensity_mean_mean")
+    for source, target, port in (
+        (ids["Nuclei"], measurements.id, 0),
+        (ids["DNA"], measurements.id, 1),
+        (measurements.id, summary.id, 0),
+        (summary.id, plot.id, 0),
+    ):
+        result = graph.connect(source, target, target_port=port)
+        assert result.success, result.message
+
+    graph.run(None, source_payloads=_sources(ids, reference))
+    _assert_reference(graph, ids, reference)
+    labels = reference["Nuclei_segmented"]
+    expected = np.array(
+        [
+            reference["DNA"][labels == label].mean(dtype=np.float64)
+            for label in np.unique(labels)
+            if label > 0
+        ]
+    )
+    table = graph.outputs[summary.id]
+    assert isinstance(table, TableData)
+    row = table.records()[0]
+    assert row["intensity_mean_n"] == len(expected)
+    assert row["intensity_mean_mean"] == pytest.approx(expected.mean())
+    assert row["intensity_mean_std"] == pytest.approx(expected.std(ddof=1))
+    figure = graph.outputs[plot.id]
+    assert isinstance(figure, PlotData)
+    assert figure.series[0].y == pytest.approx((expected.mean(),))
 
 
 def test_primary_two_port_preflight_matches_execution_without_running_kernels(

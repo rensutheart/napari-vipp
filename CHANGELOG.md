@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Make the recorded CellProfiler compartment profile available alongside the
+  existing Statistics, Plot Results, Table Source and Results Workspace tools.
+  Extend the exhaustive example with an object-intensity plot and verify that
+  CellProfiler fixture measurements feed descriptive summaries and plots while
+  preserving the reference segmentation.
+
 - Add six CPU nodes for the recorded CellProfiler 4.2.6 nuclear/cellular
   compartment profile: normalized Gaussian smoothing, Li thresholding,
   shape-based nuclei, propagation-seed preparation, cell-region finishing,
@@ -22,6 +28,143 @@
   portable synthetic watershed workflow, and a bounded Random Walker benchmark.
   Evidence records exact backend agreement, parameters, source hashes and runtime
   limits; biological accuracy and complete paper/Fiji reproduction remain separate.
+- Add a **Results Workspace** with Data, Summary and Plots views, keeping
+  controls beside the table or figure. Open existing Statistics/Plot Results
+  nodes or explicitly add ordinary nodes; edits stay synchronized with their
+  inspectors and plot windows. Distinguish original measurement inputs from
+  summary-table inputs, keep browsing separate from analysis, and retain the
+  existing table/figure export paths. No new statistical methods are added.
+
+- Make Results Workspace navigation clearer with full-width icon tabs,
+  readable input and node labels, and **Show node** beside the editing heading.
+  Adding a summary-based plot now waits for an explicit measurement choice
+  before calculating, with a concise setup prompt instead of duplicate errors.
+  Add **Select all** and **Select none** above the visible-columns list;
+  these change the table view without affecting calculations or exports.
+  Summary meanings and scientific validation are unchanged.
+
+- Keep Results Workspace's **Data source → Statistics node → Plot** selection
+  bar visible above every tab, with bold headings, thicker cyan arrows, a
+  restrained accent border and compact add actions. Browse exact table
+  outputs and named ports; **None — use input data** selects direct plots.
+  Tabs change only the view, and plots never fall back to another branch.
+  Keep deliberate rewiring under **Change plot input…**;
+  node settings remain shared and **Show node** targets the selected node.
+
+- Keep the blue-bordered Results Workspace input card visible with a clickable
+  header and outlined cyan chevron; **Input details** start collapsed inside
+  it. Distinguish grey interpretation notes, orange data/display cautions and
+  red calculation errors. Notes can be dismissed and reopened per plot/window;
+  new data or analysis choices bring them back. Errors, setup and stale-result
+  messages remain visible. Scientific results and exports are unchanged.
+
+- Add automatic or custom major tick intervals for numeric Plot Results axes,
+  shared by the inspector, plot window, Results Workspace and figure exports.
+  Grid lines follow the major ticks; count axes retain whole-number ticks.
+
+- Fit the Results Workspace plot preview to its available area, keeping the
+  axes visible while settings scroll independently. Use consistent
+  **Plot settings** and **Appearance** section headings with regular field
+  labels and a theme-aware outlined Appearance chevron across all plot editors.
+  Resizing the preview changes neither the data nor the saved recipe;
+  exported figure dimensions remain controlled by the export dialog.
+
+- Keep Plot Results warnings readable in light and dark themes and give
+  wrapped messages enough height in narrow inspectors. Warning meanings,
+  calculations and export behavior are unchanged.
+
+- Add plain-language help to Statistics fields and choices, explaining image
+  and sample identities, multi-column grouping and optional counts. Separate
+  explanatory text and result-inclusion details for easier reading; summary
+  calculations and saved analysis semantics are unchanged.
+
+- Clarify **Auto-select measurements** and add **Select all / Select none**
+  to the shared Statistics inspector/workspace controls. Automatic selection
+  tracks eligible numeric measurements; Select all saves the current eligible
+  names as a manual selection, while Select none clears it without reverting
+  to automatic mode. Both leave recognized IDs, grouping fields and text out
+  of bulk selection; an empty selection must be completed before calculation.
+
+- Organize Statistics controls into clearly separated measurement, grouping,
+  observation-unit and statistic sections, with backgrounds matching the
+  surrounding inspector or Results Workspace. Show concise help for the
+  selected missing-value policy and a compact **Result overview** with
+  per-measurement inclusion counts. Calculations, selections and exports are
+  unchanged.
+
+- Expand **Summarize Measurements** as **Statistics**, retaining its saved
+  operation identity and legacy calculations until explicit upgrade. New
+  recipes provide descriptive summaries of objects, image means or sample
+  means, with explicit equal-image/equal-object weighting, exclusions, counts
+  and retained units. Sample SD is undefined for fewer than two eligible
+  summarized units. Results remain ordinary tables for CSV/TSV export and
+  plotting; no inferential tests, p-values or confidence intervals are added.
+
+- Keep the Plot Results activity row reserved while idle so updates do not move
+  the plot or controls. Preserve the surrounding summary, hint, warning and
+  opened data-view space while replacing an out-of-date result.
+
+- Use whole-number ticks for Plot Results histogram counts and explicitly
+  count-valued object measurements, without rounding percentages or image means.
+  Show an indeterminate update indicator in the inspector and plot window while
+  relevant calculations are queued or running; old plots remain unavailable for
+  export until the update is ready.
+
+- Explain incompatible **Mean per image** grouping inside the plot window and
+  inspector, with clear choices for individual objects or image-level groups.
+  Failed plots can be reopened for review; status messages stay compact with
+  full Details, and failed/stale figures cannot be exported as current results.
+
+- Keep Plot Results category labels readable when resizing or exporting:
+  shorten, wrap, rotate and space labels without changing groups or values,
+  and state when only some group labels fit. Show clearer axis titles with
+  units once, reveal exact group values on point selection, and suggest
+  **Scatter** when a numeric **Group by** field creates many separate groups.
+
+- Standardize dialog footer actions across plots, tables, examples, batch and
+  setup windows: on Windows, the main action precedes the rightmost
+  **Cancel**/**Close**; on macOS, dismissal precedes the main action. Keep
+  secondary utilities separate and distinguish stopping active work from
+  dismissing its window. Native file pickers retain their system conventions.
+
+- Add **Plot Results** for connected measurement tables: individual/grouped
+  points with mean or median, shared-bin histograms, cumulative distributions
+  and scatter plots. Distinguish objects from image means, retain units and
+  excluded-value counts, and open an editable plot window. Export sized
+  PNG/TIFF or vector SVG/PDF figures. Include **Morphology & Intensity Plots**,
+  a guided single-image example with 60 calibrated synthetic objects; plots
+  are descriptive and do not add statistical tests.
+
+- Add reviewed batch measurement collection: verify saved table outputs,
+  preserve typed values, units, image/object identity and existing annotations,
+  and keep empty, missing, failed or excluded items visible. Save a separate
+  `.vipp-results.json` measurement dataset and reopen it through **Table Source**
+  for the existing table tools. Historical outputs without typed records are
+  not guessed or silently recalculated. Workflow JSON references the dataset
+  by path and hash rather than embedding results. The collection itself does
+  not perform plotting or new statistical tests.
+
+- Export collected measurements directly as CSV, TSV or an Excel workbook,
+  without rerunning images or opening a results workflow. Offer an optional
+  image-summary companion for CSV/TSV; Excel includes **Measurements**, **Image
+  summary** and **About this collection** sheets with image outcomes,
+  annotations, units and run information. Keep **Save VIPP collection…**
+  separate, with opening a results workflow off by default; the native dataset
+  remains the typed round-trip format.
+
+- Separate workflow commands from the Settings gear in a three-dot **Workflow
+  actions** menu beside Save. Group **Open example**, **Save workflow as**, and
+  exports with separators; keep Save as easy to find and retain graph-action
+  overflow in this menu on narrow windows. Existing save shortcuts and export
+  behavior are unchanged.
+
+- Show live, redacted package download and installation output in the Windows
+  setup window's **Installation log**, separate from settings and diagnostic
+  details. Follow new output only while at the bottom; scrolling up holds the
+  reading position and **Jump to latest** resumes following. Bound the recent
+  on-screen log, retain the full setup record, and stop the elapsed-time refresh
+  from resetting the Advanced details scroll position. Installation approval,
+  hash checks, cancellation and rollback policies are unchanged.
 
 ## 0.15.0a5 - 2026-09-14
 

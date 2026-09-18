@@ -49,6 +49,12 @@ def make_preview(
     if data is None or mode.lower() == "off":
         return None
 
+    from napari_vipp.core.result_plots import is_plot_data
+
+    if is_plot_data(data):
+        # Plot thumbnails belong to the plot renderer, never image reduction.
+        return None
+
     arr = np.asarray(data)
     if arr.size == 0:
         return None

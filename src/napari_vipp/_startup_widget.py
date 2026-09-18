@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp import __version__
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 
 if TYPE_CHECKING:
     import napari
@@ -218,10 +219,11 @@ class VippStartupWidget(QWidget):
         actions.addStretch(1)
         self.retry_button = QPushButton("Retry")
         self.retry_button.clicked.connect(self.retry)
-        actions.addWidget(self.retry_button)
         self.close_button = QPushButton("Close VIPP panel")
         self.close_button.clicked.connect(self.close)
-        actions.addWidget(self.close_button)
+        add_dialog_buttons(
+            actions, actions=(self.retry_button,), dismiss=self.close_button
+        )
         actions.addStretch(1)
         layout.addLayout(actions)
 

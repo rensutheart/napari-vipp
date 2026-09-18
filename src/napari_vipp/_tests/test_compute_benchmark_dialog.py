@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -27,6 +28,36 @@ from napari_vipp.ui.compute_benchmark_dialog import (
     NodeBenchmarkWorkerOutcome,
 )
 from napari_vipp.ui.palette_roles import theme_colors
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_footer_uses_platform_order_and_separates_cancellation(
+    qtbot, monkeypatch, platform
+):
+    from napari_vipp.ui import compute_benchmark_dialog as module
+    from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+
+    monkeypatch.setattr(
+        module, "add_dialog_buttons", partial(add_dialog_buttons, platform=platform)
+    )
+    dialog = NodeBenchmarkDialog("Gaussian blur")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.layout().activate()
+
+    completion = [dialog.apply_button, dialog.close_button]
+    if platform == "darwin":
+        completion.reverse()
+    ordered = [dialog.cancel_button, *completion]
+    assert ordered == sorted(ordered, key=lambda button: button.x())
+    assert all(
+        left.geometry().right() < right.x()
+        for left, right in zip(ordered, ordered[1:], strict=False)
+    )
+    assert not dialog.cancel_button.autoDefault()
+    assert not dialog.close_button.autoDefault()
+    assert not dialog.apply_button.isEnabled()
+    assert not dialog.close_button.isEnabled()
 
 
 def _theme_palette(*, base: str, text: str) -> QPalette:

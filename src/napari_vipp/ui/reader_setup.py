@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp import reader_setup as setup
 from napari_vipp.core.reader_support import probe_reader, reader_spec
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 
 
 class _SetupWorker(QThread):
@@ -79,8 +80,8 @@ class ReaderSetupDialog(QDialog):
         self.action.clicked.connect(self._action)
         self.cancel = QPushButton("Close")
         self.cancel.clicked.connect(self.close)
-        actions.addWidget(self.action)
-        actions.addWidget(self.cancel)
+        actions.addStretch(1)
+        add_dialog_buttons(actions, actions=(self.action,), dismiss=self.cancel)
         layout.addLayout(actions)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)

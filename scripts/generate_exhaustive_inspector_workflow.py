@@ -2,8 +2,9 @@
 
 The resulting graph is intentionally broad rather than a single linear
 analysis.  Each lane uses a small bundled sample that suits the represented
-operations, and every operation exposed in the node palette appears at least
-once. Long shared routes use named tunnels while nearby connections remain
+operations. Palette operations appear at least once except Table Source, which
+requires an authored external collection and has separate save/reopen coverage.
+Long shared routes use named tunnels while nearby connections remain
 visible, so the graph stays readable without hiding its processing structure.
 Keep this generator deterministic so the checked-in JSON remains easy to
 review and regenerate after the palette changes.
@@ -21,6 +22,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
 )
 from napari_vipp.core.workflow import save_workflow
+from napari_vipp.ui.examples import EXHAUSTIVE_EXTERNAL_SOURCE_IDS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATHS = (
@@ -846,9 +848,19 @@ def build_workflow() -> tuple[
         "summarize_measurements",
         5100,
         5750,
+        summary_version=1,
         group_by="auto",
         value_columns="auto",
         statistics="count,mean,median,std,min,max,q25,q75",
+    )
+    plot = place(
+        "plot_results",
+        5100,
+        6350,
+        plot_type="Distribution",
+        y_column="intensity_mean",
+        distribution="Histogram",
+        title="Object mean intensity distribution",
     )
     batch = place(
         "batch_output",
@@ -864,6 +876,7 @@ def build_workflow() -> tuple[
     wire(intensity_table, merged, target_port=1)
     wire(merged, add_metadata)
     wire(add_metadata, select_columns)
+    wire(select_columns, plot)
     wire(select_columns, summarize)
     wire(summarize, batch)
 
@@ -1337,7 +1350,9 @@ def build_workflow() -> tuple[
     wire(compartment_nuclei, compartment_cytoplasm, target_port=1)
 
     operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
-    expected = {spec.id for spec in PALETTE_NODE_LIBRARY}
+    expected = (
+        {spec.id for spec in PALETTE_NODE_LIBRARY} - EXHAUSTIVE_EXTERNAL_SOURCE_IDS
+    )
     actual = set(operation_counts)
     if actual != expected:
         raise RuntimeError(

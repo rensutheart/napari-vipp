@@ -3766,6 +3766,9 @@ def measure_overall_skeleton_network(
 
 
 IDENTITY_JOIN_COLUMNS = (
+    "_vipp_run_id",
+    "_vipp_item_key",
+    "_vipp_batch_id",
     "source_name",
     "sample_id",
     "sample",
@@ -3984,7 +3987,7 @@ SUMMARY_GROUP_COLUMN_PRIORITY = (
 )
 
 SUMMARY_EXCLUDED_VALUE_COLUMNS = frozenset(
-    set(IDENTITY_JOIN_COLUMNS) | set(SUMMARY_GROUP_COLUMN_PRIORITY)
+    set(IDENTITY_JOIN_COLUMNS) | set(SUMMARY_GROUP_COLUMN_PRIORITY) | {"_vipp_row"}
 )
 
 DEFAULT_SUMMARY_STATISTICS = (
@@ -4004,8 +4007,35 @@ def summarize_measurements(
     group_by: str = "auto",
     value_columns: str = "auto",
     statistics: str = "count,mean,median,std,min,max,q25,q75",
+    summary_version: int = 1,
+    summary_level: str = "Objects",
+    image_column: str = "",
+    sample_column: str = "",
+    sample_weighting: str = "Equal images",
+    missing_policy: str = "Exclude and report",
+    *,
+    progress: ProgressContext | None = None,
 ) -> TableData:
-    """Summarize measurement columns by metadata or axis-index groups."""
+    """Versioned descriptive summary; direct calls retain the legacy default."""
+    from napari_vipp.core.statistics import _validate_version, summarize_statistics
+
+    _validate_version(summary_version)
+    if summary_version == 2:
+        return summarize_statistics(
+            data,
+            summary_version=summary_version,
+            group_by=group_by,
+            value_columns=value_columns,
+            statistics=statistics,
+            summary_level=summary_level,
+            image_column=image_column,
+            sample_column=sample_column,
+            sample_weighting=sample_weighting,
+            missing_policy=missing_policy,
+            progress=progress,
+        )
+    if progress is not None:
+        progress.check_cancelled()
     table = _validated_table(data)
     group_columns = _summary_group_columns(table, group_by)
     numeric_columns = _summary_value_columns(table, value_columns, group_columns)
@@ -6840,6 +6870,12 @@ def save_output(
 ):
     """Pipeline node that writes the current output and passes data downstream."""
     from napari_vipp.core.meshes import is_mesh_data, save_mesh_output
+    from napari_vipp.core.result_plots import is_plot_data
+
+    if is_plot_data(data):
+        raise TypeError(
+            "Save Image cannot save plots. Use Export figure or Batch Output."
+        )
 
     if is_mesh_data(data):
         if str(enabled).lower() == "on" and str(path).strip():

@@ -25,6 +25,7 @@ from napari_vipp.startup import (
     StartupPhase,
     StartupSnapshot,
 )
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 
 
 def _branding_pixmap() -> QPixmap | None:
@@ -182,16 +183,18 @@ class StartupSplash(QWidget):
         actions.addStretch(1)
         self.keep_waiting_button = QPushButton("Keep waiting")
         self.keep_waiting_button.clicked.connect(self.keep_waiting_requested)
-        actions.addWidget(self.keep_waiting_button)
         self.hide_button = QPushButton("Hide splash")
         self.hide_button.clicked.connect(self.hide_requested)
-        actions.addWidget(self.hide_button)
         self.open_log_button = QPushButton("Open diagnostic log")
         self.open_log_button.clicked.connect(self.open_log_requested)
-        actions.addWidget(self.open_log_button)
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.close_requested)
-        actions.addWidget(self.close_button)
+        add_dialog_buttons(
+            actions, actions=(self.keep_waiting_button,), dismiss=self.hide_button
+        )
+        add_dialog_buttons(
+            actions, actions=(self.open_log_button,), dismiss=self.close_button
+        )
         actions.addStretch(1)
         root.addLayout(actions)
 

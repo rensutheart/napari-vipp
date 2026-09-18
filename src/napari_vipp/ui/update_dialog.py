@@ -12,7 +12,6 @@ from qtpy.QtWidgets import (
     QBoxLayout,
     QCheckBox,
     QDialog,
-    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,6 +30,7 @@ from napari_vipp.core.update_install import (
     managed_update_target,
 )
 from napari_vipp.core.updates import RELEASES_URL, installer_asset
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.update_download import UpdateDownloadController
 

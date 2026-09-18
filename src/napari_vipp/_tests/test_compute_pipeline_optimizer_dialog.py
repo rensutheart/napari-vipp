@@ -1,3 +1,4 @@
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +35,39 @@ from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
     _subtle_group_brush,
 )
 from napari_vipp.ui.palette_roles import theme_colors
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_footer_uses_platform_order_and_separates_cancellation(
+    qtbot, monkeypatch, platform
+):
+    from napari_vipp.ui import compute_pipeline_optimizer_dialog as module
+    from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+
+    monkeypatch.setattr(
+        module, "add_dialog_buttons", partial(add_dialog_buttons, platform=platform)
+    )
+    dialog = PipelineOptimizerDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.cancel_button.isHidden()
+    dialog.cancel_button.show()
+    dialog.show()
+    dialog.layout().activate()
+
+    completion = [dialog.analyze_button, dialog.apply_button]
+    if platform == "darwin":
+        completion.insert(0, dialog.close_button)
+    else:
+        completion.append(dialog.close_button)
+    ordered = [dialog.cancel_button, *completion]
+    assert ordered == sorted(ordered, key=lambda button: button.x())
+    assert all(
+        left.geometry().right() < right.x()
+        for left, right in zip(ordered, ordered[1:], strict=False)
+    )
+    assert not dialog.cancel_button.autoDefault()
+    assert not dialog.close_button.autoDefault()
+    assert not dialog.apply_button.isEnabled()
 
 
 def _theme_palette(*, base: str, text: str) -> QPalette:

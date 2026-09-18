@@ -15,7 +15,6 @@ from qtpy.QtWidgets import (
     QComboBox,
     QCompleter,
     QDialog,
-    QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -44,6 +43,7 @@ from napari_vipp.ui.batch_override_widgets import (
     BatchOverrideTable,
 )
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
