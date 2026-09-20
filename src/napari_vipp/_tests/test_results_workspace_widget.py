@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from qtpy.QtCore import QCoreApplication, QEvent
+from qtpy.QtCore import QCoreApplication, QEvent, Qt
 
 from napari_vipp._tests.test_statistics_widget import _statistics_widget
 from napari_vipp._tests.test_ui_inspector_widget_integration import (
@@ -40,7 +40,7 @@ def _plot(widget, source, table, **params):
     widget._sync_node_input_ports(node.id)
     widget._sync_node_output_ports(node.id)
     widget._connect_nodes(source.id, node.id)
-    node.params.update(y_column="area", group_column="condition", **params)
+    node.params.update({"y_column": "area", "group_column": "condition", **params})
     result = build_plot_result(table, **node.params)
     state = plot_state_from_data(result)
     widget.pipeline.outputs[node.id] = result
@@ -363,7 +363,86 @@ def test_added_branches_are_spaced_and_duplicate_titles_are_distinguishable(qtbo
             for index, label in enumerate(labels)
             if combo.itemData(index)
         )
-        assert all("[" not in label and "_" not in label for label in labels)
+        assert all(
+            label == widget._node_title(combo.itemData(index))
+            for index, label in enumerate(labels)
+            if combo.itemData(index)
+        )
+
+
+def test_workspace_uses_shared_node_names_and_live_settings_descriptions(
+    qtbot, monkeypatch
+):
+    from napari_vipp.ui.node_labels import build_node_presentations
+
+    widget, source, summary, table, _result, _panel = _statistics_widget(qtbot)
+    plot, _ = _plot(widget, source, table)
+    aliases = {source.id: "Cell measurements", summary.id: "Well comparison"}
+
+    def presentation(node_id):
+        return build_node_presentations(
+            widget.pipeline, aliases, tables={source.id: table}
+        ).get(node_id)
+
+    monkeypatch.setattr(widget, "_node_presentation", presentation, raising=False)
+    monkeypatch.setattr(
+        widget, "_node_title", lambda node_id: presentation(node_id).name
+    )
+    dialog, _key = _open(widget, source)
+    widget._results_workspace.open_node(summary.id)
+    assert dialog.data_selector.currentText() == "Cell measurements"
+    assert dialog.summary_selector.currentText() == "Well comparison"
+    tooltip = dialog.summary_selector.currentData(Qt.ToolTipRole)
+    assert "Operation: Statistics" in tooltip
+    assert f"Node ID: {summary.id}" in tooltip
+    assert "Mean, SD" in tooltip
+    assert "Grouped by condition" in tooltip
+    assert "Output:" in dialog.data_selector.currentData(Qt.ToolTipRole)
+
+    summary.params["statistics"] = "median"
+    widget._results_workspace.refresh()
+    assert dialog.summary_selector.currentText() == "Well comparison"
+    assert "Median" in dialog.summary_selector.currentData(Qt.ToolTipRole)
+    assert "Mean, SD" not in dialog.summary_selector.toolTip()
+
+    widget._results_workspace.open_node(plot.id)
+    assert dialog.plot_selector.currentText() == "area by condition"
+    assert "Operation: Plot Results" in dialog.plot_selector.toolTip()
+    assert f"Node ID: {plot.id}" in dialog.plot_selector.toolTip()
+
+
+@pytest.mark.parametrize("use_summary", [False, True])
+def test_renaming_plot_input_refreshes_caption_without_recomputing(qtbot, use_summary):
+    widget, source, summary, table, summary_result, _panel = _statistics_widget(qtbot)
+    input_node = summary if use_summary else source
+    plot, result = _plot(
+        widget, input_node, summary_result if use_summary else table,
+        y_column="area_mean" if use_summary else "area",
+    )
+    dialog = widget._results_workspace.open_node(plot.id)
+    automatic_name = widget._node_title(input_node.id)
+    assert automatic_name in dialog.plot_input_toggle.text()
+    outputs = dict(widget.pipeline.outputs)
+    params = {key: dict(node.params) for key, node in widget.pipeline.nodes.items()}
+
+    assert widget._set_node_name(input_node.id, "All reviewed cells")
+    assert "All reviewed cells" in dialog.plot_input_toggle.text()
+    assert "All reviewed cells" in dialog.plot_input_toggle.toolTip()
+    assert "All reviewed cells" in dialog.plot_source.currentText()
+    assert automatic_name not in dialog.plot_input_toggle.text()
+    assert dialog._plot_result is result
+    assert all(widget.pipeline.outputs[key] is value for key, value in outputs.items())
+    assert {
+        key: dict(node.params) for key, node in widget.pipeline.nodes.items()
+    } == params
+    assert not widget._pending_dirty_node_ids
+    assert not widget._debounce_timer.isActive()
+
+    widget.undo()
+    assert automatic_name in dialog.plot_input_toggle.text()
+    assert "All reviewed cells" not in dialog.plot_input_toggle.text()
+    assert dialog._plot_result is result
+    assert all(widget.pipeline.outputs[key] is value for key, value in outputs.items())
 
 
 def test_added_summary_plot_waits_for_selection_without_pipeline_error(qtbot):

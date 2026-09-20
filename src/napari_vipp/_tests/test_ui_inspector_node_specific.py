@@ -355,7 +355,7 @@ def test_connected_input_card_clears_when_upstream_node_is_deleted(qtbot):
 
     assert (
         widget.connected_inputs_panel.rows[0].source_label.text()
-        == "Gaussian Blur · out"
+        == f"{widget._node_title(blur.id)} · out"
     )
 
     widget._delete_node(blur.id)

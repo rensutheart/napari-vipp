@@ -45,11 +45,9 @@ def _connected_pipeline() -> tuple[PrototypePipeline, str, str]:
 
 
 def test_mime_type_and_schema_identity_are_stable() -> None:
-    assert GRAPH_FRAGMENT_MIME_TYPE == (
-        "application/x-napari-vipp-graph-fragment+json"
-    )
+    assert GRAPH_FRAGMENT_MIME_TYPE == ("application/x-napari-vipp-graph-fragment+json")
     assert GRAPH_FRAGMENT_KIND == "napari-vipp-graph-fragment"
-    assert GRAPH_FRAGMENT_VERSION == 2
+    assert GRAPH_FRAGMENT_VERSION == 3
 
 
 def test_capture_roundtrip_uses_local_keys_and_relative_positions() -> None:
@@ -95,9 +93,7 @@ def test_capture_roundtrip_uses_local_keys_and_relative_positions() -> None:
     assert fragment.nodes[0].compute_preference == NodeComputePreference("best_gpu")
     assert fragment.nodes[0].optimizer_locked is True
     assert fragment.nodes[1].compute_preference is None
-    assert fragment.connections == (
-        GraphFragmentConnection("n0", "n1", 0, 0, ""),
-    )
+    assert fragment.connections == (GraphFragmentConnection("n0", "n1", 0, 0, ""),)
     assert fragment.notes == (
         GraphFragmentNote("note0", "Review threshold", (120.0, 40.0), 260.0, "n1"),
     )
@@ -137,9 +133,7 @@ def test_capture_preserves_tunnel_only_with_internal_subscriber() -> None:
         positions={blur_id: (0.0, 0.0), threshold_id: (100.0, 0.0)},
     )
 
-    assert fragment.tunnels == (
-        GraphFragmentTunnel("Prepared image", "n0", 0),
-    )
+    assert fragment.tunnels == (GraphFragmentTunnel("Prepared image", "n0", 0),)
     assert fragment.connections[0].tunnel == "Prepared image"
 
     source_only = capture_graph_fragment(

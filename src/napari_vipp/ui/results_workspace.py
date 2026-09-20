@@ -7,6 +7,8 @@ table workers and figure exporter remain the owners of their respective UIs.
 
 from __future__ import annotations
 
+from html import escape
+
 from qtpy.QtCore import (
     QEvent,
     QPoint,
@@ -74,6 +76,17 @@ from napari_vipp.ui.statistics import (
     statistics_preview_header,
 )
 from napari_vipp.ui.toolbar_controls import toolbar_icon
+
+
+def _plain_tooltip(text: str) -> str:
+    """Prevent Qt rich-text detection from interpreting authored labels.
+
+    Ordinary tooltips retain their existing plain strings. If text contains
+    markup delimiters, use explicitly escaped HTML and preserve line breaks.
+    """
+    if "<" not in text:
+        return text
+    return "<qt>" + escape(text).replace("\n", "<br>") + "</qt>"
 
 
 def _label(text="", *, bold=False):
@@ -246,6 +259,7 @@ class _WorkspacePlotNoteText(_PlotWarningLabel):
 class ResultsWorkspaceDialog(QDialog):
     """Reusable editors around real graph nodes, never a second analysis engine."""
 
+    workflow_selected = Signal(str)
     data_selected = Signal(object)
     summary_selected = Signal(str)
     plot_selected = Signal(str)
@@ -264,6 +278,8 @@ class ResultsWorkspaceDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("VippResultsWorkspace")
         self.setWindowTitle("Results Workspace — VIPP")
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setSizeGripEnabled(True)
@@ -271,6 +287,11 @@ class ResultsWorkspaceDialog(QDialog):
         self.resize(1200, 800)
         self._updating = False
         self._available = True
+        self._workflow_selection_enabled = True
+        self._has_workflow_choices = False
+        self._has_data_choices = False
+        self._workflow_activation_timer = QTimer(self)
+        self._workflow_activation_timer.setSingleShot(True)
         self._data_node_id = ""
         self._data_title = "Input measurements"
         self._data_table = None
@@ -383,6 +404,7 @@ class ResultsWorkspaceDialog(QDialog):
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
         self.tabs.currentChanged.connect(self._refresh_actions)
+        self.set_workflows((), "")
         self.set_choices()
         self.set_data(None)
         self.set_summary()
@@ -393,13 +415,20 @@ class ResultsWorkspaceDialog(QDialog):
     def _build_connection_bar(self, layout):
         self.connection_bar = QFrame(self)
         self.connection_bar.setObjectName("WorkspaceConnections")
-        self.connection_bar.setAccessibleName("Data, statistics and plot connections")
+        self.connection_bar.setAccessibleName(
+            "Workflow, data, statistics and plot connections"
+        )
         row = QHBoxLayout(self.connection_bar)
         row.setContentsMargins(10, 8, 10, 10)
         row.setSpacing(10)
+        self.workflow_selector = _combo("Workflow")
         self.data_selector = _combo("Data source")
         self.summary_selector = _combo("Statistics node")
         self.plot_selector = _combo("Plot")
+        self.workflow_selector.setToolTip(
+            "Choose an open workflow, then select one of its table sources. "
+            "Switching workflows does not change node connections or data."
+        )
         self.data_selector.setToolTip(
             "Browse a different table branch in this workflow. This changes "
             "the workspace view only; it does not change node connections or data."
@@ -430,6 +459,7 @@ class ResultsWorkspaceDialog(QDialog):
         self.connection_arrows = []
         for index, (caption, combo, button) in enumerate(
             (
+                ("Workflow", self.workflow_selector, None),
                 ("Data source", self.data_selector, None),
                 ("Statistics node", self.summary_selector, self.add_summary_button),
                 ("Plot", self.plot_selector, self.add_plot_button),
@@ -449,7 +479,7 @@ class ResultsWorkspaceDialog(QDialog):
             label.setWordWrap(False)
             self.connection_labels.append(label)
             group_layout.addWidget(label)
-            if index == 0:
+            if combo is self.data_selector:
                 self.data_source_label = label
             fields = QHBoxLayout()
             fields.setSpacing(5)
@@ -464,6 +494,8 @@ class ResultsWorkspaceDialog(QDialog):
             row.addWidget(group, 1)
         row.addStretch(0)
         layout.addWidget(self.connection_bar)
+        self.workflow_selector.currentIndexChanged.connect(self._workflow_selected)
+        self.workflow_selector.activated.connect(self._workflow_activated)
         self.data_selector.currentIndexChanged.connect(self._data_selected)
         self.summary_selector.currentIndexChanged.connect(self._summary_selected)
         self.plot_selector.currentIndexChanged.connect(self._plot_selected)
@@ -938,7 +970,7 @@ class ResultsWorkspaceDialog(QDialog):
         control.showPopup()
 
     @staticmethod
-    def _choices(combo, choices, selected, empty):
+    def _choices(combo, choices, selected, empty, *, tooltips=None):
         expected = list(choices)
         if not expected:
             expected = [("", empty)]
@@ -949,7 +981,12 @@ class ResultsWorkspaceDialog(QDialog):
             combo.clear()
             for value, label in expected:
                 combo.addItem(label, value)
-                combo.setItemData(combo.count() - 1, label, Qt.ToolTipRole)
+        # An alias can stay unchanged while its calculation settings change.
+        # Refresh descriptions even when the visible choices did not change.
+        for index, (value, label) in enumerate(expected):
+            description = tooltips.get(value, label) if tooltips else label
+            combo.setItemData(index, description, Qt.AccessibleDescriptionRole)
+            combo.setItemData(index, _plain_tooltip(description), Qt.ToolTipRole)
         # Qt's QVariant comparison does not reliably find Python tuple user data
         # (table outputs use a node/port pair). Compare the Python values instead.
         selected_index = next(
@@ -967,8 +1004,13 @@ class ResultsWorkspaceDialog(QDialog):
     def _choice_tooltip(combo):
         if not hasattr(combo, "_workspace_choice_help"):
             combo._workspace_choice_help = combo.toolTip()
+        description = (
+            combo.currentData(Qt.AccessibleDescriptionRole) or combo.currentText()
+        )
         combo.setToolTip(
-            f"Selected: {combo.currentText()}\n\n{combo._workspace_choice_help}".strip()
+            _plain_tooltip(
+                f"Selected: {description}\n\n{combo._workspace_choice_help}".strip()
+            )
         )
 
     def set_choices(
@@ -984,9 +1026,11 @@ class ResultsWorkspaceDialog(QDialog):
         data_source=None,
         plot_scopes=(),
         plot_scope_id="",
+        choice_tooltips=None,
     ):
         self._updating = True
         try:
+            self._has_data_choices = any(choice[0] for choice in data_sources)
             self._summary_bound = bool(summary_id) and summary_id in {
                 choice[0] for choice in summaries
             }
@@ -995,18 +1039,39 @@ class ResultsWorkspaceDialog(QDialog):
             }
             self._plot_unavailable = bool(plot_id) and not self._plot_bound
             self._choices(
-                self.data_selector, data_sources, data_source, "No table selected"
+                self.data_selector,
+                data_sources,
+                data_source,
+                "No table selected",
+                tooltips=choice_tooltips,
             )
-            self._choices(self.plot_scope, plot_scopes, plot_scope_id, "No input table")
+            self._choices(
+                self.plot_scope,
+                plot_scopes,
+                plot_scope_id,
+                "No input table",
+                tooltips=choice_tooltips,
+            )
             self._choices(
                 self.summary_selector,
                 [("", "None — use input data"), *summaries],
                 summary_id,
                 "None — use input data",
+                tooltips=choice_tooltips,
             )
-            self._choices(self.plot_selector, plots, plot_id, "No plot yet")
             self._choices(
-                self.plot_source, plot_sources, plot_source_id, "No input table"
+                self.plot_selector,
+                plots,
+                plot_id,
+                "No plot yet",
+                tooltips=choice_tooltips,
+            )
+            self._choices(
+                self.plot_source,
+                plot_sources,
+                plot_source_id,
+                "No input table",
+                tooltips=choice_tooltips,
             )
             self.statistics_panel.setVisible(bool(summary_id))
             self.statistics_panel.result_group.setVisible(bool(summary_id))
@@ -1021,11 +1086,25 @@ class ResultsWorkspaceDialog(QDialog):
         self._sync_plot_context()
         self._refresh_actions()
 
+    def set_workflows(self, workflows, workflow_id, *, enabled=True):
+        """List open sessions without emitting a user navigation request."""
+        updating = self._updating
+        self._updating = True
+        try:
+            self._has_workflow_choices = any(choice[0] for choice in workflows)
+            self._workflow_selection_enabled = bool(enabled)
+            self._choices(
+                self.workflow_selector, workflows, workflow_id, "No open workflows"
+            )
+        finally:
+            self._updating = updating
+        self._refresh_actions()
+
     def set_relationship(self, text, *, plot_context="", has_plot=True):
         """Describe graph connections without inferring or changing them."""
         self.connection_label.setText(text)
-        self.connection_label.setToolTip(text)
-        self.connection_bar.setToolTip(text)
+        self.connection_label.setToolTip(_plain_tooltip(text))
+        self.connection_bar.setToolTip(_plain_tooltip(text))
         self.connection_bar.setAccessibleDescription(text)
         self._plot_context = plot_context
         self._sync_plot_context()
@@ -1086,6 +1165,24 @@ class ResultsWorkspaceDialog(QDialog):
             self.point_label.hide()
             self.plotted_data_button.setChecked(False)
             self.plotted_panel.hide()
+
+    def _workflow_selected(self, *_args):
+        if not self._updating:
+            # Qt emits activated immediately after currentIndexChanged for a
+            # changed popup choice. Keep that pair to one navigation request.
+            self._workflow_activation_timer.start(0)
+            self._choice_tooltip(self.workflow_selector)
+            workflow_id = self.workflow_selector.currentData()
+            if workflow_id:
+                self.workflow_selected.emit(str(workflow_id))
+
+    def _workflow_activated(self, *_args):
+        if self._workflow_activation_timer.isActive():
+            self._workflow_activation_timer.stop()
+        else:
+            # The graph may have switched to another tab outside this window.
+            # Choosing the displayed workflow again must return to its session.
+            self._workflow_selected()
 
     def _data_selected(self, *_args):
         if not self._updating:
@@ -1622,8 +1719,13 @@ class ResultsWorkspaceDialog(QDialog):
             and self._available
             and not self._busy
         )
+        self.workflow_selector.setEnabled(
+            self._workflow_selection_enabled and self._has_workflow_choices
+        )
+        # A removed source must not trap the user in an unavailable workspace.
+        # The controller supplies valid choices for the active workflow only.
+        self.data_selector.setEnabled(self._has_data_choices)
         for widget in (
-            self.data_selector,
             self.summary_selector,
             self.plot_scope,
             self.plot_selector,

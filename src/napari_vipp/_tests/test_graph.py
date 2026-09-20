@@ -163,12 +163,8 @@ def test_manual_card_button_follows_real_napari_qss_theme(qtbot):
     qtbot.addWidget(host)
     host.show()
 
-    host.setStyleSheet(
-        get_stylesheet("light", extra_variables={"font_size": "9pt"})
-    )
-    qtbot.waitUntil(
-        lambda: view.palette().color(QPalette.Base).lightnessF() > 0.5
-    )
+    host.setStyleSheet(get_stylesheet("light", extra_variables={"font_size": "9pt"}))
+    qtbot.waitUntil(lambda: view.palette().color(QPalette.Base).lightnessF() > 0.5)
     view._apply_palette_theme()
     card = view._cards["gaussian"]
     card.set_execution_state("not_calculated", manual=True)
@@ -182,12 +178,8 @@ def test_manual_card_button_follows_real_napari_qss_theme(qtbot):
     QApplication.processEvents()
     assert _dominant_widget_color(button) == "#e5e7eb"
 
-    host.setStyleSheet(
-        get_stylesheet("dark", extra_variables={"font_size": "9pt"})
-    )
-    qtbot.waitUntil(
-        lambda: view.palette().color(QPalette.Base).lightnessF() < 0.5
-    )
+    host.setStyleSheet(get_stylesheet("dark", extra_variables={"font_size": "9pt"}))
+    qtbot.waitUntil(lambda: view.palette().color(QPalette.Base).lightnessF() < 0.5)
     view._apply_palette_theme()
     assert button.palette().color(QPalette.Button).lightnessF() < 0.5
     assert button.palette().color(QPalette.ButtonText).lightnessF() > 0.5
@@ -256,9 +248,7 @@ def test_node_card_shows_and_updates_authored_bypass_badge(qtbot):
     assert not card._bypass_overlay.isHidden()
     assert card._bypass_overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
     assert card._bypass_overlay.focusPolicy() == Qt.NoFocus
-    assert view._proxies[crop.id].opacity() == pytest.approx(
-        BYPASSED_NODE_OPACITY
-    )
+    assert view._proxies[crop.id].opacity() == pytest.approx(BYPASSED_NODE_OPACITY)
     assert "exact primary input" in card.compute_badge.toolTip()
     outline_pen = card._bypass_outline_pen()
     assert outline_pen.color() == QColor(BYPASSED_NODE_OUTLINE)
@@ -348,9 +338,7 @@ def test_incrementally_added_bypassed_node_is_faded_immediately(qtbot):
     view.add_node(crop, QPointF(330, -220))
 
     assert view._cards[crop.id]._bypassed
-    assert view._proxies[crop.id].opacity() == pytest.approx(
-        BYPASSED_NODE_OPACITY
-    )
+    assert view._proxies[crop.id].opacity() == pytest.approx(BYPASSED_NODE_OPACITY)
 
 
 def test_node_context_menu_toggles_reviewed_bypass_mode(qtbot, monkeypatch):
@@ -736,9 +724,7 @@ def test_pressing_selected_node_exposes_press_boundary_to_receivers(qtbot):
         )
     )
     view.node_selection_changed.connect(
-        lambda node_ids, primary: selection_changes.append(
-            (tuple(node_ids), primary)
-        )
+        lambda node_ids, primary: selection_changes.append((tuple(node_ids), primary))
     )
 
     view.select_node("gaussian")
@@ -750,7 +736,7 @@ def test_pressing_selected_node_exposes_press_boundary_to_receivers(qtbot):
 
     assert selected == ["gaussian"]
     assert press_boundaries == [True]
-    assert selection_changes == [(('gaussian',), "gaussian")]
+    assert selection_changes == [(("gaussian",), "gaussian")]
 
     # Programmatic same-node selection remains distinguishable as an explicit
     # refresh boundary rather than a pointer press.
@@ -758,8 +744,8 @@ def test_pressing_selected_node_exposes_press_boundary_to_receivers(qtbot):
     assert selected == ["gaussian", "gaussian"]
     assert press_boundaries == [True, False]
     assert selection_changes == [
-        (('gaussian',), "gaussian"),
-        (('gaussian',), "gaussian"),
+        (("gaussian",), "gaussian"),
+        (("gaussian",), "gaussian"),
     ]
 
 
@@ -1174,17 +1160,10 @@ def test_isolated_tuning_has_distinct_active_mode_treatment(qtbot, dark):
     assert STALE_EXECUTION_ACCENT not in card.styleSheet()
     assert graph_theme(card.palette()).tuning_surface in card.styleSheet()
     assert card.execution_label.text() == "Tuning in isolation"
-    assert (
-        "#c4b5fd" if dark else "#6d28d9"
-    ) in card.execution_label.styleSheet()
-    stale_category_colors = (
-        ("#78350f", "#fde68a")
-        if dark
-        else ("#fef3c7", "#92400e")
-    )
+    assert ("#c4b5fd" if dark else "#6d28d9") in card.execution_label.styleSheet()
+    stale_category_colors = ("#78350f", "#fde68a") if dark else ("#fef3c7", "#92400e")
     assert all(
-        color not in card.category_label.styleSheet()
-        for color in stale_category_colors
+        color not in card.category_label.styleSheet() for color in stale_category_colors
     )
 
     card.set_processing(True, queued=True)
@@ -1222,11 +1201,12 @@ def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
         "Copy node",
         "Paste values",
         "Delete",
-            "Inspect Code",
-            "Duplicate Node",
-            "Add note",
-            "Bypass node",
-            "Tune node in isolation",
+        "Inspect Code",
+        "Duplicate Node",
+        "Rename…",
+        "Add note",
+        "Bypass node",
+        "Tune node in isolation",
         "Pin",
     ]
     assert deleted == ["threshold"]

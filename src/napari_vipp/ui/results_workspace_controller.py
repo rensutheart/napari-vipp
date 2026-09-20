@@ -20,6 +20,7 @@ from napari_vipp.core.tables import is_table_data
 @dataclass
 class _Workspace:
     dialog: object
+    session_id: str = ""
     root: tuple = ()
     summary_id: str = ""
     plot_id: str = ""
@@ -27,6 +28,8 @@ class _Workspace:
     context_initialized: bool = False
     stamps: dict = field(default_factory=dict)
     revisions: dict = field(default_factory=dict)
+    navigation: dict = field(default_factory=dict)
+    workflow_stamp: tuple = ()
 
 
 class ResultsWorkspaceController(QObject):
@@ -98,13 +101,13 @@ class ResultsWorkspaceController(QObject):
             return None
         root, summary_id, plot_id, tab = origin
         key = (self.widget._workflow_tabs.current.session_id, *root)
-        # A window can browse another data branch without changing the graph.
+        # A window can browse another workflow or branch without changing graphs.
         # Keep its original key as an event-owner token, not as the active input.
         match = next(
             (
                 (k, e)
                 for k, e in self.windows.items()
-                if k[0] == key[0] and e.root == root
+                if e.session_id == key[0] and e.root == root
             ),
             None,
         )
@@ -116,7 +119,7 @@ class ResultsWorkspaceController(QObject):
                 key = (*key, object())
             dialog = ResultsWorkspaceDialog(self.widget)
             dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-            entry = self.windows[key] = _Workspace(dialog, root=root)
+            entry = self.windows[key] = _Workspace(dialog, session_id=key[0], root=root)
             dialog.finished.connect(
                 lambda _result, k=key, owner=entry: self._forget(k, owner)
             )
@@ -136,6 +139,9 @@ class ResultsWorkspaceController(QObject):
             )
             dialog.data_selected.connect(
                 lambda value: dispatch(self._select_data, value)
+            )
+            dialog.workflow_selected.connect(
+                lambda value: dispatch(self._select_workflow, value)
             )
             dialog.plot_scope_selected.connect(
                 lambda value: dispatch(self._select_scope, value)
@@ -196,7 +202,8 @@ class ResultsWorkspaceController(QObject):
             not self._closed
             and key in self.windows
             and current is not None
-            and key[0] == current.session_id
+            and self.windows[key].session_id == current.session_id
+            and bool(root)
             and root[0] in self.widget.pipeline.nodes
             and root[1] < len(self.widget.pipeline.output_ports(root[0]))
             and self.widget.pipeline.output_ports(root[0])[root[1]].output_type
@@ -206,6 +213,60 @@ class ResultsWorkspaceController(QObject):
     def _root(self, key):
         entry = self.windows.get(key)
         return entry.root if entry is not None else key[1:3]
+
+    def _select_workflow(self, key, session_id):
+        """Navigate through the normal tab guard before touching its graph.
+
+        The window key stays an event-owner token. Its selected session may
+        change; all edits and panel lookups use that session's identity.
+        """
+        entry = self.windows.get(key)
+        if entry is None or self._closed:
+            return
+        try:
+            index = self.widget._workflow_tabs.index_of(session_id)
+        except KeyError:
+            self.refresh()
+            return
+        if not self.widget._on_workflow_tab_activation_requested(index):
+            entry.workflow_stamp = ()
+            self.refresh()
+            return
+        if entry.session_id != session_id:
+            fields = (
+                "root",
+                "summary_id",
+                "plot_id",
+                "plot_scope_id",
+                "context_initialized",
+            )
+            entry.navigation[entry.session_id] = tuple(
+                getattr(entry, name) for name in fields
+            )
+            saved = entry.navigation.get(session_id)
+            if saved is None:
+                saved = (next(iter(self._data_sources()), ()), "", "", "", False)
+            entry.session_id = session_id
+            for name, value in zip(fields, saved, strict=True):
+                setattr(entry, name, value)
+            entry.stamps.clear()
+            entry.revisions.clear()
+        self.refresh()
+
+    def _workflow_choices(self):
+        sessions = self.widget._workflow_tabs
+        duplicates = Counter(session.title for session in sessions)
+        reserved = {session.title for session in sessions}
+        choices = []
+        for index, session in enumerate(sessions, 1):
+            label = session.title
+            if duplicates[label] > 1:
+                label = f"{label} · tab {index}"
+                while label in reserved:
+                    label += f" · tab {index}"
+                reserved.add(label)
+            choices.append((session.session_id, label))
+        return choices
 
     def _data_sources(self):
         """Exact analysis inputs, including filtered/merged and multi-port tables.
@@ -221,6 +282,43 @@ class ResultsWorkspaceController(QObject):
             and (origin := self._origin(node.id, port)) is not None
         )
         return list(roots)
+
+    def _table_titles(self):
+        # Graph, inspector and workspace share presentation-only names and the
+        # same stable duplicate disambiguation, independent of dropdown order.
+        return {n: self.widget._node_title(n) for n in self.widget.pipeline.nodes}
+
+    def _choice_tooltips(self, outputs):
+        details = {}
+        for node_id in self.widget.pipeline.nodes:
+            presentation = self.widget._node_presentation(node_id)
+            if presentation is None:
+                continue
+            details[node_id] = "\n".join(
+                part
+                for part in (
+                    presentation.name,
+                    f"Operation: {presentation.operation}",
+                    presentation.summary,
+                    f"Node ID: {node_id}",
+                )
+                if part
+            )
+        for node_id, port in outputs:
+            ports = self.widget.pipeline.output_ports(node_id)
+            details[(node_id, port)] = (
+                details.get(node_id, f"Node ID: {node_id}")
+                + f"\nOutput: {ports[port].label} (port {port + 1})"
+            )
+        return details
+
+    def _data_title(self, output, titles):
+        node_id, port = output
+        label = titles[node_id]
+        ports = self.widget.pipeline.output_ports(node_id)
+        if len(ports) > 1:
+            label += f" · {ports[port].label}"
+        return label
 
     def _choices(self, key):
         root = self._root(key)
@@ -259,7 +357,11 @@ class ResultsWorkspaceController(QObject):
 
     def _select_data(self, key, root):
         current = self.widget._workflow_tabs.current
-        if key not in self.windows or current is None or key[0] != current.session_id:
+        if (
+            key not in self.windows
+            or current is None
+            or self.windows[key].session_id != current.session_id
+        ):
             return
         root = tuple(root) if root else ()
         if root not in self._data_sources() or root == self._root(key):
@@ -335,14 +437,14 @@ class ResultsWorkspaceController(QObject):
             self.widget._statistics if kind == "summary" else self.widget._result_plots
         )
         controller.panel_for(node_id)
-        controller._commit((key[0], node_id), values)
+        controller._commit((self.windows[key].session_id, node_id), values)
         self.refresh()
 
     def _upgrade(self, key):
         node_id = self._editable(key, "summary")
         if node_id is not None:
             self.widget._statistics.panel_for(node_id)
-            self.widget._statistics._upgrade((key[0], node_id))
+            self.widget._statistics._upgrade((self.windows[key].session_id, node_id))
             self.refresh()
 
     def _source_port(self, key, source_id):
@@ -615,7 +717,7 @@ class ResultsWorkspaceController(QObject):
         try:
             sessions = {session.session_id for session in self.widget._workflow_tabs}
             for key, entry in tuple(self.windows.items()):
-                if key[0] not in sessions:
+                if entry.session_id not in sessions:
                     entry.dialog.close()
                     self.windows.pop(key, None)
                     continue
@@ -625,12 +727,60 @@ class ResultsWorkspaceController(QObject):
 
     def _refresh(self, key, entry):
         dialog, widget = entry.dialog, self.widget
+        reason = widget._workflow_tab_switch_block_reason()
+        workflows = self._workflow_choices()
+        workflow_stamp = (
+            tuple(workflows),
+            tuple(str(session.path) for session in widget._workflow_tabs),
+            entry.session_id,
+            reason,
+        )
+        if entry.workflow_stamp != workflow_stamp:
+            entry.workflow_stamp = workflow_stamp
+            dialog.set_workflows(workflows, entry.session_id, enabled=not reason)
+            for index, session in enumerate(widget._workflow_tabs):
+                details = f"{session.title}\n{session.path or 'Unsaved workflow'}"
+                if reason:
+                    details += f"\nWait until {reason} before switching workflows."
+                dialog.workflow_selector.setItemData(index, details, Qt.ToolTipRole)
+                if session.session_id == entry.session_id:
+                    dialog.workflow_selector.setToolTip(
+                        "Choose an open workflow to browse its results. "
+                        "This also activates its workflow tab.\n" + details
+                    )
         if not self._active(key):
-            dialog.set_available(
-                False,
-                "Return to the source workflow tab. If its source node was "
-                "removed, undo that change or open another table.",
+            current = widget._workflow_tabs.current
+            selected_active = (
+                current is not None and current.session_id == entry.session_id
             )
+            roots = self._data_sources() if selected_active else []
+            titles = self._table_titles() if roots else {}
+            # Never leave the previous workflow's data or plot visible beneath
+            # the newly selected workflow name, including empty workflows.
+            dialog.set_choices(
+                data_sources=[(root, self._data_title(root, titles)) for root in roots],
+                data_source=entry.root or None,
+                choice_tooltips=self._choice_tooltips(roots) if roots else {},
+            )
+            dialog.set_data(None)
+            dialog.set_summary()
+            dialog.set_plot()
+            if not selected_active:
+                message = (
+                    "Select this workflow in Workflow above to return to its "
+                    "results, or choose another open workflow."
+                )
+            elif roots:
+                message = (
+                    "The selected table is unavailable. Choose another Data "
+                    "source above, or undo its removal."
+                )
+            else:
+                message = (
+                    "This workflow has no table outputs. Choose another Workflow "
+                    "above, or add a measurement or Table Source node."
+                )
+            dialog.set_available(False, message)
             dialog.set_busy(False)
             entry.stamps.clear()
             entry.revisions.clear()
@@ -661,33 +811,11 @@ class ResultsWorkspaceController(QObject):
             else "Original measurements"
         )
         data_sources = self._data_sources()
-        # Number duplicate names across the workflow, not across a filtered
-        # dropdown. Statistics 2 stays Statistics 2 when another branch is shown.
-        titles = {n: widget._node_title(n) for n in widget.pipeline.nodes}
-        duplicates = Counter(titles.values())
-        numbered = Counter()
-        reserved = set(titles.values())
-        friendly_titles = {}
-        for node_id, title in titles.items():
-            if duplicates[title] > 1:
-                numbered[title] += 1
-                label = f"{title} {numbered[title]}"
-                while label in reserved:
-                    numbered[title] += 1
-                    label = f"{title} {numbered[title]}"
-                reserved.add(label)
-                friendly_titles[node_id] = label
-            else:
-                friendly_titles[node_id] = title
-        titles = friendly_titles
+        titles = self._table_titles()
+        choice_tooltips = self._choice_tooltips(data_sources)
 
         def data_title(output):
-            node_id, port = output
-            label = titles[node_id]
-            ports = widget.pipeline.output_ports(node_id)
-            if len(ports) > 1:
-                label += f" · {ports[port].label}"
-            return label
+            return self._data_title(output, titles)
 
         choices = (
             root,
@@ -701,6 +829,7 @@ class ResultsWorkspaceController(QObject):
             source,
             root_kind,
             tuple(titles.items()),
+            tuple(choice_tooltips.items()),
             tuple(
                 (
                     n,
@@ -749,6 +878,7 @@ class ResultsWorkspaceController(QObject):
                     ),
                 ],
                 plot_source_id=source[0] if source else entry.plot_scope_id,
+                choice_tooltips=choice_tooltips,
             )
         scope_title = titles.get(entry.plot_scope_id, "Unavailable summary")
         plot_title = titles.get(entry.plot_id, "No connected plot")
@@ -796,11 +926,11 @@ class ResultsWorkspaceController(QObject):
             controller = (
                 widget._statistics if kind == "summary" else widget._result_plots
             )
-            panel = controller.panels.get((key[0], node_id))
+            panel = controller.panels.get((entry.session_id, node_id))
             if panel is None:
                 panel = controller.panel_for(node_id)
             else:
-                controller._refresh_panel((key[0], node_id), panel)
+                controller._refresh_panel((entry.session_id, node_id), panel)
             node_state = self._state(node_id)
             setup_message = self.plot_setup_message(node_id) if kind == "plot" else ""
             if setup_message:
@@ -814,6 +944,9 @@ class ResultsWorkspaceController(QObject):
                 id(panel.result),
                 node_state,
                 setup_message,
+                # A presentation-only rename leaves recipes and cached values
+                # unchanged, but the plot's input caption must still refresh.
+                data_title(source) if kind == "plot" and source else "",
             )
             entry.revisions[kind] = revision
             if entry.stamps.get(kind) == stamp:

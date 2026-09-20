@@ -7,10 +7,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from heapq import heappop, heappush
+from html import escape
 from math import ceil
 
 import numpy as np
-from qtpy.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
     QFont,
@@ -151,8 +152,7 @@ def _has_external_image_mime(mime_data) -> bool:
 
     try:
         return bool(
-            mime_data is not None
-            and (mime_data.hasUrls() or mime_data.hasImage())
+            mime_data is not None and (mime_data.hasUrls() or mime_data.hasImage())
         )
     except (AttributeError, RuntimeError, TypeError):
         return False
@@ -372,6 +372,43 @@ class ProcessingBadge(QWidget):
             painter.drawEllipse(QPointF(15.0, 15.0), 2.4, 2.4)
 
 
+class ElidedNodeLabel(QLabel):
+    """Bound a node's display name without losing its accessible full text."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = str(text)
+        self.setTextFormat(Qt.PlainText)
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = str(text)
+        self.setAccessibleName(self._full_text)
+        self._refresh_elision()
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        hint = super().sizeHint()
+        return QSize(
+            min(self.fontMetrics().horizontalAdvance(self._full_text), 180),
+            hint.height(),
+        )
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_elision()
+
+    def _refresh_elision(self) -> None:
+        super().setText(
+            self.fontMetrics().elidedText(
+                self._full_text, Qt.ElideRight, max(self.contentsRect().width(), 0)
+            )
+        )
+
+
 class ElidedSubtitleLabel(QLabel):
     """One-line subtitle that keeps its complete value in a tooltip."""
 
@@ -464,10 +501,7 @@ class BypassCardOverlay(QWidget):
 
         resolved_input = None if input_y is None else float(input_y)
         resolved_output = None if output_y is None else float(output_y)
-        if (
-            self._input_y == resolved_input
-            and self._output_y == resolved_output
-        ):
+        if self._input_y == resolved_input and self._output_y == resolved_output:
             return
         self._input_y = resolved_input
         self._output_y = resolved_output
@@ -480,9 +514,7 @@ class BypassCardOverlay(QWidget):
 
         # A line through the port axis makes the alias relationship legible at
         # a glance. This is paint only: it cannot receive hover or mouse input.
-        painter.setPen(
-            _bypass_pass_through_pen(is_dark=self._graph_theme.is_dark)
-        )
+        painter.setPen(_bypass_pass_through_pen(is_dark=self._graph_theme.is_dark))
         center_y = float(self.rect().center().y())
         input_y = center_y if self._input_y is None else self._input_y
         output_y = center_y if self._output_y is None else self._output_y
@@ -546,7 +578,7 @@ class NodeCard(QFrame):
         self.accent_bar = QFrame()
         self.accent_bar.setObjectName("NodeAccent")
         self.accent_bar.setFixedHeight(4)
-        self.title_label = QLabel(title)
+        self.title_label = ElidedNodeLabel(title)
         self.title_label.setStyleSheet("font-weight: 650;")
         self.title_label.setSizePolicy(
             QSizePolicy.Expanding,
@@ -586,6 +618,10 @@ class NodeCard(QFrame):
         title_layout.addWidget(self.compute_badge, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.category_label = QLabel(category)
         self.category_label.setObjectName("NodeCategory")
+        self.operation_label = ElidedNodeLabel()
+        self.operation_label.setObjectName("NodeOperation")
+        self.operation_label.hide()
+        self._node_presentation: tuple[str, str, str] | None = None
         self.subtitle_label = ElidedSubtitleLabel()
         self.subtitle_label.setObjectName("NodeSubtitle")
         self.subtitle_label.setStyleSheet(
@@ -629,6 +665,7 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.accent_bar)
         self.card_layout.addWidget(self.category_label)
         self.card_layout.addWidget(self.title_row)
+        self.card_layout.addWidget(self.operation_label)
         self.card_layout.addWidget(self.subtitle_label)
         self.card_layout.addWidget(self.preview)
         self.card_layout.addWidget(self.metadata_label)
@@ -639,6 +676,7 @@ class NodeCard(QFrame):
         self._bypass_overlay.setGeometry(self.rect())
         self._bypass_overlay.hide()
         self._refresh_style()
+        self.set_node_presentation(name=title, operation=title, summary="")
 
     def set_port_label_gutters(self, left: float, right: float) -> None:
         """Reserve clear card space for persistent labels on either edge."""
@@ -964,6 +1002,35 @@ class NodeCard(QFrame):
     def set_subtitle(self, text: str, tooltip: str | None = None) -> None:
         self.subtitle_label.set_full_text(text, tooltip)
 
+    def set_node_presentation(self, *, name: str, operation: str, summary: str) -> bool:
+        """Update display metadata; report whether layout text changed."""
+        operation = str(operation or "").strip()
+        name = str(name or "").strip() or operation
+        summary = str(summary or "").strip()
+        presentation = (name, operation, summary)
+        if presentation == self._node_presentation:
+            return False
+        layout_changed = (
+            self._node_presentation is None
+            or self._node_presentation[:2] != presentation[:2]
+        )
+        self._node_presentation = presentation
+        if layout_changed:
+            self.title_label.set_full_text(name)
+            self.operation_label.set_full_text(operation)
+            self.operation_label.setVisible(bool(operation and name != operation))
+        detail = f"{name}\nOperation: {operation}"
+        if summary:
+            detail += f"\nSettings: {summary}"
+        detail += f"\nNode ID: {self.node_id}"
+        tooltip = "<qt>" + escape(detail).replace("\n", "<br>") + "</qt>"
+        self.title_label.setToolTip(tooltip)
+        self.operation_label.setToolTip(tooltip)
+        self.setAccessibleName(name)
+        self.setAccessibleDescription(detail)
+        self.preview.setAccessibleName(f"{name} thumbnail preview")
+        return layout_changed
+
     def set_compute_badge(
         self,
         kind: ComputeBadgeKind | str | None,
@@ -1237,6 +1304,9 @@ class NodeCard(QFrame):
         self.subtitle_label.setStyleSheet(
             f"color: {theme.subtitle}; font-size: 10px; padding-bottom: 1px;"
         )
+        self.operation_label.setStyleSheet(
+            f"color: {theme.muted_text}; font-size: 10px;"
+        )
         self.preview.setStyleSheet(
             f"background: {theme.preview}; color: {theme.preview_text}; "
             "border-radius: 4px;"
@@ -1245,9 +1315,9 @@ class NodeCard(QFrame):
             f"color: {theme.muted_text}; font-size: 10px; padding-top: 2px;"
         )
         execution_color = (
-            "#c4b5fd" if theme.is_dark else "#6d28d9"
-        ) if isolated_tuning_active else (
-            "#fbbf24" if theme.is_dark else "#92400e"
+            ("#c4b5fd" if theme.is_dark else "#6d28d9")
+            if isolated_tuning_active
+            else ("#fbbf24" if theme.is_dark else "#92400e")
         )
         self.execution_label.setStyleSheet(
             f"color: {execution_color}; font-size: 10px; padding-top: 1px;"
@@ -1541,9 +1611,7 @@ class GraphNoteItem(QGraphicsTextItem):
         fill = QColor(theme.note_surface)
         fill.setAlpha(230)
         border = (
-            QColor(theme.pinned)
-            if self.isSelected()
-            else QColor(theme.note_border)
+            QColor(theme.pinned) if self.isSelected() else QColor(theme.note_border)
         )
         painter.setBrush(fill)
         painter.setPen(QPen(border, 1.4 if self.isSelected() else 1.0))
@@ -1950,9 +2018,7 @@ class NodeProxy(QGraphicsProxyWidget):
         card = self._card()
         if card is not None:
             primary_input_y = (
-                float(self.input_ports[0].pos().y())
-                if self.input_ports
-                else None
+                float(self.input_ports[0].pos().y()) if self.input_ports else None
             )
             sole_output_y = (
                 float(self.output_ports[0].pos().y())
@@ -2597,6 +2663,7 @@ class PipelineGraphView(QGraphicsView):
     node_duplicate_requested = Signal(str)
     node_code_requested = Signal(str)
     node_note_requested = Signal(str)
+    node_rename_requested = Signal(str)
     node_isolation_requested = Signal(str)
     node_bypass_requested = Signal(str, bool)
     node_moved = Signal(str, object, object)
@@ -3807,6 +3874,27 @@ class PipelineGraphView(QGraphicsView):
         for connection in proxy.connections:
             connection.update_path()
 
+    def set_node_presentation(
+        self, node_id: str, *, name: str, operation: str, summary: str
+    ) -> None:
+        """Set a node's display identity independently of its scientific model."""
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        before = proxy.sceneBoundingRect()
+        if not card.set_node_presentation(
+            name=name, operation=operation, summary=summary
+        ):
+            return
+        card.adjustSize()
+        proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+        proxy.update()
+
     def set_node_subtitle(
         self,
         node_id: str,
@@ -4191,9 +4279,7 @@ class PipelineGraphView(QGraphicsView):
         previous = self._cards.get(self._image_drop_target_node_id or "")
         if previous is not None:
             previous.set_image_drop_target(False)
-        self._image_drop_target_node_id = (
-            node_id if node_id in self._cards else None
-        )
+        self._image_drop_target_node_id = node_id if node_id in self._cards else None
         current = self._cards.get(self._image_drop_target_node_id or "")
         if current is not None:
             current.set_image_drop_target(True)
@@ -4206,9 +4292,7 @@ class PipelineGraphView(QGraphicsView):
             if not _accept_external_image_copy(event):
                 self._set_image_drop_target(None)
                 return
-            node_id = self._image_source_node_id_at_view_pos(
-                _point_from_event(event)
-            )
+            node_id = self._image_source_node_id_at_view_pos(_point_from_event(event))
             self._set_image_drop_target(node_id)
             return
         if _has_external_image_mime(event.mimeData()):
@@ -4237,9 +4321,7 @@ class PipelineGraphView(QGraphicsView):
             event.acceptProposedAction()
             return
         if _image_source_mime_is_eligible(event.mimeData()):
-            node_id = self._image_source_node_id_at_view_pos(
-                _point_from_event(event)
-            )
+            node_id = self._image_source_node_id_at_view_pos(_point_from_event(event))
             if node_id is None or not _accept_external_image_copy(event):
                 self._set_image_drop_target(None)
                 event.ignore()
@@ -4299,9 +4381,7 @@ class PipelineGraphView(QGraphicsView):
             event.acceptProposedAction()
             return
         if _image_source_mime_is_eligible(event.mimeData()):
-            node_id = self._image_source_node_id_at_view_pos(
-                _point_from_event(event)
-            )
+            node_id = self._image_source_node_id_at_view_pos(_point_from_event(event))
             self._set_image_drop_target(None)
             if node_id is None or not _accept_external_image_copy(event):
                 event.ignore()
@@ -4754,6 +4834,7 @@ class PipelineGraphView(QGraphicsView):
         duplicate_action = (
             menu.addAction("Duplicate Node") if selected_count == 1 else None
         )
+        rename_action = menu.addAction("Rename…") if selected_count == 1 else None
         add_note_action = menu.addAction("Add note") if selected_count == 1 else None
         menu.addSeparator()
         isolation_action = None
@@ -4784,9 +4865,7 @@ class PipelineGraphView(QGraphicsView):
             if isolation_visible:
                 isolation_action = menu.addAction("Tune node in isolation")
                 isolation_action.setCheckable(True)
-                isolation_action.setChecked(
-                    node_id == self._isolated_tuning_node_id
-                )
+                isolation_action.setChecked(node_id == self._isolated_tuning_node_id)
                 isolation_action.setEnabled(isolation_enabled)
                 isolation_action.setToolTip(isolation_tooltip)
                 isolation_action.setStatusTip(isolation_tooltip)
@@ -4808,6 +4887,8 @@ class PipelineGraphView(QGraphicsView):
             self.node_code_requested.emit(node_id)
         elif duplicate_action is not None and action == duplicate_action:
             self.node_duplicate_requested.emit(node_id)
+        elif rename_action is not None and action == rename_action:
+            self.node_rename_requested.emit(node_id)
         elif add_note_action is not None and action == add_note_action:
             self.node_note_requested.emit(node_id)
         elif bypass_action is not None and action == bypass_action:
@@ -4850,14 +4931,10 @@ class PipelineGraphView(QGraphicsView):
             )
         elif self._isolated_tuning_node_id is not None:
             enabled = False
-            tooltip = (
-                "Apply or cancel isolated tuning before changing Bypass node."
-            )
+            tooltip = "Apply or cancel isolated tuning before changing Bypass node."
         elif not self._node_has_primary_bypass_input(node_id):
             enabled = False
-            tooltip = (
-                f"Connect the {primary_label} input before bypassing this node."
-            )
+            tooltip = f"Connect the {primary_label} input before bypassing this node."
         elif not self._node_has_scientific_output_use(node_id):
             enabled = False
             tooltip = (
@@ -4877,9 +4954,7 @@ class PipelineGraphView(QGraphicsView):
 
         if self._node_isolation_state_resolver is not None:
             try:
-                visible, enabled, tooltip = self._node_isolation_state_resolver(
-                    node_id
-                )
+                visible, enabled, tooltip = self._node_isolation_state_resolver(node_id)
             except Exception as exc:  # pragma: no cover - defensive UI boundary
                 return (
                     False,
@@ -4912,8 +4987,7 @@ class PipelineGraphView(QGraphicsView):
         return bool(
             primary is not None
             and any(
-                primary in ports
-                for ports in self._tunnel_subscriber_ports.values()
+                primary in ports for ports in self._tunnel_subscriber_ports.values()
             )
         )
 
@@ -4921,8 +4995,7 @@ class PipelineGraphView(QGraphicsView):
         if any(connection.source_id == node_id for connection in self._connections):
             return True
         return any(
-            port.node_id == node_id
-            for port in self._tunnel_source_ports.values()
+            port.node_id == node_id for port in self._tunnel_source_ports.values()
         )
 
     def _show_canvas_context_menu(
@@ -5488,9 +5561,7 @@ def _wire_path(
     if not _route_collision_penalty(bezier_points, all_obstacles):
         return bezier
 
-    candidates = _wire_route_candidates(
-        start, end, all_obstacles, protected=protected
-    )
+    candidates = _wire_route_candidates(start, end, all_obstacles, protected=protected)
     best_path, points, _score = min(
         candidates,
         key=lambda candidate: candidate[2],
@@ -5552,7 +5623,9 @@ def _wire_route_candidates(
                 path,
                 drawn_points,
                 _route_score(
-                    drawn_points, obstacles, bends=max(len(clean) - 2, 0),
+                    drawn_points,
+                    obstacles,
+                    bends=max(len(clean) - 2, 0),
                     protected=protected,
                 ),
             )
@@ -5648,10 +5721,16 @@ def _orthogonal_route_candidates(
         for top, bottom in zip(boundaries, boundaries[1:], strict=False)
     )
     for y in sorted(lanes):
-        candidates.append([
-            start, route_start, QPointF(route_start.x(), y),
-            QPointF(route_end.x(), y), route_end, end,
-        ])
+        candidates.append(
+            [
+                start,
+                route_start,
+                QPointF(route_start.x(), y),
+                QPointF(route_end.x(), y),
+                route_end,
+                end,
+            ]
+        )
     for x in (left_x, right_x):
         if x < lo_x or x > hi_x:
             continue
@@ -5708,6 +5787,7 @@ def _wire_visibility_detour(
     ):
         return None
     corridor = QRectF(first, last).normalized()
+
     # Distance from the port corridor, not its centre: protect narrow passages
     # near either end even for a very long wire.
     def distance(rect: QRectF) -> float:
@@ -5720,12 +5800,14 @@ def _wire_visibility_detour(
 
     lanes = protected + tuple(sorted(obstacles, key=distance)[:32])
     pad = 20.0  # More than the rounded corner's 18-pixel radius.
-    xs = sorted({first.x(), last.x()} | {
-        value for rect in lanes for value in (rect.left() - pad, rect.right() + pad)
-    })
-    ys = sorted({first.y(), last.y()} | {
-        value for rect in lanes for value in (rect.top() - pad, rect.bottom() + pad)
-    })
+    xs = sorted(
+        {first.x(), last.x()}
+        | {value for rect in lanes for value in (rect.left() - pad, rect.right() + pad)}
+    )
+    ys = sorted(
+        {first.y(), last.y()}
+        | {value for rect in lanes for value in (rect.top() - pad, rect.bottom() + pad)}
+    )
     origin = (xs.index(first.x()), ys.index(first.y()), 0)
     goal = (xs.index(last.x()), ys.index(last.y()))
     costs = {origin: 0.0}
@@ -5757,7 +5839,10 @@ def _wire_visibility_detour(
                 return path
             return None
         for nx, ny, next_direction in (
-            (ix - 1, iy, 0), (ix + 1, iy, 0), (ix, iy - 1, 1), (ix, iy + 1, 1),
+            (ix - 1, iy, 0),
+            (ix + 1, iy, 0),
+            (ix, iy - 1, 1),
+            (ix, iy + 1, 1),
         ):
             if not (0 <= nx < len(xs) and 0 <= ny < len(ys)):
                 continue
@@ -5835,7 +5920,8 @@ def _route_collision_penalty(
     bounds.adjust(-0.001, -0.001, 0.001, 0.001)
     return sum(
         _polyline_rect_penalty(points, rect)
-        for rect in obstacles if bounds.intersects(rect)
+        for rect in obstacles
+        if bounds.intersects(rect)
     )
 
 

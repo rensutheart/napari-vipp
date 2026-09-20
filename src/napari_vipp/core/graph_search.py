@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from napari_vipp.core.operation_search import operation_search_aliases
 
@@ -19,17 +20,37 @@ class GraphSearchMatch:
     matched_fields: tuple[str, ...] = ()
 
 
+class NodeSearchPresentation(Protocol):
+    """Read-only node display metadata supplied by the presentation layer."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def operation(self) -> str: ...
+
+    @property
+    def summary(self) -> str: ...
+
+    @property
+    def automatic_name(self) -> str: ...
+
+
 def find_graph_matches(
     query: str,
     nodes: Iterable[object],
     output_tunnels: Iterable[object] = (),
     connections: Iterable[object] = (),
+    *,
+    node_presentations: Mapping[str, NodeSearchPresentation] | None = None,
 ) -> tuple[GraphSearchMatch, ...]:
     """Return graph elements whose searchable fields match ``query``.
 
     Matching is case-insensitive and punctuation-insensitive. A query matches
     when every normalized query token is present in the candidate text,
     including common alternative names for the node's operation.
+    Optional resident presentation metadata supplies searchable display names
+    and settings summaries without changing the scientific node identities.
     """
 
     normalized_query = normalize_search_text(query)
@@ -37,8 +58,10 @@ def find_graph_matches(
         return ()
 
     matches: list[GraphSearchMatch] = []
+    node_presentations = node_presentations or {}
     for node in nodes:
-        match = _node_match(normalized_query, node)
+        node_id = str(getattr(node, "id", "") or "").strip()
+        match = _node_match(normalized_query, node, node_presentations.get(node_id))
         if match is not None:
             matches.append(match)
 
@@ -65,11 +88,15 @@ def normalize_search_text(value: object) -> str:
     ).strip()
 
 
-def _node_match(query: str, node: object) -> GraphSearchMatch | None:
+def _node_match(
+    query: str,
+    node: object,
+    presentation: NodeSearchPresentation | None = None,
+) -> GraphSearchMatch | None:
     node_id = str(getattr(node, "id", "") or "").strip()
     if not node_id:
         return None
-    fields = _node_search_fields(node)
+    fields = _node_search_fields(node, presentation)
     search_text = normalize_search_text(
         " ".join(f"{label} {value}" for label, value in fields)
     )
@@ -81,6 +108,8 @@ def _node_match(query: str, node: object) -> GraphSearchMatch | None:
         if _tokens_match(query, normalize_search_text(f"{label} {value}"))
     )
     label = str(getattr(node, "title", "") or node_id)
+    if presentation is not None:
+        label = str(presentation.name or "").strip() or label
     return GraphSearchMatch(
         kind="node",
         label=label,
@@ -90,11 +119,23 @@ def _node_match(query: str, node: object) -> GraphSearchMatch | None:
     )
 
 
-def _node_search_fields(node: object) -> tuple[tuple[str, str], ...]:
+def _node_search_fields(
+    node: object, presentation: NodeSearchPresentation | None = None
+) -> tuple[tuple[str, str], ...]:
     fields = [
         ("title", str(getattr(node, "title", "") or "")),
+        ("node id", str(getattr(node, "id", "") or "")),
         ("operation id", str(getattr(node, "operation_id", "") or "")),
     ]
+    if presentation is not None:
+        fields.extend(
+            (
+                ("name", str(presentation.name or "")),
+                ("automatic name", str(presentation.automatic_name or "")),
+                ("operation", str(presentation.operation or "")),
+                ("settings", str(presentation.summary or "")),
+            )
+        )
     aliases = operation_search_aliases(str(getattr(node, "operation_id", "") or ""))
     if aliases:
         fields.append(("alternative name", " ".join(aliases)))

@@ -5,7 +5,7 @@ import threading
 
 import pytest
 from qtpy.QtCore import QEvent, Qt
-from qtpy.QtGui import QColor, QPalette
+from qtpy.QtGui import QColor, QPalette, QTextDocument
 from qtpy.QtWidgets import QDialog
 
 from napari_vipp.core.result_plots import build_plot_result
@@ -30,6 +30,7 @@ def _table():
 def _dialog(qtbot):
     dialog = ResultsWorkspaceDialog()
     qtbot.addWidget(dialog)
+    dialog.set_workflows([("workflow-a", "Measurements")], "workflow-a")
     dialog.set_data(_table(), node_id="measure", title="Measure Objects")
     dialog.set_choices(
         summaries=[("summary", "Statistics")],
@@ -55,7 +56,169 @@ def test_open_empty_workspace_does_not_invent_analysis(qtbot):
     assert not dialog.export_button.isEnabled()
     assert dialog.summary_selector.currentData() == ""
     assert dialog.plot_selector.currentData() == ""
+    assert not dialog.workflow_selector.isEnabled()
+    assert not dialog.data_selector.isEnabled()
     assert not dialog.isModal()
+
+
+def test_workspace_supports_native_maximize_and_restore(qtbot):
+    dialog = _dialog(qtbot)
+    flags = dialog.windowFlags()
+    assert flags & Qt.WindowTitleHint
+    assert flags & Qt.WindowCloseButtonHint
+    assert flags & Qt.WindowMaximizeButtonHint
+    assert not flags & Qt.WindowContextHelpButtonHint
+    normal_size = dialog.size()
+    dialog.showMaximized()
+    qtbot.waitUntil(dialog.isMaximized)
+    assert not dialog.isFullScreen()
+    dialog.showNormal()
+    qtbot.waitUntil(lambda: not dialog.isMaximized())
+    assert dialog.size() == normal_size
+
+
+def test_workflow_selection_is_explicit_and_programmatic_refresh_is_silent(qtbot):
+    dialog = _dialog(qtbot)
+    selected = []
+    dialog.workflow_selected.connect(selected.append)
+    workflows = [("a", "Measurements — experiment A"), ("b", "Measurements — B")]
+    dialog.set_workflows(workflows, "a")
+    assert selected == []
+    assert dialog.workflow_selector.currentData() == "a"
+    dialog.workflow_selector.setCurrentIndex(1)
+    assert selected == ["b"]
+    assert "Measurements — B" in dialog.workflow_selector.toolTip()
+    dialog.set_workflows(workflows, "a")
+    assert selected == ["b"]
+    assert dialog.workflow_selector.currentData() == "a"
+
+
+def test_choice_tooltips_show_markup_names_and_settings_literally(qtbot):
+    dialog = _dialog(qtbot)
+    name = "<b>Nuclear intensity</b> & cells"
+    description = name + "\nOperation: Statistics\nMean of <i>area</i> < 100"
+    dialog.set_workflows([("workflow-a", name)], "workflow-a")
+    dialog.set_choices(
+        data_sources=[(("measure", 0), name)],
+        data_source=("measure", 0),
+        summaries=[("summary", name)],
+        summary_id="summary",
+        plots=[("plot", name)],
+        plot_id="plot",
+        plot_sources=[("measure", name)],
+        plot_source_id="measure",
+        plot_scopes=[("scope", name)],
+        plot_scope_id="scope",
+        choice_tooltips={
+            key: description
+            for key in (("measure", 0), "summary", "plot", "measure", "scope")
+        },
+    )
+    for combo in (
+        dialog.workflow_selector,
+        dialog.data_selector,
+        dialog.summary_selector,
+        dialog.plot_selector,
+        dialog.plot_source,
+        dialog.plot_scope,
+    ):
+        assert combo.currentText() == name
+        expected = name if combo is dialog.workflow_selector else description
+        item_tooltip = combo.currentData(Qt.ToolTipRole)
+        assert "&lt;b&gt;Nuclear intensity&lt;/b&gt;" in item_tooltip
+        document = QTextDocument()
+        document.setHtml(item_tooltip)
+        assert document.toPlainText() == expected
+        document.setHtml(combo.toolTip())
+        expected_help = (
+            f"Selected: {expected}\n\n{combo._workspace_choice_help}".strip()
+        )
+        assert document.toPlainText() == expected_help
+        assert "&amp;lt;" not in combo.toolTip()
+        assert combo.currentData(Qt.AccessibleDescriptionRole) == expected
+    assert dialog.data_selector.currentData() == ("measure", 0)
+    assert dialog.summary_selector.currentData() == "summary"
+
+
+def test_plain_tooltip_strings_and_settings_refresh_are_preserved(qtbot):
+    dialog = _dialog(qtbot)
+    choices = dict(summaries=[("summary", "Well means")], summary_id="summary")
+    ordinary = "Well means\nOperation: Statistics\nMean, SD"
+    dialog.set_choices(**choices, choice_tooltips={"summary": ordinary})
+    assert dialog.summary_selector.currentData(Qt.ToolTipRole) == ordinary
+    assert dialog.summary_selector.toolTip().startswith(f"Selected: {ordinary}\n\n")
+    changed = "Well means\nOperation: Statistics\nMean of <b>area</b>"
+    dialog.set_choices(**choices, choice_tooltips={"summary": changed})
+    document = QTextDocument()
+    document.setHtml(dialog.summary_selector.toolTip())
+    assert document.toPlainText().startswith(f"Selected: {changed}\n\n")
+    dialog.set_choices(**choices, choice_tooltips={"summary": ordinary})
+    assert dialog.summary_selector.currentData(Qt.ToolTipRole) == ordinary
+    assert dialog.summary_selector.toolTip().startswith(f"Selected: {ordinary}\n\n")
+
+
+def test_connection_tooltip_uses_literal_authored_names(qtbot):
+    dialog = _dialog(qtbot)
+    relationship = "<b>Cells</b> → area summary & plot"
+    dialog.set_relationship(relationship)
+    assert dialog.connection_label.text() == relationship
+    assert dialog.connection_bar.accessibleDescription() == relationship
+    for tooltip in (dialog.connection_label.toolTip(), dialog.connection_bar.toolTip()):
+        document = QTextDocument()
+        document.setHtml(tooltip)
+        assert document.toPlainText() == relationship
+
+
+def test_workflow_navigation_survives_missing_source_and_obeys_switch_block(qtbot):
+    dialog = _dialog(qtbot)
+    workflows = [("a", "Measurements A"), ("b", "Measurements B")]
+    dialog.set_workflows(workflows, "a")
+    dialog.set_available(False, "The selected data source was removed.")
+    assert dialog.workflow_selector.isEnabled()
+    dialog.set_workflows(workflows, "a", enabled=False)
+    dialog.set_available(True)
+    dialog.set_busy(False)
+    assert not dialog.workflow_selector.isEnabled()
+    dialog.set_available(False)
+    dialog.set_workflows(workflows, "a", enabled=True)
+    assert dialog.workflow_selector.isEnabled()
+    dialog.set_workflows([], "a")
+    assert not dialog.workflow_selector.isEnabled()
+
+
+def test_activating_same_workflow_can_return_to_it_without_duplicate_requests(qtbot):
+    dialog = _dialog(qtbot)
+    dialog.set_workflows([("a", "Workflow A"), ("b", "Workflow B")], "a")
+    selected = []
+    dialog.workflow_selected.connect(selected.append)
+    dialog.set_available(False, "Switch to this workflow to edit it.")
+    dialog.workflow_selector.activated.emit(0)
+    assert selected == ["a"]
+    qtbot.waitUntil(lambda: not dialog._workflow_activation_timer.isActive())
+    dialog.workflow_selector.setCurrentIndex(1)
+    dialog.workflow_selector.activated.emit(1)
+    assert selected == ["a", "b"]
+    qtbot.waitUntil(lambda: not dialog._workflow_activation_timer.isActive())
+    dialog.workflow_selector.activated.emit(1)
+    assert selected == ["a", "b", "b"]
+
+
+def test_missing_data_source_allows_valid_replacement_without_enabling_edits(qtbot):
+    dialog = _dialog(qtbot)
+    dialog.set_choices(
+        data_sources=[(("replacement", "table"), "Other measurements")],
+        data_source=("removed", "table"),
+    )
+    dialog.set_available(False, "The selected data source was removed.")
+    assert dialog.data_selector.isEnabled()
+    assert not dialog.add_summary_button.isEnabled()
+    assert not dialog.add_plot_button.isEnabled()
+    selected = []
+    dialog.data_selected.connect(selected.append)
+    dialog.data_selector.setCurrentIndex(0)
+    assert selected == [("replacement", "table")]
+    dialog.set_choices(data_source=("removed", "table"))
+    assert not dialog.data_selector.isEnabled()
 
 
 def test_tables_are_embedded_widgets_not_child_dialogs(qtbot):
@@ -70,6 +233,7 @@ def test_sync_choices_and_parameters_does_not_emit_user_edits(qtbot):
     dialog = _dialog(qtbot)
     events = []
     for signal in (
+        dialog.workflow_selected,
         dialog.summary_selected,
         dialog.plot_selected,
         dialog.plot_source_changed,
@@ -77,6 +241,7 @@ def test_sync_choices_and_parameters_does_not_emit_user_edits(qtbot):
         dialog.plot_params_changed,
     ):
         signal.connect(events.append)
+    dialog.set_workflows([("workflow-a", "Measurements")], "workflow-a")
     dialog.set_choices(
         summaries=[("summary", "Statistics")],
         summary_id="summary",

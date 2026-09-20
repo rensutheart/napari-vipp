@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Give Table Source, Statistics and Plot Results descriptive automatic labels,
+  with optional custom names for every node through the inspector's **Name**
+  field or **Rename…** context action. Show consistent names in the graph,
+  Results Workspace, workflow search and connected-input descriptions, retaining
+  operation type and current settings context. Disambiguate matching names
+  using source context and, when needed, a stable identity suffix. Names are
+  saved, undoable and copied with nodes; resetting to automatic naming, renaming
+  and name-only undo leave calculations, caches and figure titles unchanged.
+
+- Add a native maximize/restore button to Results Workspace and a **Workflow**
+  selector before Data source, Statistics node and Plot, joined by matching blue
+  arrows. Browse tables across
+  open workflows with distinct labels for duplicate tab names; switching uses
+  the normal tab safety checks and retains each workflow's results selection.
+  Edits and calculations stay in the selected workflow.
+
 - Make the recorded CellProfiler compartment profile available alongside the
   existing Statistics, Plot Results, Table Source and Results Workspace tools.
   Extend the exhaustive example with an object-intensity plot and verify that

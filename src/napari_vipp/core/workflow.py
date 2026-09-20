@@ -20,6 +20,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     NodeComputePreference,
 )
+from napari_vipp.core.node_names import normalize_node_name
 from napari_vipp.core.pipeline import (
     GraphConnection,
     GraphNode,
@@ -71,9 +72,7 @@ def serialize_workflow(
                 "target_port": connection.target_port,
                 "source_port": connection.source_port,
                 **(
-                    {"tunnel": connection.tunnel_name}
-                    if connection.tunnel_name
-                    else {}
+                    {"tunnel": connection.tunnel_name} if connection.tunnel_name else {}
                 ),
             }
             for connection in pipeline.connections
@@ -169,9 +168,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
             raise ValueError(
                 f"Tunnel {index} references missing source node {source!r}."
             )
-        source_port = _required_non_negative_int(
-            raw, "source_port", f"tunnel {index}"
-        )
+        source_port = _required_non_negative_int(raw, "source_port", f"tunnel {index}")
         source_slot = (source, source_port)
         if source_slot in occupied_outputs:
             raise ValueError(
@@ -209,8 +206,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
             tunnel_key = _tunnel_key(tunnel_name)
             if tunnel_key not in tunnel_sources:
                 raise ValueError(
-                    f"Connection {index} references unknown tunnel "
-                    f"{tunnel_name!r}."
+                    f"Connection {index} references unknown tunnel {tunnel_name!r}."
                 )
             if tunnel_sources[tunnel_key] != (source, source_port):
                 raise ValueError(
@@ -532,8 +528,7 @@ def _notes_from_data(raw_notes: Any, node_id_set: set[str]) -> list[dict[str, An
         attached_node = str(raw.get("attached_node", "") or "").strip()
         if attached_node and attached_node not in node_id_set:
             raise ValueError(
-                f"Note {note_id!r} references missing attached node "
-                f"{attached_node!r}."
+                f"Note {note_id!r} references missing attached node {attached_node!r}."
             )
         note = {
             "id": note_id.strip(),
@@ -562,6 +557,10 @@ def _workflow_metadata_to_dict(
         raise ValueError("VIPP workflow metadata must be an object.")
 
     vipp: dict[str, Any] = {}
+    if "node_names" in raw_vipp:
+        node_names = _node_names_metadata_to_dict(raw_vipp["node_names"], node_id_set)
+        if node_names:
+            vipp["node_names"] = node_names
     if "inspector" in raw_vipp:
         vipp["inspector"] = _inspector_metadata_to_dict(
             raw_vipp["inspector"],
@@ -578,6 +577,23 @@ def _workflow_metadata_to_dict(
             node_id_set,
         )
     return {"vipp": vipp} if vipp else {}
+
+
+def _node_names_metadata_to_dict(
+    raw_node_names: Any,
+    node_id_set: set[str],
+) -> dict[str, str]:
+    """Validate presentation names and discard entries for removed nodes."""
+    if not isinstance(raw_node_names, dict):
+        raise ValueError("Workflow node_names metadata must be an object.")
+    result: dict[str, str] = {}
+    for node_id, value in raw_node_names.items():
+        if not isinstance(node_id, str) or not node_id.strip():
+            raise ValueError("Workflow node_names keys must be non-empty node IDs.")
+        name = normalize_node_name(value)
+        if name and node_id in node_id_set:
+            result[node_id] = name
+    return result
 
 
 def _portable_compute_request(
@@ -751,8 +767,7 @@ def _inspector_metadata_to_dict(
         right_panel_visible = raw_inspector.get("right_panel_visible")
         if not isinstance(right_panel_visible, bool):
             raise ValueError(
-                "Workflow inspector metadata 'right_panel_visible' must be a "
-                "boolean."
+                "Workflow inspector metadata 'right_panel_visible' must be a boolean."
             )
         result["right_panel_visible"] = right_panel_visible
     if "display_profiles" in raw_inspector:
@@ -841,8 +856,7 @@ def _inspect_display_profiles_to_list(
             )
         if rgb_channel_index is not None and rgb_channel_index not in {0, 1, 2}:
             raise ValueError(
-                f"{context.capitalize()} display_rgb_channel_index must be 0, "
-                "1, or 2."
+                f"{context.capitalize()} display_rgb_channel_index must be 0, 1, or 2."
             )
         if display_channel_axis_as_layers and display_rgb:
             raise ValueError(
@@ -854,9 +868,7 @@ def _inspect_display_profiles_to_list(
                 f"{context.capitalize()} display_channel_index is required "
                 "exactly for channel-axis surfaces."
             )
-        display_as_channels = (
-            display_rgb_as_channels or display_channel_axis_as_layers
-        )
+        display_as_channels = display_rgb_as_channels or display_channel_axis_as_layers
         surface_channel_index = (
             rgb_channel_index if display_rgb_as_channels else channel_index
         )
@@ -963,8 +975,7 @@ def _inspect_intensity_settings_to_dict(
     for raw_dtype, raw_settings in raw_by_dtype.items():
         if not isinstance(raw_dtype, str) or not raw_dtype.strip():
             raise ValueError(
-                f"{context.capitalize()} intensity dtype keys must be non-empty "
-                "text."
+                f"{context.capitalize()} intensity dtype keys must be non-empty text."
             )
         dtype = raw_dtype.strip()
         if not isinstance(raw_settings, dict):
@@ -1046,8 +1057,7 @@ def _thumbnail_metadata_to_dict(
         node_id = value.strip()
         if node_id not in node_id_set:
             raise ValueError(
-                f"Workflow thumbnail metadata references missing node "
-                f"{node_id!r}."
+                f"Workflow thumbnail metadata references missing node {node_id!r}."
             )
         key = node_id.casefold()
         if key in seen:
@@ -1108,9 +1118,7 @@ def _optional_node_id(
         raise ValueError(f"{context.capitalize()} {key!r} must be a node id string.")
     node_id = value.strip()
     if node_id not in node_id_set:
-        raise ValueError(
-            f"{context.capitalize()} references missing node {node_id!r}."
-        )
+        raise ValueError(f"{context.capitalize()} references missing node {node_id!r}.")
     return node_id
 
 

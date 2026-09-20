@@ -181,9 +181,9 @@ def test_unavailable_selected_plot_does_not_claim_other_connected_plots_are_abse
     assert not dialog.show_node_button.isEnabled()
 
 
-def test_navigation_unavailable_while_different_workflow_is_active(qtbot):
+def test_navigation_unavailable_without_active_workflow_choices(qtbot):
     dialog = _dialog(qtbot)
-    _choices(dialog)
+    dialog.set_choices()
     dialog.set_available(False)
     assert not dialog.data_selector.isEnabled()
     assert not dialog.plot_scope.isEnabled()
@@ -192,17 +192,23 @@ def test_navigation_unavailable_while_different_workflow_is_active(qtbot):
 
 @pytest.mark.parametrize("width", [760, 1280])
 @pytest.mark.parametrize("base,text", [("#23242b", "#f0f1f2"), ("#fafafa", "#20252d")])
-def test_prominent_connection_bar_has_three_compact_controls_on_every_tab(
+def test_prominent_connection_bar_has_four_compact_controls_on_every_tab(
     qtbot, width, base, text
 ):
     dialog = _dialog(qtbot)
     dialog.setPalette(_palette(base, text))
     dialog.refresh_theme()
+    dialog.set_workflows([("workflow", "Cell measurements")], "workflow")
     _choices(dialog)
     dialog.resize(width, 700)
     dialog.set_relationship("Cell measurements → By condition → Mean area")
     qtbot.wait(20)
-    choices = (dialog.data_selector, dialog.summary_selector, dialog.plot_selector)
+    choices = (
+        dialog.workflow_selector,
+        dialog.data_selector,
+        dialog.summary_selector,
+        dialog.plot_selector,
+    )
     assert dialog.connection_bar.findChildren(QComboBox) == list(choices)
     assert "border-radius: 0" in dialog.connection_bar.styleSheet()
     assert "border:" in dialog.connection_bar.styleSheet()
@@ -211,12 +217,13 @@ def test_prominent_connection_bar_has_three_compact_controls_on_every_tab(
         in dialog.connection_bar.styleSheet()
     )
     assert [label.text() for label in dialog.connection_labels] == [
+        "Workflow",
         "Data source",
         "Statistics node",
         "Plot",
     ]
     assert all(label.font().bold() for label in dialog.connection_labels)
-    assert len(dialog.connection_arrows) == 2
+    assert len(dialog.connection_arrows) == 3
     assert all(not isinstance(arrow, QLabel) for arrow in dialog.connection_arrows)
     assert dialog.connection_bar.accessibleDescription().endswith("Mean area")
     assert not dialog.connection_label.isVisible()
@@ -226,7 +233,7 @@ def test_prominent_connection_bar_has_three_compact_controls_on_every_tab(
         qtbot.wait(10)
         for combo in choices:
             assert combo.isVisible()
-            assert 120 <= combo.width() <= 340
+            assert 95 <= combo.width() <= 340
             top = combo.mapTo(dialog, QPoint())
             assert top.y() < dialog.tabs.y()
         assert len({combo.mapTo(dialog, QPoint()).y() for combo in choices}) == 1
@@ -307,3 +314,44 @@ def test_long_selected_names_are_available_without_expanding_the_bar(qtbot):
     assert dialog.data_selector.width() <= 340
     assert name in dialog.data_selector.toolTip()
     assert dialog.data_selector.itemData(0, Qt.ToolTipRole) == name
+
+
+def test_node_choice_details_update_without_changing_names_or_selection(qtbot):
+    dialog = _dialog(qtbot)
+    selections = []
+    dialog.summary_selected.connect(selections.append)
+    first = "Area by treatment\nOperation: Statistics\nMean, SD\nNode ID: stable-id"
+    choices = dict(
+        summaries=[("stable-id", "Area by treatment")],
+        summary_id="stable-id",
+    )
+    dialog.set_choices(**choices, choice_tooltips={"stable-id": first})
+    index = dialog.summary_selector.currentIndex()
+    assert dialog.summary_selector.itemData(index, Qt.ToolTipRole) == first
+    assert first in dialog.summary_selector.toolTip()
+    revised = first.replace("Mean, SD", "Median")
+    dialog.set_choices(**choices, choice_tooltips={"stable-id": revised})
+    assert dialog.summary_selector.currentText() == "Area by treatment"
+    assert revised in dialog.summary_selector.toolTip()
+    assert "Mean, SD" not in dialog.summary_selector.toolTip()
+    assert selections == []
+
+
+def test_each_table_port_can_have_its_own_full_node_description(qtbot):
+    dialog = _dialog(qtbot)
+    outputs = [
+        (("multi", 0), "Measures · Objects"),
+        (("multi", 1), "Measures · Counts"),
+    ]
+    descriptions = {
+        ("multi", 0): "Measures\nOperation: Measure\nOutput: Objects (port 1)",
+        ("multi", 1): "Measures\nOperation: Measure\nOutput: Counts (port 2)",
+    }
+    dialog.set_choices(
+        data_sources=outputs, data_source=("multi", 1), choice_tooltips=descriptions
+    )
+    assert dialog.data_selector.currentData() == ("multi", 1)
+    assert descriptions[("multi", 1)] in dialog.data_selector.toolTip()
+    assert (
+        dialog.data_selector.itemData(0, Qt.ToolTipRole) == descriptions[("multi", 0)]
+    )

@@ -278,6 +278,7 @@ from napari_vipp.core.metadata import (
     table_data_quality_rows,
     with_channel_colors,
 )
+from napari_vipp.core.node_names import normalize_node_name
 from napari_vipp.core.operations import (
     BORN_WOLF_PSF_AUTO_PARAMETERS,
     BORN_WOLF_PSF_MANUAL_DEFAULTS,
@@ -655,6 +656,8 @@ from napari_vipp.ui.mesh_histogram import (
     mesh_filter_decimals,
     mesh_filter_histogram,
 )
+from napari_vipp.ui.node_labels import NodePresentation, build_node_presentations
+from napari_vipp.ui.node_naming import NodeNameEditor
 from napari_vipp.ui.object_filter_feedback import ObjectFilterFeedbackSection
 from napari_vipp.ui.palette import NodeLibraryPanel
 from napari_vipp.ui.palette_roles import blend_colors, palette_is_dark, theme_colors
@@ -2095,6 +2098,9 @@ class VippWidget(QWidget):
         self._source_preview_errors: dict[str, str] = {}
         self._source_view_modes: dict[str, str] = {}
         self._source_channel_displays: dict[str, str] = {}
+        self._node_names: dict[str, str] = {}
+        self._node_presentation_key = None
+        self._node_presentation_cache: dict[str, NodePresentation] = {}
         self._source_channel_stack_positions: dict[str, dict[str, int]] = {}
         self._source_memory_crop_dismissals: set[
             tuple[str, str, tuple[tuple[int, int], ...]]
@@ -2819,7 +2825,7 @@ class VippWidget(QWidget):
         self.graph_search_edit.setAccessibleName("Find in workflow")
         self.graph_search_edit.setClearButtonEnabled(True)
         self.graph_search_edit.setToolTip(
-            "Search node titles, operation IDs, tunnel names, and output tags. "
+            "Search node names, settings, operations, tunnel names, and output tags. "
             "Ctrl+F focuses search when not assigned to napari or another shortcut."
         )
         self.graph_search_edit.setMinimumWidth(140)
@@ -3894,6 +3900,7 @@ class VippWidget(QWidget):
             # after startup fails.  No initial workflow has been handed to the
             # user yet, so there is no user-authored session to protect.
             return True
+        self.node_name_editor.commit_pending()
         current = self._workflow_tabs.current
         if current is not None and current.pipeline is self.pipeline:
             self._finish_parameter_history_group()
@@ -6352,6 +6359,10 @@ class VippWidget(QWidget):
             Qt.AlignLeft,
         )
         inspector_header_layout.addLayout(self.inspector_context_layout)
+        self.node_name_editor = NodeNameEditor()
+        self.node_name_editor.name_committed.connect(self._set_node_name)
+        inspector_header_layout.addWidget(self.node_name_editor)
+        self.selected_title.setTextFormat(Qt.PlainText)
         layout.addWidget(self.inspector_header_panel)
 
         thumbnail_contrast_status_layout = QHBoxLayout(
@@ -6923,6 +6934,7 @@ class VippWidget(QWidget):
             self._open_image_on_source_node
         )
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
+        self.graph_view.node_rename_requested.connect(self._rename_node)
         self.graph_view.node_code_requested.connect(self._inspect_node_code)
         self.graph_view.node_note_requested.connect(self._add_graph_note_for_node)
         self.graph_view.node_isolation_requested.connect(
@@ -10058,6 +10070,7 @@ class VippWidget(QWidget):
             self.pipeline.nodes.values(),
             self.pipeline.output_tunnel_list(),
             self.pipeline.connections,
+            node_presentations=self._node_presentations(),
         )
         self._graph_search_matches = matches
         if reset_index:
@@ -10127,7 +10140,7 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes[match.node_id]
         fields = ", ".join(match.matched_fields)
         suffix = f" via {fields}" if fields else ""
-        self.status_label.setText(f"Focused '{node.title}'{suffix}.")
+        self.status_label.setText(f"Focused '{self._node_title(node.id)}'{suffix}.")
 
     def _clear_graph_search_tunnel_highlight(self) -> None:
         if not self._graph_search_highlighted_tunnel:
@@ -10525,25 +10538,25 @@ class VippWidget(QWidget):
         ):
             widget.repaint()
 
-    def _on_workflow_tab_activation_requested(self, bar_index: int) -> None:
+    def _on_workflow_tab_activation_requested(self, bar_index: int) -> bool:
         if bar_index < 0:
             self._reset_workflow_tab_bar_selection()
-            return
+            return False
         session_id = self.workflow_tab_bar.tabData(bar_index)
         try:
             target_index = self._workflow_tabs.index_of(str(session_id))
         except KeyError:
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
-            return
+            return False
         if target_index == self._workflow_tabs.current_index:
-            return
+            return True
         reason = self._workflow_tab_switch_block_reason()
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before switching workflow tabs."
             )
             self._reset_workflow_tab_bar_selection()
-            return
+            return False
 
         session = self._workflow_tabs[target_index]
         source_session = self._workflow_tabs.current
@@ -10572,6 +10585,7 @@ class VippWidget(QWidget):
             self._set_workflow_tab_loading(False)
         if not activated:
             self._reset_workflow_tab_bar_selection()
+        return activated
 
     def _restore_workflow_tab_after_failed_activation(
         self,
@@ -10597,6 +10611,7 @@ class VippWidget(QWidget):
         *,
         check_safety: bool = True,
     ) -> bool:
+        self.node_name_editor.commit_pending()
         self._commit_crop_draft(schedule_run=False)
         if not 0 <= target_index < len(self._workflow_tabs):
             return False
@@ -10764,6 +10779,7 @@ class VippWidget(QWidget):
     ) -> None:
         """Rebuild Qt presentation around retained state without recomputing."""
         workflow = snapshot.workflow
+        self._restore_node_names(workflow.metadata)
         valid_node_ids = set(self.pipeline.nodes)
         self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
         self._compute_fallback_policy = FallbackPolicy.parse(
@@ -10883,6 +10899,7 @@ class VippWidget(QWidget):
 
     def undo(self) -> None:
         """Restore the previous workflow graph snapshot."""
+        self.node_name_editor.commit_pending()
         blocked = self._compute_policy_edit_block_reason()
         if blocked:
             self._set_status(
@@ -10911,6 +10928,7 @@ class VippWidget(QWidget):
 
     def redo(self) -> None:
         """Reapply the most recently undone workflow graph snapshot."""
+        self.node_name_editor.commit_pending()
         blocked = self._compute_policy_edit_block_reason()
         if blocked:
             self._set_status(
@@ -10955,6 +10973,7 @@ class VippWidget(QWidget):
                 self._graph_note_documents()
                 if notes_override is None
                 else notes_override,
+                metadata=self._node_name_metadata(),
                 compute_request=self._current_compute_request(),
             ),
             selected_node_id=(
@@ -11494,7 +11513,8 @@ class VippWidget(QWidget):
         target_workflow = target.workflow
         if (
             current_workflow.graph != target_workflow.graph
-            or current_workflow.metadata != target_workflow.metadata
+            or VippWidget._metadata_without_node_names(current_workflow.metadata)
+            != VippWidget._metadata_without_node_names(target_workflow.metadata)
             or current_workflow.compute_request != target_workflow.compute_request
         ):
             return False
@@ -11517,6 +11537,7 @@ class VippWidget(QWidget):
         return (
             current_workflow.positions != target_workflow.positions
             or current_workflow.notes != target_workflow.notes
+            or current_workflow.metadata != target_workflow.metadata
         )
 
     def _restore_canvas_history_snapshot(
@@ -11542,6 +11563,8 @@ class VippWidget(QWidget):
                     width=note.width,
                     attached_node=note.attached_node,
                 )
+        self._restore_node_names(workflow.metadata)
+        self._refresh_node_name_surfaces()
         return True
 
     def _restore_history_snapshot(
@@ -11591,6 +11614,7 @@ class VippWidget(QWidget):
             if pinned_layer is not None:
                 self._remove_layer(pinned_layer)
             workflow.graph.restore_into(self.pipeline)
+            self._restore_node_names(workflow.metadata)
             self._restore_graph_notes(note.to_mapping() for note in workflow.notes)
             valid_node_ids = set(self.pipeline.nodes)
             self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
@@ -13486,6 +13510,8 @@ class VippWidget(QWidget):
         clone = self.pipeline.add_node(original.operation_id)
         clone.params = deepcopy(original.params)
         clone.title = original.title
+        if node_id in self._node_names:
+            self._node_names[clone.id] = self._node_names[node_id]
         self.pipeline.restore_node_execution_mode(
             clone.id,
             original.execution_mode,
@@ -13573,6 +13599,7 @@ class VippWidget(QWidget):
                 selected,
                 positions=self.graph_view.node_positions(),
                 notes=self._graph_note_documents(),
+                node_names=self._node_names,
                 node_preferences=self._compute_node_preferences,
                 optimizer_locked_node_ids=(
                     self._compute_optimizer_locked_node_ids & set(selected)
@@ -13805,6 +13832,9 @@ class VippWidget(QWidget):
                 )
             }
             self.pipeline.restore_node_execution_modes(staged_modes)
+            for copied, node_id in zip(fragment.nodes, new_node_ids, strict=True):
+                if copied.custom_name:
+                    self._node_names[node_id] = copied.custom_name
 
             for node_id in new_node_ids:
                 node = self.pipeline.nodes[node_id]
@@ -14206,6 +14236,7 @@ class VippWidget(QWidget):
         self.status_label.setText("New empty workflow created.")
 
     def _close_workflow_tab(self, bar_index: int) -> None:
+        self.node_name_editor.commit_pending()
         self._commit_crop_draft(schedule_run=False)
         if bar_index < 0:
             self._reset_workflow_tab_bar_selection()
@@ -14305,6 +14336,7 @@ class VippWidget(QWidget):
                 self._store_workflow_tab_runtime(replacement)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Closed workflow '{closed.title}'.")
+        self._results_workspace.refresh()
 
     def _dispose_workflow_tab_session(
         self,
@@ -14353,6 +14385,7 @@ class VippWidget(QWidget):
         session = self._workflow_tabs.rename(index, title)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Renamed workflow tab to '{session.title}'.")
+        self._results_workspace.refresh()
 
     def _reveal_workflow_tab(self, session_id: str) -> None:
         """Locate a tab's saved file without activating, saving or running it."""
@@ -14380,6 +14413,7 @@ class VippWidget(QWidget):
             return
         self._workflow_tabs.move(source_index, target_index)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self._results_workspace.refresh()
 
     def _build_graph_from_pipeline(self) -> None:
         self.graph_view.build_graph(
@@ -14417,6 +14451,8 @@ class VippWidget(QWidget):
             }
 
         vipp: dict[str, object] = {"inspector": inspector}
+        if names := self._node_name_metadata().get("vipp", {}).get("node_names"):
+            vipp["node_names"] = names
         vipp["compute_optimizer"] = {
             "locked_node_ids": sorted(
                 self._compute_optimizer_locked_node_ids & valid_node_ids
@@ -14533,6 +14569,7 @@ class VippWidget(QWidget):
 
     def _save_workflow_dialog(self, *, force_choose_path: bool = False) -> bool:
         """Save the active workflow using the user's persistent local policy."""
+        self.node_name_editor.commit_pending()
         self._commit_crop_draft(schedule_run=False)
         include_batch = self._include_batch_workspace_with_workflow()
         if include_batch is None:
@@ -14633,6 +14670,7 @@ class VippWidget(QWidget):
             f"Saved workflow{version}{detail} to {saved.name}.",
             severity=MessageSeverity.SUCCESS,
         )
+        self._results_workspace.refresh()
         return True
 
     def _load_workflow_dialog(self) -> None:
@@ -14754,6 +14792,7 @@ class VippWidget(QWidget):
                     session.detach_path(title=bundled_example.title)
                 self._store_workflow_tab_runtime(session)
                 self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            self._results_workspace.refresh()
             return loaded
 
         # Read and choose intent before creating a tab, discarding layers, or
@@ -14829,6 +14868,7 @@ class VippWidget(QWidget):
             session.detach_path(title=bundled_example.title)
         self._store_workflow_tab_runtime(session)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self._results_workspace.refresh()
         return loaded
 
     def _choose_workflow_reproduction(self, workflow: dict) -> bool:
@@ -14888,6 +14928,7 @@ class VippWidget(QWidget):
         Bundled examples request ``prefer_image_source`` so they open at the
         start of the scientific data flow instead of a saved terminal node.
         """
+        self.node_name_editor.commit_pending()
         self._last_workflow_load_detail = ""
         if self._isolated_tuning_node_id is not None:
             self._apply_isolated_tuning(run=False, announce=False)
@@ -14925,6 +14966,7 @@ class VippWidget(QWidget):
         self._reset_compute_decisions()
         valid_node_ids = set(self.pipeline.nodes)
         vipp_metadata = self._workflow_vipp_metadata(workflow)
+        self._restore_node_names({"vipp": vipp_metadata})
         optimizer_metadata = vipp_metadata.get("compute_optimizer")
         if isinstance(optimizer_metadata, dict):
             self._compute_optimizer_locked_node_ids = {
@@ -17203,7 +17245,7 @@ class VippWidget(QWidget):
                 spec.default if spec is not None else "?",
             )
             details.append(
-                f"{node.title} / {label} = "
+                f"{self._node_title(node.id)} / {label} = "
                 f"{self._batch_parameter_value_text(override.value)} "
                 "(workflow value "
                 f"{self._batch_parameter_value_text(workflow_value)})"
@@ -17435,7 +17477,11 @@ class VippWidget(QWidget):
             node = self.pipeline.nodes.get(node_id)
             if node is None:
                 continue
-            title = configured_titles.get(node_id, node.title)
+            title = (
+                self._node_title(node_id)
+                if node_id in self._node_names
+                else configured_titles.get(node_id, self._node_title(node_id))
+            )
             if title in source_names:
                 title = f"{title} ({node_id})"
             source_names[title] = item.source_label(node_id)
@@ -18240,7 +18286,7 @@ class VippWidget(QWidget):
             parameters.extend(
                 BatchOverrideParameterSpec(
                     node_id,
-                    node.title,
+                    self._node_title(node_id),
                     node.operation_id,
                     parameter,
                     node.params.get(parameter.name, parameter.default),
@@ -20866,7 +20912,7 @@ class VippWidget(QWidget):
                 TunnelSummary(
                     tunnel.name,
                     tunnel.source_id,
-                    source_node.title,
+                    self._node_title(source_node.id),
                     int(tunnel.source_port),
                     output_type,
                     subscribers,
@@ -21343,6 +21389,7 @@ class VippWidget(QWidget):
             self._source_preview_errors.pop(node_id, None)
             self._source_view_modes.pop(node_id, None)
             self._source_channel_displays.pop(node_id, None)
+            self._node_names.pop(node_id, None)
             self._source_channel_stack_positions.pop(node_id, None)
             self._inspector_output_port_by_node.pop(node_id, None)
             deleted_dismissals = tuple(
@@ -21890,6 +21937,7 @@ class VippWidget(QWidget):
             self.table_group.show()
 
     def _clear_empty_inspector(self) -> None:
+        self.node_name_editor.clear()
         self.compute_parity_notice.clear()
         self.compute_parity_notice.setHidden(True)
         self._primed_diagnostic_node_id = ""
@@ -22004,6 +22052,7 @@ class VippWidget(QWidget):
         spec = self.pipeline.operation_spec(node.operation_id)
         profile = self._inspector_profile_for_node(node.id)
         self._active_inspector_profile = profile
+        self._sync_node_names()
         self._sync_inspector_header(spec)
         self._sync_connected_inputs_ui(profile)
         self._sync_source_representation_ui(profile)
@@ -22318,7 +22367,7 @@ class VippWidget(QWidget):
             else:
                 source_node = self.pipeline.nodes.get(connection.source_id)
                 source_title = (
-                    source_node.title
+                    self._node_title(source_node.id)
                     if source_node is not None
                     else connection.source_id
                 )
@@ -22695,6 +22744,7 @@ class VippWidget(QWidget):
             # inspector or reset its scroll position. Programmatic reselection
             # remains available outside the graph mouse-press boundary.
             return
+        self.node_name_editor.commit_pending()
         self._cancel_selected_inspector_refresh()
         selection_changed = node_id != self._selected_node_id
         if selection_changed:
@@ -22716,8 +22766,8 @@ class VippWidget(QWidget):
         # relevant metadata remain unchanged.
         self._psf_preflight_cache.pop(node_id, None)
         self._remember_cache_node(node_id)
-        node = self.pipeline.nodes[node_id]
-        self.selected_title.setText(node.title)
+        self.selected_title.setText(self._node_title(node_id))
+        self._sync_node_names()
         self._sync_preview_ui()
         self._sync_keep_cached_ui()
         self._render_parameters(node_id)
@@ -23127,6 +23177,7 @@ class VippWidget(QWidget):
             )
 
     def _sync_execution_ui(self) -> None:
+        self._sync_node_names()
         for node_id in self.pipeline.nodes:
             self.graph_view.set_node_bypassed(
                 node_id,
@@ -23904,7 +23955,9 @@ class VippWidget(QWidget):
                 continue
             source_node = self.pipeline.nodes.get(connection.source_id)
             source_title = (
-                source_node.title if source_node is not None else connection.source_id
+                self._node_title(source_node.id)
+                if source_node is not None
+                else connection.source_id
             )
             source_ports = self.pipeline.output_ports(connection.source_id)
             source_port_label = (
@@ -30317,6 +30370,7 @@ class VippWidget(QWidget):
         return palette[index % len(palette)]
 
     def _sync_all_output_ports(self) -> None:
+        self._sync_node_names()
         for node_id in self.pipeline.nodes:
             self._sync_node_output_ports(node_id)
         self._sync_port_tunnels()
@@ -38309,6 +38363,7 @@ class VippWidget(QWidget):
         )
 
     def _update_metadata_panel(self) -> None:
+        self._sync_node_names()
         if self._selected_node_id not in self.pipeline.nodes:
             self._clear_empty_inspector()
             return
@@ -42036,9 +42091,10 @@ class VippWidget(QWidget):
             if len(ports) > 1 and 0 <= output_port < len(ports)
             else ""
         )
-        title = f"{node.title} — {port_label}" if port_label else node.title
+        node_name = self._node_title(node.id)
+        title = f"{node_name} — {port_label}" if port_label else node_name
         suffix = f"_{safe_batch_filename(port_label)}" if port_label else ""
-        default_name = f"{safe_batch_filename(node.title)}{suffix}.csv"
+        default_name = f"{safe_batch_filename(node_name)}{suffix}.csv"
         dialog.set_table(
             data,
             title=title,
@@ -45646,8 +45702,158 @@ class VippWidget(QWidget):
                 canonical[source_axis] = int(values[current_index])
         return tuple(canonical)
 
+    def _node_name_metadata(self) -> dict:
+        names = {
+            node_id: name
+            for node_id, name in self._node_names.items()
+            if node_id in self.pipeline.nodes and name
+        }
+        return {"vipp": {"node_names": names}} if names else {}
+
+    @staticmethod
+    def _metadata_without_node_names(metadata: dict) -> dict:
+        metadata = deepcopy(metadata)
+        vipp = metadata.get("vipp", {})
+        vipp.pop("node_names", None)
+        if not vipp:
+            metadata.pop("vipp", None)
+        return metadata
+
+    def _restore_node_names(self, metadata: dict) -> None:
+        names = metadata.get("vipp", {}).get("node_names", {})
+        self._node_names = {
+            node_id: name
+            for node_id, value in names.items()
+            if node_id in self.pipeline.nodes and (name := normalize_node_name(value))
+        }
+        self._node_presentation_key = None
+
+    def _node_presentations(self) -> dict[str, NodePresentation]:
+        # Only already resident, immutable table metadata is inspected. Never
+        # read files, scan rows or request a calculation just to name a node.
+        tables = {
+            node_id: data
+            for node_id, data in self.pipeline.outputs.items()
+            if node_id in self.pipeline.nodes
+            and is_table_data(data)
+            and self.pipeline.node_execution_states.get(node_id) == EXECUTION_READY
+        }
+        key = (
+            id(self.pipeline),
+            tuple(
+                (node.id, node.operation_id, node.title, repr(node.params))
+                for node in self.pipeline.nodes.values()
+            ),
+            tuple(sorted(self._node_names.items())),
+            tuple(
+                (node_id, table.name, table.columns, table.column_units)
+                for node_id, table in tables.items()
+            ),
+            tuple(self.pipeline.connections),
+        )
+        if key != self._node_presentation_key:
+            self._node_presentation_cache = build_node_presentations(
+                self.pipeline, self._node_names, tables=tables
+            )
+            self._node_presentation_key = key
+        return self._node_presentation_cache
+
+    def _node_presentation(self, node_id: str) -> NodePresentation | None:
+        return self._node_presentations().get(node_id)
+
     def _node_title(self, node_id: str) -> str:
-        return self.pipeline.nodes[node_id].title
+        presentation = self._node_presentation(node_id)
+        return presentation.name if presentation is not None else node_id
+
+    def _sync_node_names(self) -> None:
+        presentations = self._node_presentations()
+        changed = self._node_presentation_key != getattr(
+            self, "_node_names_synced_key", None
+        )
+        self._node_names_synced_key = self._node_presentation_key
+        for node_id, item in presentations.items():
+            self.graph_view.set_node_presentation(
+                node_id, name=item.name, operation=item.operation, summary=item.summary
+            )
+        editor = getattr(self, "node_name_editor", None)
+        item = presentations.get(self._selected_node_id)
+        if editor is not None and item is not None:
+            self.selected_title.setText(item.name)
+            editor.set_node(
+                self._selected_node_id,
+                self._node_names.get(self._selected_node_id, ""),
+                item,
+            )
+        elif editor is not None:
+            editor.clear()
+        dialog = getattr(self, "_result_table_dialog", None)
+        if changed and dialog is not None and dialog.context_key is not None:
+            node_id, port = dialog.context_key
+            self._sync_result_table_dialog(dialog.table, port, node_id=node_id)
+        if changed and hasattr(self, "graph_search_edit"):
+            self._refresh_graph_search_matches(reset_index=False)
+        if (
+            changed
+            and hasattr(self, "connected_inputs_panel")
+            and self._selected_node_id in self.pipeline.nodes
+        ):
+            self._sync_connected_inputs_ui(
+                self._inspector_profile_for_node(self._selected_node_id)
+            )
+
+    def _refresh_node_name_surfaces(self) -> None:
+        """Refresh authored identity without invalidating scientific outputs."""
+        self._sync_node_names()
+        self._refresh_graph_search_matches(reset_index=False)
+        if self._selected_node_id in self.pipeline.nodes:
+            self._sync_connected_inputs_ui(
+                self._inspector_profile_for_node(self._selected_node_id)
+            )
+        self._results_workspace.refresh()
+        self._statistics.refresh()
+        self._result_plots.refresh()
+
+    def _set_node_name(self, node_id: str, value: str) -> bool:
+        if node_id not in self.pipeline.nodes:
+            return False
+        try:
+            name = normalize_node_name(value)
+        except (TypeError, ValueError) as exc:
+            self._set_status(str(exc), severity=MessageSeverity.ERROR, actionable=True)
+            self._sync_node_names()
+            return False
+        if self._node_names.get(node_id, "") == name:
+            self._sync_node_names()
+            return False
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        if name:
+            self._node_names[node_id] = name
+        else:
+            self._node_names.pop(node_id, None)
+        self._refresh_node_name_surfaces()
+        self._push_undo_snapshot(before)
+        self.status_label.setText(
+            f"Named node '{self._node_title(node_id)}'."
+            if name
+            else f"Restored automatic name '{self._node_title(node_id)}'."
+        )
+        return True
+
+    def _rename_node(self, node_id: str) -> None:
+        self.node_name_editor.commit_pending()
+        presentation = self._node_presentation(node_id)
+        if presentation is None:
+            return
+        value, accepted = QInputDialog.getText(
+            self,
+            "Rename node",
+            f"Name (leave blank for automatic):\n{presentation.automatic_name}",
+            QLineEdit.Normal,
+            self._node_names.get(node_id, ""),
+        )
+        if accepted:
+            self._set_node_name(node_id, value)
 
     def _node_state_dict(
         self,

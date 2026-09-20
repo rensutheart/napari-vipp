@@ -858,11 +858,18 @@ hidden execution graph. Opening/browsing is read-only; explicit add actions
 create ordinary saved nodes. All editors for a node share its recipe, undo
 history and stale/result lifecycle. Data navigation identifies an exact node
 output and port, not an inferred earliest ancestor; transformed and merged
-tables remain distinct inputs. One persistent selection bar binds **Data
-source → Statistics node → Plot** across all three views. Selecting Statistics
+tables remain distinct inputs. One persistent selection bar binds **Workflow →
+Data source → Statistics node → Plot** across all three views. Workflow selection
+uses the ordinary guarded tab-activation path, including rollback on failed
+presentation restoration. The workspace's stable event-owner key is separate
+from its selected session ID; all panel access, edits, calculation and Show node
+actions use the selected session. Per-session branch selections are retained
+only as presentation state. Identical node IDs in different sessions never
+identify the same scientific result. Duplicate workflow titles include their
+tab number. Selecting Statistics
 scopes plots to direct connections from that summary; **None — use input data**
 scopes them to the exact root table output. Neither empty plot scopes nor tab
-switches fall back to sibling branches. The three selectors are presentation
+switches fall back to sibling branches. The four selectors are presentation
 state; adjacent add actions explicitly create saved nodes, and **Change plot
 input…** exposes explicit graph connection edits. Removed
 selections retain their identity
@@ -871,6 +878,41 @@ columns do not change scientific inputs or the full table export. Upstream
 collection/joining remains explicit. Workspace/inspector/plot-window views
 share the renderer and persisted numeric-axis tick spacing; presentation
 intervals change ticks and grid lines, never the measured values or bins.
+The native maximize/restore control changes window geometry only. Regression
+coverage includes empty workflows, removed sources, failed and blocked switches,
+same-choice reactivation after an external tab switch, and closing a window's
+original workflow after it has navigated elsewhere.
+
+Node presentation names are separate from `GraphNode.title`, node IDs and
+operation parameters. Optional custom names are saved in
+`metadata.vipp.node_names`, keyed by node ID; unnamed workflows keep their
+existing document representation. Names must be printable single-line text of
+at most 200 characters. Outer spaces are trimmed, empty names restore automatic
+naming, and stale node references are discarded. This UI metadata is excluded
+from scientific workflow hashes and execution cache keys. Name-only history
+restoration refreshes presentation without restoring the graph or discarding
+calculated outputs. Retained workflow sessions restore their own names.
+
+`ui/node_labels.py` derives Table Source labels from a resident dataset title
+or filename, Statistics labels from selected measurements and grouping, and
+Plot Results labels from a meaningful figure title or current plot settings.
+Statistics also appends `Image averages` or `Sample averages` when the current
+recipe summarizes those observation levels; the complete settings summary
+states its level and weighting. Legacy summaries retain their legacy context.
+It uses authored settings and already resident table metadata without reading
+source files or measurement rows. A custom name overrides only the visible
+name; the operation type and settings summary remain separate and update with
+the recipe. Graph labels, Results Workspace choices, workflow search and
+connected-input descriptions share this presentation. Name collisions add
+source context first, then a stable node-identity suffix when needed; display
+text never becomes a connection or selection identity. A custom plot name
+does not alter its persisted figure title.
+
+Graph clipboard schema 3 carries optional per-node `custom_name` text and
+continues to read schemas 1 and 2. Copy/paste remaps names to the newly allocated
+node IDs, while duplication preserves the authored name with a new identity.
+Paste Values transfers operation settings without replacing the destination
+name. Deletion removes its name, and undo restores it with the node.
 
 `Skeletonize` accepts masks and produces a binary skeleton mask in metadata-aware
 2D or 3D spatial blocks. `Analyze Skeleton` accepts a skeleton mask and outputs
