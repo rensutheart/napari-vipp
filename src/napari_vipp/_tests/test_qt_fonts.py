@@ -1,11 +1,37 @@
 """Offscreen font setup is conditional and cannot silently test tofu metrics."""
 
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from napari_vipp._tests import _qt_fonts
+
+
+def test_packaging_conftest_loads_without_installed_test_package():
+    """Installer checks use a wheel without _tests and never request qapp."""
+    conftest = Path(__file__).with_name("conftest.py")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.abc, runpy, sys\n"
+            "class NoInstalledTests(importlib.abc.MetaPathFinder):\n"
+            "    def find_spec(self, fullname, path=None, target=None):\n"
+            "        if fullname.startswith('napari_vipp._tests'):\n"
+            "            raise ModuleNotFoundError(fullname)\n"
+            "sys.meta_path.insert(0, NoInstalledTests())\n"
+            "runpy.run_path(sys.argv[1])\n",
+            str(conftest),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 class _FontDatabase:
