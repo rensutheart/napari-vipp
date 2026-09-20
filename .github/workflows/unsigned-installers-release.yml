@@ -212,7 +212,8 @@ jobs:
           set -euo pipefail
           python -m pip install --no-deps -e .
           python -m pytest -q --noconftest \
-            src/napari_vipp/_tests/test_macos_installer_packaging.py
+            src/napari_vipp/_tests/test_macos_installer_packaging.py \
+            src/napari_vipp/_tests/test_macos_centrosome_wheel.py
           wheel="$(find dist/python -maxdepth 1 -name '*.whl' -type f)"
           test -n "$wheel"
           test "$(printf '%s\n' "$wheel" | wc -l | tr -d ' ')" -eq 1

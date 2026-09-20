@@ -300,11 +300,7 @@ def build_installer(
             },
         )
         centrosome_recipe_dir = input_dir / "centrosome"
-        _render_template(
-            root / "packaging/macos/centrosome/recipe.yaml.in",
-            centrosome_recipe_dir / "recipe.yaml",
-            {},
-        )
+        _stage_centrosome_recipe(root, centrosome_recipe_dir)
 
         channel_dir = temporary_root / "channel"
         _build_local_conda_packages(
@@ -965,6 +961,12 @@ def _render_macos_icon(source_svg: Path, output: Path, work_dir: Path) -> None:
     )
     if not output.is_file() or output.stat().st_size == 0:
         raise MacOSInstallerPackagingError("macOS icon generation produced no output.")
+
+
+def _stage_centrosome_recipe(root: Path, recipe_dir: Path) -> None:
+    source = root / "packaging/macos/centrosome"
+    _render_template(source / "recipe.yaml.in", recipe_dir / "recipe.yaml", {})
+    shutil.copy2(source / "verify_wheel.py", recipe_dir / "verify_wheel.py")
 
 
 def _build_local_conda_packages(
