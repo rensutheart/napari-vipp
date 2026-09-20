@@ -138,6 +138,7 @@ def test_every_registered_operation_resolves_one_complete_inspector_profile():
             "none",
             "runtime",
             "table",
+            "plot",
         }
         assert profile.execution_is_manual is (spec.execution_policy == "manual")
         assert profile.show_output_selector is spec.is_multi_output
@@ -330,14 +331,14 @@ def test_every_effective_output_profile_has_only_valid_actions_and_pinning():
                     else "multi_runtime"
                 )
             )
-        elif spec.output_type in {"image", "labels", "mask", "table", "mesh"}:
+        elif spec.output_type in {"image", "labels", "mask", "table", "plot", "mesh"}:
             expected_action = spec.output_type
         else:
             expected_action = "runtime"
 
         assert profile.output_action_kind == expected_action, spec.id
 
-        if expected_action in _TABLE_ACTION_KINDS | {"none"}:
+        if expected_action in _TABLE_ACTION_KINDS | {"none", "plot"}:
             assert not profile.supports_pin, spec.id
         elif expected_action in _DISPLAYABLE_ACTION_KINDS:
             assert profile.supports_pin, spec.id
@@ -353,6 +354,14 @@ def test_every_effective_output_profile_has_only_valid_actions_and_pinning():
             assert LABEL_DISTRIBUTION_SECTION in profile.primary_sections, spec.id
         if expected_action in {"mask", "multi_mask"}:
             assert MASK_SUMMARY_SECTION in profile.primary_sections, spec.id
+
+
+def test_plot_profile_keeps_figure_actions_separate_from_napari_image_pinning():
+    profile = _profile("plot_results")
+    assert profile.output_action_kind == "plot"
+    assert not profile.supports_pin
+    assert not profile.supports_all_outputs_action
+    assert HISTOGRAMS_SECTION not in profile.primary_sections
 
 
 @pytest.mark.parametrize(

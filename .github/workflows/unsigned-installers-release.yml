@@ -266,6 +266,7 @@ jobs:
           test -x "$prefix/bin/python"
           test -x "$app/Contents/MacOS/vipp"
           "$prefix/bin/python" -m pip check
+          "$prefix/bin/python" scripts/smoke_centrosome_install.py --require-installed
           "$prefix/bin/python" -m napari_vipp.core.reader_support all-native
           "$prefix/bin/python" scripts/smoke_mesh_install.py --require-installed
           "$prefix/bin/python" -c \

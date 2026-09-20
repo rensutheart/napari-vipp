@@ -5939,7 +5939,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("log_x", "Logarithmic X", "bool", False, 0, 1, 1),
             ParameterSpec("log_y", "Logarithmic Y", "bool", False, 0, 1, 1),
             ParameterSpec("title", "Plot title", "text", "", 0, 0, 1),
-            ParameterSpec("point_size", "Point size", "float", 5.0, 1.0, 20.0, 0.5),
+            ParameterSpec(
+                "point_size", "Point size", "float", 5.0, 1.0, 20.0, 0.5, decimals=1
+            ),
             ParameterSpec("show_grid", "Show grid", "bool", True, 0, 1, 1),
             ParameterSpec(
                 "x_tick_interval",

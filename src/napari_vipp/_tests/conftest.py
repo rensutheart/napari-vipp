@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from qtpy.compat import isalive
 
+from napari_vipp._tests._qt_fonts import load_offscreen_windows_fonts
 from napari_vipp.core.compute_history import PIPELINE_TIMING_HISTORY_PATH_ENV
 from napari_vipp.ui import (
     presentation_settings,
@@ -11,6 +12,16 @@ from napari_vipp.ui import (
     updates,
     workflow_save_settings,
 )
+
+
+@pytest.fixture(scope="session")
+def qapp(qapp):
+    """Use real glyphs for all offscreen UI tests, including isolated modules."""
+    # Windows' offscreen plugin may expose an empty font database. Register
+    # native fonts once for the QApplication lifetime, not in an individual
+    # test module: otherwise layout outcomes depend on test order/sharding.
+    load_offscreen_windows_fonts(qapp)
+    return qapp
 
 
 @pytest.fixture(autouse=True)

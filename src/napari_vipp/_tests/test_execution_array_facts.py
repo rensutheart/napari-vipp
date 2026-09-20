@@ -2808,9 +2808,9 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
             operation.id
             for operation in NODE_LIBRARY
             if operation.has_input
-            # Tables and surfaces are domain objects, not image arrays whose
+            # Tables, plots and surfaces are domain objects, not image arrays whose
             # exact shape/dtype can be projected for an accelerator consumer.
-            and operation.output_type not in {"table", "mesh"}
+            and operation.output_type not in {"table", "plot", "mesh"}
             and not any(
                 implementation.runtime_id != "cpu-numpy"
                 for implementation in registry.implementations_for_operation(

@@ -37,7 +37,8 @@ table/plot windows remain available; this is not a new all-in-one operation.
 - **Data source** browses exact table outputs, including filtered/merged tables
   and named ports. Viewing a summary scopes **Plots** to its direct connections;
   no connected plot is an empty state, not a fallback to another summary.
-  **Plots for** switches this browsing context without editing the graph.
+  The persistent **Workflow → Data source → Statistics node → Plot** selectors
+  switch browsing context without editing graph connections.
 - Opening/browsing creates no nodes. **Add summary** and **Add plot** are
   explicit, undoable creation of ordinary Statistics/Plot Results nodes.
   Existing related nodes can be selected without copying their settings.

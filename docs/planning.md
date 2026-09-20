@@ -117,6 +117,14 @@ Important remaining limits are:
 
 ## Active Release Order
 
+The **0.16.0a1** candidate delivers measurement collection, descriptive Statistics,
+Plot Results and Results Workspace, together with the qualified, bounded
+CellProfiler compartment/Propagation implementations. It includes descriptive
+node names and cross-workflow results navigation. Registration, image comparison
+and template matching remain later 0.16 slices, not prerequisites for this alpha.
+The candidate is not published: installer/native compatibility, final-main CI,
+immutable artifact checks and user acceptance still gate publication.
+
 The released `0.15.0a1` consolidates the batch, inspector, measurement, and
 workflow-interface overhaul. The released `0.15.0a2` adds batteries-included
 readers, quiet update discovery, clearer display/search/inspector controls,

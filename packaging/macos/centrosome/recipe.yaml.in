@@ -1,0 +1,66 @@
+# Centrosome is not available from conda-forge. Repackage the exact upstream
+# CPython 3.12 wheel as a native local package; never label its extensions noarch.
+# Sources and SHA-256 values: https://pypi.org/pypi/centrosome/1.3.4/json
+package:
+  name: centrosome
+  version: "1.3.4"
+
+source:
+  - if: target_platform == "osx-arm64"
+    then:
+      url: https://files.pythonhosted.org/packages/6f/86/4e6bdc6bef1a236d2a992e668a3d07c8506db189608501a24547c0f5a068/centrosome-1.3.4-cp312-cp312-macosx_11_0_arm64.whl
+      sha256: ee9190b8514e329972cfaa601a3ed66ec1a4f1968fed310dedb70d8a9236d667
+      file_name: centrosome-1.3.4-cp312-cp312-macosx_11_0_arm64.whl
+  - if: target_platform == "osx-64"
+    then:
+      url: https://files.pythonhosted.org/packages/56/66/5e47052e30a71905e8cd820d480cdd4d872697ba93d16dc273507e25b39b/centrosome-1.3.4-cp312-cp312-macosx_10_13_x86_64.whl
+      sha256: b43e878fd0916b8a40b10294ee366a809a4c81e73eae9bec15684e6291368b0b
+      file_name: centrosome-1.3.4-cp312-cp312-macosx_10_13_x86_64.whl
+
+build:
+  number: 0
+  string: py312_vipp_0
+  skip:
+    - target_platform not in ["osx-arm64", "osx-64"]
+  script:
+    - ${PYTHON} -c "from pathlib import Path; from zipfile import ZipFile; wheels = list(Path('.').glob('centrosome-1.3.4-*.whl')); assert len(wheels) == 1; archive = ZipFile(wheels[0]); Path('LICENSE').write_bytes(archive.read('centrosome-1.3.4.dist-info/licenses/LICENSE'))"
+    - ${PYTHON} -m pip install centrosome-1.3.4-*.whl --no-index --no-deps --no-build-isolation -vv
+    - rm -f "${SP_DIR}/centrosome-1.3.4.dist-info/direct_url.json"
+
+requirements:
+  host:
+    - python 3.12.*
+    - pip
+  run:
+    - python >=3.12,<3.13
+    - python_abi 3.12.* *_cp312
+    - __osx >=13
+    # Keep these synchronized with the pinned upstream wheel's METADATA.
+    - deprecation
+    - numpy >=1.18.2
+    - pillow >=7.1.0,<12
+    - scikit-image >=0.17.2,<1
+    - scipy >=1.4.1,<2,!=1.11.0
+
+tests:
+  - python:
+      imports:
+        - centrosome._propagate
+        - centrosome._cpmorphology2
+        - centrosome._convex_hull
+        - centrosome._filter
+        - centrosome._lapjv
+        - centrosome._fastemd
+        - centrosome.cpmorphology
+        - centrosome.outline
+        - centrosome.smooth
+      python_version: "3.12.*"
+  - script:
+      - python -c "from importlib.metadata import version; assert version('centrosome') == '1.3.4'"
+
+about:
+  homepage: https://github.com/CellProfiler/centrosome
+  repository: https://github.com/CellProfiler/centrosome
+  summary: Upstream Centrosome reference kernels bundled for VIPP
+  license: BSD-3-Clause
+  license_file: LICENSE

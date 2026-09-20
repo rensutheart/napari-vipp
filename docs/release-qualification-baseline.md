@@ -1,6 +1,68 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-14
+Last reviewed: 2026-09-20
+
+## 0.16.0a1 candidate qualification declaration
+
+This alpha covers the union of changes from published `v0.15.0a5`, including
+measurement collection/exports, Table Source, descriptive Statistics, Plot
+Results, Results Workspace, node naming, the CPU CellProfiler profiles and
+Windows installation-log presentation. It is a candidate, not a publication
+receipt. Final-main CI, native packaging and user acceptance remain required.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  cpu_scientific: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_execution: true
+  source_reader_packaging: false
+  windows_installer_runtime: true
+  macos_installer_runtime: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_reader_and_gpu_algorithm_evidence: v0.15.0a5
+```
+
+- Statistics and plot contracts retain explicit observation levels, exclusions,
+  identities and units. Version-1 summaries remain legacy calculations until
+  explicit upgrade. New node display names must not change scientific cache
+  identity; current-result export must not expose stale calculations.
+- The earlier results-branch focused run passed 649 tests. The separate
+  [paper/results integration record](validation/paper-statistics-plots-integration.md)
+  and [seeded-segmentation qualification](evidence/seeded-segmentation/qualification.md)
+  document their exact narrower evidence and unresolved historical runs. They
+  are not substitutes for the combined candidate's complete CI matrix.
+- Candidate-focused checks passed 185 batch/update/font tests, a separate
+  155-test batch-layout run with CI font settings, and 728 plot parameter,
+  inspector and catalogue checks. All 56 failing cases from the earlier
+  integrated full-suite report now pass when replayed together. These runs
+  overlap; their counts are not an aggregate full-suite result. The combined
+  documentation/macOS packaging run passed 68 checks with one macOS-only skip.
+- The new native Centrosome dependency requires a matching, pinned macOS
+  package on both architectures and installed compiled-kernel checks. Python
+  dependency consistency and clean wheel/source installs are required on all
+  supported routes. Exact wheel and source builds must agree independently.
+- Shared execution/provenance changed even though existing GPU kernels did
+  not. Verify affected planning, fallback, history and CPU/GPU interoperability;
+  do not infer a new GPU qualification from CPU results.
+- User acceptance uses protected copies of the supplied final YAP/TAZ and
+  Fascin workflows and verified table snapshots. Preserve original inputs,
+  layouts and scientific settings. Export only to a separate acceptance folder.
+  Historical Fascin source differences remain a limitation, not a release fix.
+- Private acceptance reproduced both results graphs twice (9,550 and 10,766
+  input rows), verified 54 table/figure exports, and loaded/saved/reopened all
+  four workflow copies without changing their scientific identity. One pinned
+  representative image per batch also passed (39 and 303 measured objects).
+  Image publication nodes and full batch runs were deliberately not executed.
+  Original-file hashes were unchanged. This is bounded workflow acceptance,
+  not a new whole-dataset biological or cross-software validation claim.
+- Publish no tag, numbered manual or distribution until the exact candidate
+  passes its outstanding gates. Record final artifact hashes and native job
+  identities with the eventual release assets.
 
 ## 0.15.0a5 qualification declaration
 

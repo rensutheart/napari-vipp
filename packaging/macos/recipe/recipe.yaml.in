@@ -34,6 +34,7 @@ outputs:
         - pip
       run:
         - python >=3.12,<3.14
+        - centrosome ==1.3.4
         - dask-core >=2025.2
         - fast-simplification >=0.2.0,<0.3
         - czifile >=2026.8.16,<2027
@@ -64,6 +65,8 @@ outputs:
       - python:
           imports:
             - napari_vipp
+            - centrosome.propagate
+            - centrosome.cpmorphology
             - fast_simplification
             - czifile
             - imagecodecs

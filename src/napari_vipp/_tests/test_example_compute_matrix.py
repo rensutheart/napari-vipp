@@ -576,6 +576,7 @@ def test_compute_matrix_covers_every_bundled_example():
         "object-intensity",
         "merged-measurements",
         "summary-table",
+        "plot-morphology",
         "derived-morphology",
         "mesh-morphology",
         "mesh-objects",

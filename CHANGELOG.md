@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.16.0a1 - Unreleased
+
+- Package the compiled Centrosome dependency for both macOS architectures from
+  pinned upstream wheels, with installed-kernel checks in installer builds.
+
+- Preserve fractional Plot Results point sizes in generic numeric controls.
+  Complete plot/table catalogue regression coverage and make Windows offscreen
+  layout tests use installed fonts rather than missing-font placeholder metrics.
+
 - Give Table Source, Statistics and Plot Results descriptive automatic labels,
   with optional custom names for every node through the inspector's **Name**
   field or **Rename…** context action. Show consistent names in the graph,
