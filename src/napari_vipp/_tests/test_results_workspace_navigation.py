@@ -257,6 +257,47 @@ def test_prominent_connection_bar_has_four_compact_controls_on_every_tab(
         assert not dialog.plot_source.isVisible()
 
 
+@pytest.mark.parametrize("button_height", [26, 31])
+@pytest.mark.parametrize("width", [760, 1280])
+def test_connection_selectors_stay_aligned_with_taller_native_action_buttons(
+    qtbot, button_height, width
+):
+    dialog = _dialog(qtbot)
+    _choices(dialog)
+    choices = (
+        dialog.workflow_selector,
+        dialog.data_selector,
+        dialog.summary_selector,
+        dialog.plot_selector,
+    )
+    # Native styles need not give QPushButton and QComboBox the same height.
+    # Reproduce both an odd/even 1px difference and a larger native-style gap
+    # on every platform, without relying on the runner's installed styles.
+    for combo in choices:
+        combo.setFixedHeight(25)
+    buttons = (dialog.add_summary_button, dialog.add_plot_button)
+    for button in buttons:
+        button.setFixedHeight(button_height)
+    dialog.resize(width, 700)
+
+    for tab in ("data", "summary", "plots"):
+        dialog.show_tab(tab)
+        qtbot.wait(10)
+        assert len({combo.mapTo(dialog, QPoint()).y() for combo in choices}) == 1
+        assert len({label.height() for label in dialog.connection_labels}) == 1
+        for button, combo in zip(buttons, choices[2:], strict=True):
+            assert button.height() == button_height
+            button_center = button.mapTo(dialog, button.rect().center())
+            combo_center = combo.mapTo(dialog, combo.rect().center())
+            # QRect centers use integer coordinates; mixed odd/even heights
+            # may round the same visual center to adjacent pixels.
+            assert abs(button_center.y() - combo_center.y()) <= 1
+        for arrow, combo in zip(dialog.connection_arrows, choices[1:], strict=True):
+            assert arrow.mapTo(dialog, arrow.arrowCenter()).y() == combo.mapTo(
+                dialog, combo.rect().center()
+            ).y()
+
+
 def test_none_middle_choice_is_explicit_and_add_plot_uses_data_not_old_scope(qtbot):
     dialog = _dialog(qtbot)
     _choices(dialog)

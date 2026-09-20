@@ -481,7 +481,12 @@ class ResultsWorkspaceDialog(QDialog):
             group_layout.addWidget(label)
             if combo is self.data_selector:
                 self.data_source_label = label
-            fields = QHBoxLayout()
+            # A shared-height field row keeps all selectors aligned even when
+            # native + buttons are taller than the native combo boxes. A bare
+            # nested layout caps its height and stretches the heading instead.
+            fields_row = QWidget(group)
+            fields = QHBoxLayout(fields_row)
+            fields.setContentsMargins(0, 0, 0, 0)
             fields.setSpacing(5)
             combo.setMaximumWidth(340)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -489,7 +494,7 @@ class ResultsWorkspaceDialog(QDialog):
             if button is not None:
                 button.setFixedWidth(28)
                 fields.addWidget(button)
-            group_layout.addLayout(fields)
+            group_layout.addWidget(fields_row, 1)
             self.connection_groups.append(group)
             row.addWidget(group, 1)
         row.addStretch(0)

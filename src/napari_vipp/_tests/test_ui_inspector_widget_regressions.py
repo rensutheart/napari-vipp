@@ -20,6 +20,38 @@ from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.ui.inspector import MASK_SUMMARY_SECTION
 
 
+def _wait_for_inspector_layout(qtbot, widget):
+    """Observe settled scroll-container geometry, not a queued Qt resize."""
+    previous = None
+    stable_turns = 0
+
+    def settled():
+        nonlocal previous, stable_turns
+        panel = widget.inspector_panel
+        geometry = (
+            widget.inspector_content.width(),
+            widget.inspector_content.height(),
+            panel.viewport().width(),
+            panel.viewport().height(),
+            panel.verticalScrollBar().maximum(),
+            widget.parameter_group.height(),
+            widget.parameter_form_widget.height(),
+        )
+        if geometry != previous:
+            previous, stable_turns = geometry, 0
+            return False
+        stable_turns += 1
+        return (
+            stable_turns >= 3
+            and widget.inspector_content.height()
+            >= widget.inspector_content.minimumHeight()
+            and widget.parameter_group.height()
+            >= widget.parameter_group.minimumSizeHint().height()
+        )
+
+    qtbot.waitUntil(settled, timeout=2_000)
+
+
 def _publish_multi_output(widget, node_id, outputs, *, axes="YX") -> None:
     values = [np.asarray(output) for output in outputs]
     states = [
@@ -157,6 +189,9 @@ def test_dragging_selected_node_preserves_inspector_and_scroll(
     connected_row_ids = tuple(id(row) for row in widget.connected_inputs_panel.rows)
     panel = widget.inspector_panel
     widget.inspector_content.setMinimumHeight(panel.viewport().height() + 500)
+    # A nonzero range can belong to the old layout. Let the synthetic minimum
+    # height reach QScrollArea before choosing the scroll position to preserve.
+    _wait_for_inspector_layout(qtbot, widget)
     qtbot.waitUntil(lambda: panel.verticalScrollBar().maximum() > 0)
     panel.verticalScrollBar().setValue(panel.verticalScrollBar().maximum())
     scroll_before = panel.verticalScrollBar().value()
@@ -364,9 +399,10 @@ def test_repeated_embedded_label_switch_keeps_parameter_rows_and_height_stable(
     for _cycle in range(3):
         for node in (label_filter, labels):
             widget.graph_view._cards[node.id].selected.emit(node.id)
-            # This regression is about the first parameter frame. Keep the
-            # slower diagnostics out of the comparison while allowing QLabel's
-            # queued height-for-width pass to run.
+            # Scientific controls must be complete in the first parameter
+            # frame, without waiting for the slower diagnostics. QScrollArea
+            # can still apply the containing section's padding/minimum size on
+            # its next layout pass; compare that outer frame once committed.
             widget._cancel_selected_inspector_refresh()
 
             form_widgets = tuple(
@@ -380,22 +416,33 @@ def test_repeated_embedded_label_switch_keeps_parameter_rows_and_height_stable(
             assert expected_parameters[node.operation_id] <= set(
                 widget._parameter_widgets
             )
-            immediate = (
+            assert all(
+                widget.parameter_form_widget.rect().contains(control.geometry())
+                for control in form_widgets
+            )
+            immediate_form = (
                 widget.parameter_form.rowCount(),
-                widget.parameter_group.height(),
                 widget.parameter_form_widget.height(),
             )
-            expected_geometry.setdefault(node.operation_id, immediate)
-            assert immediate == expected_geometry[node.operation_id]
-
-            qtbot.wait(25)
+            _wait_for_inspector_layout(qtbot, widget)
+            assert (
+                widget.parameter_form.rowCount(),
+                widget.parameter_form_widget.height(),
+            ) == immediate_form
 
             settled = (
                 widget.parameter_form.rowCount(),
                 widget.parameter_group.height(),
                 widget.parameter_form_widget.height(),
             )
-            assert settled == immediate
+            expected_geometry.setdefault(node.operation_id, settled)
+            assert settled == expected_geometry[node.operation_id]
+            qtbot.wait(25)
+            assert (
+                widget.parameter_form.rowCount(),
+                widget.parameter_group.height(),
+                widget.parameter_form_widget.height(),
+            ) == settled
 
     # Guard the scientific controls rather than an obsolete extra guidance row.
     # Every row and both frame heights must still remain stable on each switch.

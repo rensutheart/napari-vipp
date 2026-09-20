@@ -4,6 +4,9 @@
 
 ## 0.16.0a1 - Unreleased
 
+- Keep Results Workspace's source selectors aligned when native dropdowns and
+  their adjacent **+** buttons have different heights.
+
 - Package the compiled Centrosome dependency for both macOS architectures from
   pinned upstream wheels, with installed-kernel checks in installer builds.
 

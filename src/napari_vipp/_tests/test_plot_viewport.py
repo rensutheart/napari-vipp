@@ -19,10 +19,17 @@ def _assert_inside(parent, child):
 
 @pytest.mark.parametrize("width,height", [(760, 520), (1200, 800)])
 @pytest.mark.parametrize("summary_input", [False, True])
+@pytest.mark.parametrize("fit_delay", [0, 150])
 def test_full_plot_and_axes_stay_visible_when_workspace_resizes(
-    qtbot, width, height, summary_input
+    qtbot, monkeypatch, width, height, summary_input, fit_delay
 ):
     dialog = _dialog(qtbot)
+    if fit_delay:
+        # Model a busy event loop deterministically. The old fixed 100 ms sleep
+        # captured the unfitted title and reproduced the exact Windows CI clip.
+        timer = dialog.plot_canvas._fit_timer
+        start = timer.start
+        monkeypatch.setattr(timer, "start", lambda _interval=0: start(fit_delay))
     table = _table()
     y_column = "area"
     if summary_input:
@@ -40,23 +47,30 @@ def test_full_plot_and_axes_stay_visible_when_workspace_resizes(
     dialog.set_plot(table=table, params=params, result=result, stale=False)
     dialog.show_tab("plots")
     dialog.resize(width, height)
-    qtbot.wait(100)
     canvas = dialog.plot_canvas.canvas
     assert not isinstance(dialog.plot_area.parentWidget(), QScrollArea)
-    _assert_inside(dialog.plot_area, canvas)
-    _assert_inside(dialog, dialog.plot_area)
-    assert canvas.height() >= 100
-    canvas.draw()
-    figure = canvas.figure
-    bounds = figure.axes[0].get_tightbbox(canvas.get_renderer())
-    assert bounds.x0 >= -2 and bounds.y0 >= -2
-    assert bounds.x1 <= figure.bbox.width + 2
-    assert bounds.y1 <= figure.bbox.height + 2
+
+    def assert_fitted_plot():
+        # Qt sizes the viewport, then its deferred fit adjusts typography.
+        # Assert the eventual rendered bounds, not a machine-speed deadline.
+        assert not dialog.plot_canvas._fit_timer.isActive()
+        _assert_inside(dialog.plot_area, canvas)
+        _assert_inside(dialog, dialog.plot_area)
+        assert canvas.height() >= 100
+        canvas.draw()
+        figure = canvas.figure
+        bounds = figure.axes[0].get_tightbbox(canvas.get_renderer())
+        assert bounds.x0 >= -2 and bounds.y0 >= -2
+        assert bounds.x1 <= figure.bbox.width + 2
+        assert bounds.y1 <= figure.bbox.height + 2
+
+    qtbot.waitUntil(assert_fitted_plot, timeout=3000)
     before = canvas.size()
     dialog.resize(width + 200, height + 150)
-    qtbot.wait(100)
-    assert canvas.width() > before.width()
-    assert canvas.height() > before.height()
+    qtbot.waitUntil(
+        lambda: canvas.width() > before.width() and canvas.height() > before.height()
+    )
+    qtbot.waitUntil(assert_fitted_plot, timeout=3000)
     assert result.recipe.to_params() == params
     assert dialog._plot_result is result
     assert changes == []
