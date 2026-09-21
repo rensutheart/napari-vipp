@@ -466,6 +466,32 @@ def _draw_glyph(painter: QPainter, kind: str, color: QColor) -> None:
         painter.drawLine(QPointF(8, 4), QPointF(8, 16))
         painter.drawLine(QPointF(13, 4), QPointF(13, 16))
         return
+    if kind in {"increase-decimals", "decrease-decimals"}:
+        # Draw the .0 / .00 forms as vectors, not tiny font-dependent text.
+        # The arrow follows the familiar spreadsheet convention: left for
+        # more displayed places, right for fewer. It is beside the .0 row.
+        increase = kind == "increase-decimals"
+        decimal_pen = QPen(painter.pen())
+        decimal_pen.setWidthF(1.35)
+        painter.setPen(decimal_pen)
+        for y, two_places in ((2.2, not increase), (11.2, increase)):
+            for x in ((7.5, 13.0) if two_places else (13.0,)):
+                painter.drawEllipse(QRectF(x, y, 4.0, 5.8))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(5.0 if two_places else 10.5, y + 5.1),
+                                0.8, 0.8)
+            painter.setPen(decimal_pen)
+            painter.setBrush(Qt.NoBrush)
+        arrow_y = 5.1 if increase else 14.1
+        tip_x, tail_x = (2.0, 7.0) if increase else (7.0, 2.0)
+        wing_x = tip_x + (2.3 if increase else -2.3)
+        painter.drawLine(QPointF(tail_x, arrow_y), QPointF(tip_x, arrow_y))
+        path.moveTo(wing_x, arrow_y - 2.3)
+        path.lineTo(tip_x, arrow_y)
+        path.lineTo(wing_x, arrow_y + 2.3)
+        painter.drawPath(path)
+        return
     if kind == "math":
         painter.drawLine(QPointF(3, 7), QPointF(10, 7))
         painter.drawLine(QPointF(6.5, 3.5), QPointF(6.5, 10.5))

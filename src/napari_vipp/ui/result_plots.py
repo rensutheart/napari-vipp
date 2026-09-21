@@ -65,6 +65,12 @@ from napari_vipp.core.result_plots import (
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.iconography import interface_icon, palette_branch_color
 from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.table_display import (
+    DEFAULT_DECIMAL_PLACES,
+    TableDecimalControls,
+    format_table_value,
+    validate_decimal_places,
+)
 
 
 def _label(text, parent=None):
@@ -711,9 +717,22 @@ class PlotRecipeControls(QWidget):
 class _PreparedTableModel(QAbstractTableModel):
     """Virtualized access to complete prepared rows; no QTableWidget copying."""
 
-    def __init__(self, table, parent=None):
+    def __init__(self, table, parent=None, *, decimal_places=DEFAULT_DECIMAL_PLACES):
         super().__init__(parent)
         self.table = table
+        self.decimal_places = validate_decimal_places(decimal_places)
+
+    def set_decimal_places(self, decimal_places):
+        decimal_places = validate_decimal_places(decimal_places)
+        if self.decimal_places == decimal_places:
+            return
+        self.decimal_places = decimal_places
+        if self.rowCount() and self.columnCount():
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(self.rowCount() - 1, self.columnCount() - 1),
+                [Qt.DisplayRole],
+            )
 
     def rowCount(self, parent=None):  # noqa: N802
         return 0 if parent is not None and parent.isValid() else self.table.row_count
@@ -722,9 +741,11 @@ class _PreparedTableModel(QAbstractTableModel):
         return 0 if parent is not None and parent.isValid() else self.table.column_count
 
     def data(self, index, role=Qt.DisplayRole):
-        if index.isValid() and role == Qt.DisplayRole:
+        if index.isValid() and role in (Qt.DisplayRole, Qt.ToolTipRole):
             value = self.table.rows[index.row()][index.column()]
-            return "" if value is None else str(value)
+            if role == Qt.ToolTipRole:
+                return "" if value is None else str(value)
+            return format_table_value(value, self.decimal_places)
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):  # noqa: N802
@@ -1196,6 +1217,10 @@ class PlotResultsDialog(QDialog):
         _retain_hidden_space(self.point_label)
         self.plot.point_selected.connect(self.point_label.setText)
         plot_layout.addWidget(self.point_label)
+        self.data_decimal_controls = TableDecimalControls(self)
+        self.data_decimal_controls.decimals_changed.connect(self._set_data_decimals)
+        self.data_decimal_controls.hide()
+        plot_layout.addWidget(self.data_decimal_controls, 0, Qt.AlignRight)
         self.data_view = QTableView(self)
         self.data_view.setMinimumHeight(150)
         self.data_view.setAlternatingRowColors(True)
@@ -1216,7 +1241,7 @@ class PlotResultsDialog(QDialog):
         row = QHBoxLayout()
         self.data_button = QPushButton("View plotted data", self)
         self.data_button.setCheckable(True)
-        self.data_button.toggled.connect(self.data_view.setVisible)
+        self.data_button.toggled.connect(self._set_data_visible)
         self._data_before_busy = None
         row.addWidget(self.data_button)
         row.addStretch(1)
@@ -1229,14 +1254,24 @@ class PlotResultsDialog(QDialog):
             button.setAutoDefault(False)
         layout.addLayout(row)
 
+    def _set_data_visible(self, visible):
+        self.data_view.setVisible(visible)
+        self.data_decimal_controls.setVisible(visible)
+
+    def _set_data_decimals(self, decimal_places):
+        model = self.data_view.model()
+        if model is not None:
+            model.set_decimal_places(decimal_places)
+
     def set_state(self):
         owner = self.owner
         if owner.busy:
             if self._data_before_busy is None:
                 self._data_before_busy = self.data_button.isChecked()
-            policy = self.data_view.sizePolicy()
-            policy.setRetainSizeWhenHidden(self._data_before_busy)
-            self.data_view.setSizePolicy(policy)
+            for widget in (self.data_view, self.data_decimal_controls):
+                policy = widget.sizePolicy()
+                policy.setRetainSizeWhenHidden(self._data_before_busy)
+                widget.setSizePolicy(policy)
         self.busy_indicator.set_busy(owner.busy, owner.busy_message)
         self.controls.set_state(owner.table, owner.params)
         if owner.failed:
@@ -1249,11 +1284,16 @@ class PlotResultsDialog(QDialog):
         self.export_button.setEnabled(owner.result is not None and not owner.stale)
         current_data = owner.result is not None and not owner.failed and not owner.busy
         self.data_button.setEnabled(current_data)
+        self.data_decimal_controls.setEnabled(current_data)
         _set_plot_warnings(self.warning, owner.result, stale=owner.stale)
         if current_data:
             old = self.data_view.model()
             self.data_view.setModel(
-                _PreparedTableModel(owner.result.plotted_table, self.data_view)
+                _PreparedTableModel(
+                    owner.result.plotted_table,
+                    self.data_view,
+                    decimal_places=self.data_decimal_controls.decimal_places,
+                )
             )
             if old is not None:
                 old.deleteLater()
@@ -1266,9 +1306,10 @@ class PlotResultsDialog(QDialog):
         if not owner.busy and self._data_before_busy is not None:
             self.data_button.setChecked(current_data and self._data_before_busy)
             self._data_before_busy = None
-            policy = self.data_view.sizePolicy()
-            policy.setRetainSizeWhenHidden(False)
-            self.data_view.setSizePolicy(policy)
+            for widget in (self.data_view, self.data_decimal_controls):
+                policy = widget.sizePolicy()
+                policy.setRetainSizeWhenHidden(False)
+                widget.setSizePolicy(policy)
         self.point_label.setVisible(current_data)
         if not owner.busy:
             self.point_label.setText(

@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-## 0.16.0a1 - Unreleased
+## 0.16.0a1 - 2026-09-21
+
+- Add Increase Decimal and Decrease Decimal controls to Results Workspace and
+  table windows. Round floating-point display values only, with original values
+  available on hover; integer cells, calculations, sorting and exports are unchanged.
 
 - Keep Results Workspace's source selectors aligned when native dropdowns and
   their adjacent **+** buttons have different heights.

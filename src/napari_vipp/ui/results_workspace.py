@@ -649,6 +649,8 @@ class ResultsWorkspaceDialog(QDialog):
         self.data_panel = self._table_panel(right)
         self.search_proxy = QSortFilterProxyModel(self.data_panel)
         self.search_proxy.setSourceModel(self.data_panel.model)
+        # Search original text, not the rounded presentation of numeric cells.
+        self.search_proxy.setFilterRole(Qt.UserRole)
         self.search_proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.search_proxy.setFilterKeyColumn(-1)
         self.data_panel.table_view.setModel(self.search_proxy)
@@ -841,6 +843,13 @@ class ResultsWorkspaceDialog(QDialog):
         self.plotted_panel.summary_label.hide()
         self.plotted_panel.sort_hint.hide()
         self.plotted_panel.export_note.hide()
+        # Share the existing action row: adding a toolbar inside this compact
+        # table would consume its only visible rows in a small workspace.
+        self.plotted_panel.table_toolbar.removeWidget(
+            self.plotted_panel.decimal_controls
+        )
+        plot_actions.insertWidget(1, self.plotted_panel.decimal_controls)
+        self.plotted_panel.decimal_controls.hide()
         self.plotted_panel.table_view.setToolTip(
             "Plotted values. Click a column heading to sort this view. "
             "Sorting does not change the plot or its source measurements."
@@ -929,6 +938,7 @@ class ResultsWorkspaceDialog(QDialog):
         # chart and a failed Matplotlib layout during the next paint.
         self._fit_plot_information()
         self.plotted_panel.setVisible(visible)
+        self.plotted_panel.decimal_controls.setVisible(visible)
 
     def _set_point_description(self, text):
         self.point_label.setToolTip(text)
@@ -955,7 +965,25 @@ class ResultsWorkspaceDialog(QDialog):
         height = min(content_height + 2, budget)
         if self.plot_info.height() != height:
             self.plot_info.setFixedHeight(height)
-        table_height = max(96, min(180, round(available * 0.25)))
+        table = self.plotted_panel.table_view
+        # A maximum alone lets the layout shrink the data down to just its
+        # headers. Reserve one complete row with the current font/theme sizes.
+        minimum_table_height = (
+            max(
+                table.horizontalHeader().height(),
+                table.horizontalHeader().sizeHint().height(),
+            )
+            + table.verticalHeader().defaultSectionSize()
+            + table.horizontalScrollBar().sizeHint().height()
+            + 2 * table.frameWidth()
+            if inspecting_data
+            else 0
+        )
+        if self.plotted_panel.minimumHeight() != minimum_table_height:
+            self.plotted_panel.setMinimumHeight(minimum_table_height)
+        table_height = max(
+            minimum_table_height, 96, min(180, round(available * 0.25))
+        )
         if self.plotted_panel.maximumHeight() != table_height:
             self.plotted_panel.setMaximumHeight(table_height)
         if self.point_label.toolTip():

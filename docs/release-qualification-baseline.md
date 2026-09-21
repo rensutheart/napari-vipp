@@ -1,14 +1,16 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-20
+Last reviewed: 2026-09-21
 
-## 0.16.0a1 candidate qualification declaration
+## 0.16.0a1 qualification declaration
 
 This alpha covers the union of changes from published `v0.15.0a5`, including
 measurement collection/exports, Table Source, descriptive Statistics, Plot
 Results, Results Workspace, node naming, the CPU CellProfiler profiles and
-Windows installation-log presentation. It is a candidate, not a publication
-receipt. Final-main CI, native packaging and user acceptance remain required.
+Windows installation-log presentation. The user accepted the latest results
+UI, including decimal-display controls, and authorized publication on
+2026-09-21. This declaration is not a publication receipt: final-main CI,
+exact-tag native packaging and published artifact checks remain required.
 
 ```yaml
 tier: alpha
@@ -49,6 +51,15 @@ carried_forward:
 - Shared execution/provenance changed even though existing GPU kernels did
   not. Verify affected planning, fallback, history and CPU/GPU interoperability;
   do not infer a new GPU qualification from CPU results.
+- The bounded [RTX 5090 shared-execution canary](benchmarks/a1-shared-execution-canary-windows-rtx5090.json)
+  passed 11 cases, including six real-CUDA cases, with no skips or failures on
+  2026-09-21. It covers device segments, public measurement-table finalization,
+  generated and saved batch provenance, cancellation, visible fallback,
+  cleanup/reuse and verified resume. Critical scientific sources were unchanged
+  during the run. The reused dependency environment is not a clean installation
+  and contains a Pillow/Centrosome metadata mismatch outside these exercised
+  paths; clean dependency/install qualification remains the exact-main and
+  native-package gates. This is not a new full-catalogue or biological claim.
 - User acceptance uses protected copies of the supplied final YAP/TAZ and
   Fascin workflows and verified table snapshots. Preserve original inputs,
   layouts and scientific settings. Export only to a separate acceptance folder.
@@ -60,6 +71,14 @@ carried_forward:
   Image publication nodes and full batch runs were deliberately not executed.
   Original-file hashes were unchanged. This is bounded workflow acceptance,
   not a new whole-dataset biological or cross-software validation claim.
+- The pre-publication candidate at `b0ec73a` passed all six full OS/Python
+  lanes, all compatibility and clean-install checks, and the Windows and both
+  macOS development installer jobs (CI `35537427955`, native builds
+  `35537427954` and `35537427953`). Final decimal-display changes retain exact
+  underlying values; focused table, sorting, search, export and UI regressions
+  and light/dark layout checks passed. A native GUI retest calculated both
+  protected results copies and reached ready before the user's acceptance.
+  These records do not replace CI for the final publication commit.
 - Publish no tag, numbered manual or distribution until the exact candidate
   passes its outstanding gates. Record final artifact hashes and native job
   identities with the eventual release assets.

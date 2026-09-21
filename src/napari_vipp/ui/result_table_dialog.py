@@ -40,6 +40,12 @@ from qtpy.QtWidgets import (
 from napari_vipp.core.tables import TableData, save_table_output
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.table_display import (
+    DEFAULT_DECIMAL_PLACES,
+    TableDecimalControls,
+    format_table_value,
+    validate_decimal_places,
+)
 
 _NATURAL_TEXT_PART = re.compile(r"(\d+)")
 _SORT_HINT = (
@@ -329,6 +335,24 @@ class ResultTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._table = table or TableData((), ())
         self._row_order: list[int] | None = None
+        self._decimal_places = DEFAULT_DECIMAL_PLACES
+
+    @property
+    def decimal_places(self) -> int:
+        return self._decimal_places
+
+    def set_decimal_places(self, value: int) -> None:
+        value = validate_decimal_places(value)
+        if value == self._decimal_places:
+            return
+        self._decimal_places = value
+        if self.rowCount() and self.columnCount():
+            # Repaint without resetting row order, selection, or scroll position.
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(self.rowCount() - 1, self.columnCount() - 1),
+                [Qt.DisplayRole],
+            )
 
     @property
     def table(self) -> TableData:
@@ -365,7 +389,9 @@ class ResultTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
         value = self.raw_value(index.row(), index.column())
-        if role in (Qt.DisplayRole, Qt.ToolTipRole):
+        if role == Qt.DisplayRole:
+            return format_table_value(value, self._decimal_places)
+        if role in (Qt.ToolTipRole, Qt.UserRole):
             return _display_value(value)
         if role == Qt.TextAlignmentRole:
             if isinstance(value, numbers.Number) and not isinstance(
@@ -442,6 +468,10 @@ class _ResultTableView:
         self.sort_hint.setWordWrap(True)
 
         self.model = ResultTableModel(parent=self)
+        self.decimal_controls = TableDecimalControls(self)
+        self.decimal_controls.decimals_changed.connect(
+            lambda places: self.model.set_decimal_places(places)
+        )
         self.table_view = QTableView(self)
         self.table_view.setModel(self.model)
         self.table_view.setAccessibleName("Complete result table")
@@ -480,7 +510,10 @@ class _ResultTableView:
         )
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.summary_label)
+        self.table_toolbar = QHBoxLayout()
+        self.table_toolbar.addWidget(self.summary_label, 1)
+        self.table_toolbar.addWidget(self.decimal_controls, 0, Qt.AlignRight)
+        layout.addLayout(self.table_toolbar)
         layout.addWidget(self.result_status_panel)
         layout.addWidget(self.sort_hint)
         layout.addWidget(self.table_view, 1)

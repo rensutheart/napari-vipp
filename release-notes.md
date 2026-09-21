@@ -1,7 +1,5 @@
 # VIPP 0.16.0a1
 
-**Unreleased candidate.** 0.15.0a5 remains the public alpha.
-
 VIPP 0.16.0a1 brings measured objects, descriptive summaries and figures into a connected Results Workspace, alongside reproducible seeded segmentation and CellProfiler compartment workflows.
 
 **Alpha software.** Preserve original images, saved workflows and decisive outputs. Check representative data before scientific interpretation.
@@ -13,6 +11,7 @@ VIPP 0.16.0a1 brings measured objects, descriptive summaries and figures into a 
 - Plot Results provides grouped points, distributions, cumulative distributions and scatter plots. Edit a shared recipe in the inspector, plot window or Results Workspace; export sized PNG/TIFF/SVG/PDF figures. Numeric axes offer automatic or explicit tick spacing, and counts use whole-number ticks.
 - Results Workspace combines Data, Summary and Plots with a visible Workflow → Data source → Statistics node → Plot selection bar. Source relationships remain explicit, edits stay synchronized, stale outputs cannot be exported as current, and plot previews fit the visible window.
 - Give nodes descriptive custom names or use automatic labels. Names remain consistent across the graph and results selectors; renaming does not change calculations or figure titles.
+- Use spreadsheet-style Increase Decimal and Decrease Decimal controls throughout Results Workspace and table windows. Round floating-point display values from 0–15 decimal places; integers stay unchanged, hover reveals the original value, and calculations, sorting and exports retain full precision.
 
 ## Reproducible seeded segmentation
 
@@ -30,6 +29,6 @@ VIPP 0.16.0a1 brings measured objects, descriptive summaries and figures into a 
 
 Statistics remains descriptive: no hypothesis tests, ANOVA, p-values, significance labels or confidence intervals are added. Registration, image comparison and template matching are later 0.16 work, not features of this alpha.
 
-New nodes and parameters require the new version; retain copies before resaving older workflows. Reproduction version acknowledgements and verified-resume restrictions remain in force. Native installers require qualification with the new dependencies; macOS remains CPU-only. Desktop installers are unsigned alpha builds, and macOS packages are unnotarized.
+New nodes and parameters require the new version; retain copies before resaving older workflows. Reproduction version acknowledgements and verified-resume restrictions remain in force. macOS remains CPU-only. Desktop installers are unsigned alpha builds, and macOS packages are unnotarized.
 
-See the candidate's qualification declaration for evidence boundaries. Publication requires passing exact-final-main CI, verified native packages and artifact checksums; local demonstrations do not replace those gates.
+See the [qualification declaration](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a1/docs/release-qualification-baseline.md) for evidence boundaries and the release assets for platform checksums. Local demonstrations do not establish biological accuracy or complete historical paper reproduction.

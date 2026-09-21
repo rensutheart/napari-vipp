@@ -2,11 +2,17 @@
 
 from types import SimpleNamespace
 
+import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QApplication
 
 from napari_vipp.core.result_plots import build_plot_result
-from napari_vipp.core.tables import TableData
-from napari_vipp.ui.result_plots import PlotExportDialog, PlotResultsPanel
+from napari_vipp.core.tables import TableData, save_table_output
+from napari_vipp.ui.result_plots import (
+    PlotExportDialog,
+    PlotResultsPanel,
+    _PreparedTableModel,
+)
 
 
 def _panel(qtbot):
@@ -69,6 +75,140 @@ def test_data_inspection_is_complete_and_points_identify_labels(qtbot):
     artist = window.plot.canvas.figure.axes[0].collections[0]
     window.plot._picked(SimpleNamespace(artist=artist, ind=[0]))
     assert "label_id: 9" in window.point_label.text()
+
+
+@pytest.mark.parametrize(
+    ("value", "display"),
+    [
+        (1.23456789, "1.235"),
+        (-2.1234567, "-2.123"),
+        (10.0, "10.000"),
+        (17, "17"),
+        (2**80, str(2**80)),
+        (True, "True"),
+        (False, "False"),
+        ("1.23456789", "1.23456789"),
+        (None, ""),
+        (float("nan"), "nan"),
+        (float("inf"), "inf"),
+        (float("-inf"), "-inf"),
+    ],
+)
+def test_prepared_table_decimal_display_keeps_exact_values_and_tooltips(value, display):
+    table = TableData(("measurement",), ((value,),))
+    rows = table.rows
+    model = _PreparedTableModel(table)
+    assert model.data(model.index(0, 0)) == display
+    assert model.data(model.index(0, 0), Qt.ToolTipRole) == (
+        "" if value is None else str(value)
+    )
+    assert model.table is table
+    assert table.rows is rows
+    assert table.rows[0][0] is value
+
+
+def test_inline_table_decimal_controls_are_display_only_and_toggle_with_data(
+    qtbot, tmp_path
+):
+    table = TableData(("area",), ((1.23456789,), (8.7654321,)))
+    result = build_plot_result(table, y_column="area")
+    original_source = result.source_table
+    panel = PlotResultsPanel(result=result)
+    qtbot.addWidget(panel)
+    panel.show()
+    window = panel.open_plot()
+    controls = window.data_decimal_controls
+    emitted = []
+    panel.params_changed.connect(emitted.append)
+    original_params = dict(panel.params)
+    save_table_output(result.plotted_table, tmp_path / "before.csv")
+
+    assert controls.decimal_places == 3
+    assert not controls.isVisible()
+    window.data_button.setChecked(True)
+    assert controls.isVisible()
+    y_column = result.plotted_table.columns.index("y")
+    model = window.data_view.model()
+    assert model.data(model.index(0, y_column)) == "1.235"
+    qtbot.mouseClick(controls.increase_button, Qt.LeftButton)
+    assert controls.decimal_places == 4
+    assert model.data(model.index(0, y_column)) == "1.2346"
+    assert model.data(model.index(0, y_column), Qt.ToolTipRole) == "1.23456789"
+
+    window.data_button.setChecked(False)
+    assert not window.data_view.isVisible() and not controls.isVisible()
+    window.data_button.setChecked(True)
+    assert controls.isVisible() and controls.decimal_places == 4
+    controls.set_decimal_places(0)
+    assert not controls.decrease_button.isEnabled()
+    assert model.data(model.index(0, y_column)) == "1"
+    controls.set_decimal_places(15)
+    assert not controls.increase_button.isEnabled()
+    assert model.data(model.index(0, y_column)) == "1.234567890000000"
+
+    save_table_output(result.plotted_table, tmp_path / "after.csv")
+    assert (tmp_path / "before.csv").read_bytes() == (
+        tmp_path / "after.csv"
+    ).read_bytes()
+    assert panel.result is result and model.table is result.plotted_table
+    assert result.source_table is original_source and original_source == table
+    assert panel.params == original_params and emitted == []
+    assert not panel.stale and window.export_button.isEnabled()
+
+
+def test_inline_table_decimal_precision_survives_refresh_busy_and_failure(qtbot):
+    panel = _panel(qtbot)
+    window = panel.open_plot()
+    controls = window.data_decimal_controls
+    window.data_button.setChecked(True)
+    controls.set_decimal_places(7)
+    result = panel.result
+    old_model = window.data_view.model()
+    panel.set_result(result)
+    assert window.data_view.model() is not old_model
+    assert window.data_view.model().decimal_places == controls.decimal_places == 7
+    for _ in range(3):
+        QApplication.processEvents()
+    geometry = controls.geometry()
+
+    panel.set_state(result=result, busy=True)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert not controls.isVisible() and not controls.isEnabled()
+    assert controls.sizePolicy().retainSizeWhenHidden()
+    assert controls.geometry() == geometry
+    assert window.data_view.model() is None
+    panel.set_result(result)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert controls.isVisible() and controls.isEnabled()
+    assert not controls.sizePolicy().retainSizeWhenHidden()
+    assert controls.geometry() == geometry
+    assert window.data_view.model().decimal_places == controls.decimal_places == 7
+
+    panel.set_state(result=result, stale=True)
+    assert not window.export_button.isEnabled()
+    assert controls.decimal_places == 7
+    panel.set_state(result=result, failed=True, message="Review the plot settings.")
+    assert not controls.isVisible() and not controls.isEnabled()
+    assert window.data_view.model() is None
+    panel.set_result(result)
+    assert controls.decimal_places == 7 and not controls.isVisible()
+    window.data_button.setChecked(True)
+    assert controls.isVisible() and window.data_view.model().decimal_places == 7
+
+
+def test_prepared_table_precision_updates_display_role_without_replacing_data():
+    table = TableData(("area",), ((1.23456789,),))
+    model = _PreparedTableModel(table)
+    emitted = []
+    model.dataChanged.connect(lambda *args: emitted.append(args))
+    model.set_decimal_places(6)
+    assert model.data(model.index(0, 0)) == "1.234568"
+    assert model.table is table
+    assert len(emitted) == 1 and emitted[0][2] == [Qt.DisplayRole]
+    model.set_decimal_places(6)
+    assert len(emitted) == 1
 
 
 def test_export_dimensions_do_not_follow_window_size(qtbot):
