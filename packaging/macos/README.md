@@ -45,10 +45,33 @@ inside VIPP; no Automatic, CPU or GPU app variants are created. The recipe
 retains `vipp-app` as the sole GUI entry point, alongside the existing command-line
 tools. This does not add or qualify any macOS GPU backend.
 
-The conda recipe contains two exact-version local packages:
+The local channel contains three exact-version packages:
 
 - `napari-vipp`, installed from the wheel built from the same source checkout;
-- `vipp-menu`, containing the macOS menu metadata and generated ICNS icon.
+- `vipp-menu`, containing the macOS menu metadata and generated ICNS icon;
+- `centrosome==1.3.4`, repackaged from the upstream native CPython 3.12 wheel
+  for the target architecture. This package is **not** `noarch`.
+
+Unreleased dependency fix: Centrosome is required by the VIPP wheel but was
+missing from the macOS runtime recipe, whose `pip install --no-deps` does not
+supply it. There is no `conda-forge/centrosome` package at the time of this
+change. `centrosome/recipe.yaml.in` therefore uses the exact arm64 or x86_64
+wheel URL and SHA-256 published in the
+[upstream PyPI 1.3.4 metadata](https://pypi.org/pypi/centrosome/1.3.4/json).
+Rattler verifies that download, preserves its BSD licence, and installs it
+without downloading or replacing dependencies through pip. Its conda runtime
+metadata includes the wheel's dependency bounds, including `pillow<12`, plus
+an explicit CPython 3.12 ABI requirement. Do not replace this with a noarch
+wrapper, a source-build fallback, an unpinned pip download or a different
+Centrosome version without requalification.
+
+The builder tests all six compiled Centrosome imports before building VIPP,
+then rejects a missing, duplicate or wrong-architecture local package. Both
+macOS installer workflows retain strict installed `pip check` and run
+`scripts/smoke_centrosome_install.py --require-installed` against the managed
+Python, checking native imports, an exact two-seed propagation phantom and
+constant-image smoothing. Windows checks of recipe/command generation cannot
+replace these native solve, build, install and runtime gates.
 
 Constructor resolves the rest from conda-forge and embeds the complete solved
 environment for offline installation. The release manifest records the source,
@@ -65,7 +88,7 @@ the installed dependency check. Both native PKGs must pass that check and
 their subsequent launch checks after rebuilding.
 
 The alpha lockfile still records the build's temporary local channel URI for
-the two VIPP wrapper packages. Their exact hashes remain in the build/release
+the three local packages. Their exact hashes remain in the build/release
 manifests and their bytes are embedded in the offline PKG. A signed production
 build should instead publish those packages to a durable channel and configure
 constructor `channels_remap` so its lockfile has durable provenance.
@@ -201,8 +224,8 @@ following:
    `spctl --assess --type install --verbose=4` to accept the exact artifact.
 5. Test install, first launch, representative workflow/export, replacement,
    failure cleanup, and removal on clean Apple Silicon and Intel Macs.
-6. Publish the two VIPP conda packages to a durable release channel and remap
-   the build channel to it.
+6. Publish the local VIPP and Centrosome conda packages to a durable release
+   channel and remap the build channel to it.
 
 Apple certificates and notarization credentials are intentionally absent from
 the repository.

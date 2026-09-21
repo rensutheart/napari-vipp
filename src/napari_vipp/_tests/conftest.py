@@ -13,6 +13,20 @@ from napari_vipp.ui import (
 )
 
 
+@pytest.fixture(scope="session")
+def qapp(qapp):
+    """Use real glyphs for all offscreen UI tests, including isolated modules."""
+    # Packaging-only checks can target an installed wheel, which deliberately
+    # excludes _tests. Load this test helper only when a UI test needs Qt.
+    from napari_vipp._tests._qt_fonts import load_offscreen_windows_fonts
+
+    # Windows' offscreen plugin may expose an empty font database. Register
+    # native fonts once for the QApplication lifetime, not in an individual
+    # test module: otherwise layout outcomes depend on test order/sharding.
+    load_offscreen_windows_fonts(qapp)
+    return qapp
+
+
 @pytest.fixture(autouse=True)
 def _isolate_reader_support_session(monkeypatch):
     """Share diagnostics within each test, never across QApplication test reuse."""

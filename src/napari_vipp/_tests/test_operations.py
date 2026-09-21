@@ -377,7 +377,6 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
                 inspect.signature(spec.function).parameters.values()
             )
             declared = {param.name for param in spec.parameters}
-            accepted = {param.name for param in signature_params}
             required = {
                 param.name
                 for param in signature_params[1:]
@@ -388,7 +387,15 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
                     inspect.Parameter.VAR_KEYWORD,
                 }
             }
-            assert declared <= accepted, spec.id
+            # Recipe-backed operations accept their settings through **params.
+            # Check Python's actual call contract instead of requiring every
+            # keyword to be spelled out in the function signature.
+            try:
+                inspect.signature(spec.function).bind(
+                    object(), **{param.name: param.default for param in spec.parameters}
+                )
+            except TypeError as exc:
+                pytest.fail(f"{spec.id}: declared settings cannot be called: {exc}")
             assert required <= declared, spec.id
 
         output_names = [port.name for port in spec.output_ports]
@@ -2522,6 +2529,9 @@ def test_pipeline_summarizes_measurement_table_by_time_index():
     labels = pipeline.add_node("label_connected_components")
     measurements = pipeline.add_node("measure_objects")
     summarized = pipeline.add_node("summarize_measurements")
+    # This regression exercises the explicit legacy auto-grouping contract.
+    pipeline.set_param(summarized.id, "summary_version", 1)
+    pipeline.set_param(summarized.id, "group_by", "auto")
     pipeline.set_param(threshold.id, "threshold", 5)
     pipeline.set_param(summarized.id, "value_columns", "area_pixels")
     pipeline.set_param(summarized.id, "statistics", "count,mean,min,max")
@@ -2543,7 +2553,7 @@ def test_pipeline_summarizes_measurement_table_by_time_index():
     assert records[1]["t_index"] == 1
     assert records[1]["row_count"] == 1
     assert records[1]["area_pixels_mean"] == 20.0
-    assert state.history[-1] == "Summarize Measurements: summarized 2 groups"
+    assert state.history[-1].endswith(": summarized 2 groups")
 
 
 def test_pipeline_summarizes_skeleton_branch_table_by_time_index():

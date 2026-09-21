@@ -8,6 +8,7 @@ on:
       - "packaging/macos/**"
       - "scripts/package_macos_installer.py"
       - "scripts/smoke_mesh_install.py"
+      - "scripts/smoke_centrosome_install.py"
       - "scripts/cache_native_reader_corpus.py"
       - "src/napari_vipp/_tests/test_macos_installer_packaging.py"
       - "src/napari_vipp/**"
@@ -58,6 +59,7 @@ jobs:
           python -m pip install --no-deps -e .
           python -m pytest -q --noconftest \
             src/napari_vipp/_tests/test_macos_installer_packaging.py \
+            src/napari_vipp/_tests/test_macos_centrosome_wheel.py \
             src/napari_vipp/_tests/test_native_reader_corpus_script.py
 
       - name: Build the exact source wheel
@@ -106,6 +108,7 @@ jobs:
           test -x "$prefix/bin/python"
           test -d "$app"
           "$prefix/bin/python" -m pip check
+          "$prefix/bin/python" scripts/smoke_centrosome_install.py --require-installed
           "$prefix/bin/python" -m napari_vipp.core.reader_support all-native
           "$prefix/bin/python" scripts/smoke_mesh_install.py --require-installed
           expected_version="$(python -c \

@@ -276,6 +276,7 @@ class MemoryTopology(StrEnum):
 
 
 _SCIENTIFIC_STACK_DISTRIBUTIONS = (
+    "centrosome",
     "numpy",
     "scipy",
     "scikit-image",

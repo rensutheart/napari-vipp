@@ -172,9 +172,16 @@ def _source_payloads(spec, pipeline, sample_catalog) -> dict[str, SourcePayload]
             for node_id in pipeline.topological_order()
             if pipeline.nodes[node_id].operation_id == "input"
         )
-        assert len(source_ids) == len(spec.samples)
+        # The inventory names distinct samples; multiple authored sources may
+        # bind the same sample independently (for example, separate lanes).
+        source_samples = {
+            source_id: pipeline.nodes[source_id].params["sample_name"]
+            for source_id in source_ids
+        }
+        assert set(source_samples.values()) == set(spec.samples)
         payloads = {}
-        for source_id, sample_name in zip(source_ids, spec.samples, strict=True):
+        for source_id, sample_name in source_samples.items():
+            assert pipeline.nodes[source_id].params["source_mode"] == "sample"
             data, layer_kwargs = sample_catalog[sample_name]
             payloads[source_id] = SourcePayload(
                 np.array(data, copy=True),
@@ -569,6 +576,7 @@ def test_compute_matrix_covers_every_bundled_example():
         "object-intensity",
         "merged-measurements",
         "summary-table",
+        "plot-morphology",
         "derived-morphology",
         "mesh-morphology",
         "mesh-objects",

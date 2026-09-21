@@ -1031,6 +1031,7 @@ def test_progress_adapter_preserves_stage_unit_log_and_truthful_indeterminacy(
     assert byte_update.unit is ProgressUnit.BYTES
     assert byte_update.fraction == pytest.approx(0.25)
     assert byte_update.log_path == log_path
+    assert byte_update.console_text == ""
 
     for stage in ("resolving", "installing"):
         update = _progress_update(
@@ -1047,6 +1048,32 @@ def test_progress_adapter_preserves_stage_unit_log_and_truthful_indeterminacy(
         assert update.unit is ProgressUnit.ACTIVITY
         assert update.fraction is None
         assert update.log_path == log_path
+        assert update.console_text == ""
+
+
+@pytest.mark.parametrize(
+    "stage", ["resolving", "installing", "acceptance", "rolling_back"]
+)
+def test_progress_adapter_forwards_console_chunks_without_rewriting_text(
+    tmp_path, stage
+):
+    text = "Collecting packages…\nDownloaded 50%\rDownloaded 100%\r\n"
+    update = _progress_update(
+        SimpleNamespace(
+            stage=SimpleNamespace(value=stage),
+            message="",
+            completed=0,
+            total=0,
+            console_text=text,
+            log_path=tmp_path / "setup-events.jsonl",
+        )
+    )
+
+    assert update.stage == stage
+    assert update.message == ""
+    assert update.console_text == text
+    assert update.fraction is None
+    assert update.log_path == tmp_path / "setup-events.jsonl"
 
 
 def test_frozen_automatic_route_probes_gpu_with_selected_python(

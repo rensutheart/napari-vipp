@@ -135,7 +135,7 @@ def default_temporary_free_bytes(track: ComputeTrack) -> int:
 
 @dataclass(frozen=True, slots=True)
 class ProgressUpdate:
-    """One backend milestone normalized for any future platform front end."""
+    """One backend milestone or output chunk for any platform front end."""
 
     stage: str
     message: str
@@ -143,6 +143,7 @@ class ProgressUpdate:
     total: int | None = None
     unit: ProgressUnit = ProgressUnit.STEPS
     log_path: Path | None = None
+    console_text: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "unit", ProgressUnit(self.unit))
@@ -328,10 +329,13 @@ class InstallerController:
         listener: StateListener,
         *,
         worker_factory: WorkerFactory = _default_worker_factory,
+        console_listener: Callable[[str], None] | None = None,
     ) -> None:
         self._backend = backend
         self._listener = listener
         self._worker_factory = worker_factory
+        self._console_listener = console_listener
+        self._last_console_milestone: tuple[str, str] | None = None
         self._lock = threading.RLock()
         self._cancellation = threading.Event()
         self._selection = InstallerSelection()
@@ -627,6 +631,7 @@ class InstallerController:
     def _begin_operation(self) -> int:
         self._generation += 1
         self._cancellation = threading.Event()
+        self._last_console_milestone = None
         return self._generation
 
     def _start_worker(self, target: Callable[[], None]) -> None:
@@ -731,6 +736,21 @@ class InstallerController:
         with self._lock:
             if generation != self._generation or not self.busy:
                 return
+            # Console chunks have their own non-coalescing, thread-safe sink.
+            # They must not replace the current phase with a stream of text or
+            # enter the view-state queue, where intermediate records may be lost.
+            if update.console_text:
+                if self._console_listener is not None:
+                    self._console_listener(update.console_text)
+                return
+            milestone = (update.stage, update.message.rstrip("\r\n"))
+            if (
+                self._console_listener is not None
+                and milestone[1]
+                and milestone != self._last_console_milestone
+            ):
+                self._console_listener(milestone[1] + "\n")
+                self._last_console_milestone = milestone
             self._publish(
                 replace(
                     self._state,

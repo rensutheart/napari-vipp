@@ -11,9 +11,6 @@ from napari_vipp._tests.test_updates import (
     deliver,
     release,
 )
-from napari_vipp._tests.test_updates import (
-    native_fonts_for_offscreen as native_fonts_for_offscreen,
-)
 from napari_vipp.core.update_install import UpdateInstallError
 from napari_vipp.ui import update_dialog as ui
 

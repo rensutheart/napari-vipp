@@ -78,6 +78,19 @@ class BatchRunReport(QFrame):
             "and details."
         )
         layout.addWidget(self.evidence_label)
+        self.collection_actions = QFrame()
+        collection = QHBoxLayout(self.collection_actions)
+        collection.setContentsMargins(0, 0, 0, 0)
+        self.collect_results_button = ToolbarCommandButton(
+            "Collect measurement results…"
+        )
+        self.collect_results_button.setObjectName("BatchCollectMeasurementsAction")
+        collection.addWidget(self.collect_results_button, 0, Qt.AlignTop)
+        collection.addWidget(self._label(
+            "Combine saved measurement tables, review missing results and add "
+            "sample information. No images are recalculated."
+        ), 1)
+        layout.addWidget(self.collection_actions)
         package = QHBoxLayout()
         self.export_package_button = ToolbarCommandButton(
             "Export reproducibility package…"

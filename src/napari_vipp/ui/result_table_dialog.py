@@ -38,15 +38,21 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.tables import TableData, save_table_output
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
+from napari_vipp.ui.table_display import (
+    DEFAULT_DECIMAL_PLACES,
+    TableDecimalControls,
+    format_table_value,
+    validate_decimal_places,
+)
 
 _NATURAL_TEXT_PART = re.compile(r"(\d+)")
 _SORT_HINT = (
     "Click a column heading to sort ascending; click it again to sort descending."
 )
 _EXPORT_NOTE = (
-    "Sorting changes this view only; export preserves the workflow's exact "
-    "row order."
+    "Sorting changes this view only; export preserves the workflow's exact row order."
 )
 _BACKGROUND_TASK_ROW_THRESHOLD = 50_000
 
@@ -206,9 +212,7 @@ def _sorted_source_rows(
         # mixed-type column instead of letting a header click fail.
         ordered_present = sorted(
             present,
-            key=lambda row_index: _natural_text_key(
-                table.rows[row_index][int(column)]
-            ),
+            key=lambda row_index: _natural_text_key(table.rows[row_index][int(column)]),
             reverse=order == Qt.DescendingOrder,
         )
     present = ordered_present
@@ -331,6 +335,24 @@ class ResultTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._table = table or TableData((), ())
         self._row_order: list[int] | None = None
+        self._decimal_places = DEFAULT_DECIMAL_PLACES
+
+    @property
+    def decimal_places(self) -> int:
+        return self._decimal_places
+
+    def set_decimal_places(self, value: int) -> None:
+        value = validate_decimal_places(value)
+        if value == self._decimal_places:
+            return
+        self._decimal_places = value
+        if self.rowCount() and self.columnCount():
+            # Repaint without resetting row order, selection, or scroll position.
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(self.rowCount() - 1, self.columnCount() - 1),
+                [Qt.DisplayRole],
+            )
 
     @property
     def table(self) -> TableData:
@@ -345,17 +367,11 @@ class ResultTableModel(QAbstractTableModel):
         self.endResetModel()
 
     def rowCount(self, parent=None) -> int:  # noqa: N802
-        return (
-            0
-            if parent is not None and parent.isValid()
-            else self._table.row_count
-        )
+        return 0 if parent is not None and parent.isValid() else self._table.row_count
 
     def columnCount(self, parent=None) -> int:  # noqa: N802
         return (
-            0
-            if parent is not None and parent.isValid()
-            else self._table.column_count
+            0 if parent is not None and parent.isValid() else self._table.column_count
         )
 
     def source_row(self, displayed_row: int) -> int:
@@ -373,7 +389,9 @@ class ResultTableModel(QAbstractTableModel):
         if not index.isValid():
             return None
         value = self.raw_value(index.row(), index.column())
-        if role in (Qt.DisplayRole, Qt.ToolTipRole):
+        if role == Qt.DisplayRole:
+            return format_table_value(value, self._decimal_places)
+        if role in (Qt.ToolTipRole, Qt.UserRole):
             return _display_value(value)
         if role == Qt.TextAlignmentRole:
             if isinstance(value, numbers.Number) and not isinstance(
@@ -400,9 +418,7 @@ class ResultTableModel(QAbstractTableModel):
     def sort(self, column: int, order=Qt.AscendingOrder) -> None:
         if not 0 <= int(column) < self._table.column_count:
             return
-        self.apply_row_order(
-            _sorted_source_rows(self._table, int(column), order)
-        )
+        self.apply_row_order(_sorted_source_rows(self._table, int(column), order))
 
     def apply_row_order(self, row_order: list[int]) -> None:
         if len(row_order) != self._table.row_count:
@@ -415,22 +431,19 @@ class ResultTableModel(QAbstractTableModel):
         self.endResetModel()
 
 
-class ResultTableDialog(QDialog):
-    """Nonmodal full-table viewer shared by every table-producing node."""
-
-    exportCompleted = Signal(str)
-    sortCompleted = Signal(int, object)
-    recalculationRequested = Signal()
+class _ResultTableView:
+    """Shared table content for standalone dialogs and embedded workspaces."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("VippResultTableDialog")
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setWindowTitle("Result table")
-        self.setWindowModality(Qt.NonModal)
-        self.setSizeGripEnabled(True)
-        self.setMinimumSize(420, 280)
-        self.resize(1000, 650)
+        if isinstance(self, QDialog):
+            self.setWindowModality(Qt.NonModal)
+            self.setSizeGripEnabled(True)
+            self.setMinimumSize(420, 280)
+            self.resize(1000, 650)
 
         self.summary_label = QLabel("No table output is available.", self)
         self.summary_label.setWordWrap(True)
@@ -455,6 +468,10 @@ class ResultTableDialog(QDialog):
         self.sort_hint.setWordWrap(True)
 
         self.model = ResultTableModel(parent=self)
+        self.decimal_controls = TableDecimalControls(self)
+        self.decimal_controls.decimals_changed.connect(
+            lambda places: self.model.set_decimal_places(places)
+        )
         self.table_view = QTableView(self)
         self.table_view.setModel(self.model)
         self.table_view.setAccessibleName("Complete result table")
@@ -481,19 +498,22 @@ class ResultTableDialog(QDialog):
         self.export_button = QPushButton("Export CSV/TSV…", self)
         self.export_button.setEnabled(False)
         self.export_button.setToolTip(
-            "Export the complete table using the same CSV/TSV writer as the "
-            "inspector."
+            "Export the complete table using the same CSV/TSV writer as the inspector."
         )
         self.close_button = QPushButton("Close", self)
 
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.addStretch(1)
-        buttons.addWidget(self.export_button)
-        buttons.addWidget(self.close_button)
+        add_dialog_buttons(
+            buttons, actions=(self.export_button,), dismiss=self.close_button
+        )
 
         layout = QVBoxLayout(self)
-        layout.addWidget(self.summary_label)
+        self.table_toolbar = QHBoxLayout()
+        self.table_toolbar.addWidget(self.summary_label, 1)
+        self.table_toolbar.addWidget(self.decimal_controls, 0, Qt.AlignRight)
+        layout.addLayout(self.table_toolbar)
         layout.addWidget(self.result_status_panel)
         layout.addWidget(self.sort_hint)
         layout.addWidget(self.table_view, 1)
@@ -503,6 +523,9 @@ class ResultTableDialog(QDialog):
         self._table: TableData | None = None
         self._context_key: tuple[str, int] | None = None
         self._default_export_name = "result-table.csv"
+        # Integrated owners can require a current node revision. The standalone
+        # viewer intentionally also supports explicitly inspecting retained rows.
+        self.export_guard = None
         self._sort_column: int | None = None
         self._sort_order = Qt.AscendingOrder
         # Use the shared pool so destroying or hiding a dialog never waits for
@@ -702,9 +725,7 @@ class ResultTableDialog(QDialog):
         self._active_sort_worker = worker
         self.table_view.horizontalHeader().setSectionsClickable(False)
         column_name = table.columns[int(column)]
-        self.sort_hint.setText(
-            f"Sorting {table.row_count:,} rows by “{column_name}”…"
-        )
+        self.sort_hint.setText(f"Sorting {table.row_count:,} rows by “{column_name}”…")
         self._worker_pool.start(worker)
 
     def _on_sort_finished(self, outcome: _SortOutcome) -> None:
@@ -742,8 +763,11 @@ class ResultTableDialog(QDialog):
         self._restore_committed_sort_indicator()
 
     def request_export(self) -> None:
-        if self._table is None:
+        if self._table is None or (
+            self.export_guard is not None and not self.export_guard()
+        ):
             return
+        table = self._table
         request = choose_table_export_target(
             self,
             default_name=self._default_export_name,
@@ -751,8 +775,13 @@ class ResultTableDialog(QDialog):
         )
         if request is None:
             return
+        # A native file dialog runs its own event loop: the workflow may have
+        # changed, failed or become stale while the destination was chosen.
+        if self.export_guard is not None and (
+            table is not self._table or not self.export_guard()
+        ):
+            return
         requested, format = request
-        table = self._table
         self._start_background_export(table, requested, format=format)
 
     def _start_background_export(
@@ -796,6 +825,10 @@ class ResultTableDialog(QDialog):
     def export_table(self, path: str | Path, *, format: str = "auto") -> Path:
         if self._table is None:
             raise ValueError("No table output is available to export.")
+        if self.export_guard is not None and not self.export_guard():
+            raise ValueError(
+                "The result is not current. Calculate again before exporting."
+            )
         return save_table_output(
             self._table,
             path,
@@ -863,6 +896,26 @@ class ResultTableDialog(QDialog):
         super().closeEvent(event)
 
 
+class ResultTablePanel(_ResultTableView, QWidget):
+    """Embeddable full-table viewer retaining asynchronous sort and export."""
+
+    exportCompleted = Signal(str)
+    sortCompleted = Signal(int, object)
+    recalculationRequested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.close_button.hide()
+
+
+class ResultTableDialog(_ResultTableView, QDialog):
+    """Nonmodal full-table viewer shared by every table-producing node."""
+
+    exportCompleted = Signal(str)
+    sortCompleted = Signal(int, object)
+    recalculationRequested = Signal()
+
+
 def choose_table_export_target(
     parent: QWidget,
     *,
@@ -903,6 +956,7 @@ def choose_table_export_target(
 
 __all__ = [
     "ResultTableDialog",
+    "ResultTablePanel",
     "ResultTableModel",
     "choose_table_export_target",
 ]

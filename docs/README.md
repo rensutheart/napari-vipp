@@ -29,14 +29,26 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Public data corpus](public-data-corpus.md)
 - [Source-aware loading qualification](source-aware-loading-0.14.0a1.md)
 - [Analytical phantom validation](analytical-phantom-validation.md)
+- [Seeded segmentation](seeded-segmentation.md): 2D CellProfiler Propagation,
+  acquired-image examples, existing 3D watershed and Random Walker evaluation.
+- [Statistics-paper reproduction](validation/statistics-paper-reproduction.md):
+  the recorded CellProfiler compartment profile, independent executable checks,
+  acquired-input provenance and comparison with archived paper measurements.
+- [Paper statistics/plot integration](validation/paper-statistics-plots-integration.md):
+  existing descriptive tools alongside the compartment profile, fixture bridge
+  checks and inherited batch UI qualification limits.
 - [Richardson-Lucy TV validation](rl-tv-validation-report.md)
 - [Research and publication record](research-and-publication.md)
 
 ## Current Planning
 
+- [Batch measurement collection](measurement-collection.md): unreleased
+  collection/export contract, typed datasets, Table Source, and validation record.
 - [Measurement plots and statistics](measurement-plots-and-statistics-plan.md):
-  planned 0.16 results workflow with two general-purpose nodes, batch-table
-  collection, independent-sample safeguards, editable pop-outs, and figure export.
+  approved descriptive-only 0.16 scope; implemented, unreleased collection and
+  plotting plus versioned object/image/sample summaries. No inference phase.
+- [Statistics contract](statistics.md): descriptive methods, weighting,
+  exclusions, output counts/units, and explicit legacy-recipe migration.
 - [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
   planned 0.16 scope for 2D/3D alignment, SSIM and related comparisons, template
   detection, and transform contracts; drift/rigid/affine follow-ups are separate.

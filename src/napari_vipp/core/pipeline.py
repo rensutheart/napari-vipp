@@ -15,6 +15,15 @@ import numpy as np
 
 from napari_vipp.core import metadata as _metadata
 from napari_vipp.core import operations as _operations
+from napari_vipp.core.cellprofiler_compartments import (
+    cellprofiler_cytoplasm,
+    cellprofiler_finish_cells,
+    cellprofiler_primary_objects,
+    cellprofiler_propagation_seeds,
+    cellprofiler_smooth,
+    cellprofiler_threshold,
+)
+from napari_vipp.core.cellprofiler_contracts import CELLPROFILER_2D_OPERATION_IDS
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
@@ -72,6 +81,7 @@ from napari_vipp.core.operations import (
     born_wolf_psf_outputs,
     calculate_weighted_image,
     canny_edges,
+    cellprofiler_propagation,
     clear_border_objects,
     clip_intensity,
     closing,
@@ -175,6 +185,7 @@ from napari_vipp.core.operations import (
     yen_threshold,
 )
 from napari_vipp.core.progress import ProgressContext
+from napari_vipp.core.result_plots import PlotState, plot_results, plot_state_from_data
 from napari_vipp.core.source_items import SourceItem
 from napari_vipp.core.source_window import ExactSourceWindowData
 from napari_vipp.core.tables import TableState, table_state_from_data
@@ -1107,6 +1118,7 @@ SAFE_BYPASS_BOUNDARY_OPERATION_IDS = frozenset(
         "batch_output",
         "mask_to_3d_mesh",
         "labels_to_3d_mesh",
+        "plot_results",
     }
 )
 
@@ -1212,7 +1224,7 @@ class SourcePayload:
     data: Any
     metadata: dict | None = None
     name: str = ""
-    image_state: ImageState | None = None
+    image_state: ImageState | TableState | None = None
     revision_token: object | None = None
     axis_semantics_resolved: bool = False
     source_item: SourceItem | None = None
@@ -1405,6 +1417,10 @@ LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
     "object_colocalization_metrics",
 }
 SAME_SHAPE_GRID_OPERATIONS = {
+    "cellprofiler_cytoplasm",
+    "cellprofiler_finish_cells",
+    "cellprofiler_propagation_seeds",
+    "cellprofiler_propagation",
     "add_images",
     "calculate_weighted_image",
     "colocalization_mask",
@@ -3659,6 +3675,206 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=OBJECT_SEPARATION_GROUP,
     ),
     OperationSpec(
+        "cellprofiler_propagation",
+        "Grow Regions from Seeds — CellProfiler Propagation",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "labels",
+        (
+            ParameterSpec(
+                "regularization",
+                "Distance regularization",
+                "float",
+                0.05,
+                0.0,
+                1000000.0,
+                0.01,
+                5,
+                slider_minimum=0.0,
+                slider_maximum=1.0,
+                tooltip=(
+                    "Balances travel distance against local intensity differences. "
+                    "Larger values make growth more dependent on distance. "
+                    "The guidance image is not normalized: its intensity scale "
+                    "affects this balance. Zero uses intensity differences alone."
+                ),
+            ),
+        ),
+        cellprofiler_propagation,
+        max_inputs=3,
+        inputs=(
+            InputSpec("image", "array", "Guidance image"),
+            InputSpec("seeds", "labels", "Seed labels"),
+            InputSpec("mask", "mask", "Foreground mask"),
+        ),
+        execution_policy="manual",
+        subcategory=OBJECT_SEPARATION_GROUP,
+        stack_processing_note=(
+            "CPU, one 2D YX image only. Select a plane and channel explicitly "
+            "before connecting a stack. Uses the CellProfiler Centrosome kernel "
+            "with unchanged intensities and pixel distances. Seed labels outside "
+            "the mask remain in the output but do not grow. Cancellation is "
+            "checked before and after the native calculation."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_smooth",
+        "Smooth — CellProfiler Gaussian",
+        "Filtering",
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "artifact_diameter",
+                "Artifact diameter (pixels)",
+                "float",
+                2.0,
+                0.0,
+                100.0,
+                0.1,
+                4,
+            ),
+        ),
+        cellprofiler_smooth,
+        stack_processing_note=(
+            "One 2D YX float32 image in 0–1. CellProfiler 4.2.6 Gaussian: "
+            "sigma = diameter / 2.35, normalized constant borders; float32 output. "
+            "Convert and scale original intensities explicitly before this node."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_threshold",
+        "Threshold — CellProfiler Minimum Cross-Entropy",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec(
+                "smoothing_scale",
+                "Threshold smoothing scale",
+                "float",
+                0.0,
+                0.0,
+                100.0,
+                0.1,
+                4,
+            ),
+        ),
+        cellprofiler_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+        stack_processing_note=(
+            "One 2D YX float32 image in 0–1. Global Li threshold is computed "
+            "before smoothing and applied with >= after normalized Gaussian "
+            "smoothing (sigma = scale / 1.3488). Correction 1, bounds 0–1, no log."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_primary_objects",
+        "Segment Nuclei — CellProfiler Shape",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "labels",
+        (
+            ParameterSpec(
+                "min_diameter", "Minimum diameter (pixels)", "int", 15, 1, 1000, 1
+            ),
+            ParameterSpec(
+                "max_diameter", "Maximum diameter (pixels)", "int", 50, 1, 10000, 1
+            ),
+            ParameterSpec(
+                "threshold_smoothing",
+                "Threshold smoothing scale",
+                "float",
+                1.3488,
+                0.0,
+                100.0,
+                0.1,
+                4,
+            ),
+        ),
+        cellprofiler_primary_objects,
+        outputs=(
+            OutputSpec("retained", "labels", "Retained nuclei"),
+            OutputSpec("unedited", "labels", "Before filtering"),
+        ),
+        execution_policy="manual",
+        subcategory=OBJECT_SEPARATION_GROUP,
+        stack_processing_note=(
+            "CellProfiler 4.2.6 shape/shape profile on one 2D YX float32 image "
+            "in 0–1: global Li, automatic maxima suppression, reduced-resolution "
+            "maxima, hole filling, size and image-border exclusion. Local fixed "
+            "random seed 0. Keep both outputs for faithful cell propagation."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_propagation_seeds",
+        "Prepare Seeds — CellProfiler Propagation",
+        SEGMENTATION_CATEGORY,
+        "labels",
+        "labels",
+        (),
+        cellprofiler_propagation_seeds,
+        max_inputs=2,
+        inputs=(
+            InputSpec("unedited", "labels", "Before filtering"),
+            InputSpec("retained", "labels", "Retained nuclei"),
+        ),
+        subcategory=OBJECT_SEPARATION_GROUP,
+        stack_processing_note=(
+            "One aligned 2D YX grid. Retains unedited nuclei touching the image "
+            "border as competing seeds. Removes excluded interior nuclei. "
+            "Use the paired outputs of Segment Nuclei — CellProfiler Shape."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_finish_cells",
+        "Finish Cell Regions — CellProfiler",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (ParameterSpec("fill_holes", "Fill labelled holes", "bool", True, 0, 1, 1),),
+        cellprofiler_finish_cells,
+        max_inputs=2,
+        inputs=(
+            InputSpec("grown", "labels", "Grown regions"),
+            InputSpec("retained", "labels", "Retained nuclei"),
+        ),
+        stack_processing_note=(
+            "One aligned 2D YX grid. Fills labelled holes with Centrosome, then "
+            "maps regions to their retained nucleus IDs. Regions grown solely "
+            "from excluded border nuclei are removed; other border cells remain."
+        ),
+    ),
+    OperationSpec(
+        "cellprofiler_cytoplasm",
+        "Extract Cytoplasm — CellProfiler",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (
+            ParameterSpec(
+                "shrink_nuclei",
+                "Shrink nuclei before subtraction",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        cellprofiler_cytoplasm,
+        max_inputs=2,
+        inputs=(
+            InputSpec("cells", "labels", "Cell labels"),
+            InputSpec("nuclei", "labels", "Nucleus labels"),
+        ),
+        stack_processing_note=(
+            "One aligned 2D YX grid. CellProfiler tertiary-object subtraction "
+            "preserves cell IDs. Shrinking keeps the one-pixel Centrosome nuclear "
+            "outline in cytoplasm; disabling it removes every nuclear pixel."
+        ),
+    ),
+    OperationSpec(
         "expand_labels",
         "Expand Labels",
         SEGMENTATION_CATEGORY,
@@ -5625,6 +5841,135 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         execution_policy="manual",
     ),
     OperationSpec(
+        "table_source",
+        "Table Source",
+        MEASUREMENTS_CATEGORY,
+        None,
+        "table",
+        (
+            ParameterSpec(
+                "dataset_path",
+                "Results dataset",
+                "text",
+                "",
+                0,
+                0,
+                1,
+                tooltip="Open a collected .vipp-results.json measurement dataset.",
+            ),
+            ParameterSpec(
+                "dataset_sha256",
+                "Expected dataset SHA-256",
+                "text",
+                "",
+                0,
+                0,
+                1,
+                tooltip=(
+                    "Recorded when you choose the dataset. Changed files require "
+                    "explicit review; workflow JSON never embeds measurement rows."
+                ),
+            ),
+        ),
+        subcategory="Tables",
+    ),
+    OperationSpec(
+        "plot_results",
+        "Plot Results",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "plot",
+        (
+            ParameterSpec("recipe_version", "Recipe version", "int", 1, 1, 1, 1),
+            ParameterSpec(
+                "plot_type",
+                "Plot type",
+                "choice",
+                "Compare groups",
+                0,
+                0,
+                1,
+                choices=("Compare groups", "Distribution", "Scatter"),
+            ),
+            ParameterSpec("y_column", "Measurement (Y)", "text", "auto", 0, 0, 1),
+            ParameterSpec("x_column", "Measurement (X)", "text", "auto", 0, 0, 1),
+            ParameterSpec("group_column", "Group by", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "point_unit",
+                "Each point represents",
+                "choice",
+                "Objects",
+                0,
+                0,
+                1,
+                choices=("Objects", "Mean per image"),
+            ),
+            ParameterSpec("image_column", "Image identity", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "summary",
+                "Summary",
+                "choice",
+                "Mean",
+                0,
+                0,
+                1,
+                choices=("Mean", "Median", "None"),
+            ),
+            ParameterSpec(
+                "distribution",
+                "Distribution",
+                "choice",
+                "Histogram",
+                0,
+                0,
+                1,
+                choices=("Histogram", "Cumulative"),
+            ),
+            ParameterSpec("bins", "Histogram bins", "int", 20, 2, 512, 1),
+            ParameterSpec(
+                "normalization",
+                "Histogram Y",
+                "choice",
+                "Count",
+                0,
+                0,
+                1,
+                choices=("Count", "Percent"),
+            ),
+            ParameterSpec("log_x", "Logarithmic X", "bool", False, 0, 1, 1),
+            ParameterSpec("log_y", "Logarithmic Y", "bool", False, 0, 1, 1),
+            ParameterSpec("title", "Plot title", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "point_size", "Point size", "float", 5.0, 1.0, 20.0, 0.5, decimals=1
+            ),
+            ParameterSpec("show_grid", "Show grid", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "x_tick_interval",
+                "X axis label interval",
+                "text",
+                "Auto",
+                0,
+                0,
+                1,
+                tooltip="Auto or a positive numeric interval on a linear X axis.",
+            ),
+            ParameterSpec(
+                "y_tick_interval",
+                "Y axis label interval",
+                "text",
+                "Auto",
+                0,
+                0,
+                1,
+                tooltip=(
+                    "Auto or a positive numeric interval; counts need whole numbers."
+                ),
+            ),
+        ),
+        plot_results,
+        subcategory="Tables",
+    ),
+    OperationSpec(
         "merge_tables",
         "Merge Tables",
         MEASUREMENTS_CATEGORY,
@@ -5708,16 +6053,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "summarize_measurements",
-        "Summarize Measurements",
+        "Statistics",
         MEASUREMENTS_CATEGORY,
         "table",
         "table",
         (
+            ParameterSpec("summary_version", "Summary version", "int", 2, 1, 2, 1),
             ParameterSpec(
                 "group_by",
-                "Group by columns (auto or comma-separated)",
+                "Show separate results for",
                 "text",
-                "auto",
+                "",
                 0,
                 0,
                 1,
@@ -5735,10 +6081,42 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 "statistics",
                 "Statistics",
                 "text",
-                "count,mean,median,std,min,max,q25,q75",
+                "count,mean,std",
                 0,
                 0,
                 1,
+            ),
+            ParameterSpec(
+                "summary_level",
+                "Summarize using",
+                "choice",
+                "Objects",
+                0,
+                0,
+                1,
+                choices=("Objects", "Image averages", "Sample averages"),
+            ),
+            ParameterSpec("image_column", "Image identity", "text", "", 0, 0, 1),
+            ParameterSpec("sample_column", "Sample identity", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "sample_weighting",
+                "Within each sample",
+                "choice",
+                "Equal images",
+                0,
+                0,
+                1,
+                choices=("Equal images", "Equal objects"),
+            ),
+            ParameterSpec(
+                "missing_policy",
+                "Missing or invalid measurements",
+                "choice",
+                "Exclude and report",
+                0,
+                0,
+                1,
+                choices=("Exclude and report", "Stop and review"),
             ),
         ),
         summarize_measurements,
@@ -6408,6 +6786,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "tsv",
                     "obj",
                     "3mf",
+                    "png",
+                    "svg",
+                    "pdf",
                 ),
             ),
             ParameterSpec("subfolder", "Subfolder", "text", "", 0, 0, 1),
@@ -6561,6 +6942,10 @@ def graph_node_from_persisted_params(
         raise ValueError(f"{context} requires non-empty 'id'.")
     if not isinstance(saved_params, dict):
         raise ValueError(f"Parameters for node {node_id!r} must be an object.")
+    if operation_id == "table_source":
+        from napari_vipp.core.table_source import validate_table_source_reference
+
+        validate_table_source_reference(saved_params)
     # The former public dropdown offered ImageJ Triangle. Keep that exact
     # serialized calculation loadable and visibly label it as legacy, while
     # preventing new nodes from authoring it through the Default-only spec.
@@ -6610,6 +6995,34 @@ def graph_node_from_persisted_params(
         saved_params.setdefault("high_percentile", 99.0)
         saved_params.setdefault("reference_mean", 0.0)
         saved_params.setdefault("reference_standard_deviation", 1.0)
+    elif operation_id == "plot_results":
+        # Axis spacing was originally automatic. Old workflows, history,
+        # generated execution and batch restores keep exactly that default.
+        saved_params = dict(saved_params)
+        saved_params.setdefault("x_tick_interval", "Auto")
+        saved_params.setdefault("y_tick_interval", "Auto")
+    elif operation_id == "summarize_measurements":
+        # V2 makes aggregation/exclusions explicit and leaves singleton SD
+        # undefined. Old workflows must not silently acquire those semantics.
+        saved_params = dict(saved_params)
+        legacy_summary = (
+            "summary_version" not in saved_params
+            or saved_params.get("summary_version") == 1
+        )
+        if legacy_summary:
+            saved_params.setdefault("summary_version", 1)
+            saved_params.setdefault("summary_level", "Objects")
+            saved_params.setdefault("image_column", "")
+            saved_params.setdefault("sample_column", "")
+            saved_params.setdefault("sample_weighting", "Equal images")
+            saved_params.setdefault("missing_policy", "Exclude and report")
+        version = saved_params.get("summary_version")
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, Integral)
+            or version not in (1, 2)
+        ):
+            raise ValueError(f"Node {node_id!r} has an unsupported Statistics version.")
 
     required_params = {parameter.name for parameter in spec.parameters}
     missing_params = required_params - saved_params.keys()
@@ -6713,10 +7126,12 @@ class PrototypePipeline:
         self.nodes: dict[str, GraphNode] = {}
         self.connections: list[GraphConnection] = []
         self.outputs: dict[str, Any] = {}
-        self.output_states: dict[str, ImageState | TableState | MeshState | None] = {}
+        self.output_states: dict[
+            str, ImageState | TableState | MeshState | PlotState | None
+        ] = {}
         self.node_outputs: dict[str, list[Any]] = {}
         self.node_output_states: dict[
-            str, list[ImageState | TableState | MeshState | None]
+            str, list[ImageState | TableState | MeshState | PlotState | None]
         ] = {}
         self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
@@ -9482,8 +9897,20 @@ class PrototypePipeline:
         # An unmaterialized device value is no longer a reusable host result.
         self.completed_node_ids.discard(node_id)
 
-    def finish_execution(self, execution: PipelineRunState) -> dict[str, Any]:
+    def finish_execution(
+        self, execution: PipelineRunState, *, cancel_callback=None,
+    ) -> dict[str, Any]:
         """Apply final cache retention after all runnable nodes were committed."""
+        for node_id in self.completed_node_ids:
+            node = self.nodes[node_id]
+            if node.operation_id == "table_source":
+                from napari_vipp.core.table_source import resolve_table_source
+
+                try:
+                    resolve_table_source(node.params, cancellation=cancel_callback)
+                except Exception as exc:
+                    self.set_node_execution_error(node_id, str(exc))
+                    raise
         if execution.prune_unretained:
             self.prune_cached_outputs(execution.retained_node_ids)
         return self.outputs
@@ -9554,7 +9981,7 @@ class PrototypePipeline:
                 self.commit_node_results(execution, node_id, results)
                 if node_finished_callback is not None:
                     node_finished_callback(node_id)
-        return self.finish_execution(execution)
+        return self.finish_execution(execution, cancel_callback=cancel_callback)
 
     def preflight_axis_contract(
         self,
@@ -9663,7 +10090,7 @@ class PrototypePipeline:
                     f"unhandled multi-output image operation {node.title!r}."
                 )
             return [(None, None)] * max(call.output_port_count, 1)
-        if spec.output_type in {"table", "mesh"}:
+        if spec.output_type in {"table", "mesh", "plot"}:
             return [(None, None)] * max(call.output_port_count, 1)
         try:
             dtype_policies = (
@@ -9688,6 +10115,33 @@ class PrototypePipeline:
         node = self.nodes[call.node_id]
         operation_id = call.operation_id
         input_state = call.input_states[0] if call.input_states else None
+        if operation_id == "cellprofiler_primary_objects":
+            if not isinstance(input_state, ImageState):
+                return [(None, None)] * call.output_port_count
+            # Both label ports preserve the sampled grid. Predict them without
+            # executing segmentation or inspecting a proxy's pixel values.
+            dtype = np.dtype(np.int32)
+            proxy = self._axis_contract_proxy(input_state.shape, dtype)
+            return [
+                (
+                    proxy,
+                    self._axis_contract_replaced_state(
+                        input_state,
+                        input_state.shape,
+                        input_state.axes,
+                        dtype,
+                        operation_id=operation_id,
+                        history_item=_metadata._operation_history(
+                            input_state,
+                            operation_id,
+                            f"{node.title} ({port.label})",
+                            self._public_params(node.params),
+                        ),
+                        channels=input_state.channels,
+                    ),
+                )
+                for port in self.output_ports(node.id)
+            ]
         channel_collapse = (
             operation_id in _metadata.CHANNEL_COLLAPSE_OPERATIONS
             and call.kwargs.get("channel_axis") is not None
@@ -10593,6 +11047,7 @@ class PrototypePipeline:
                 input_metadata,
                 input_name,
                 source_payloads,
+                cancellation=cancel_callback,
             )
 
         if self.node_is_bypassed(node_id):
@@ -10617,12 +11072,22 @@ class PrototypePipeline:
         source_payloads: Mapping[str, SourcePayload],
         *,
         defer_statistics: bool = False,
+        cancellation=None,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
         """Resolve one source boundary without invoking an operation callable."""
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
         if spec.has_input:
             raise ValueError(f"Node {node_id!r} is not a source boundary.")
+        if node.operation_id == "table_source":
+            from napari_vipp.core.table_source import resolve_table_source
+
+            return resolve_table_source(
+                node.params,
+                source_payloads.get(node_id),
+                metadata_only=defer_statistics,
+                cancellation=cancellation,
+            )
         payload = source_payloads.get(node_id)
         if payload is None:
             payload = SourcePayload(input_data, input_metadata, input_name)
@@ -10729,6 +11194,21 @@ class PrototypePipeline:
         kwargs = self._operation_kwargs(node)
         primary_state = resolved_states[0] if resolved_states else None
         primary_input = resolved_inputs[0]
+        if node.operation_id in CELLPROFILER_2D_OPERATION_IDS:
+            for state in resolved_states:
+                if (
+                    not isinstance(state, ImageState)
+                    or len(state.shape) != 2
+                    or len(state.axes) != 2
+                    or tuple(axis.name.casefold() for axis in state.axes) != ("y", "x")
+                    or any(axis.type != "space" for axis in state.axes)
+                ):
+                    raise ValueError(
+                        f"{node.title} requires one 2D YX image on every input. "
+                        "Use Select Axis Slice / Extract Channel to select a "
+                        "plane explicitly; use Reorder Axes for non-YX input. "
+                        "For volumetric growth use Marker-Controlled Watershed."
+                    )
         if node.operation_id == "colocalization_mask":
             _validate_colocalization_mask_scalar_inputs(node, resolved_states)
             if not axis_contract_only:
@@ -11088,6 +11568,14 @@ class PrototypePipeline:
             )
         spec = self.operation_spec(node.operation_id)
         input_states = list(call.input_states)
+        if spec.output_type == "plot":
+            history = _combined_history(input_states) + (
+                f"{node.title}: {output.recipe.plot_type}; "
+                f"{output.counts.plotted_points} points; "
+                f"{output.counts.excluded_rows} excluded input rows; "
+                f"{output.recipe.point_unit}",
+            )
+            return [(output, plot_state_from_data(output, history=history))]
         if spec.output_type == "mesh" or (
             node.operation_id == "save_output" and is_mesh_data(output)
         ):
@@ -11433,14 +11921,23 @@ class PrototypePipeline:
             params = self._public_params(node.params)
             if node.operation_id == "born_wolf_psf":
                 params = self._born_wolf_output_transform_params(node, index)
-            state = transform_split_output_state(
-                data,
-                input_state,
-                operation_id=node.operation_id,
-                operation_title=node.title,
-                port_name=port.label,
-                params=params,
-            )
+            if node.operation_id == "cellprofiler_primary_objects":
+                state = transform_image_state(
+                    data,
+                    input_state,
+                    operation_id=node.operation_id,
+                    operation_title=f"{node.title} ({port.label})",
+                    params=params,
+                )
+            else:
+                state = transform_split_output_state(
+                    data,
+                    input_state,
+                    operation_id=node.operation_id,
+                    operation_title=node.title,
+                    port_name=port.label,
+                    params=params,
+                )
             results.append((data, state))
         return results
 

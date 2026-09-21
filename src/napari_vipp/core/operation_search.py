@@ -12,6 +12,10 @@ from types import MappingProxyType
 
 OPERATION_SEARCH_ALIASES = MappingProxyType(
     {
+        "cellprofiler_propagation": (
+            "propagate labels", "seeded region growing", "cellprofiler",
+            "centrosome", "grow cells from nuclei", "propagation",
+        ),
         "dilate": ("dilate", "dilating", "grow mask", "expand foreground"),
         "erode": ("erode", "eroding", "shrink mask", "shrink foreground"),
         "opening": ("open mask", "binary opening", "morphological opening"),
@@ -109,6 +113,14 @@ OPERATION_SEARCH_ALIASES = MappingProxyType(
         "measure_objects": ("object measurements", "region properties", "regionprops"),
         "measure_objects_intensity": ("object intensity measurements",),
         "intensity_histogram": ("intensity distribution",),
+        "summarize_measurements": (
+            "summarize measurements",
+            "descriptive statistics",
+            "summary table",
+            "image averages",
+            "sample averages",
+            "standard deviation",
+        ),
         "save_output": ("save output", "write image", "export image"),
     }
 )

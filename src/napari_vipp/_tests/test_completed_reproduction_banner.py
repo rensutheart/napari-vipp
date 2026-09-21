@@ -9,6 +9,8 @@ import pytest
 from qtpy.QtWidgets import QMessageBox
 
 from napari_vipp._tests.test_batch_reproduction_ui import _check, _dialog, _request
+from napari_vipp._tests.test_batch_results import _record
+from napari_vipp._tests.test_ui_batch import _preview_result
 from napari_vipp.core.batch import BatchStatus
 from napari_vipp.core.reproduction import ReproductionRow, current_vipp_version
 from napari_vipp.ui.palette_roles import theme_colors
@@ -36,11 +38,12 @@ def _verified_check(request):
 
 def _run_result(tmp_path, request, *, statuses=None, has_failures=False):
     statuses = statuses or (BatchStatus.COMPLETED,) * 3
+    preview = _preview_result(tmp_path, count=len(statuses))
     return SimpleNamespace(
         manifest=SimpleNamespace(
             items=tuple(
-                SimpleNamespace(index=i, status=status)
-                for i, status in enumerate(statuses, start=1)
+                _record(item, status, timing=False)
+                for item, status in zip(preview.items, statuses, strict=True)
             ),
             reproduction=_verified_check(request).to_dict(),
             compute={"runtime_cleanup_succeeded": not has_failures},

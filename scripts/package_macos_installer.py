@@ -299,10 +299,13 @@ def build_installer(
                 "__VIPP_WHEEL_SHA256__": wheel.sha256,
             },
         )
+        centrosome_recipe_dir = input_dir / "centrosome"
+        _stage_centrosome_recipe(root, centrosome_recipe_dir)
 
         channel_dir = temporary_root / "channel"
         _build_local_conda_packages(
             recipe_dir=recipe_dir,
+            centrosome_recipe_dir=centrosome_recipe_dir,
             channel_dir=channel_dir,
             target_platform=target_platform,
             rattler_build=Path(tools["rattler-build"]["path"]),
@@ -370,6 +373,9 @@ def build_installer(
             "configuration": {
                 "construct_template": "packaging/macos/construct.yaml.in",
                 "recipe_template": "packaging/macos/recipe/recipe.yaml.in",
+                "centrosome_recipe_template": (
+                    "packaging/macos/centrosome/recipe.yaml.in"
+                ),
                 "menu_template": "packaging/macos/vipp-menu.json.in",
                 "cpu_only": True,
                 "current_user_only": True,
@@ -437,9 +443,7 @@ def finalize_unsigned_installer(
         )
 
     staging = unsigned_staging_installer.expanduser().resolve()
-    expected_staging = (
-        f"VIPP-{source.version}-macOS-{architecture}-SIGNING-STAGING.pkg"
-    )
+    expected_staging = f"VIPP-{source.version}-macOS-{architecture}-SIGNING-STAGING.pkg"
     if staging.name != expected_staging:
         raise MacOSInstallerPackagingError(
             f"The unsigned staging filename must be {expected_staging}."
@@ -510,11 +514,9 @@ def finalize_unsigned_installer(
             shutil.copyfile(staging, temporary_package)
             for key, source_path in evidence_sources.items():
                 shutil.copyfile(source_path, temporary_evidence[key])
-            if (
-                _sha256(temporary_package) != artifact_record.get("sha256")
-                or temporary_package.stat().st_size
-                != artifact_record.get("size_bytes")
-            ):
+            if _sha256(temporary_package) != artifact_record.get(
+                "sha256"
+            ) or temporary_package.stat().st_size != artifact_record.get("size_bytes"):
                 raise MacOSInstallerPackagingError(
                     "The copied unsigned PKG differs from the reviewed staging PKG."
                 )
@@ -537,8 +539,7 @@ def finalize_unsigned_installer(
                 "wheel": build_document.get("wheel"),
                 "signature": copied_signature,
                 "constructor_evidence": {
-                    key: _file_record(path)
-                    for key, path in temporary_evidence.items()
+                    key: _file_record(path) for key, path in temporary_evidence.items()
                 },
                 "local_conda_packages": build_document.get("local_conda_packages"),
                 "user_warning": {
@@ -562,9 +563,7 @@ def finalize_unsigned_installer(
             # ``shasum -c`` without requiring six additional downloads.
             checksum_members = [temporary_package]
             temporary_checksums.write_text(
-                "".join(
-                    f"{_sha256(path)}  {path.name}\n" for path in checksum_members
-                ),
+                "".join(f"{_sha256(path)}  {path.name}\n" for path in checksum_members),
                 encoding="ascii",
                 newline="\n",
             )
@@ -810,9 +809,7 @@ def _command_version(executable: Path, product: str) -> str:
     return match.group(1)
 
 
-def _build_release_wheel(
-    root: Path, temporary_root: Path, source: SourceState
-) -> Path:
+def _build_release_wheel(root: Path, temporary_root: Path, source: SourceState) -> Path:
     """Build a comparison wheel from an archive of the exact tagged commit."""
 
     source_archive = temporary_root / "clean-tag-source.tar"
@@ -874,9 +871,7 @@ def _render_menu_metadata(template: Path, output: Path, source: SourceState) -> 
         raise MacOSInstallerPackagingError(
             f"Version {source.version!r} cannot be represented in a macOS bundle."
         )
-    short_version = ".".join(
-        match.group(part) for part in ("major", "minor", "patch")
-    )
+    short_version = ".".join(match.group(part) for part in ("major", "minor", "patch"))
     _render_template(
         template,
         output,
@@ -968,9 +963,16 @@ def _render_macos_icon(source_svg: Path, output: Path, work_dir: Path) -> None:
         raise MacOSInstallerPackagingError("macOS icon generation produced no output.")
 
 
+def _stage_centrosome_recipe(root: Path, recipe_dir: Path) -> None:
+    source = root / "packaging/macos/centrosome"
+    _render_template(source / "recipe.yaml.in", recipe_dir / "recipe.yaml", {})
+    shutil.copy2(source / "verify_wheel.py", recipe_dir / "verify_wheel.py")
+
+
 def _build_local_conda_packages(
     *,
     recipe_dir: Path,
+    centrosome_recipe_dir: Path,
     channel_dir: Path,
     target_platform: str,
     rattler_build: Path,
@@ -984,12 +986,39 @@ def _build_local_conda_packages(
             "RATTLER_BUILD_LOG_STYLE": "plain",
         }
     )
+    # Centrosome has no conda-forge package. Build and test the pinned native
+    # wheel wrapper first so the VIPP runtime dependency can resolve locally.
+    # Do not skip these tests: importing compiled extensions checks the host ABI.
+    _run(
+        [
+            os.fspath(rattler_build),
+            "build",
+            "--recipe",
+            os.fspath(centrosome_recipe_dir / "recipe.yaml"),
+            "--channel",
+            "conda-forge",
+            "--target-platform",
+            target_platform,
+            "--output-dir",
+            os.fspath(channel_dir),
+            "--package-format",
+            "conda",
+            "--test",
+            "native",
+            "--no-config",
+        ],
+        cwd=centrosome_recipe_dir,
+        env=env,
+    )
+    _index_channel(channel_dir)
     _run(
         [
             os.fspath(rattler_build),
             "build",
             "--recipe",
             os.fspath(recipe_dir / "recipe.yaml"),
+            "--channel",
+            channel_dir.resolve().as_uri(),
             "--channel",
             "conda-forge",
             "--target-platform",
@@ -1010,15 +1039,41 @@ def _build_local_conda_packages(
 def _index_local_channel(
     *, channel_dir: Path, target_platform: str
 ) -> list[dict[str, object]]:
-    noarch = channel_dir / "noarch"
-    packages = sorted(noarch.glob("*.conda"))
-    for required in ("napari-vipp-", "vipp-menu-"):
-        if len([path for path in packages if path.name.startswith(required)]) != 1:
-            raise MacOSInstallerPackagingError(
-                f"Expected one local {required} package; found "
-                f"{[p.name for p in packages]}."
+    packages = sorted(channel_dir.glob("*/*.conda"))
+    expected = (
+        ("noarch", "napari-vipp-"),
+        ("noarch", "vipp-menu-"),
+        (target_platform, "centrosome-1.3.4-"),
+    )
+    for subdir, required in expected:
+        if (
+            len(
+                [
+                    path
+                    for path in packages
+                    if path.parent.name == subdir and path.name.startswith(required)
+                ]
             )
+            != 1
+        ):
+            raise MacOSInstallerPackagingError(
+                f"Expected one local {subdir}/{required} package; found "
+                f"{[p.relative_to(channel_dir).as_posix() for p in packages]}."
+            )
+    if len(packages) != len(expected):
+        raise MacOSInstallerPackagingError(
+            "Unexpected local conda packages; only VIPP, its menu and the "
+            "matching native Centrosome package may enter the installer."
+        )
     (channel_dir / target_platform).mkdir(exist_ok=True)
+    _index_channel(channel_dir)
+    return [{**_file_record(path), "subdir": path.parent.name} for path in packages]
+
+
+def _index_channel(channel_dir: Path) -> None:
+    # Solvers inspect noarch even before the native dependency build has been
+    # followed by the two noarch VIPP packages.
+    (channel_dir / "noarch").mkdir(exist_ok=True)
     _run(
         [
             sys.executable,
@@ -1029,7 +1084,6 @@ def _index_local_channel(
             "--no-bz2",
         ]
     )
-    return [_file_record(path) for path in packages]
 
 
 def _stage_constructor_documents(

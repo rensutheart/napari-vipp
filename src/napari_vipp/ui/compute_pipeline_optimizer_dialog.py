@@ -37,6 +37,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
 )
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 
 
@@ -471,10 +472,12 @@ class PipelineOptimizerDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        buttons.addWidget(self.analyze_button)
-        buttons.addWidget(self.apply_button)
-        buttons.addWidget(self.cancel_button)
-        buttons.addWidget(self.close_button)
+        add_dialog_buttons(
+            buttons,
+            actions=(self.analyze_button, self.apply_button),
+            dismiss=self.close_button,
+            stop_actions=(self.cancel_button,),
+        )
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
         layout.addLayout(time_limit_row)

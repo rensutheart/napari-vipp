@@ -150,30 +150,46 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
             ),
         ),
         "summary-table": ExampleGuidance(
-            purpose="Summarise object counts and areas across timepoints.",
+            purpose=(
+                "Explore measurements, summaries and plots together in the "
+                "Results Workspace."
+            ),
             data=(
                 "Synthetic measurement-summary sample with known object counts and "
                 "areas"
             ),
             explore=(
-                "Inspect the measured area of each object at each timepoint.",
-                "Review the experiment information added as table columns.",
                 (
-                    "Group the rows to calculate object counts and mean, minimum and "
-                    "maximum areas."
+                    "Select Add Metadata Columns or Statistics, then open the "
+                    "Results Workspace to see the table beside its controls."
+                ),
+                (
+                    "Group the six object rows across three timepoints to "
+                    "calculate counts and mean, minimum and maximum areas."
+                ),
+                (
+                    "Check included values and see why one object cannot define "
+                    "a standard deviation."
+                ),
+                (
+                    "Compare the original-data plot, with six object points, "
+                    "with the summary plot, with one mean per timepoint."
                 ),
             ),
             results=(
                 "Object-level measurements",
                 "Grouped summary table",
+                "Original-object and summary-mean plots",
             ),
             try_this=(
-                "Compare the object rows for one timepoint with its summary row. "
-                "Check how its object count and mean area were formed."
+                "In the workspace's Plots tab, switch between the original "
+                "measurements and summary table. Check which rows each point "
+                "represents. In Appearance, try a Y axis label interval of 5."
             ),
             caution=(
-                "Grouping summarises the rows; it does not establish independent "
-                "biological replicates."
+                "Neither object rows nor summary rows automatically represent "
+                "independent biological replicates. A summary's SD column does "
+                "not automatically add error bars to a plot."
             ),
         ),
         "derived-morphology": ExampleGuidance(
@@ -193,6 +209,37 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "and the major-to-minor axis ratio in the table."
             ),
             caution="These are 2D shape descriptors, not 3D surface measurements.",
+        ),
+        "plot-morphology": ExampleGuidance(
+            purpose=(
+                "Turn measurements from one image into readable shape and "
+                "intensity plots."
+            ),
+            data=(
+                "One synthetic 2D image with 60 separated ellipses; "
+                "0.5 micrometer per pixel"
+            ),
+            explore=(
+                "Follow thresholding and labelling to one measurement row per object.",
+                "Compare the area histogram with individual elongation measurements.",
+                "Explore the designed relationship between area and brightness.",
+                "Open a plot window, change its settings and export a sized figure.",
+            ),
+            results=(
+                "60 labelled objects",
+                "Joined shape and intensity measurements",
+                "Histogram, scatter, individual-point and cumulative plots",
+            ),
+            try_this=(
+                "Select the area-intensity scatter node and choose Open plot. "
+                "Change the Y measurement to eccentricity to compare a different "
+                "relationship. The source image does not need recalculation."
+            ),
+            caution=(
+                "These are invented demonstration data. The 60 objects come from "
+                "one image, not 60 independent biological samples; size and "
+                "brightness were deliberately linked in the sample generator."
+            ),
         ),
         "mesh-morphology": ExampleGuidance(
             purpose=(
@@ -532,15 +579,16 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
         ),
         "exhaustive-inspector": ExampleGuidance(
             purpose=(
-                "Inspect every available node in one comprehensive testing workflow."
+                "Inspect image and measurement tools in one comprehensive "
+                "testing workflow."
             ),
             data=(
-                "Seven synthetic samples spanning images, volumes, skeletons and "
+                "Eight synthetic samples spanning images, volumes, skeletons and "
                 "deconvolution"
             ),
             explore=(
                 (
-                    "Browse the seven labelled lanes to find different types of "
+                    "Browse the nine labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",
@@ -558,7 +606,8 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
             ),
             caution=(
                 "This is an interface-testing collection, not one recommended "
-                "analysis pipeline."
+                "analysis pipeline. Table Source needs a saved batch measurement "
+                "dataset and is reviewed separately."
             ),
             chooser_category="Developer & testing workflows",
         ),

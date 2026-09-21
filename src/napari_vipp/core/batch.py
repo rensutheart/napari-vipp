@@ -104,6 +104,7 @@ from napari_vipp.core.reproduction import (
     ReproductionCheck,
     ReproductionRequest,
 )
+from napari_vipp.core.result_plots import is_plot_data
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceChangedError,
@@ -153,6 +154,9 @@ _KNOWN_SUFFIXES = (
     ".tsv",
     ".obj",
     ".3mf",
+    ".png",
+    ".svg",
+    ".pdf",
 )
 _IMAGE_SUFFIXES = {
     "ome-tiff": ".ome.tif",
@@ -163,8 +167,9 @@ _IMAGE_SUFFIXES = {
 _IMAGE_FORMATS = frozenset(_IMAGE_SUFFIXES)
 _TABLE_FORMATS = frozenset(("csv", "tsv"))
 _MESH_FORMATS = frozenset(("obj", "3mf"))
+_PLOT_FORMATS = frozenset(("png", "tiff", "svg", "pdf"))
 _OUTPUT_FORMATS = frozenset(
-    ("batch default", *_IMAGE_FORMATS, *_TABLE_FORMATS, *_MESH_FORMATS)
+    ("batch default", *_IMAGE_FORMATS, *_TABLE_FORMATS, *_MESH_FORMATS, *_PLOT_FORMATS)
 )
 _OVERWRITE_VALUES = frozenset(("batch default", "yes", "no"))
 _HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -364,18 +369,30 @@ class BatchOutputConfig:
         _require_text(self.node_id, "Batch output node_id")
         _require_text(self.node_title, "Batch output node_title")
         _require_text(self.tag, "Batch output tag")
-        if self.kind not in {"image", "table", "mesh"}:
-            raise ValueError("Batch output kind must be 'image', 'table', or 'mesh'.")
+        if self.kind not in {"image", "table", "mesh", "plot"}:
+            raise ValueError(
+                "Batch output kind must be 'image', 'table', 'mesh', or 'plot'."
+            )
         if self.format not in _OUTPUT_FORMATS:
             raise ValueError(f"Unsupported batch output format: {self.format!r}.")
-        if self.kind == "table" and self.format in _IMAGE_FORMATS:
+        if self.kind == "table" and self.format not in {
+            "batch default",
+            *_TABLE_FORMATS,
+        }:
             raise ValueError("A table batch output cannot use an image format.")
-        if self.kind == "image" and self.format in _TABLE_FORMATS:
+        if self.kind == "image" and self.format not in {
+            "batch default",
+            *_IMAGE_FORMATS,
+        }:
             raise ValueError("An image batch output cannot use a table format.")
         if self.kind == "mesh" and self.format not in {"batch default", *_MESH_FORMATS}:
             raise ValueError("A mesh batch output requires OBJ or 3MF format.")
         if self.kind != "mesh" and self.format in _MESH_FORMATS:
             raise ValueError("Only a mesh batch output can use OBJ or 3MF format.")
+        if self.kind == "plot" and self.format not in {"batch default", *_PLOT_FORMATS}:
+            raise ValueError(
+                "A plot batch output requires PNG, TIFF, SVG or PDF format."
+            )
         _require_text(self.filename_template, "Batch output filename_template")
         if self.overwrite not in _OVERWRITE_VALUES:
             raise ValueError(
@@ -791,6 +808,7 @@ class _StagedBatchOutput:
     temporary_path: Path
     saved_temporary_path: Path
     content_identity: dict[str, object] = field(default_factory=dict)
+    table_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -955,6 +973,7 @@ class BatchOutputRecord:
     error_type: str = ""
     error_message: str = ""
     content_identity: dict[str, object] = field(default_factory=dict)
+    table_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -978,6 +997,8 @@ class BatchOutputRecord:
             result["execution_provenance_sha256"] = self.execution_provenance_sha256
         if self.content_identity:
             result["content_identity"] = dict(self.content_identity)
+        if self.table_metadata:
+            result["table_metadata"] = _json_safe(self.table_metadata)
         if self.error_type:
             result["error"] = {
                 "type": self.error_type,
@@ -2800,9 +2821,14 @@ def run_batch(
                             output_checkpoint_changed = True
                         else:
                             try:
+                                staging_options = (
+                                    {"cancellation": cancel_event}
+                                    if cancel_event is not None else {}
+                                )
                                 staged = _save_planned_output(
                                     item_pipeline,
                                     output_plan,
+                                    **staging_options,
                                 )
                             except _SkippedOutput as exc:
                                 output_record = replace(
@@ -2984,6 +3010,7 @@ def run_batch(
                                 size_bytes=size,
                                 provenance_status="produced",
                                 content_identity=staged.content_identity,
+                                table_metadata=staged.table_metadata,
                                 execution_provenance_sha256=(
                                     item_record.execution_provenance_sha256
                                 ),
@@ -3569,7 +3596,7 @@ def _validate_effective_batch_output_contract(
             )
         effective_type = ports[0].output_type
         effective_kind = (
-            effective_type if effective_type in {"table", "mesh"} else "image"
+            effective_type if effective_type in {"table", "mesh", "plot"} else "image"
         )
         if output.kind == effective_kind:
             continue
@@ -3642,7 +3669,7 @@ def _plan_output(
     resolved_format = _resolved_output_format(config, output)
     suffix = (
         f".{resolved_format}"
-        if resolved_format in _MESH_FORMATS
+        if resolved_format in _MESH_FORMATS or resolved_format in {"png", "svg", "pdf"}
         else ".tsv"
         if resolved_format == "tsv"
         else ".csv"
@@ -3681,6 +3708,8 @@ def _resolved_output_format(config: BatchConfig, output: BatchOutputConfig) -> s
         return output.format
     if output.kind == "mesh":
         return "obj"
+    if output.kind == "plot":
+        return "png"
     return "csv" if output.kind == "table" else config.default_image_format
 
 
@@ -3703,7 +3732,7 @@ def _resolved_existing_file_policy(
 
 def _filename_suffix_matches_format(filename: str, output_format: str) -> bool:
     lower = filename.lower()
-    if output_format in _MESH_FORMATS:
+    if output_format in _MESH_FORMATS or output_format in {"png", "svg", "pdf"}:
         return lower.endswith(f".{output_format}")
     if output_format == "ome-tiff":
         return lower.endswith((".ome.tif", ".ome.tiff", ".tif", ".tiff"))
@@ -3809,7 +3838,9 @@ def _validate_pipeline_config(
         node = pipeline.nodes[output.node_id]
         ports = pipeline.output_ports(output.node_id)
         output_type = ports[0].output_type if ports else "any"
-        expected_kind = output_type if output_type in {"table", "mesh"} else "image"
+        expected_kind = (
+            output_type if output_type in {"table", "mesh", "plot"} else "image"
+        )
         if output.kind != expected_kind:
             raise ValueError(
                 f"Batch output {output.node_id!r} kind does not match the workflow."
@@ -4545,6 +4576,8 @@ def _source_identity_progress_callback(
 def _save_planned_output(
     pipeline: PrototypePipeline,
     output: BatchOutputPlan,
+    *,
+    cancellation=None,
 ) -> _StagedBatchOutput:
     """Fully write an output privately without publishing its destination."""
     if output.recovery_root is not None:
@@ -4570,12 +4603,28 @@ def _save_planned_output(
     output.path.parent.mkdir(parents=True, exist_ok=True)
     temporary = _temporary_output_path(output.path)
     saved_temporary = temporary
+    table_metadata = {}
     try:
-        if is_mesh_data(data):
+        if is_plot_data(data):
+            from napari_vipp.core.plot_rendering import save_plot_output
+
+            if output.format not in _PLOT_FORMATS:
+                raise ValueError(
+                    "Plot batch outputs require PNG, TIFF, SVG or PDF format."
+                )
+            saved_temporary = save_plot_output(
+                temporary, data, file_format=output.format, cancellation=cancellation
+            )
+        elif is_mesh_data(data):
             if output.format not in _MESH_FORMATS:
                 raise ValueError("Mesh batch outputs require OBJ or 3MF format.")
             saved_temporary = save_mesh_output(data, temporary, format=output.format)
         elif is_table_data(data):
+            from napari_vipp.core.measurement_collection import (
+                table_measurement_metadata,
+            )
+
+            table_metadata = table_measurement_metadata(data, cancellation=cancellation)
             if output.format not in _TABLE_FORMATS:
                 raise ValueError(
                     f"Table output {output.node_id!r} has invalid format "
@@ -4603,6 +4652,9 @@ def _save_planned_output(
         saved_temporary = Path(saved_temporary)
         with saved_temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
+            if table_metadata.get("available"):
+                file_hash = hashlib.file_digest(stream, "sha256")
+                table_metadata["file_sha256"] = file_hash.hexdigest()
     except BaseException:
         _best_effort_unlink(Path(saved_temporary))
         _best_effort_unlink(temporary)
@@ -4612,7 +4664,9 @@ def _save_planned_output(
     except BaseException:
         _best_effort_unlink(saved_temporary)
         raise
-    return _StagedBatchOutput(output, temporary, saved_temporary, identity)
+    return _StagedBatchOutput(
+        output, temporary, saved_temporary, identity, table_metadata,
+    )
 
 
 def _promote_staged_output(staged: _StagedBatchOutput) -> Path:
@@ -5021,6 +5075,7 @@ def _batch_actual_compute_summary(
 
 def _runtime_versions() -> dict[str, object]:
     distributions = (
+        "centrosome",
         "napari-vipp",
         "numpy",
         "scipy",
@@ -5370,10 +5425,28 @@ def _canonical_scientific_node(value: object) -> dict[str, object]:
             "high_threshold": 0.75,
         },
         "rescale_intensity": {"invert_intensity": False},
+        "plot_results": {"x_tick_interval": "Auto", "y_tick_interval": "Auto"},
     }
     for name, default in legacy_defaults.get(operation_id, {}).items():
         if params.get(name) == default:
             params.pop(name, None)
+    if (
+        operation_id == "summarize_measurements"
+        and params.get("summary_version", 1) == 1
+    ):
+        # Restoring an old summary must not detach its recorded batch identity.
+        # V2 is an explicit scientific upgrade, so none of its fields are elided.
+        summary_defaults = {
+            "summary_version": 1,
+            "summary_level": "Objects",
+            "image_column": "",
+            "sample_column": "",
+            "sample_weighting": "Equal images",
+            "missing_policy": "Exclude and report",
+        }
+        for name, default in summary_defaults.items():
+            if params.get(name) == default:
+                params.pop(name, None)
     threshold_mode = str(params.get("threshold_mode", "Manual")).casefold()
     source_item = source_item_from_params(params) if operation_id == "input" else None
     source_item_bound = source_item is not None

@@ -69,6 +69,7 @@ from napari_vipp.ui.batch_reproduction import BatchReproductionPresentation
 from napari_vipp.ui.batch_resume import BatchResumeActions
 from napari_vipp.ui.batch_setup import BatchSetupPresentation
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
@@ -404,24 +405,32 @@ class BatchWorkflowWorkspace(
         self.next_button.clicked.connect(self._next_batch_step)
         self.footer_overrides_button = ToolbarCommandButton("Load overrides")
         self.footer_overrides_button.clicked.connect(self._open_selected_overrides)
-        # Keep the optional detour immediately left of the next step on every
-        # platform, independent of native dialog-button role ordering.
+        # Keep the optional detour separate from the platform-aware actions.
         self.footer_action_row = QWidget()
         self.footer_action_row.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         action_layout = QHBoxLayout(self.footer_action_row)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(6)
         action_layout.addStretch(1)
-        self._footer_buttons = (
+        footer_buttons = (
             self.footer_overrides_button,
             self.next_button,
             self.run_button,
             self.cancel_run_button,
             self.close_button,
         )
-        for button in self._footer_buttons:
+        for button in footer_buttons:
             self.button_box.removeButton(button)
-            action_layout.addWidget(button)
+        action_layout.addWidget(self.footer_overrides_button)
+        self._footer_buttons = (
+            self.footer_overrides_button,
+            *add_dialog_buttons(
+                action_layout,
+                actions=(self.next_button, self.run_button),
+                dismiss=self.close_button,
+                stop_actions=(self.cancel_run_button,),
+            ),
+        )
         self.close_button.clicked.connect(self.reject)
         self.button_box.hide()
         footer_layout.addWidget(self.footer_action_row, 0, Qt.AlignVCenter)

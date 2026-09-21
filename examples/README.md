@@ -37,6 +37,7 @@ registry):
 - `merged-measurements`
 - `summary-table`
 - `derived-morphology`
+- `plot-morphology`
 - `mesh-morphology`
 - `mesh-objects`
 - `skeleton-qc`
@@ -61,7 +62,7 @@ example...**. Its actively maintained source also remains under
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
-| `exhaustive-inspector-showcase.json` | Seven bundled VIPP synthetic samples | Seven-lane comprehensive review graph containing every operation currently exposed in the node palette, representative connections and tunnels, canvas notes, and saved inspector display settings. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
+| `exhaustive-inspector-showcase.json` | Eight bundled VIPP synthetic samples | Nine-lane comprehensive review graph covering palette operations except **Table Source**, which requires a separately saved batch measurement dataset and has dedicated collection/reopen tests. Includes the 2D CellProfiler Propagation and compartment-profile lanes, representative connections and tunnels, canvas notes, and saved inspector display settings. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
 | `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, checking one-step undo/redo, and using **Add conversion** to make a `uint16` Gaussian input GPU eligible on a qualified GPU setup. It opens with Auto compute intent so that qualified systems can show the real tip; CPU-only systems continue normally without it. Open it as `graph-authoring`. |
 | `responsive-volume-crop-acceptance.json` | `VIPP synthetic time-lapse multichannel` | Numbered acceptance path for the responsive TCZYX Crop Stack. It verifies explicit-Z controls, an immediate constant-size crop box and current-slice outline during rapid slider movement, one committed calculation and undo after release or idle, exact T/C preservation and physical-origin shifts, draft flushing before calculation/save/export/batch/tab/close boundaries, inferred-QYX rejection, and the explained CPU assignment under Prefer GPU. The authored margins crop `(5, 3, 12, 96, 128)` to `(5, 3, 9, 87, 115)`. Open it as `responsive-crop`. |
 | `safe-node-bypass-acceptance.json` | `VIPP synthetic volume` | Focused Crop Stack acceptance path for the exact scientific alias, would-run card thumbnail, bypass styling, undo/save/export, GPU-neutral status, and batch Run/Bypass profile. Open it as `safe-node-bypass`. |
@@ -74,6 +75,7 @@ example...**. Its actively maintained source also remains under
 | `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity via `Red intensity` tunnel, table merge, and metadata columns. |
 | `synthetic-measurement-summary.json` | `VIPP synthetic measurement summary` | Grouped measurement summaries with known timepoint object counts and areas. |
 | `synthetic-derived-object-morphology.json` | `VIPP synthetic object morphology` | Derived 2D morphology, circularity, perimeter/area ratio, Hu moments, and checklist-based column selection. |
+| `synthetic-measurement-plots.json` | `VIPP synthetic measurement plots` | One calibrated 2D image with 60 separated synthetic ellipses. Threshold and label, join morphology/intensity tables, annotate image identity, then review histogram, scatter, points and cumulative Plot Results branches. Four canvas notes distinguish designed size/signal association from biological evidence. No output files are written by calculation. Open as `plot-morphology`. |
 | `synthetic-3d-mesh-morphology.json` | `VIPP synthetic 3D mesh morphology` | True-3D mesh morphology on anisotropic objects, including surface area, mesh volume, convex hull metrics, sphericity, and tiny-object status reporting. |
 | `synthetic-mesh-objects.json` | `VIPP synthetic 3D mesh morphology` | Saved interactive workflow: split a single mesh into five objects, colour by triangle count with Turbo, filter and combine, smooth at 2 iterations/strength 1, then simplify at 10%/aggressiveness 4. Retains layout and inspector profiles; no automatic file output. Open as `mesh-objects`; see the [mesh guide](https://rensutheart.github.io/vipp-mkdocs/nightly/workflows/mask-to-mesh/). |
 | `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path using a `Skeleton mask` tunnel: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
@@ -85,6 +87,13 @@ example...**. Its actively maintained source also remains under
 | `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with one shared, visible `float32` Preserve conversion feeding matched 25-iteration RL/RL-TV branches, a matched ZYX PSF, the authored `1e-12` filter epsilon, and conservative `0.002` TV regularization. The conversion does not rescale intensity. GPU agreement is a backend check, not proof that the PSF, iteration count, or restored structures are scientifically valid. |
 
 ## Validation Expectations
+
+The standalone [validation/seeded-3d-watershed.json](validation/seeded-3d-watershed.json)
+uses the bundled `VIPP synthetic volume` for the seeded 3D watershed acceptance
+path. Open this file directly; it is separate from the packaged example chooser.
+Its focused acceptance tests check volumetric execution and exported-Python
+equality. The associated [validation record](../docs/evidence/seeded-segmentation/README.md)
+also covers an analytical phantom and acquired mitochondrial volumes.
 
 `synthetic-mesh-objects.json` is the manually authored **Mesh Objects, Colours &
 Refinement** example (`mesh-objects`, under **3D Meshes**). It

@@ -7,7 +7,6 @@ from enum import StrEnum
 from qtpy.QtCore import QEvent, Qt, Signal
 from qtpy.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -17,6 +16,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import SemanticToneColors, theme_colors
 
 

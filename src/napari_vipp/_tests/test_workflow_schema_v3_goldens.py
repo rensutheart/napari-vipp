@@ -16,10 +16,10 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Add the binary colocalization branch. The regression below also pins
-    # the preceding mask-free and boundary-free analysis hashes.
+    # Add a genuine YX compartment lane and an object-intensity plot. The
+    # regression below removes those additions and pins the historical graph.
     "exhaustive-inspector-showcase.json": (
-        "73c0d4bdec149820aa62922d30d4e22b3f34b1769661e465e6b0686d75180a58"
+        "7f5bcf569782aaf4a89a191b28752c394227abb43ea7c716773811e1ece7e624"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -73,8 +73,15 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     "synthetic-gpu-segmentation-bridge.json": (
         "599f8346ce68cc92233fbd7ec3136e9d720a9c126ef17642d3c649acca29aa46"
     ),
+    # Pin the already bundled four-view morphology/intensity plot example.
+    # Automatic tick defaults restore explicitly without changing this hash.
+    "synthetic-measurement-plots.json": (
+        "05845756b6715c2d47d748c57ad26df95890791aefbb7c8f82f33310b04749ea"
+    ),
+    # Explicit Statistics v2 + separate original-row and summary-row plots.
+    # The prior six-node scientific contract is pinned independently below.
     "synthetic-measurement-summary.json": (
-        "34ada05bf06ba895a6e33fcba913fa7272f3c7ba9feb50809dbc95e967db20f8"
+        "e9165b36ff5af09e4d27d70f7f8b10451773141ce5b968d0b7575c93f959bc01"
     ),
     "synthetic-mesh-objects.json": (
         "5551e6579baa275a1b5281be67b60b4bcff0b6e2e2cebc15735820d142101479"
@@ -143,6 +150,19 @@ def _canonical_schema_v6_document(document: dict[str, Any]) -> dict[str, Any]:
             node["params"].setdefault("high_threshold", 0.75)
         elif node["operation_id"] == "rescale_intensity":
             node["params"].setdefault("invert_intensity", False)
+        elif node["operation_id"] == "plot_results":
+            node["params"].setdefault("x_tick_interval", "Auto")
+            node["params"].setdefault("y_tick_interval", "Auto")
+        elif (
+            node["operation_id"] == "summarize_measurements"
+            and node["params"].get("summary_version", 1) == 1
+        ):
+            node["params"].setdefault("summary_version", 1)
+            node["params"].setdefault("summary_level", "Objects")
+            node["params"].setdefault("image_column", "")
+            node["params"].setdefault("sample_column", "")
+            node["params"].setdefault("sample_weighting", "Equal images")
+            node["params"].setdefault("missing_policy", "Exclude and report")
     if document["version"] == 3:
         canonical["execution"] = {
             "compute": {
@@ -205,12 +225,106 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
     assert scientific_workflow_hash(reserialized) == expected_hash
 
 
+def test_workspace_example_preserves_the_original_measurement_analysis():
+    document = _load_example("synthetic-measurement-summary.json")
+    added_ids = {"plot_objects", "plot_summary"}
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_ids
+    ]
+    document["connections"] = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] not in added_ids and edge["target"] not in added_ids
+    ]
+    for node_id in added_ids:
+        document["positions"].pop(node_id)
+    document["notes"] = [
+        note for note in document["notes"] if note.get("attached_node") not in added_ids
+    ]
+    summary = next(
+        node for node in document["nodes"] if node["id"] == "summarize_measurements_1"
+    )
+    assert summary["params"]["summary_version"] == 2
+    assert summary["params"]["group_by"] == "condition,replicate,t_index"
+    assert summary["params"]["statistics"] == "count,mean,std,min,max"
+    # Restore just the intentionally upgraded summary recipe. All original
+    # measurement/segmentation parameters and edges must still match exactly.
+    summary["params"] = {
+        "group_by": "auto",
+        "value_columns": "area_pixels",
+        "statistics": "count,mean,min,max",
+    }
+    historical_hash = "34ada05bf06ba895a6e33fcba913fa7272f3c7ba9feb50809dbc95e967db20f8"
+    assert scientific_workflow_hash(document) == historical_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(document)) == historical_hash
+    )
+
+
 def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
     document = _load_example("exhaustive-inspector-showcase.json")
+    # The added plot consumes the existing measurement table without changing
+    # it or the legacy summary recipe. Strip only that display branch before
+    # checking the historical scientific graph.
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] != "plot_results_1"
+    ]
+    document["connections"] = [
+        edge for edge in document["connections"]
+        if edge["target"] != "plot_results_1"
+    ]
+    document["positions"].pop("plot_results_1")
+    compartment_lane = {
+        "input_9",
+        "convert_dtype_2",
+        "rescale_intensity_2",
+        "cellprofiler_smooth_1",
+        "cellprofiler_primary_objects_1",
+        "cellprofiler_threshold_1",
+        "cellprofiler_propagation_seeds_1",
+        "cellprofiler_propagation_2",
+        "cellprofiler_finish_cells_1",
+        "cellprofiler_cytoplasm_1",
+    }
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in compartment_lane
+    ]
+    document["connections"] = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] not in compartment_lane
+        and edge["target"] not in compartment_lane
+    ]
+    for identifier in compartment_lane:
+        document["positions"].pop(identifier)
+    assert scientific_workflow_hash(document) == (
+        "8ae1b99c0c19585c6e6d5b28b0a62312f65b95379caf198294d7f6f2eeea6f7d"
+    )
+    propagation_lane = {
+        "input_8",
+        "h_maxima_markers_2",
+        "binary_threshold_2",
+        "cellprofiler_propagation_1",
+    }
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in propagation_lane
+    ]
+    document["connections"] = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] not in propagation_lane
+        and edge["target"] not in propagation_lane
+    ]
+    for identifier in propagation_lane:
+        document["positions"].pop(identifier)
+    assert scientific_workflow_hash(document) == (
+        "73c0d4bdec149820aa62922d30d4e22b3f34b1769661e465e6b0686d75180a58"
+    )
     mask_id = "colocalization_mask_1"
     document["nodes"] = [node for node in document["nodes"] if node["id"] != mask_id]
     document["connections"] = [
-        edge for edge in document["connections"]
+        edge
+        for edge in document["connections"]
         if mask_id not in (edge["source"], edge["target"])
     ]
     document["positions"].pop(mask_id)

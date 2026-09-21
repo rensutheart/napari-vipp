@@ -11,6 +11,7 @@ _PATH_FIELDS = {
     "path",
     "file",
     "file_path",
+    "dataset_path",
     "output_path",
     "input_dir",
     "output_dir",

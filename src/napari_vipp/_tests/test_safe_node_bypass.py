@@ -77,10 +77,13 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
     assert len({spec.id for spec in NODE_LIBRARY}) == len(NODE_LIBRARY)
     assert {spec.id for spec in NODE_LIBRARY if not spec.supports_bypass} == {
         "input",
+        "table_source",
+        "plot_results",
         "mask_to_3d_mesh",
         "labels_to_3d_mesh",
         "analyze_skeleton",
         "born_wolf_psf",
+        "cellprofiler_primary_objects",
         "colocalization_metrics",
         "event_localization",
         "intensity_histogram",

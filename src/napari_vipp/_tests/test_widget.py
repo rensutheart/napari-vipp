@@ -23108,6 +23108,7 @@ def test_toolbar_file_actions_remain_visible_at_every_width(
         (widget.new_workflow_button, "New"),
         (widget.load_workflow_button, "Open"),
         (widget.save_workflow_button, "Save"),
+        (widget.workflow_actions_menu_button, "Workflow actions"),
     ):
         assert not button.isHidden()
         assert not button.icon().isNull()
@@ -23300,6 +23301,7 @@ def test_toolbar_separates_document_batch_display_and_execution_actions(qtbot):
         widget.new_workflow_button,
         widget.load_workflow_button,
         widget.save_workflow_button,
+        widget.workflow_actions_menu_button,
     ]
     assert workflow_buttons == [
         widget.batch_button,
@@ -24239,7 +24241,148 @@ def test_toolbar_compaction_remeasures_nested_groups_after_layout_changes(qtbot)
     )
 
 
-def test_toolbar_settings_menu_consolidates_actions_not_preview_controls(qtbot):
+@pytest.mark.parametrize("width", (1400, 900, 640))
+def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, width):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, width)
+    widget._populate_workflow_actions_menu()
+    widget._populate_settings_toolbar_menu()
+
+    menu = widget.workflow_actions_menu
+    actions = menu.actions()
+    labels = [None if action.isSeparator() else action.text() for action in actions]
+    assert labels[:8] == [
+        "Open example…",
+        "Open Results Workspace…",
+        None,
+        "Save workflow as…",
+        None,
+        "Export Python…",
+        "Export reproducibility package…",
+        "Export OME dataset…",
+    ]
+    assert actions[3] is widget.save_workflow_as_action
+    assert not actions[0].icon().isNull()
+    assert not actions[3].icon().isNull()
+    if width == 640:
+        assert labels[8:] == [None, "Auto Arrange graph", "Tunnels…"]
+    else:
+        assert len(actions) == 8
+    assert not set(labels) & {
+        action.text() for action in widget.settings_menu.actions()
+    }
+    button = widget.workflow_actions_menu_button
+    assert button.menu() is menu
+    assert button.accessibleName() == "Workflow actions"
+    assert widget.settings_menu_button.accessibleName() == "Settings"
+    assert "Workflow actions" in widget.save_workflow_button.toolTip()
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+
+
+def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
+    qtbot, monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 640)
+    calls = []
+    for button, label in (
+        (widget.open_example_button, "Open example…"),
+        (widget.export_button, "Export Python…"),
+        (widget.export_ome_button, "Export OME dataset…"),
+        (widget.leave_batch_button, "Leave batch mode"),
+        (widget.auto_structure_button, "Auto Arrange graph"),
+        (widget.tunnel_manager_button, "Tunnels…"),
+    ):
+        monkeypatch.setattr(button, "click", lambda label=label: calls.append(label))
+    monkeypatch.setattr(
+        widget,
+        "_export_reproducibility_package_dialog",
+        lambda: calls.append("Export reproducibility package…"),
+    )
+    save_requests = []
+    monkeypatch.setattr(
+        widget,
+        "_request_workflow_save",
+        lambda **kwargs: save_requests.append(kwargs),
+    )
+    widget.leave_batch_button.show()
+    for _ in range(3):
+        widget._populate_workflow_actions_menu()
+    actions = widget.workflow_actions_menu.actions()
+    assert [action.text() for action in actions[-3:]] == [
+        "Leave batch mode", "Auto Arrange graph", "Tunnels…",
+    ]
+    for action in actions:
+        if not action.isSeparator():
+            action.trigger()
+    assert calls == [
+        "Open example…",
+        "Export Python…",
+        "Export reproducibility package…",
+        "Export OME dataset…",
+        "Leave batch mode",
+        "Auto Arrange graph",
+        "Tunnels…",
+    ]
+    assert save_requests == [{"force_choose_path": True}]
+    assert widget.save_workflow_as_action.shortcuts() == []
+    widget.leave_batch_button.hide()
+    widget._populate_workflow_actions_menu()
+    assert "Leave batch mode" not in {
+        action.text() for action in widget.workflow_actions_menu.actions()
+    }
+
+
+@pytest.mark.parametrize("theme", ("dark", "light"))
+@pytest.mark.parametrize("font_size", (10, 14))
+def test_toolbar_workflow_actions_menu_fits_styled_text(
+    qtbot, tmp_path, theme, font_size,
+):
+    from napari._qt.qt_resources import get_stylesheet
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    font = widget.font()
+    font.setFamily("Segoe UI")
+    font.setPointSize(font_size)
+    widget.setFont(font)
+    widget.setStyleSheet(
+        get_stylesheet(theme, extra_variables={"font_size": f"{font_size}pt"})
+    )
+    _show_toolbar_at_width(widget, qtbot, 1400)
+    menu = widget.workflow_actions_menu
+    # Exercise aboutToShow, rather than populating manually before rendering.
+    menu.popup(widget.workflow_actions_menu_button.mapToGlobal(QPoint(0, 30)))
+    qtbot.waitUntil(menu.isVisible)
+    for action in menu.actions():
+        rect = menu.actionGeometry(action)
+        assert menu.rect().contains(rect)
+        if not action.isSeparator():
+            assert rect.width() >= menu.fontMetrics().horizontalAdvance(action.text())
+            assert rect.height() >= menu.fontMetrics().height()
+    assert widget.command_toolbar_widget.grab().save(str(tmp_path / "toolbar.png"))
+    assert menu.grab().save(str(tmp_path / "workflow-actions.png"))
+    menu.hide()
+    _show_toolbar_at_width(widget, qtbot, 640)
+    assert widget.workflow_actions_menu_button.isVisible()
+    assert widget.settings_menu_button.isVisible()
+    assert (
+        widget.command_toolbar_widget.minimumSizeHint().width()
+        <= widget.command_toolbar_widget.width()
+    )
+    assert widget.command_toolbar_widget.grab().save(
+        str(tmp_path / "toolbar-narrow.png")
+    )
+
+
+def test_toolbar_settings_menu_keeps_preferences_not_document_or_preview_controls(
+    qtbot,
+):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -24333,9 +24476,9 @@ def test_settings_menu_headings_are_bold_normal_color_labels(
     headings = {
         action.text(): action
         for action in widget.settings_menu.actions()
-        if action.text() in {"Workflow actions", "Compute", "Workflow settings"}
+        if action.text() in {"Compute", "Workflow settings"}
     }
-    assert set(headings) == {"Workflow actions", "Compute", "Workflow settings"}
+    assert set(headings) == {"Compute", "Workflow settings"}
     menu_color = widget.settings_menu.palette().color(
         QPalette.Active, QPalette.WindowText
     )

@@ -14,7 +14,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -63,6 +62,7 @@ from napari_vipp.ui.batch_progress import (
     preparation_stage,
 )
 from napari_vipp.ui.batch_workspace import BatchActivityLabel, BatchWorkflowWorkspace
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import (
     blend_colors,
     custom_paint_colors,

@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QSizePolicy,
 )
 
+from napari_vipp._tests.test_batch_results import _record
 from napari_vipp.core.batch import (
     DEFAULT_BATCH_SOURCE_PATTERN,
     BatchAxisSuggestion,
@@ -995,8 +996,8 @@ def test_completed_run_marks_preflight_historical_without_erasing_evidence(
     run_result = SimpleNamespace(
         manifest=SimpleNamespace(
             items=tuple(
-                SimpleNamespace(index=index, status=BatchStatus.COMPLETED)
-                for index in range(1, 4)
+                _record(item, BatchStatus.COMPLETED, timing=False)
+                for item in result.items
             )
         ),
         summary={"completed": 3, "partial": 0, "skipped": 0, "failed": 0},
@@ -1067,10 +1068,13 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
 
     run_result = SimpleNamespace(
         manifest=SimpleNamespace(
-            items=(
-                SimpleNamespace(index=1, status=BatchStatus.COMPLETED),
-                SimpleNamespace(index=2, status=BatchStatus.FAILED),
-                SimpleNamespace(index=3, status=BatchStatus.SKIPPED),
+            items=tuple(
+                _record(item, status, timing=False)
+                for item, status in zip(
+                    result.items,
+                    (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.SKIPPED),
+                    strict=True,
+                )
             )
         ),
         summary={"completed": 1, "partial": 0, "skipped": 1, "failed": 1},

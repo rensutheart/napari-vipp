@@ -35,6 +35,7 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "VIPP synthetic 3D measured PSF",
         "VIPP synthetic GPU segmentation cleanup",
         "VIPP synthetic threshold gallery",
+        "VIPP synthetic measurement plots",
     ]
     assert shapes[0] == (12, 96, 128)
     assert shapes[1] == (3, 12, 96, 128)
@@ -51,6 +52,7 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
     assert shapes[12] == (5, 9, 9)
     assert shapes[13] == (3, 12, 96, 128)
     assert shapes[14] == (8, 64, 80)
+    assert shapes[15] == (384, 640)
     assert axis_orders == [
         "ZYX",
         "CZYX",
@@ -67,11 +69,13 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "ZYX",
         "CZYX",
         "ZYX",
+        "YX",
     ]
     assert preferred_flags == [
         False,
         False,
         True,
+        False,
         False,
         False,
         False,

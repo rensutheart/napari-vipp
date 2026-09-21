@@ -125,6 +125,7 @@ class BatchResultsPanel(QWidget):
     policyChanged = Signal(str)
     resumeRequested = Signal()
     packageAvailabilityChanged = Signal()
+    collectionSaved = Signal(str)
     PAGE_SIZE = 100
 
     def __init__(self, parent=None) -> None:
@@ -140,6 +141,7 @@ class BatchResultsPanel(QWidget):
         self._report_path: Path | None = None
         self._tone = "info"
         self._has_result = False
+        self._has_table_results = False
         self._active_index: int | None = None
         self._selected_paths: list[Path] = []
         self._plan_config = None
@@ -185,6 +187,8 @@ class BatchResultsPanel(QWidget):
         self.run_report = BatchRunReport()
         self.export_package_button = self.run_report.export_package_button
         self.export_package_button.clicked.connect(self._export_package)
+        self.collect_results_button = self.run_report.collect_results_button
+        self.collect_results_button.clicked.connect(self._collect_measurements)
         layout.addWidget(self.run_report)
 
         self.elapsed_label = self._label("Elapsed —")
@@ -774,6 +778,11 @@ class BatchResultsPanel(QWidget):
         self._report_path = Path(
             getattr(result, "manifest_archive_path", None) or result.manifest_path
         )
+        self._has_table_results = any(
+            output.kind == "table"
+            for item in manifest.items
+            for output in item.outputs
+        )
         reported = _duration(
             getattr(manifest, "started_at", ""),
             getattr(manifest, "finished_at", ""),
@@ -1336,6 +1345,16 @@ class BatchResultsPanel(QWidget):
         )
         self.export_package_button.setEnabled(export_enabled)
         self.export_package_button.setToolTip(export_tooltip)
+        self.run_report.collection_actions.setVisible(self._has_table_results)
+        self.collect_results_button.setEnabled(
+            export_enabled and self._has_table_results and self._has_result
+        )
+        self.collect_results_button.setToolTip(
+            "Collect one saved table output across batch items into a reusable "
+            "measurement dataset. Every result file is checked before collection."
+            if self.collect_results_button.isEnabled()
+            else "Finish a batch with saved table outputs before collecting results."
+        )
         self.output_folder_button.setEnabled(folder_exists)
         self.output_folder_button.setToolTip(
             str(self._output_dir)
@@ -1358,6 +1377,17 @@ class BatchResultsPanel(QWidget):
         dialog.exported.connect(self._package_exported)
         dialog.show()
         dialog.prepare_report()
+
+    def _collect_measurements(self) -> None:
+        self._sync_artifact_buttons()
+        if not self.collect_results_button.isEnabled():
+            return
+        from .measurement_collection import MeasurementCollectionDialog
+
+        dialog = MeasurementCollectionDialog(self._report_path, parent=self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.collectionSaved.connect(self.collectionSaved.emit)
+        dialog.show()
 
     def _package_exported(self, path: str) -> None:
         self.file_action_label.setText(

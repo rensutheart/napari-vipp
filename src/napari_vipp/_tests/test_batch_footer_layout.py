@@ -1,6 +1,7 @@
 """Rendered geometry regressions for the single-row batch footer."""
 
 from dataclasses import replace
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,9 @@ from qtpy.QtWidgets import QApplication
 
 from napari_vipp._tests.test_ui_batch import _actions, _preview_result
 from napari_vipp.core.batch import BatchStatus
+from napari_vipp.ui import batch_workspace
 from napari_vipp.ui.batch import CollectionBatchDialog
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 
 
 def _footer_rect(dialog, widget):
@@ -32,7 +35,13 @@ def _assert_single_row(dialog, *, width, height, state):
         widgets.append(dialog.footer_elapsed_label)
     widgets.extend(buttons)
     rectangles = [_footer_rect(dialog, widget) for widget in widgets]
-    assert all(rect.width() > 0 for rect in rectangles), state
+    assert all(rect.width() > 0 for rect in rectangles), (
+        state,
+        [
+            (widget.objectName(), widget.text(), rect)
+            for widget, rect in zip(widgets, rectangles, strict=True)
+        ],
+    )
     assert all(footer.rect().contains(rect) for rect in rectangles), (
         state,
         footer.rect(),
@@ -52,7 +61,14 @@ def _assert_single_row(dialog, *, width, height, state):
 
 
 @pytest.mark.parametrize("width", [1080, 640])
-def test_footer_stays_one_row_through_batch_lifecycle(qtbot, tmp_path, width):
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_footer_stays_one_row_through_batch_lifecycle(
+    qtbot, tmp_path, width, platform, monkeypatch
+):
+    monkeypatch.setattr(
+        batch_workspace, "add_dialog_buttons",
+        partial(add_dialog_buttons, platform=platform),
+    )
     plan = _preview_result(tmp_path)
     actions = replace(_actions(plan, []), check_batch=lambda *_args: None)
     dialog = CollectionBatchDialog(actions=actions)
@@ -63,11 +79,16 @@ def test_footer_stays_one_row_through_batch_lifecycle(qtbot, tmp_path, width):
     height = dialog.footer.height()
 
     def check(state):
-        _assert_single_row(dialog, width=width, height=height, state=state)
+        # Hiding actions invalidates nested layouts in successive event passes.
+        # Assert the settled geometry, not the old action-row size mid-transition.
+        qtbot.waitUntil(
+            lambda: _assert_single_row(dialog, width=width, height=height, state=state)
+        )
 
     check("idle")
     assert dialog.source_detection_progress.isHidden()
     assert dialog.next_button.isVisible()
+    assert (dialog.next_button.x() < dialog.close_button.x()) == (platform == "win32")
 
     dialog.next_button.click()
     assert dialog._checking_plan
@@ -93,7 +114,9 @@ def test_footer_stays_one_row_through_batch_lifecycle(qtbot, tmp_path, width):
     result = SimpleNamespace(
         manifest=SimpleNamespace(
             items=tuple(
-                SimpleNamespace(index=item.index, status=BatchStatus.COMPLETED)
+                SimpleNamespace(
+                    index=item.index, status=BatchStatus.COMPLETED, outputs=()
+                )
                 for item in plan.items
             )
         ),

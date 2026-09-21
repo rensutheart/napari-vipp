@@ -52,8 +52,10 @@ def test_overlap_example_is_discoverable_by_its_mask_workflow(qtbot):
 
 
 def test_racc_and_overlap_examples_have_distinct_catalog_entries(qtbot):
-    assert len(EXAMPLE_WORKFLOWS) == 22
-    assert len({example.id for example in EXAMPLE_WORKFLOWS}) == 22
+    assert len({example.id for example in EXAMPLE_WORKFLOWS}) == len(EXAMPLE_WORKFLOWS)
+    assert {"racc-colocalization", "colocalization-overlap"} <= {
+        example.id for example in EXAMPLE_WORKFLOWS
+    }
     dialog = ExampleWorkflowDialog()
     qtbot.addWidget(dialog)
     dialog.filter_edit.setText("RACC")

@@ -10,7 +10,6 @@ from qtpy.QtGui import QDesktopServices, QFontMetrics, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
-    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -26,6 +25,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.examples import EXAMPLE_WORKFLOWS, ExampleWorkflowSpec
 from napari_vipp.ui.palette_roles import blend_colors, theme_colors
 from napari_vipp.ui.search import _normalize_search_text
@@ -181,9 +181,6 @@ class ExampleWorkflowDialog(QDialog):
         footer.addWidget(self.footer_hint, 1)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Cancel).setAutoDefault(False)
-        # GnomeLayout keeps Cancel before Open on every platform, without
-        # reversing macOS/GNOME styles that already use that native order.
-        self.buttons.setStyleSheet("QDialogButtonBox { button-layout: 3; }")
         self.buttons.setLayoutDirection(Qt.LeftToRight)
         self.open_button = self.buttons.addButton(
             "Open example", QDialogButtonBox.AcceptRole
@@ -288,9 +285,7 @@ class ExampleWorkflowDialog(QDialog):
         self.tree.viewport().setStyleSheet(
             f"QWidget#exampleTreeViewport {{ background: {sidebar_surface}; }}"
         )
-        self.details_scroll.viewport().setStyleSheet(
-            f"background: {detail_surface};"
-        )
+        self.details_scroll.viewport().setStyleSheet(f"background: {detail_surface};")
         self.detail_panel.setStyleSheet(
             f"QWidget#exampleDetailPanel {{ background: {detail_surface}; }}"
             'QWidget[exampleSection="true"] { background: transparent; }'
@@ -506,7 +501,7 @@ class ExampleWorkflowDialog(QDialog):
             valid = url.isValid() and url.scheme() == "https" and bool(url.host())
             self.paper_link.setText(
                 f'<a href="{escape(guidance.paper_url, quote=True)}">'
-                f'Read the paper: {escape(guidance.paper_authors)}</a>'
+                f"Read the paper: {escape(guidance.paper_authors)}</a>"
                 if valid
                 else escape(guidance.paper_authors)
             )

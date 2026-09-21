@@ -55,13 +55,13 @@ previews and selected-node inspector visible together.*
 ## Install
 
 For this version, use the
-[`v0.15.0a5` release page](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a5).
+[`v0.16.0a1` release page](https://github.com/rensutheart/napari-vipp/releases/tag/v0.16.0a1).
 
 | Platform | Recommended route |
 | --- | --- |
-| Windows 64-bit | Download `VIPP-Setup-0.15.0a5-Windows-x86_64-UNSIGNED.exe` from the release page. The setup application creates and manages a dedicated VIPP environment. A supported 64-bit Python is a separate prerequisite. |
-| macOS Apple Silicon | Download `VIPP-0.15.0a5-macOS-arm64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
-| macOS Intel | Download `VIPP-0.15.0a5-macOS-x86_64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
+| Windows 64-bit | Download `VIPP-Setup-0.16.0a1-Windows-x86_64-UNSIGNED.exe` from the release page. The setup application creates and manages a dedicated VIPP environment. A supported 64-bit Python is a separate prerequisite. |
+| macOS Apple Silicon | Download `VIPP-0.16.0a1-macOS-arm64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
+| macOS Intel | Download `VIPP-0.16.0a1-macOS-x86_64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
 | Linux or an existing Python environment | Use the manual installation below. CPU execution is supported. |
 
 The desktop installers are unsigned alpha builds. Download them only from the
@@ -72,7 +72,7 @@ For a manual installation, use a dedicated CPython 3.12 or 3.13 environment.
 On Windows or Linux:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.15.0a5"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.16.0a1"
 vipp
 ```
 
@@ -89,7 +89,7 @@ Plugins > VIPP Workflow (napari-vipp)
 
 No external data is needed for the first run:
 
-1. Launch VIPP, open the gear menu, and select **Open example…**.
+1. Launch VIPP, open the workflow-actions (**…**) menu beside Save, and select **Open example…**.
 2. Open **Red-Channel Label Cleanup**.
 3. Select the nodes from left to right. Inspect their parameters, previews,
    histograms, metadata and outputs.

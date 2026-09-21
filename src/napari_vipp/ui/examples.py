@@ -7,6 +7,10 @@ from pathlib import Path
 
 from .example_guidance import EXAMPLE_GUIDANCE_BY_ID, ExampleGuidance
 
+# The synthetic inspector graph cannot manufacture an authored batch-results
+# file. This source is covered by dedicated collection/save/reopen tests instead.
+EXHAUSTIVE_EXTERNAL_SOURCE_IDS = frozenset({"table_source"})
+
 
 @dataclass(frozen=True)
 class ExampleWorkflowSpec:
@@ -34,10 +38,12 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
             "VIPP synthetic skeleton network",
             "VIPP synthetic 3D deconvolution volume",
             "VIPP synthetic 3D measured PSF",
+            "VIPP synthetic deconvolution image",
         ),
-        "Inspect every palette operation in one seven-lane workflow with "
+        "Inspect image and measurement tools in one nine-lane workflow with "
         "representative synthetic inputs, curated tunnels, canvas notes, "
-        "and saved inspector display settings.",
+        "and saved inspector display settings. Table Source is reviewed "
+        "separately using collected batch measurements.",
     ),
     ExampleWorkflowSpec(
         "graph-authoring",
@@ -159,6 +165,17 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "synthetic-derived-object-morphology.json",
         ("VIPP synthetic object morphology",),
         "Calculate 2D morphology, circularity, perimeter-area ratio, and Hu moments.",
+    ),
+    ExampleWorkflowSpec(
+        "plot-morphology",
+        "Measurements & Tables",
+        "Morphology & Intensity Plots",
+        "synthetic-measurement-plots.json",
+        ("VIPP synthetic measurement plots",),
+        "Segment 60 separated synthetic objects in one calibrated image, "
+        "join shape and intensity measurements, and explore area histograms, "
+        "size-intensity scatter, elongation points and circularity distributions. "
+        "Open editable plot windows and export figures without a batch run.",
     ),
     ExampleWorkflowSpec(
         "mesh-morphology",

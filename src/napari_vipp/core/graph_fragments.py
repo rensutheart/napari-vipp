@@ -26,6 +26,7 @@ from napari_vipp.core.compute import (
     NodeComputePreference,
     NodePreferenceKind,
 )
+from napari_vipp.core.node_names import normalize_node_name
 from napari_vipp.core.pipeline import (
     MANUAL_AUTO_RECALCULATE_PARAM,
     NODE_LIBRARY_BY_ID,
@@ -40,7 +41,7 @@ from napari_vipp.core.pipeline import (
 
 GRAPH_FRAGMENT_MIME_TYPE = "application/x-napari-vipp-graph-fragment+json"
 GRAPH_FRAGMENT_KIND = "napari-vipp-graph-fragment"
-GRAPH_FRAGMENT_VERSION = 2
+GRAPH_FRAGMENT_VERSION = 3
 MAX_GRAPH_FRAGMENT_BYTES = 1_000_000
 MAX_GRAPH_FRAGMENT_NODES = 512
 MAX_GRAPH_FRAGMENT_CONNECTIONS = 4_096
@@ -51,16 +52,12 @@ MAX_GRAPH_FRAGMENT_NOTE_WIDTH = 10_000.0
 # Private node state is non-transferable by default.  This one setting is a
 # genuine user choice rather than calculated/cache/UI state, so it is the only
 # explicitly admitted private parameter.
-TRANSFERABLE_PRIVATE_PARAMETER_NAMES = frozenset(
-    {MANUAL_AUTO_RECALCULATE_PARAM}
-)
+TRANSFERABLE_PRIVATE_PARAMETER_NAMES = frozenset({MANUAL_AUTO_RECALCULATE_PARAM})
 
 # These names are accepted by workflow persistence for reconstruction or
 # compatibility, but are inferred from connected data and must be recalculated
 # at the paste destination.
-NONTRANSFERABLE_OPTIONAL_PARAMETER_NAMES = frozenset(
-    {"resolved_spatial_ndim"}
-)
+NONTRANSFERABLE_OPTIONAL_PARAMETER_NAMES = frozenset({"resolved_spatial_ndim"})
 
 _LOCAL_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
 _MAX_JSON_DEPTH = 32
@@ -80,6 +77,7 @@ class GraphFragmentNode:
     compute_preference: NodeComputePreference | None
     optimizer_locked: bool
     execution_mode: str
+    custom_name: str
     _params: dict[str, Any] = field(repr=False)
 
     __hash__ = None
@@ -95,6 +93,7 @@ class GraphFragmentNode:
         ) = None,
         optimizer_locked: bool = False,
         execution_mode: str = "run",
+        custom_name: str = "",
     ) -> None:
         normalized_params = _normalize_json_object(params, context="Node parameters")
         preference = _normalize_compute_preference(compute_preference)
@@ -123,6 +122,11 @@ class GraphFragmentNode:
         except (TypeError, ValueError) as exc:
             raise GraphFragmentError(str(exc)) from exc
         object.__setattr__(self, "execution_mode", normalized_execution_mode)
+        try:
+            normalized_name = normalize_node_name(custom_name)
+        except ValueError as exc:
+            raise GraphFragmentError(str(exc)) from exc
+        object.__setattr__(self, "custom_name", normalized_name)
         object.__setattr__(self, "_params", normalized_params)
 
     @property
@@ -261,8 +265,7 @@ class GraphFragment:
         ):
             raise TypeError("connections must contain GraphFragmentConnection values.")
         if any(
-            not isinstance(tunnel, GraphFragmentTunnel)
-            for tunnel in normalized_tunnels
+            not isinstance(tunnel, GraphFragmentTunnel) for tunnel in normalized_tunnels
         ):
             raise TypeError("tunnels must contain GraphFragmentTunnel values.")
         if any(not isinstance(note, GraphFragmentNote) for note in normalized_notes):
@@ -290,6 +293,7 @@ class GraphFragment:
                     ),
                     "optimizer_locked": node.optimizer_locked,
                     "execution_mode": node.execution_mode,
+                    **({"custom_name": node.custom_name} if node.custom_name else {}),
                 }
                 for node in self.nodes
             ],
@@ -435,9 +439,7 @@ def prepare_paste_values(
             "Paste Values requires the same operation: "
             f"copied {source.operation_id!r}, target is {target_operation!r}."
         )
-    source_values = validate_transferable_parameters(
-        source.operation_id, source.params
-    )
+    source_values = validate_transferable_parameters(source.operation_id, source.params)
     if target_params is None:
         return source_values
 
@@ -459,9 +461,7 @@ def prepare_paste_values(
     # Auto-recalculate is authored execution intent and belongs with a complete
     # copied node, but Paste Values must retain the existing target node's
     # execution choice just like its compute preference.
-    target_has_auto_recalculate = (
-        MANUAL_AUTO_RECALCULATE_PARAM in normalized_target
-    )
+    target_has_auto_recalculate = MANUAL_AUTO_RECALCULATE_PARAM in normalized_target
     target_auto_recalculate = normalized_target.get(MANUAL_AUTO_RECALCULATE_PARAM)
     merged = {
         name: value
@@ -512,11 +512,10 @@ def capture_graph_fragment(
     *,
     positions: Mapping[str, Sequence[Real]] | None = None,
     notes: Iterable[Mapping[str, Any]] = (),
-    node_preferences: Mapping[
-        str, NodeComputePreference | str | Mapping[str, object]
-    ]
+    node_preferences: Mapping[str, NodeComputePreference | str | Mapping[str, object]]
     | None = None,
     optimizer_locked_node_ids: Iterable[str] = (),
+    node_names: Mapping[str, str] | None = None,
 ) -> GraphFragment:
     """Capture selected nodes and wholly internal relationships.
 
@@ -559,6 +558,9 @@ def capture_graph_fragment(
     origin = ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
 
     preferences = node_preferences or {}
+    custom_names = {} if node_names is None else node_names
+    if not isinstance(custom_names, Mapping):
+        raise GraphFragmentError("Node names must map node IDs to text.")
     locked_ids = set(optimizer_locked_node_ids)
     unknown_locks = locked_ids - selected
     if unknown_locks:
@@ -583,6 +585,7 @@ def capture_graph_fragment(
                 preference,
                 node_id in locked_ids,
                 node.execution_mode,
+                custom_names.get(node_id, ""),
             )
         )
 
@@ -763,8 +766,7 @@ def validate_graph_fragment(fragment: GraphFragment) -> GraphFragment:
         tunnel = tunnel_names.get(key)
         if tunnel is None:
             raise GraphFragmentError(
-                f"Connection {index} references unknown tunnel "
-                f"{connection.tunnel!r}."
+                f"Connection {index} references unknown tunnel {connection.tunnel!r}."
             )
         if connection.tunnel != tunnel.name:
             raise GraphFragmentError(
@@ -781,9 +783,7 @@ def validate_graph_fragment(fragment: GraphFragment) -> GraphFragment:
         referenced_tunnels.add(key)
     unreferenced = set(tunnel_names) - referenced_tunnels
     if unreferenced:
-        names = ", ".join(
-            repr(tunnel_names[key].name) for key in sorted(unreferenced)
-        )
+        names = ", ".join(repr(tunnel_names[key].name) for key in sorted(unreferenced))
         raise GraphFragmentError(
             f"Internal tunnel(s) have no copied subscribers: {names}."
         )
@@ -821,17 +821,15 @@ def graph_fragment_from_mapping(raw: Mapping[str, Any]) -> GraphFragment:
         context="Graph fragment",
     )
     if top["kind"] != GRAPH_FRAGMENT_KIND:
-        raise GraphFragmentError(
-            f"Unsupported graph fragment kind {top['kind']!r}."
-        )
+        raise GraphFragmentError(f"Unsupported graph fragment kind {top['kind']!r}.")
     if (
         isinstance(top["version"], bool)
         or not isinstance(top["version"], Integral)
-        or int(top["version"]) not in {1, GRAPH_FRAGMENT_VERSION}
+        or int(top["version"]) not in {1, 2, GRAPH_FRAGMENT_VERSION}
     ):
         raise GraphFragmentError(
             f"Unsupported graph fragment version {top['version']!r}; "
-            f"expected 1 or {GRAPH_FRAGMENT_VERSION}."
+            f"expected 1, 2, or {GRAPH_FRAGMENT_VERSION}."
         )
     fragment_version = int(top["version"])
 
@@ -852,11 +850,12 @@ def graph_fragment_from_mapping(raw: Mapping[str, Any]) -> GraphFragment:
             "compute_preference",
             "optimizer_locked",
         }
-        if fragment_version == GRAPH_FRAGMENT_VERSION:
+        if fragment_version >= 2:
             required_node_fields.add("execution_mode")
         item = _strict_object(
             value,
             required=required_node_fields,
+            optional={"custom_name"} if fragment_version >= 3 else set(),
             context=f"Node {index}",
         )
         nodes.append(
@@ -868,6 +867,7 @@ def graph_fragment_from_mapping(raw: Mapping[str, Any]) -> GraphFragment:
                 item["compute_preference"],
                 item["optimizer_locked"],
                 item.get("execution_mode", "run"),
+                item.get("custom_name", ""),
             )
         )
 
@@ -1013,9 +1013,7 @@ def _normalize_compute_preference(
                 f"Unknown node compute preference field(s): {names}."
             )
         if "kind" not in value or not isinstance(value["kind"], str):
-            raise GraphFragmentError(
-                "Node compute preference requires a text 'kind'."
-            )
+            raise GraphFragmentError("Node compute preference requires a text 'kind'.")
         if "value" in value and not isinstance(value["value"], str):
             raise GraphFragmentError("Node compute preference 'value' must be text.")
     try:
@@ -1152,6 +1150,7 @@ def _strict_object(
     *,
     required: set[str],
     context: str,
+    optional: set[str] | None = None,
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise GraphFragmentError(f"{context} must be an object.")
@@ -1162,7 +1161,7 @@ def _strict_object(
     if missing:
         names = ", ".join(sorted(missing))
         raise GraphFragmentError(f"{context} is missing required field(s): {names}.")
-    unknown = keys - required
+    unknown = keys - required - (optional or set())
     if unknown:
         names = ", ".join(sorted(unknown))
         raise GraphFragmentError(f"{context} has unknown field(s): {names}.")

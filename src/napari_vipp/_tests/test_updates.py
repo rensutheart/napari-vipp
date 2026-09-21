@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 
 import pytest
 from packaging.version import Version
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtGui import QFont, QFontDatabase
+from qtpy.QtGui import QFont
 from qtpy.QtNetwork import QNetworkReply, QNetworkRequest
 from qtpy.QtWidgets import QApplication
 
@@ -21,20 +19,6 @@ from napari_vipp.core.updates import (
 from napari_vipp.ui import update_dialog as dialog_ui
 from napari_vipp.ui import updates
 from napari_vipp.ui.updates import UpdateController, UpdateDialog, VersionBadge
-
-
-@pytest.fixture(autouse=True, scope="module")
-def native_fonts_for_offscreen(qapp):
-    # The Windows offscreen Qt plugin does not discover system fonts. Load
-    # installed fonts so layout/visual checks measure glyphs, not empty boxes.
-    fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    ids = []
-    for filename in ("segoeui.ttf", "segoeuib.ttf", "seguisb.ttf"):
-        if (fonts / filename).is_file():
-            ids.append(QFontDatabase.addApplicationFont(str(fonts / filename)))
-    yield
-    for font_id in ids:
-        QFontDatabase.removeApplicationFont(font_id)
 
 
 def release(version="0.16.0a1", *, assets=(), **extra):

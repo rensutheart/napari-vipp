@@ -22,7 +22,6 @@ from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -51,6 +50,7 @@ from napari_vipp.ui.compute_setup import (
     compute_setup_not_checked,
     present_compute_setup,
 )
+from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import ThemeColors, theme_colors
 
 _COMPUTE_TONE_PROPERTY = "vippComputeTone"

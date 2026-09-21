@@ -1,0 +1,217 @@
+{
+  "well": "A01",
+  "field": "001",
+  "python": "3.8.10 (tags/v3.8.10:3d8993a, May  3 2021, 11:48:03) [MSC v.1928 64 bit (AMD64)]",
+  "versions": {
+    "numpy": "1.23.1",
+    "scipy": "1.9.0",
+    "skimage": "0.18.3",
+    "centrosome": "unavailable",
+    "cellprofiler": "4.2.6",
+    "cellprofiler_core": "4.2.6"
+  },
+  "measurements": {
+    "Count_Cells": 4.0,
+    "Count_Cytoplasm": 4.0,
+    "Count_Nuclei": 4.0,
+    "FileName_Actin": "synthetic_A01_T0001F001L01A03Z01C04.tif",
+    "FileName_DNA": "synthetic_A01_T0001F001L01A01Z01C01.tif",
+    "FileName_Fascin": "synthetic_A01_T0001F001L01A02Z01C02.tif",
+    "FileName_NuclearActin": "synthetic_A01_T0001F001L01A04Z01C03.tif",
+    "MD5Digest_Actin": "d9effb718903b99d7b37bdb12ca9179d",
+    "MD5Digest_DNA": "a2f53c85017505a0df899e69127696c2",
+    "MD5Digest_Fascin": "f75ed78a4f96dad54122307598ef6057",
+    "MD5Digest_NuclearActin": "a02b222efd0e28bb3e6fa9cfbec2215a",
+    "Scaling_Actin": 65535,
+    "Scaling_DNA": 65535,
+    "Scaling_Fascin": 65535,
+    "Scaling_NuclearActin": 65535,
+    "Threshold_FinalThreshold_Cells": 0.06372390687465668,
+    "Threshold_FinalThreshold_Nuclei": 0.046382974833250046,
+    "Threshold_OrigThreshold_Cells": 0.06372390687465668,
+    "Threshold_OrigThreshold_Nuclei": 0.046382974833250046,
+    "Threshold_SumOfEntropies_Cells": -12.771227937462776,
+    "Threshold_SumOfEntropies_Nuclei": -13.086137108779766,
+    "Threshold_WeightedVariance_Cells": 1.2270647821205785,
+    "Threshold_WeightedVariance_Nuclei": 1.4823890970583307,
+    "Nuclei_threshold_mask_sigma": 1.0,
+    "Cells_threshold_mask_sigma": 0.0
+  },
+  "arrays": {
+    "DNA": {
+      "dtype": "float32",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.00013733119703829288,
+      "max": 0.45212480425834656,
+      "array_sha256": "253f0396d082bcb90fd4dcf19fc9e25c96726af140e9fc89e7542965aa7e72da"
+    },
+    "Actin": {
+      "dtype": "float32",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.001235980773344636,
+      "max": 0.2727397680282593,
+      "array_sha256": "e5cdf93061d5276655bbb56a1655d20eab5ce41f896a88700ec096e638e0b9fa"
+    },
+    "Fascin": {
+      "dtype": "float32",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.00079346913844347,
+      "max": 0.2577553987503052,
+      "array_sha256": "0e4c18e81485064023550d62b78ff30a3d89e2ed6cc1a8f60faf0f288559c2d7"
+    },
+    "NuclearActin": {
+      "dtype": "float32",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0003051804378628731,
+      "max": 0.15028610825538635,
+      "array_sha256": "e36a696a4f279a28b09e64ec3846b90fef219b0b2618aa3279d4fec555e719a6"
+    },
+    "SmoothedDNA": {
+      "dtype": "float32",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0007369963568635285,
+      "max": 0.44610005617141724,
+      "array_sha256": "8c97ee83fe4d0dd3e1afd3e904d2af7dc6386e8f96b3927847420e22740b95a4"
+    },
+    "SmoothedActin": {
+      "dtype": "float32",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0017330925911664963,
+      "max": 0.27211225032806396,
+      "array_sha256": "0d2b839b3e24b58fc1bdd4f137437691af15787503f5b51615d7b98f9d717ba6"
+    },
+    "Nuclei_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 4.0,
+      "array_sha256": "d7e94340f1686fa608725c14a8d8fdfb5c85c22048552174e13f4a1f96c5728d"
+    },
+    "Nuclei_unedited_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 6.0,
+      "array_sha256": "cd033908afe2fdbee58e1514a35a0197e076627a9c9ee8624da889cae86cc7e3"
+    },
+    "Nuclei_small_removed_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 5.0,
+      "array_sha256": "7e9cc445ccfc5660d22ea84f05eaca5e9dc0c5b7784af6e8ec6415b99bc6330c"
+    },
+    "Cells_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 4.0,
+      "array_sha256": "daed8008906d5a2d9fe7ec4a45bbc16dc98073dd314dddccead65d981fea4cf9"
+    },
+    "Cells_unedited_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 5.0,
+      "array_sha256": "e57ffedda80dea1bc2a6ac42cb196b01c9661b2c164e4f7ccab39632d59555e9"
+    },
+    "Cells_small_removed_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 5.0,
+      "array_sha256": "e57ffedda80dea1bc2a6ac42cb196b01c9661b2c164e4f7ccab39632d59555e9"
+    },
+    "Cytoplasm_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 4.0,
+      "array_sha256": "8ebb2df077ed1c2696673ada99add6a822299753b3666bbb8d875721064dd317"
+    },
+    "Cytoplasm_unedited_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 4.0,
+      "array_sha256": "8ebb2df077ed1c2696673ada99add6a822299753b3666bbb8d875721064dd317"
+    },
+    "Cytoplasm_small_removed_segmented": {
+      "dtype": "int8",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 4.0,
+      "array_sha256": "8ebb2df077ed1c2696673ada99add6a822299753b3666bbb8d875721064dd317"
+    },
+    "Nuclei_threshold_mask_replayed": {
+      "dtype": "bool",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 1.0,
+      "array_sha256": "09ea22f2b1d7ce17d90888a0724830e71ed683b5a4bfa75fc54f0dc2fca2af11"
+    },
+    "Cells_threshold_mask_replayed": {
+      "dtype": "bool",
+      "shape": [
+        128,
+        160
+      ],
+      "min": 0.0,
+      "max": 1.0,
+      "array_sha256": "2ecbd07954d50f08669ea334f7803901ceb3cb6fff15ccba142e46bcf9fac52e"
+    }
+  },
+  "note": "Threshold masks replayed using unchanged CP apply_threshold and measured final thresholds; all other arrays captured directly.",
+  "fixture_sha256": "d3a7b788e935645705de9200567eb9d1e3c290de08733a97401dfb7716c68dda",
+  "fixture_license": "CC0-1.0",
+  "generator": "generate_inputs.py",
+  "official_installer_sha256": "723c76d0e431782be3c6f8098a77f4a51bb4d0400fb322656f1f8c8df9091892"
+}

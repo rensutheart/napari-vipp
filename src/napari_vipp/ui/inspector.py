@@ -229,6 +229,8 @@ def inspector_profile(
         operation_id in _OBJECT_COLOCALIZATION_OPERATION_IDS
     ):
         parameter_title = "Colocalization"
+    elif operation_id == "plot_results":
+        parameter_title = "Plot results"
     elif operation_id in _TABLE_TRANSFORM_OPERATION_IDS:
         parameter_title = "Table settings"
     elif operation_id in _MEASUREMENT_OPERATION_IDS:
@@ -278,7 +280,7 @@ def inspector_profile(
         elif operation_id == "filter_mesh_objects":
             primary.extend((LABEL_DISTRIBUTION_SECTION, METADATA_SECTION))
             distribution_kind = "mesh_filter"
-        elif output_type == "mesh":
+        elif output_type in {"mesh", "plot"}:
             primary.append(METADATA_SECTION)
             distribution_kind = "none"
         elif is_table:
@@ -356,6 +358,9 @@ def inspector_profile(
         else:
             action_kind = "multi_runtime"
             supports_pin = True
+    elif output_type == "plot":
+        action_kind = "plot"
+        supports_pin = False
     elif is_table:
         action_kind = "table"
         supports_pin = False
@@ -381,6 +386,7 @@ def inspector_profile(
         and (
             has_multiple_possible_inputs
             or operation_id in _MEASUREMENT_OPERATION_IDS
+            or operation_id == "plot_results"
             or operation_id in _CONNECTED_CONTEXT_OPERATION_IDS
         )
     )

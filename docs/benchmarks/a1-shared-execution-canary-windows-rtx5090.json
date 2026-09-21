@@ -1,0 +1,133 @@
+{
+  "schema": "napari-vipp-bounded-release-gpu-canary",
+  "schema_version": 1,
+  "candidate_version": "0.16.0a1",
+  "started_utc": "2026-09-21T11:59:51.491437+00:00",
+  "finished_utc": "2026-09-21T12:00:31.499502+00:00",
+  "result": {
+    "status": "passed",
+    "tests": 11,
+    "real_cuda_cases": 6,
+    "other_cases": 5,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "pytest_elapsed_seconds": 20.47
+  },
+  "source": {
+    "previous_public_tag": "v0.15.0a5",
+    "previous_public_commit": "bceeb5993b76518de3961932adf656dfe1ee7c2f",
+    "head_before": "b0ec73a3e085eefec5b264c4b06aad25899b089e",
+    "head_after": "b0ec73a3e085eefec5b264c4b06aad25899b089e",
+    "working_tree_clean": false,
+    "dirty_scope": [
+      "Release metadata and qualification documentation",
+      "Display-only decimal controls, icons and related UI tests"
+    ],
+    "tracked_scientific_source_matches_head": true,
+    "captured_source_files_changed_during_run": [],
+    "critical_source_files_changed_during_run": [],
+    "fingerprint_algorithm": "SHA-256 of exact file bytes",
+    "selected_file_sha256_before": {
+      "pyproject.toml": "45dbc67de6abc4e4d08e7c03acfe6bc1b73f37e23aabfe1d75488cb15235f8c2",
+      "src/napari_vipp/core/compute.py": "16849f2c5aec97f92d161a52812551866d764dbb285b6c0b96be5f7e953572d3",
+      "src/napari_vipp/core/compute_cache.py": "8962454750d6a346cb8b6ccd9abcc79a4b033ad25b0b22ef489214de8fe74f5f",
+      "src/napari_vipp/core/compute_contracts.py": "8a3e964258ce8c330a24d3f6d0e4b489c74ac31dda34e8854f3cc958355cc467",
+      "src/napari_vipp/core/compute_specs.py": "a0f17063d9a4a1d90789c17a692721d8ec8a864635993a231b60ecdc67ace43f",
+      "src/napari_vipp/core/execution.py": "6e88c9339f99d30fa124a8ef9d703c499f277f7359378b8d349277434dd37cf1",
+      "src/napari_vipp/core/metadata.py": "11b28537a3424e8c4330891c6fdd5f689b99ba7a24552516ebf3d1182ebba8a5",
+      "src/napari_vipp/core/pipeline.py": "30b5b149bdc81aac4bfe41b848aa58735de769a616c4c3fa8d1b50c7a8a8b69a",
+      "src/napari_vipp/core/batch.py": "e9bee94e7df2be718dca64cec13ba2e52a367869bf08844c22e9eeb5df2c6c55",
+      "src/napari_vipp/core/export.py": "1c7f32bd237f7af393bce7861d315645809cf1e51bfdc6e529017ecd5a216fef",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py": "80278571e8e417752b14dbbab3a88cceca49977db885b6e4ef980e5d9f474c1a",
+      "src/napari_vipp/_tests/test_batch_resume.py": "9ef7a4f3d64428aa53de0943c85b49217280dbd2609af93c06321b66f7774aef"
+    },
+    "selected_file_sha256_after": {
+      "pyproject.toml": "45dbc67de6abc4e4d08e7c03acfe6bc1b73f37e23aabfe1d75488cb15235f8c2",
+      "src/napari_vipp/core/compute.py": "16849f2c5aec97f92d161a52812551866d764dbb285b6c0b96be5f7e953572d3",
+      "src/napari_vipp/core/compute_cache.py": "8962454750d6a346cb8b6ccd9abcc79a4b033ad25b0b22ef489214de8fe74f5f",
+      "src/napari_vipp/core/compute_contracts.py": "8a3e964258ce8c330a24d3f6d0e4b489c74ac31dda34e8854f3cc958355cc467",
+      "src/napari_vipp/core/compute_specs.py": "a0f17063d9a4a1d90789c17a692721d8ec8a864635993a231b60ecdc67ace43f",
+      "src/napari_vipp/core/execution.py": "6e88c9339f99d30fa124a8ef9d703c499f277f7359378b8d349277434dd37cf1",
+      "src/napari_vipp/core/metadata.py": "11b28537a3424e8c4330891c6fdd5f689b99ba7a24552516ebf3d1182ebba8a5",
+      "src/napari_vipp/core/pipeline.py": "30b5b149bdc81aac4bfe41b848aa58735de769a616c4c3fa8d1b50c7a8a8b69a",
+      "src/napari_vipp/core/batch.py": "e9bee94e7df2be718dca64cec13ba2e52a367869bf08844c22e9eeb5df2c6c55",
+      "src/napari_vipp/core/export.py": "1c7f32bd237f7af393bce7861d315645809cf1e51bfdc6e529017ecd5a216fef",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py": "80278571e8e417752b14dbbab3a88cceca49977db885b6e4ef980e5d9f474c1a",
+      "src/napari_vipp/_tests/test_batch_resume.py": "9ef7a4f3d64428aa53de0943c85b49217280dbd2609af93c06321b66f7774aef"
+    }
+  },
+  "environment": {
+    "platform": "Windows 11, build 26200",
+    "python_implementation": "CPython",
+    "python_version": "3.12.9",
+    "packages": {
+      "napari-vipp": "0.16.0a1",
+      "centrosome": "1.3.4",
+      "cupy-cuda13x": "14.1.1",
+      "numpy": "2.5.1",
+      "scipy": "1.18.0",
+      "scikit-image": "0.26.0",
+      "xlsxwriter": "3.2.9",
+      "pytest": "9.1.1",
+      "PyQt6": "6.10.2",
+      "Pillow": "12.3.0"
+    },
+    "selected_device_id": "cuda:0",
+    "selected_device_name": "NVIDIA GeForce RTX 5090",
+    "cuda_runtime_version": 13020,
+    "cuda_driver_api_version": 13030,
+    "import_precedence": [
+      "Current candidate src",
+      "Existing GPU environment site-packages",
+      "Existing qualified paper environment site-packages, read-only fallback for Centrosome"
+    ],
+    "explicit_environment": {
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONUNBUFFERED": "1",
+      "QT_QPA_PLATFORM": "offscreen",
+      "QT_QPA_FONTDIR": "Native Windows fonts",
+      "VIPP_DISABLE_AUTO_UPDATES": "1",
+      "VIPP_EXPECT_CUDA_DEVICE": "RTX 5090",
+      "VIPP_RUN_REAL_CUDA_BATCH": "1"
+    },
+    "dependency_consistency_qualified": false,
+    "known_dependency_mismatch": "The reused GPU environment has Pillow 12.3.0, while the reused Centrosome 1.3.4 metadata requires pillow>=7.1.0,<12. No dependency was installed or replaced. These selectors exercise GPU/shared-execution boundaries, not Centrosome/Pillow kernels; clean dependency consistency remains a separate exact-main CI and native-installer gate."
+  },
+  "command": {
+    "interpreter": "Existing CPython 3.12.9 GPU environment",
+    "arguments": [
+      "-m", "pytest", "-q", "-ra", "-o", "junit_family=legacy",
+      "--junitxml=artifacts/gpu-shared-execution.xml",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_run_batch_gpu_provenance_cleanup_and_reuse",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_python_gpu_provenance_cancellation_and_reuse",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_headless_measurements_pipeline_finalizes_public_table_and_cleans",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_headless_background_gaussian_median_forms_one_device_segment",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_real_generated_cleanup_runner_preserves_v4_intent_and_provenance",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_run_batch_reuses_fake_cuda_after_visible_oom_fallback",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_device_oom_reports_actual_cpu_fallback_decision",
+      "src/napari_vipp/_tests/test_gpu_execution_integration.py::test_post_device_cancellation_keeps_proven_cleanup_only",
+      "src/napari_vipp/_tests/test_batch_resume.py::test_real_cuda_batch_restart_resume_checks_runtime_and_device"
+    ],
+    "path_normalization": "Interpreter and XML destination are normalized here; test selectors are exact repository-relative arguments."
+  },
+  "retained_evidence": {
+    "private_receipt_sha256": "821bcbd9a1061053714e99bc27d7c5df4ca04ced6b702f779dd648b582d67b4f",
+    "log_name": "gpu-shared-execution.log",
+    "log_sha256": "2f6bc960e2bcc9438ebc3c42a6c2673fa528d4aed0248742ef997a51fd541b1e",
+    "xml_name": "gpu-shared-execution.xml",
+    "xml_sha256": "2e2f6051e15b4d76e64af1722b356619047d61b5e2d24893b5315855f7ddd1ee",
+    "raw_evidence_public": false,
+    "reason": "Raw receipts and logs contain machine-local paths; this sanitized receipt retains their integrity identities without publishing those paths."
+  },
+  "interpretation": [
+    "Six test cases execute real CUDA providers; five additional cases test injected fallback and cleanup contracts. These are test-case counts, not GPU kernel-launch counts.",
+    "Selected tests cover batch/generated-runner provenance and cancellation, measurement-table finalization, a resident multi-operation corridor, completed GPU-result reuse, visible fallback and cleanup.",
+    "No selected test skipped. The existing numerical checks and GPU assignment assertions were not weakened.",
+    "The scientific source was stable, but the complete checkout was not clean. This is current-source behavioral evidence, not exact-final-tag or installed-artifact qualification.",
+    "The deliberately reused dependency environment has the explicitly recorded Pillow/Centrosome metadata mismatch. This receipt does not qualify a clean installation or a consistent production dependency solve.",
+    "This is not a full GPU catalogue or numerical-admission refresh, a performance claim, cross-device/platform support evidence, or biological validation.",
+    "Completed GPU-result reuse does not establish recovery of unfinished GPU work after process death.",
+    "No installed application, existing dependency environment, open GUI, original research input or research workflow was modified."
+  ]
+}

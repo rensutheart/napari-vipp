@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
+from napari_vipp.core.cellprofiler_contracts import CELLPROFILER_2D_OPERATION_IDS
 from napari_vipp.core.compute_contracts import AdmissionTier as AdmissionTier
 from napari_vipp.core.compute_contracts import (
     ComputePortContract as ComputePortContract,
@@ -1312,6 +1313,7 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
     host_boundary = operation.function is None or operation_id in {
         "save_output",
         "batch_output",
+        "plot_results",
     }
     if operation.function is None:
         callable_ref = ""
@@ -1347,6 +1349,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
                 _value_kind(item.output_type),
                 port_name=item.name,
                 shape_policy_id="cpu-reference-v1",
+                schema_id=(
+                    "plot-results-v1" if item.output_type == "plot" else "array-v1"
+                ),
             )
             for index, item in enumerate(operation.output_ports)
         )
@@ -1356,7 +1361,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         implementation_version="1",
         runtime_id="cpu-numpy",
         array_domain="host-numpy",
-        implementation_library_id="cpu",
+        implementation_library_id=(
+            "centrosome" if operation_id in CELLPROFILER_2D_OPERATION_IDS else "cpu"
+        ),
         callable_ref=callable_ref,
         host_boundary=host_boundary,
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
@@ -1382,7 +1389,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
             if operation.output_factory is not None
             else "static-v1"
         ),
-        supported_spatial_ndims=(1, 2, 3),
+        supported_spatial_ndims=(
+            (2,) if operation_id in CELLPROFILER_2D_OPERATION_IDS else (1, 2, 3)
+        ),
         supports_device_residency=False,
     )
 
@@ -1396,6 +1405,7 @@ def _value_kind(value: str) -> ValueKind:
         "mask": ValueKind.MASK,
         "mesh": ValueKind.MESH,
         "table": ValueKind.TABLE,
+        "plot": ValueKind.PLOT,
         "scalar": ValueKind.SCALAR,
     }
     return aliases.get(normalized, ValueKind.ANY)

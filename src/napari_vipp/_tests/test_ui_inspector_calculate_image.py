@@ -40,7 +40,8 @@ def test_calculate_image_equation_shows_effective_weights_offset_and_sources(qtb
     assert preview.text().splitlines() == [
         "Calculation",
         "Output = 0.65 × I₁ − 0.35 × I₂ + 12.5",
-        "Inputs: I₁ = Image Source · out; I₂ = Gaussian Blur · out",
+        f"Inputs: I₁ = {widget._node_title('input')} · out; "
+        f"I₂ = {widget._node_title(blur.id)} · out",
     ]
     assert preview.textFormat() == Qt.PlainText
 

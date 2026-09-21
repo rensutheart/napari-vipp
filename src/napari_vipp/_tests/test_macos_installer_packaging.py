@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 import zipfile
 from pathlib import Path
@@ -45,9 +46,7 @@ def _unsigned_finalize_fixture(tmp_path: Path):
     state = _release_state()
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir()
-    staging = staging_dir / (
-        f"VIPP-{state.version}-macOS-arm64-SIGNING-STAGING.pkg"
-    )
+    staging = staging_dir / (f"VIPP-{state.version}-macOS-arm64-SIGNING-STAGING.pkg")
     staging.write_bytes(b"reviewed unsigned package")
     evidence = {}
     for key, filename in packager._CONSTRUCTOR_EVIDENCE.items():
@@ -64,9 +63,7 @@ def _unsigned_finalize_fixture(tmp_path: Path):
         "development": False,
         "release_ready": False,
         "release_channel": "unsigned-alpha-staging",
-        "unsigned_release_filename": (
-            f"VIPP-{state.version}-macOS-arm64-UNSIGNED.pkg"
-        ),
+        "unsigned_release_filename": (f"VIPP-{state.version}-macOS-arm64-UNSIGNED.pkg"),
         "source": state.as_dict(),
         "architecture": "arm64",
         "target_platform": "osx-arm64",
@@ -88,9 +85,7 @@ def _unsigned_finalize_fixture(tmp_path: Path):
 def _mock_unsigned_finalize_host(monkeypatch, state):
     monkeypatch.setattr(packager, "_require_macos", lambda: None)
     monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
-    monkeypatch.setattr(
-        packager, "_macos_architecture", lambda: ("arm64", "osx-arm64")
-    )
+    monkeypatch.setattr(packager, "_macos_architecture", lambda: ("arm64", "osx-arm64"))
     monkeypatch.setattr(packager, "_verify_pkg_archive", lambda _path: None)
     monkeypatch.setattr(
         packager,
@@ -103,12 +98,8 @@ def _mock_unsigned_finalize_host(monkeypatch, state):
     )
 
 
-def test_plan_binds_exact_wheel_without_requiring_builder_tools(
-    tmp_path, monkeypatch
-):
-    wheel = _wheel(
-        tmp_path / f"napari_vipp-{PROJECT_VERSION}-py3-none-any.whl"
-    )
+def test_plan_binds_exact_wheel_without_requiring_builder_tools(tmp_path, monkeypatch):
+    wheel = _wheel(tmp_path / f"napari_vipp-{PROJECT_VERSION}-py3-none-any.whl")
     monkeypatch.setattr(packager, "inspect_source", lambda _root: _release_state())
     monkeypatch.setattr(packager, "_macos_architecture", lambda: ("arm64", "osx-arm64"))
 
@@ -133,9 +124,7 @@ def test_plan_binds_exact_wheel_without_requiring_builder_tools(
 
 
 def test_release_staging_requires_clean_exact_tag(tmp_path, monkeypatch):
-    wheel = _wheel(
-        tmp_path / f"napari_vipp-{PROJECT_VERSION}-py3-none-any.whl"
-    )
+    wheel = _wheel(tmp_path / f"napari_vipp-{PROJECT_VERSION}-py3-none-any.whl")
     monkeypatch.setattr(
         packager, "inspect_source", lambda _root: _release_state(tagged=False)
     )
@@ -157,13 +146,9 @@ def test_clean_exact_alpha_plan_reserves_staging_and_unsigned_names(
     tmp_path, monkeypatch
 ):
     state = _release_state()
-    wheel = _wheel(
-        tmp_path / f"napari_vipp-{state.version}-py3-none-any.whl"
-    )
+    wheel = _wheel(tmp_path / f"napari_vipp-{state.version}-py3-none-any.whl")
     monkeypatch.setattr(packager, "inspect_source", lambda _root: state)
-    monkeypatch.setattr(
-        packager, "_macos_architecture", lambda: ("arm64", "osx-arm64")
-    )
+    monkeypatch.setattr(packager, "_macos_architecture", lambda: ("arm64", "osx-arm64"))
 
     plan = packager.build_installer(
         repository_root=REPO_ROOT,
@@ -207,9 +192,7 @@ def test_unsigned_release_lane_rejects_non_alpha_versions(
 
 
 def test_plan_rejects_wheel_from_another_version(tmp_path, monkeypatch):
-    wheel = _wheel(
-        tmp_path / "napari_vipp-0.13.0-py3-none-any.whl", version="0.13.0"
-    )
+    wheel = _wheel(tmp_path / "napari_vipp-0.13.0-py3-none-any.whl", version="0.13.0")
     monkeypatch.setattr(packager, "inspect_source", lambda _root: _release_state())
 
     with pytest.raises(
@@ -249,16 +232,15 @@ def test_menu_template_renders_valid_numeric_apple_versions(tmp_path):
     expected_arguments = ["-m", "napari_vipp", "--desktop", "--profile", "auto"]
     assert item["command"] == ["{{ PYTHON }}", *expected_arguments]
     assert item["platforms"]["osx"]["command"] == [
-        "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python", *expected_arguments
+        "{{ MENU_ITEM_LOCATION }}/Contents/Resources/python",
+        *expected_arguments,
     ]
     assert item["platforms"]["osx"]["CFBundleName"] == "VIPP"
     assert item["platforms"]["osx"]["CFBundleDisplayName"] == "VIPP"
     assert item["icon"] == "{{ MENU_DIR }}/vipp.{{ ICON_EXT }}"
     assert item["platforms"]["osx"]["CFBundleVersion"] == "445"
     assert (
-        item["platforms"]["osx"]["info_plist_extra"][
-            "CFBundleShortVersionString"
-        ]
+        item["platforms"]["osx"]["info_plist_extra"]["CFBundleShortVersionString"]
         == "0.14.0"
     )
     assert "{{ MENU_ITEM_LOCATION }}" in item["platforms"]["osx"]["command"][0]
@@ -333,6 +315,176 @@ def test_macos_recipe_psygnal_constraint_matches_embedded_wheel_metadata():
         assert not conda_requirement.specifier.contains(version)
 
 
+def test_macos_recipe_supplies_every_direct_wheel_dependency():
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    recipe = (REPO_ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    application = recipe.split("      name: napari-vipp\n", 1)[1]
+    runtime = application.split("      run:\n", 1)[1].split("    tests:\n", 1)[0]
+    actual = {
+        Requirement(line.strip().removeprefix("- ")).name
+        for line in runtime.splitlines()
+        if line.strip().startswith("- ")
+    }
+    aliases = {"dask": "dask-core", "matplotlib": "matplotlib-base"}
+    required = {
+        aliases.get(requirement.name, requirement.name)
+        for dependency in project["dependencies"]
+        for requirement in [Requirement(dependency)]
+    }
+    assert required <= actual, (
+        f"Missing --no-deps runtime packages: {required - actual}"
+    )
+    requirement = next(
+        Requirement(value)
+        for value in project["dependencies"]
+        if Requirement(value).name == "centrosome"
+    )
+    assert str(requirement.specifier) == "==1.3.4"
+    assert "- centrosome ==1.3.4" in runtime
+
+
+def test_centrosome_recipe_is_pinned_native_cpython312_with_upstream_bounds():
+    recipe = (REPO_ROOT / "packaging/macos/centrosome/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    assert 'version: "1.3.4"' in recipe
+    assert "\n  noarch:" not in recipe
+    assert "- python >=3.12,<3.13" in recipe
+    assert "- python_abi 3.12.* *_cp312" in recipe
+    assert "--no-index --no-deps --no-build-isolation" in recipe
+    assert "centrosome-1.3.4.dist-info/licenses/LICENSE" in recipe
+    assert "license_file: LICENSE" in recipe
+    # These are the two reviewed release wheels, not a runtime PyPI lookup.
+    expected = {
+        "osx-arm64": (
+            "macosx_11_0_arm64",
+            "ee9190b8514e329972cfaa601a3ed66ec1a4f1968fed310dedb70d8a9236d667",
+        ),
+        "osx-64": (
+            "macosx_10_13_x86_64",
+            "b43e878fd0916b8a40b10294ee366a809a4c81e73eae9bec15684e6291368b0b",
+        ),
+    }
+    for target, (tag, digest) in expected.items():
+        section = recipe.split(f'if: target_platform == "{target}"', 1)[1]
+        section = section.split("\n  - if:", 1)[0].split("\nbuild:", 1)[0]
+        assert f"centrosome-1.3.4-cp312-cp312-{tag}.whl" in section
+        assert f"sha256: {digest}" in section
+        assert "https://files.pythonhosted.org/packages/" in section
+    assert len(re.findall(r"\n      sha256: [a-f0-9]{64}\n", recipe)) == 2
+    for dependency in (
+        "deprecation",
+        "numpy >=1.18.2",
+        "pillow >=7.1.0,<12",
+        "scikit-image >=0.17.2,<1",
+        "scipy >=1.4.1,<2,!=1.11.0",
+    ):
+        assert f"    - {dependency}\n" in recipe
+    for module in (
+        "_propagate",
+        "_cpmorphology2",
+        "_convex_hull",
+        "_filter",
+        "_lapjv",
+        "_fastemd",
+    ):
+        assert f"- centrosome.{module}" in recipe
+
+
+@pytest.mark.parametrize("target", ["osx-arm64", "osx-64"])
+def test_native_centrosome_is_built_and_tested_before_vipp(
+    tmp_path, monkeypatch, target
+):
+    calls = []
+    monkeypatch.setattr(
+        packager, "_run", lambda command, **kwargs: calls.append(command)
+    )
+    channel = tmp_path / "channel"
+    native_recipe = tmp_path / "centrosome"
+    vipp_recipe = tmp_path / "recipe"
+    packager._build_local_conda_packages(
+        recipe_dir=vipp_recipe,
+        centrosome_recipe_dir=native_recipe,
+        channel_dir=channel,
+        target_platform=target,
+        rattler_build=Path("rattler-build"),
+    )
+    assert len(calls) == 3
+    native, index, application = calls
+    assert native[native.index("--recipe") + 1] == str(native_recipe / "recipe.yaml")
+    assert native[native.index("--target-platform") + 1] == target
+    assert native[native.index("--test") + 1] == "native"
+    assert "conda_index" in index
+    assert application[application.index("--recipe") + 1] == str(
+        vipp_recipe / "recipe.yaml"
+    )
+    assert application[application.index("--channel") + 1] == channel.resolve().as_uri()
+
+
+def _local_packages(tmp_path, target, *, native_subdir=None):
+    packages = [
+        tmp_path / "noarch" / f"napari-vipp-{PROJECT_VERSION}-0.conda",
+        tmp_path / "noarch" / f"vipp-menu-{PROJECT_VERSION}-0.conda",
+        tmp_path / (native_subdir or target) / "centrosome-1.3.4-py312_vipp_0.conda",
+    ]
+    for path in packages:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.name.encode("ascii"))
+    return packages
+
+
+@pytest.mark.parametrize("target", ["osx-arm64", "osx-64"])
+def test_local_channel_evidence_includes_native_centrosome(
+    tmp_path, monkeypatch, target
+):
+    packages = _local_packages(tmp_path, target)
+    calls = []
+    monkeypatch.setattr(
+        packager, "_run", lambda command, **kwargs: calls.append(command)
+    )
+    records = packager._index_local_channel(
+        channel_dir=tmp_path, target_platform=target
+    )
+    assert len(calls) == 1
+    assert len(records) == 3
+    assert {record["filename"] for record in records} == {
+        path.name for path in packages
+    }
+    native = next(
+        record for record in records if record["filename"].startswith("centrosome-")
+    )
+    assert native["subdir"] == target
+    assert native["sha256"] == packager._sha256(packages[-1])
+
+
+@pytest.mark.parametrize(
+    "bad_package", ["missing", "noarch", "wrong_arch", "duplicate", "extra"]
+)
+def test_channel_rejects_missing_or_mispackaged_native_dependency(
+    tmp_path, monkeypatch, bad_package
+):
+    target = "osx-arm64"
+    subdir = {"noarch": "noarch", "wrong_arch": "osx-64"}.get(bad_package)
+    packages = _local_packages(tmp_path, target, native_subdir=subdir)
+    if bad_package == "missing":
+        packages[-1].unlink()
+    elif bad_package == "duplicate":
+        packages[-1].with_name("centrosome-1.3.4-other_0.conda").touch()
+    elif bad_package == "extra":
+        packages[-1].with_name("unexpected-1-0.conda").touch()
+    monkeypatch.setattr(
+        packager,
+        "_run",
+        lambda *args, **kwargs: pytest.fail("must reject before indexing"),
+    )
+    with pytest.raises(packager.MacOSInstallerPackagingError):
+        packager._index_local_channel(channel_dir=tmp_path, target_platform=target)
+
+
 def test_constructor_template_is_current_user_cpu_only_development_config():
     construct = (REPO_ROOT / "packaging/macos/construct.yaml.in").read_text(
         encoding="utf-8"
@@ -391,6 +543,11 @@ def test_native_installer_workflows_keep_strict_installed_dependency_check(workf
     text = (REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
     check_lines = [line.strip() for line in text.splitlines() if "-m pip check" in line]
     assert check_lines == ['"$prefix/bin/python" -m pip check']
+    centrosome_check = (
+        '"$prefix/bin/python" scripts/smoke_centrosome_install.py --require-installed'
+    )
+    assert centrosome_check in text
+    assert text.index(check_lines[0]) < text.index(centrosome_check)
     assert text.index(check_lines[0]) < text.index(
         '"$prefix/bin/python" scripts/smoke_mesh_install.py --require-installed'
     )
@@ -399,9 +556,7 @@ def test_native_installer_workflows_keep_strict_installed_dependency_check(workf
 @pytest.mark.parametrize(
     "workflow", ["macos-installer.yml", "unsigned-installers-release.yml"]
 )
-def test_native_installer_workflows_check_rendered_desktop_launcher(
-    tmp_path, workflow
-):
+def test_native_installer_workflows_check_rendered_desktop_launcher(tmp_path, workflow):
     menu = tmp_path / "vipp-menu.json"
     packager._render_menu_metadata(
         REPO_ROOT / "packaging/macos/vipp-menu.json.in", menu, _release_state()
@@ -426,19 +581,19 @@ def test_native_installer_workflows_check_rendered_desktop_launcher(
     child_profile = command[command.index("--profile") + 1]
     child_checks = [line for line in lines if "pgrep -f 'napari_vipp.app" in line]
     assert child_checks == [
-        f'child_pid="$(pgrep -f \'napari_vipp.app.*--profile {child_profile}\' '
+        f"child_pid=\"$(pgrep -f 'napari_vipp.app.*--profile {child_profile}' "
         '| head -n 1)"'
     ]
     assert lines.count('kill -0 "$child_pid"') == 2
     assert 'QT_API=pyside6 "$prefix/bin/python" -m napari_vipp.app \\' in lines
-    assert '--profile cpu --smoke-exit-after-ready \\' in lines
+    assert "--profile cpu --smoke-exit-after-ready \\" in lines
     assert 'grep -Fq "VIPP: VIPP is ready" "$RUNNER_TEMP/vipp-native.log"' in lines
 
 
 def test_builder_environment_pins_wheel_build_toolchain():
-    environment = (
-        REPO_ROOT / "packaging/macos/builder-environment.yml"
-    ).read_text(encoding="utf-8")
+    environment = (REPO_ROOT / "packaging/macos/builder-environment.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "python-build=1.5.0" in environment
     assert "setuptools=82.0.1" in environment
@@ -448,16 +603,14 @@ def test_builder_environment_pins_wheel_build_toolchain():
 
 
 def test_constructor_documents_render_separate_development_and_unsigned_alpha_text(
-    tmp_path
+    tmp_path,
 ):
     development = tmp_path / "development"
     release = tmp_path / "release"
     development.mkdir()
     release.mkdir()
 
-    packager._stage_constructor_documents(
-        REPO_ROOT, development, development=True
-    )
+    packager._stage_constructor_documents(REPO_ROOT, development, development=True)
     packager._stage_constructor_documents(REPO_ROOT, release, development=False)
 
     development_text = (development / "welcome.txt").read_text(encoding="utf-8")
@@ -481,9 +634,7 @@ def test_constructor_documents_render_separate_development_and_unsigned_alpha_te
     assert "does not include NVIDIA CUDA" in release_text
 
 
-def test_development_signature_requires_exact_unsigned_status(
-    tmp_path, monkeypatch
-):
+def test_development_signature_requires_exact_unsigned_status(tmp_path, monkeypatch):
     installer = tmp_path / "VIPP-DEVELOPMENT.pkg"
     installer.touch()
 
