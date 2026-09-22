@@ -63,6 +63,7 @@ HISTOGRAM_THRESHOLD_OPERATIONS = {
     "minimum_threshold",
 }
 LABEL_OPERATIONS = {
+    "skeletonize_labels",
     "cellprofiler_primary_objects",
     "cellprofiler_propagation_seeds",
     "cellprofiler_finish_cells",
@@ -2910,6 +2911,12 @@ def _operation_history(
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
     if operation_id == "composite_to_rgb":
         return _composite_to_rgb_history(input_state, operation_title, params)
+    if operation_id == "skeletonize_labels":
+        return (
+            _skeletonize_history(operation_title, params)
+            + "; each original label independently; original IDs preserved; "
+            "other labels treated as background"
+        )
     if operation_id == "skeletonize":
         return _skeletonize_history(operation_title, params)
     if operation_id == "skeleton_graph_overlay":

@@ -460,6 +460,36 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "meaningful restoration."
             ),
         ),
+        "per-label-skeleton": ExampleGuidance(
+            purpose=(
+                "Measure each labelled object's skeleton and morphology together "
+                "without losing the original object identity."
+            ),
+            data="Synthetic 3D network with three labels and 0.45 micrometer voxels",
+            explore=(
+                "Compare filtered labels with skeleton labels; each object "
+                "keeps its original ID.",
+                "Inspect component counts and isolated nodes in the per-label "
+                "summary and component detail tables.",
+                "Join the measurements by label ID and plot object volume "
+                "against skeleton length.",
+            ),
+            results=(
+                "Skeleton image with original labels",
+                "One skeleton summary row per original object",
+                "Component detail table and merged morphology table",
+                "Object volume and skeleton length scatter plot",
+            ),
+            try_this=(
+                "Raise the minimum label volume from 1 to 2 voxels. The isolated "
+                "voxel disappears from both measurement branches together."
+            ),
+            caution=(
+                "This sparse sample demonstrates identity and graph measurements. "
+                "It does not validate segmentation of acquired images. Objects "
+                "within one image are not independent biological samples."
+            ),
+        ),
         "skeleton-qc": ExampleGuidance(
             purpose=(
                 "Inspect a skeleton's branches, junctions and disconnected "

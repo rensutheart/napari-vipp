@@ -30,6 +30,10 @@ from napari_vipp.core.grid import (
     validate_mask_broadcast_image_states,
     validate_psf_image_states,
 )
+from napari_vipp.core.label_skeleton import (
+    analyze_skeleton_per_label,
+    skeletonize_labels,
+)
 from napari_vipp.core.mesh_objects import (
     color_mesh_objects,
     combine_meshes,
@@ -1410,6 +1414,7 @@ COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "object_colocalization_metrics",
 }
 LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
+    "analyze_skeleton_per_label",
     "event_localization",
     "label_overlap_association",
     "measure_objects_intensity",
@@ -1417,6 +1422,7 @@ LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
     "object_colocalization_metrics",
 }
 SAME_SHAPE_GRID_OPERATIONS = {
+    "analyze_skeleton_per_label",
     "cellprofiler_cytoplasm",
     "cellprofiler_finish_cells",
     "cellprofiler_propagation_seeds",
@@ -1621,6 +1627,8 @@ OPTIONAL_CHANNEL_AXIS_PARAMETER = replace(
 )
 
 SPATIAL_OPERATIONS = {
+    "analyze_skeleton_per_label",
+    "skeletonize_labels",
     "auto_watershed_from_mask",
     "born_wolf_psf",
     "clear_border_objects",
@@ -1922,6 +1930,39 @@ def _born_wolf_psf_outputs(count: int) -> tuple[OutputSpec, ...]:
     return tuple(
         OutputSpec(f"channel_{index + 1}_psf", "image", f"Channel {index + 1} PSF")
         for index in range(count)
+    )
+
+
+def _analyze_label_skeleton_inputs(
+    inputs,
+    spatial_mode="Auto from axes",
+    method="Auto",
+    resolved_spatial_ndim=None,
+    axis_names=None,
+    axis_types=None,
+    axis_scales=None,
+    axis_units=None,
+    source_name="",
+    progress=None,
+):
+    """Adapt the graph's ordered original-label and optional skeleton ports."""
+    if len(inputs) not in {1, 2}:
+        raise ValueError(
+            "Analyze Skeleton per Label needs original labels and an optional "
+            "labeled skeleton."
+        )
+    return analyze_skeleton_per_label(
+        inputs[0],
+        inputs[1] if len(inputs) == 2 else None,
+        spatial_mode=spatial_mode,
+        method=method,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+        source_name=source_name,
+        progress=progress,
     )
 
 
@@ -4448,6 +4489,32 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=SKELETON_NETWORK_GROUP,
     ),
     OperationSpec(
+        "skeletonize_labels",
+        "Skeletonize Labels",
+        "Morphology",
+        "labels",
+        "labels",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "method", "Method", "choice", "Auto", 0, 0, 1,
+                choices=("Auto", "Lee", "Zhang 2D"),
+                tooltip=(
+                    "Thin each original label independently; Auto uses Lee "
+                    "in 3D and Zhang in 2D."
+                ),
+            ),
+        ),
+        skeletonize_labels,
+        subcategory=SKELETON_NETWORK_GROUP,
+        stack_processing_note=(
+            "Skeletonizes each label independently within each spatial block, "
+            "preserving original IDs and calibration. Connect original labels "
+            "as well as this skeleton to Analyze Skeleton per Label to retain "
+            "objects whose skeleton becomes empty."
+        ),
+    ),
+    OperationSpec(
         "label_connected_components",
         "Label Connected Components",
         LABEL_OPERATIONS_CATEGORY,
@@ -4965,6 +5032,44 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         analyze_skeleton,
         subcategory=SKELETON_NETWORK_GROUP,
         execution_policy="manual",
+    ),
+    OperationSpec(
+        "analyze_skeleton_per_label",
+        "Analyze Skeleton per Label",
+        MEASUREMENTS_CATEGORY,
+        "labels",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "method", "Thinning method", "choice", "Auto", 0, 0, 1,
+                choices=("Auto", "Lee", "Zhang 2D"),
+                tooltip=(
+                    "Used when the optional Skeleton input is unconnected. "
+                    "A connected labeled skeleton is analyzed as supplied."
+                ),
+            ),
+        ),
+        _analyze_label_skeleton_inputs,
+        max_inputs=2,
+        inputs=(
+            InputSpec("labels", "labels", "Original labels"),
+            InputSpec("skeleton", "labels", "Skeleton (optional)"),
+        ),
+        outputs=(
+            OutputSpec("out", "table", "Objects"),
+            OutputSpec("components", "table", "Skeleton components"),
+        ),
+        subcategory=SKELETON_NETWORK_GROUP,
+        execution_policy="manual",
+        stack_processing_note=(
+            "One summary row per original label plus component details. "
+            "Retains empty skeletons in the object table. An optional labeled "
+            "skeleton must occupy the same physical grid and preserve original "
+            "IDs. When Skeleton is unconnected, each label is skeletonized "
+            "internally. "
+            "Join morphology using image identity, axis indices and label_id."
+        ),
     ),
     OperationSpec(
         "measure_skeleton_branches",
@@ -11232,7 +11337,9 @@ class PrototypePipeline:
             spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
             if node.operation_id == "clear_border_objects":
                 spatial_mode = "Auto from axes"
-            if node.operation_id == "skeletonize":
+            if node.operation_id in {
+                "skeletonize", "skeletonize_labels", "analyze_skeleton_per_label"
+            }:
                 _validate_skeletonize_auto_axes(
                     node,
                     primary_state,
@@ -11247,7 +11354,9 @@ class PrototypePipeline:
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
         _validate_positional_spatial_layout(node, primary_state, kwargs)
-        if node.operation_id == "skeletonize":
+        if node.operation_id in {"skeletonize", "skeletonize_labels"} or (
+            node.operation_id == "analyze_skeleton_per_label" and required == 1
+        ):
             _operations._skeletonize_method(
                 kwargs.get("method", "Auto"),
                 spatial_ndim=int(kwargs["resolved_spatial_ndim"]),
@@ -11410,6 +11519,11 @@ class PrototypePipeline:
         input_state: ImageState | TableState | None,
         kwargs: dict[str, Any],
     ) -> None:
+        if node.operation_id == "skeletonize_labels" and isinstance(
+            input_state, ImageState
+        ):
+            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+            kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
         if node.operation_id in {"save_output", "mask_to_3d_mesh", "labels_to_3d_mesh"}:
             kwargs["image_state"] = input_state
         if node.operation_id in {
@@ -11580,6 +11694,39 @@ class PrototypePipeline:
             node.operation_id == "save_output" and is_mesh_data(output)
         ):
             return [(output, output.state)]
+        if node.operation_id == "analyze_skeleton_per_label":
+            if not isinstance(output, (tuple, list)) or len(output) != 2:
+                raise ValueError(
+                    "Analyze Skeleton per Label must return object "
+                    "and component tables."
+                )
+            results = []
+            for port, table in zip(spec.output_ports, output, strict=True):
+                history = _table_history(
+                    input_states, f"{node.title} ({port.label})", table
+                )
+                if len(call.inputs) == 1:
+                    history += (
+                        _metadata._skeletonize_history(node.title, dict(call.kwargs))
+                        + "; independent original labels; preserved label_id",
+                    )
+                else:
+                    history += (
+                        f"{node.title}: analyzed supplied labeled skeleton; "
+                        "preserved label_id",
+                    )
+                history += (
+                    "Skeleton graph: full-neighborhood components within each "
+                    "original label; "
+                    "physical edge lengths require explicit compatible spatial units",
+                )
+                state = table_state_from_data(
+                    table,
+                    history=history,
+                    source_name=getattr(input_states[0], "source_name", ""),
+                )
+                results.append((table, state))
+            return results
         if call.multiple_inputs:
             if spec.output_type == "table":
                 history = _table_history(input_states, node.title, output)
@@ -12031,6 +12178,11 @@ class PrototypePipeline:
 
     def _required_inputs_for(self, node: GraphNode) -> int:
         spec = self.operation_spec(node.operation_id)
+        if node.operation_id == "analyze_skeleton_per_label":
+            return 2 if any(
+                connection.target_port == 1
+                for connection in self._input_connections(node.id)
+            ) else 1
         if spec.inputs:
             return len(spec.inputs)
         if "input_count" in node.params:
@@ -12123,7 +12275,10 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
             f"{operation_title}: measured supplied mesh geometry as {row_count} row; "
             "no remeshing or voxel filtering",
         )
-    if "histogram" in table_kind:
+    if table_kind == "skeleton per-label summary":
+        noun = "original label" if row_count == 1 else "original labels"
+        action = "analyzed"
+    elif "histogram" in table_kind:
         noun = "bin" if row_count == 1 else "bins"
         action = "binned"
     elif "graph node" in table_kind:

@@ -16,10 +16,10 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Add a genuine YX compartment lane and an object-intensity plot. The
-    # regression below removes those additions and pins the historical graph.
+    # Add label-preserving skeleton analysis beside the existing label lane.
+    # The regressions below remove additions and pin each historical graph.
     "exhaustive-inspector-showcase.json": (
-        "7f5bcf569782aaf4a89a191b28752c394227abb43ea7c716773811e1ece7e624"
+        "c13d64f69bd1818a0ae92aacc4745989282f0302d1ddd8263a25e3c236b3405c"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -88,6 +88,9 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-object-colocalization-association.json": (
         "4e5c80f8fc1390efa82696b031f5e02fea1a4af5bbc4fef0ff14bb6b99ac5eae"
+    ),
+    "synthetic-per-label-skeleton.json": (
+        "446e965ba7ad9b6e004fce28ea118f61518e791dc4e48c9302bf2b33816b139a"
     ),
     "synthetic-skeleton-qc.json": (
         "4804cd14731db2d940997f26eb62fd2e5d6fddceaee1b4ddf373b7be7612fb47"
@@ -261,8 +264,77 @@ def test_workspace_example_preserves_the_original_measurement_analysis():
     )
 
 
+def _without_label_skeleton_branch(document: dict[str, Any]) -> dict[str, Any]:
+    document = deepcopy(document)
+    added_ids = {"skeletonize_labels_1", "analyze_skeleton_per_label_1"}
+    added_nodes = [node for node in document["nodes"] if node["id"] in added_ids]
+    assert added_nodes == [
+        {
+            "id": "skeletonize_labels_1",
+            "operation_id": "skeletonize_labels",
+            "params": {"spatial_mode": "Auto from axes", "method": "Auto"},
+        },
+        {
+            "id": "analyze_skeleton_per_label_1",
+            "operation_id": "analyze_skeleton_per_label",
+            "params": {"spatial_mode": "Auto from axes", "method": "Auto"},
+        },
+    ]
+    added_edges = [
+        edge for edge in document["connections"]
+        if edge["source"] in added_ids or edge["target"] in added_ids
+    ]
+    assert added_edges == [
+        {
+            "source": "relabel_sequential_1",
+            "target": "skeletonize_labels_1",
+            "target_port": 0,
+            "source_port": 0,
+            "tunnel": "Object labels",
+        },
+        {
+            "source": "relabel_sequential_1",
+            "target": "analyze_skeleton_per_label_1",
+            "target_port": 0,
+            "source_port": 0,
+            "tunnel": "Object labels",
+        },
+        {
+            "source": "skeletonize_labels_1",
+            "target": "analyze_skeleton_per_label_1",
+            "target_port": 1,
+            "source_port": 0,
+        },
+    ]
+    # The branch subscribes to an existing tunnel; no source is rewired.
+    assert not any(tunnel["source"] in added_ids for tunnel in document["tunnels"])
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_ids
+    ]
+    document["connections"] = [
+        edge for edge in document["connections"] if edge not in added_edges
+    ]
+    for node_id in added_ids:
+        document["positions"].pop(node_id)
+    document["notes"] = [
+        note for note in document["notes"] if note["id"] != "label_skeleton_identity"
+    ]
+    return document
+
+
+def test_showcase_label_skeleton_branch_preserves_complete_previous_analysis():
+    document = _without_label_skeleton_branch(
+        _load_example("exhaustive-inspector-showcase.json")
+    )
+    previous_hash = "7f5bcf569782aaf4a89a191b28752c394227abb43ea7c716773811e1ece7e624"
+    assert scientific_workflow_hash(document) == previous_hash
+    assert scientific_workflow_hash(_restore_and_reserialize(document)) == previous_hash
+
+
 def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
-    document = _load_example("exhaustive-inspector-showcase.json")
+    document = _without_label_skeleton_branch(
+        _load_example("exhaustive-inspector-showcase.json")
+    )
     # The added plot consumes the existing measurement table without changing
     # it or the legacy summary recipe. Strip only that display branch before
     # checking the historical scientific graph.

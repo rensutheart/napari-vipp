@@ -1056,6 +1056,8 @@ COLOCALIZATION_THRESHOLD_VALUE_PARAMETERS = {
 }
 COLOCALIZATION_SCATTER_OPERATIONS = COLOCALIZATION_COSTES_OPERATIONS
 BACKGROUND_PIPELINE_OPERATIONS = {
+    "skeletonize_labels",
+    "analyze_skeleton_per_label",
     "table_source",
     "auto_watershed_from_mask",
     "born_wolf_psf",
@@ -28925,7 +28927,9 @@ class VippWidget(QWidget):
         if state is None or not bool(getattr(state, "spatial_axes_explicit", False)):
             return "unavailable (axes are inferred or missing)"
         node = self.pipeline.nodes.get(node_id)
-        if node is not None and node.operation_id == "skeletonize":
+        if node is not None and node.operation_id in {
+            "skeletonize", "skeletonize_labels", "analyze_skeleton_per_label"
+        }:
             mapping = _ambiguous_qyx_suffix_mapping(state)
             if mapping is not None:
                 detected_axes, required_axes = mapping

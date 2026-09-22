@@ -119,5 +119,8 @@ override the current planning documents above.
 - [Archived cuCIM native-Windows port plan](cucim-windows-port-plan.md)
 - [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)
+- [Per-label skeletons](per-label-skeleton.md): original-object identity,
+  thinning and graph conventions, optional skeleton input, calibration,
+  empty/fragment accounting, resource boundaries and regression evidence.
 - [Colocalization and RACC](colocalization-racc-plan.md)
 - [Historical node-roadmap discussion](node-roadmap-history.md)
