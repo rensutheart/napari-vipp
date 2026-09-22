@@ -20,6 +20,10 @@ def test_simpleitk_exact_pin_matches_offline_macos_recipe():
         requirement.name.lower(): requirement
         for requirement in map(Requirement, project["dependencies"])
     }
+    assert sum(
+        Requirement(value).name.lower() == "simpleitk"
+        for value in project["dependencies"]
+    ) == 1
     assert str(requirements["simpleitk"].specifier) == "==2.5.6"
     recipe = (ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
         encoding="utf-8"

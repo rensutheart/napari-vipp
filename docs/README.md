@@ -20,6 +20,7 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
+- [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)
 - [Release qualification baseline](release-qualification-baseline.md)
 - [Windows installer field acceptance](windows-installer-field-acceptance.md)
 - [Windows setup packaging](../packaging/windows/README.md)

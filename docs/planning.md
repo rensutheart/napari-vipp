@@ -15,7 +15,7 @@ early tester feedback from Tom Naber on
 ## Product Direction
 
 Development update, 2026-09-22: registration is now implemented after 0.16.0a1
-in an isolated feature branch. Final local Windows qualification passed; native
+and integrated for the next alpha. Final local Windows qualification passed; native
 Linux/macOS and release qualification remain pending. The approved scope
 is Estimate Registration (translation/rigid/affine; pairs or whole-volume time
 series), Apply Transform and Compare Images, with analytical examples.
@@ -69,12 +69,12 @@ study documentation must remain optional so simple analyses stay accessible.
 
 ### Post-0.16.0a1 CPU acceleration work
 
-The next bounded implementation step is [SimpleITK CPU qualification](simpleitk-cpu-qualification.md):
-package the library, accelerate exactly compatible Median Filter calls, and
-assess other heavy CPU operations before adopting them. Existing GPU choices
+The [SimpleITK CPU qualification](simpleitk-cpu-qualification.md) is locally
+complete. Exact CPU Median Filter acceleration and the independently qualified
+registration implementation are integrated for 0.16.0a2. Existing GPU choices
 remain unchanged. Rolling-ball background is not a median-based method, and
-Gaussian/deconvolution changes require separate scientific review. Registration
-follows later; including its library is not registration qualification.
+Gaussian/deconvolution changes require separate scientific review. See the
+[combined readiness record](release-readiness-0.16.0a2.md) for remaining release gates.
 
 The following baseline text records the earlier 0.15 planning context:
 

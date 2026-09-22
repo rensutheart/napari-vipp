@@ -23,10 +23,11 @@ registration how-to/reference, not this engineering record.
 - `_widget.py` and existing inspector/graph helpers: transform cards, metadata,
   JSON saving, ordinary diagnostic-table access and background dispatch.
 
-No registration GPU path is advertised. Existing filters and restoration methods
-are unchanged by this branch. The separate median-acceleration branch remains
-independent pending integration; adding the same SimpleITK pin does not migrate
-Gaussian, background subtraction or deconvolution.
+No registration GPU path is advertised. The 0.16.0a2 integration also includes
+the independently qualified exact CPU median acceleration, sharing one SimpleITK
+pin. Gaussian, background subtraction and deconvolution remain unchanged.
+See the [combined readiness record](release-readiness-0.16.0a2.md) for integration
+checks; the original qualification below applies to its recorded source snapshot.
 
 ## Inspector and next-step editing
 

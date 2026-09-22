@@ -56,9 +56,8 @@ dependencies = [
     "psygnal>=0.14,<0.16",
     "qtpy>=2.4",
     "scikit-image>=0.21",
-    "simpleitk==2.5.6",
     "scipy>=1.10",
-    # Exact CPU median implementation qualification; review before upgrading.
+    # Qualified CPU median and registration backend; review before upgrading.
     "simpleitk==2.5.6",
     "tifffile>=2023.8",
     "xlsxwriter>=3.2,<4",
