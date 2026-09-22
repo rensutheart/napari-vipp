@@ -58,8 +58,11 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Statistics contract](statistics.md): descriptive methods, weighting,
   exclusions, output counts/units, and explicit legacy-recipe migration.
 - [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
-  planned 0.16 scope for 2D/3D alignment, SSIM and related comparisons, template
-  detection, and transform contracts; drift/rigid/affine follow-ups are separate.
+  earlier design rationale and revised delivery scope; template detection is deferred.
+- [Registration implementation](registration-implementation.md): unreleased reusable
+  transforms, pairwise and whole-volume time-series alignment, label-safe application
+  and comparison contracts. [Synthetic qualification](registration-synthetic-qualification.md)
+  records independently known motion and measured landmark error.
 - [Update discovery and reader packaging](update-and-reader-plan.md): quiet
   update checks and the proposed default-reader dependency set.
 

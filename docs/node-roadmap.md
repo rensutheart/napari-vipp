@@ -128,7 +128,7 @@ and reproducible.
 | Optional microscope reader boundary | Initial foundation implemented | Nikon, Zeiss, Leica, Olympus, and other proprietary readers need optional dependencies and common metadata mapping without bloating the core install. | Validate the new optional reader routes against real sample files and expand per-format metadata extraction. |
 | Acquisition metadata normalization | Partial | PSF generation and publication provenance need objective, channel, wavelength, scale, scene, source identity, and upstream processing flags regardless of file format. | Extend every reader to populate the same normalized `ImageState`/source metadata fields where possible. |
 | Points output type | Not implemented | Spot detection, peak finding, puncta workflows, and nearest-neighbor analyses need coordinates as first-class outputs. | Design a points + table contract before adding blob/peak nodes. |
-| Transform output type | Not implemented | Registration needs reusable estimated transforms and interpolation policy by semantic type. | Design before adding several registration algorithms. |
+| Transform output type | Implemented in development after 0.16.0a1 | Versioned immutable physical transforms/series, reference grids, time/frame identity and label-safe application. | Complete release qualification; see [implementation](registration-implementation.md). |
 | Surface/mesh output type | Implemented, unreleased | `Mask to 3D Mesh`: immutable geometry/calibration, manual full-resolution extraction, native napari Surface and OBJ publication. Mesh morphology measurements still output tables. | Per-label identities, repair and 3MF remain deferred. |
 
 ## P1: Near-Term Node And Workflow Work
@@ -215,20 +215,19 @@ Reader requirements:
 
 ### Registration, Drift Correction, And Template Matching
 
-The [0.16 proposal](registration-and-template-matching-plan.md) defines the
-input/output contracts and gates. Translation, application, comparison, and
-template detection are core; drift is stretch, with rigid/affine as follow-ups.
-Start with complete 2D/3D workflows, not a menu of disconnected algorithms.
+The revised 2026-09-22 scope is implemented in development, with release
+qualification pending. [Current contracts](registration-implementation.md) and
+[synthetic evidence](registration-synthetic-qualification.md) supersede the
+earlier translation/template-first proposal. Whole-volume time-series drift is
+core, not stretch. Template detection is deferred.
 
 | Node | Suggested backend | Prerequisite |
 | --- | --- | --- |
-| Estimate Translation | `skimage.registration.phase_cross_correlation` | Transform output type. |
-| Apply Transform | `scipy.ndimage.affine_transform`, initially translation | Explicit reference grid, transform direction, image interpolation, and nearest-neighbor masks/labels. Replaces the narrower Apply Translation proposal. |
+| Estimate Registration | scikit-image translation; SimpleITK rigid/affine | Implemented pairwise and fixed-reference whole-volume time-series modes; reusable transform and diagnostics ports. |
+| Apply Transform | SciPy linear; exact nearest-neighbour gather | Implemented saved reference grid, frame/time compatibility, coverage masks and original label IDs. |
 | Compare Images | `skimage.metrics` plus reviewed correlation/reduction primitives | Same-grid valid-region contract; SSIM, correlation, RMSE, optional PSNR; table-first, with explicit range/window settings. |
-| Template Match | `skimage.feature.match_template` | Calibrated center-based score grid, valid-score handling, and explicit template scope. Promoted from Defer; fixed size/orientation first. |
-| Find Peaks | Local maxima plus deterministic suppression | Locations/values table and inspector overlay first; reusable points ports remain a separate contract. |
-| Estimate Drift | Repeated phase cross-correlation | Explicit time axis/reference frame, indexed transform series, shared-channel application, and failure policy. |
-| Estimate Rigid / Affine Transform | SimpleITK evaluation | Qualified reusable transforms/resampling first; SimpleITK is now included for CPU median acceleration, not yet qualified for registration. |
+| Template Match | `skimage.feature.match_template` | Deferred; calibrated score grid and explicit template scope still required. |
+| Find Peaks | Local maxima plus deterministic suppression | Deferred; locations/values table and deterministic suppression still required. |
 
 Registration should not start as several disconnected image-output nodes. It
 needs a transform contract, label-safe interpolation, metadata updates, and

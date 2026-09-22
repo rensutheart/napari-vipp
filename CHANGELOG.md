@@ -23,6 +23,29 @@
 - Include shared custom axis index columns in automatic table joins so repeated
   label IDs from different image positions remain separate.
 
+- Prevent mouse-wheel scrolling over closed inspector drop-downs from changing
+  settings, including focused selectors. The inspector continues scrolling;
+  opened lists, mouse selection and keyboard controls retain their normal behavior.
+- Add Estimate Registration with translation, rigid and advanced affine models
+  for 2D/3D image pairs and fixed-reference time series. Each time point moves
+  as a complete spatial volume, with one estimation channel shared across channels.
+- Add reusable, versioned transform outputs and Apply Transform, including
+  calibrated reference grids, exact nearest-neighbour label IDs, valid-coverage
+  masks, progress/cancellation and JSON export through batch and generated Python.
+- Add Compare Images with same-grid RMSE, correlation, SSIM and PSNR, explicit
+  intensity range and full-window coverage handling. Include three synthetic
+  registration examples and independently known motion for qualification.
+- Preserve carried label-image identity when rebuilding source metadata so
+  automatic registration interpolation does not treat labels as intensities.
+- Make Estimate Registration show its diagnostics table and a compact transform
+  summary together, without an output-display selector. Summarize both outputs
+  on the node card and provide explicit diagnostics, transform and combined
+  export actions.
+- Add a neutral **Next step** suggestion to Estimate Registration. **Add Apply
+  Transform** connects the same moving-image output and the estimated transform
+  as one undoable edit, without calculating or replacing existing branches.
+  Show an existing matching Apply Transform node, or explicitly add another.
+
 ## 0.16.0a1 - 2026-09-21
 
 - Add Increase Decimal and Decrease Decimal controls to Results Workspace and

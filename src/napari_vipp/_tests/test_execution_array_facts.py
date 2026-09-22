@@ -64,6 +64,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
 )
+from napari_vipp.core.registration_planning import REGISTRATION_PLANNING_OPERATIONS
 from napari_vipp.core.workflow import load_workflow, serialize_workflow
 
 
@@ -2829,6 +2830,9 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
         | set(execution_module._EXACT_HOST_IDENTITY_OPERATIONS)
         | set(execution_module._EXACT_HOST_MULTI_INPUT_DTYPE_POLICIES)
         | set(_EXACT_AXIS_CONTRACT_OPERATIONS)
+        # Typed transform plans and exact reference-lattice Apply outputs are
+        # exercised by test_registration_planning's no-pixel contract tests.
+        | set(REGISTRATION_PLANNING_OPERATIONS)
         # Dedicated projections include both primary-object label ports.
         | {"prepare_validate_psf", "cellprofiler_primary_objects"}
     )

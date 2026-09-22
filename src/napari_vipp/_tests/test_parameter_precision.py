@@ -83,6 +83,33 @@ def test_numeric_editors_keep_declared_precision(
     assert control.value() == spec.default
 
 
+@pytest.mark.parametrize("control_type", [ParameterControl, NumericEntryControl])
+def test_comparison_range_editor_retains_small_positive_values(qtbot, control_type):
+    from qtpy.QtCore import Qt
+
+    from napari_vipp._widget import VippWidget
+
+    operation = next(item for item in NODE_LIBRARY if item.id == "compare_images")
+    spec = next(item for item in operation.parameters if item.name == "data_range")
+    control = control_type(
+        spec, spec.default, VippWidget._declared_parameter_bounds(spec)
+    )
+    qtbot.addWidget(control)
+    assert control.value_box.minimum() == spec.minimum == 1e-12
+    for value in (spec.minimum, 2e-12, 0.123456789012, 1.0, 255.0):
+        control.value_box.setValue(value)
+        assert control.value() == value
+        text = control.value_box.text()
+        assert float(text) == value
+        control.value_box.lineEdit().selectAll()
+        qtbot.keyClicks(control.value_box.lineEdit(), text)
+        qtbot.keyClick(control.value_box.lineEdit(), Qt.Key_Return)
+        assert control.value() == value
+    control.value_box.setValue(0)
+    assert control.value() == spec.minimum
+    assert float(control.value_box.text()) > 0
+
+
 @pytest.mark.parametrize(
     "operation,name,value,expected_step",
     FRACTIONAL_MESH_PARAMETERS,

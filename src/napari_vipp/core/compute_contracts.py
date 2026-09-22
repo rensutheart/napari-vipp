@@ -29,6 +29,7 @@ class ValueKind(StrEnum):
     TABLE = "table"
     PLOT = "plot"
     MESH = "mesh"
+    TRANSFORM = "transform"
     SCALAR = "scalar"
     ANY = "any"
 

@@ -78,6 +78,8 @@ _RESERVED_FUNCTION_NAMES = {
     "batch_process",
     "is_table_data",
     "is_mesh_data",
+    "is_transform_data",
+    "save_transform_output",
     "is_plot_data",
     "save_plot_output",
     "_plot_output_format",
@@ -509,6 +511,8 @@ def _build_imports() -> str:
             ),
             "from napari_vipp.core.tables import is_table_data, save_table_output",
             "from napari_vipp.core.meshes import is_mesh_data, save_mesh_output",
+            "from napari_vipp.core.transforms import ("
+            "is_transform_data, save_transform_output)",
             "from napari_vipp.core.result_plots import is_plot_data",
             "from napari_vipp.core.plot_rendering import save_plot_output",
             "from napari_vipp.core.workflow import deserialize_workflow",
@@ -1615,7 +1619,9 @@ def _write_output_uncommitted(
 ):
     """Write only inside a private publication directory."""
     try:
-        if is_plot_data(data):
+        if is_transform_data(data):
+            saved_path = save_transform_output(data, Path(path).with_suffix(".json"))
+        elif is_plot_data(data):
             plot_path = Path(path)
             selected = _plot_output_format(output_node_id)
             allowed = {".png", ".tif", ".tiff", ".svg", ".pdf"}
@@ -1906,7 +1912,8 @@ def _plot_output_format(node_id):
 def _automatic_output_path(directory, source_stem, node_id, data):
     """Name convenience-loop and multi-output CLI artifacts by output kind."""
     suffix = (
-        "." + _plot_output_format(node_id) if is_plot_data(data)
+        ".json" if is_transform_data(data)
+        else "." + _plot_output_format(node_id) if is_plot_data(data)
         else "." + _mesh_output_format(node_id) if is_mesh_data(data) else ".ome.tif"
     )
     return Path(directory) / f"{source_stem}__{node_id}{suffix}"

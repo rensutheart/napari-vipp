@@ -72,8 +72,8 @@ def test_chooser_prioritizes_analysis_and_collapses_developer_workflows(qtbot):
     qtbot.addWidget(dialog)
     assert dialog.tree.columnCount() == 1
     assert dialog.tree.wordWrap()
-    assert len(list(_items(dialog))) == len(EXAMPLE_WORKFLOWS) == 24
-    assert "24" in dialog.count_label.text()
+    assert len(list(_items(dialog))) == len(EXAMPLE_WORKFLOWS) == 27
+    assert "27" in dialog.count_label.text()
     first_category = dialog.tree.topLevelItem(0)
     last_category = dialog.tree.topLevelItem(dialog.tree.topLevelItemCount() - 1)
     assert "segmentation" in first_category.text(0).lower()

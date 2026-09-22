@@ -3,6 +3,7 @@
 from napari_vipp.core.meshes import is_mesh_data
 from napari_vipp.core.result_plots import is_plot_data
 from napari_vipp.core.tables import is_table_data
+from napari_vipp.core.transforms import is_transform_data
 
 
 def writer_format_choices(pipeline, node_id, declared_choices):
@@ -13,7 +14,9 @@ def writer_format_choices(pipeline, node_id, declared_choices):
     kind = ports[0].output_type if ports else "any"
     if kind == "any":
         data = pipeline.input_data_for_node(node_id)
-        if is_mesh_data(data):
+        if is_transform_data(data):
+            kind = "transform"
+        elif is_mesh_data(data):
             kind = "mesh"
         elif is_table_data(data):
             kind = "table"
@@ -21,7 +24,9 @@ def writer_format_choices(pipeline, node_id, declared_choices):
             kind = "plot"
         elif data is not None and hasattr(data, "shape") and hasattr(data, "dtype"):
             kind = "array"
-    if kind == "mesh":
+    if kind == "transform":
+        allowed = {default, "json"}
+    elif kind == "mesh":
         allowed = {default, "obj", "3mf"}
     elif kind == "table":
         allowed = (
@@ -30,7 +35,9 @@ def writer_format_choices(pipeline, node_id, declared_choices):
     elif kind == "plot":
         allowed = {default, "png", "tiff", "svg", "pdf"}
     elif kind in {"array", "image", "mask", "labels"}:
-        allowed = set(declared_choices) - {"obj", "3mf", "csv", "tsv", "svg", "pdf"}
+        allowed = set(declared_choices) - {
+            "obj", "3mf", "csv", "tsv", "svg", "pdf", "json"
+        }
     else:
         allowed = {default}
     return tuple(value for value in declared_choices if value in allowed)

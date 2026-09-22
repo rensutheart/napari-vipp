@@ -59,6 +59,7 @@ _ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION = MappingProxyType(
         # The CPU median is a versioned SimpleITK/SciPy dispatcher. Even
         # fallback results must not reuse evidence from a different stack.
         "median_filter": ("simpleitk",),
+        "estimate_registration": ("SimpleITK",),
         # These colours are carried output data, not an inspector-only LUT.
         "color_mesh_objects": ("matplotlib",),
     }

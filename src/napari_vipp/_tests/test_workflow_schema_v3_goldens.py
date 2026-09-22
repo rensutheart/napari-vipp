@@ -16,10 +16,11 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Add label-preserving skeleton analysis beside the existing label lane.
-    # The regressions below remove additions and pin each historical graph.
+    # Combine the independently reviewed label-skeleton and registration
+    # additions. Removing each branch below pins the other branch's golden;
+    # removing both preserves the prior nine-lane scientific contract.
     "exhaustive-inspector-showcase.json": (
-        "c13d64f69bd1818a0ae92aacc4745989282f0302d1ddd8263a25e3c236b3405c"
+        "b77b9ec8e45f139b78f36e24e86e37289695730014f456b10c66bc3efe4415c4"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -91,6 +92,19 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-per-label-skeleton.json": (
         "446e965ba7ad9b6e004fce28ea118f61518e791dc4e48c9302bf2b33816b139a"
+    ),
+    # Reviewed analytical registration recipes: the pairwise examples compare
+    # before/after over identical valid support with explicit intensity range 1;
+    # the time-series example reuses one XYZ transform per T across channels
+    # and original labels, using nearest-neighbour label interpolation.
+    "synthetic-registration-translation.json": (
+        "41c635369b5768df39b7ac802345e2eba44fb13e8702ea80ca08c56a73c1d897"
+    ),
+    "synthetic-registration-rigid-3d.json": (
+        "5134ebbcca030fbdb6dceb1266b04ddec9e4f16dee2130b94dde176c5b20d258"
+    ),
+    "synthetic-registration-time-series.json": (
+        "4b900fcff0779b7c10742d24a5ab10bb55afdf5cfb433ec2df283f1f82cd9d41"
     ),
     "synthetic-skeleton-qc.json": (
         "4804cd14731db2d940997f26eb62fd2e5d6fddceaee1b4ddf373b7be7612fb47"
@@ -322,19 +336,82 @@ def _without_label_skeleton_branch(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-def test_showcase_label_skeleton_branch_preserves_complete_previous_analysis():
+def _without_showcase_registration_lane(document: dict[str, Any]) -> dict[str, Any]:
+    document = deepcopy(document)
+    added_ids = {
+        "input_10",
+        "input_11",
+        "estimate_registration_1",
+        "apply_transform_1",
+        "compare_images_1",
+    }
+    assert added_ids <= {node["id"] for node in document["nodes"]}
+    added_edges = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] in added_ids or edge["target"] in added_ids
+    ]
+    # The new lane is independent: it must not retune, replace or consume any
+    # previous analysis branch to satisfy exhaustive palette coverage.
+    assert len(added_edges) == 7
+    assert all(
+        edge["source"] in added_ids and edge["target"] in added_ids
+        for edge in added_edges
+    )
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_ids
+    ]
+    document["connections"] = [
+        edge for edge in document["connections"] if edge not in added_edges
+    ]
+    document["tunnels"] = [
+        tunnel for tunnel in document["tunnels"] if tunnel["source"] not in added_ids
+    ]
+    for identifier in added_ids:
+        document["positions"].pop(identifier)
+    document["notes"] = [
+        note for note in document["notes"] if note["id"] != "lane_registration"
+    ]
+    return document
+
+
+def test_showcase_label_skeleton_branch_preserves_registration_analysis():
     document = _without_label_skeleton_branch(
         _load_example("exhaustive-inspector-showcase.json")
     )
-    previous_hash = "7f5bcf569782aaf4a89a191b28752c394227abb43ea7c716773811e1ece7e624"
+    previous_hash = "32be7bd0081212c171f3dc1aa88f1901a3c50558cb4a66785bd2c26091d1e5ba"
     assert scientific_workflow_hash(document) == previous_hash
     assert scientific_workflow_hash(_restore_and_reserialize(document)) == previous_hash
 
 
-def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
-    document = _without_label_skeleton_branch(
+def test_showcase_registration_lane_preserves_label_skeleton_analysis():
+    document = _without_showcase_registration_lane(
         _load_example("exhaustive-inspector-showcase.json")
     )
+    previous_hash = "c13d64f69bd1818a0ae92aacc4745989282f0302d1ddd8263a25e3c236b3405c"
+    assert scientific_workflow_hash(document) == previous_hash
+    assert scientific_workflow_hash(_restore_and_reserialize(document)) == previous_hash
+
+
+def _without_showcase_a2_additions() -> dict[str, Any]:
+    return _without_label_skeleton_branch(
+        _without_showcase_registration_lane(
+            _load_example("exhaustive-inspector-showcase.json")
+        )
+    )
+
+
+def test_showcase_a2_additions_preserve_the_prior_nine_lane_analysis():
+    document = _without_showcase_a2_additions()
+    historical_hash = "7f5bcf569782aaf4a89a191b28752c394227abb43ea7c716773811e1ece7e624"
+    assert scientific_workflow_hash(document) == historical_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(document)) == historical_hash
+    )
+
+
+def test_showcase_adds_mask_and_boundary_qc_without_changing_preexisting_analysis():
+    document = _without_showcase_a2_additions()
     # The added plot consumes the existing measurement table without changing
     # it or the legacy summary recipe. Strip only that display branch before
     # checking the historical scientific graph.

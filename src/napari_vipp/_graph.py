@@ -1838,6 +1838,8 @@ class PortItem(QGraphicsEllipseItem):
             color = "#a78bfa"
         elif self.data_type == "mesh":
             color = "#2dd4bf"
+        elif self.data_type == "transform":
+            color = "#fb923c"
         elif self.data_type in {"array", "array_or_mesh"}:
             color = "#38bdf8"
         elif self.data_type == "any":
@@ -3482,7 +3484,10 @@ class PipelineGraphView(QGraphicsView):
         # Output capability is known before the first calculation. Tables and
         # meshes must not reserve an image placeholder while waiting for data.
         card.set_preview_enabled(
-            any(kind not in {"table", "mesh"} for kind in _node_output_port_types(node))
+            any(
+                kind not in {"table", "mesh", "transform"}
+                for kind in _node_output_port_types(node)
+            )
         )
         card.set_graph_palette(self.palette())
         card.set_bypassed(getattr(node, "execution_mode", "run") == "bypass")
@@ -6074,6 +6079,10 @@ def _types_compatible(output_type: str, input_type: str | None) -> bool:
 def _node_input_port_count(node) -> int:
     if not getattr(node, "has_input", False):
         return 0
+    if getattr(node, "operation_id", "") == "estimate_registration":
+        return 1 if node.params.get("mode") == "Time series" else 2
+    if getattr(node, "operation_id", "") == "compare_images":
+        return 3 if node.params.get("use_mask", False) else 2
     spec = _operation_spec_for_node(node)
     if spec is not None and spec.inputs:
         return len(spec.input_ports)
@@ -6091,12 +6100,14 @@ def _node_input_port_count(node) -> int:
 
 def _node_input_port_labels(node) -> list[str]:
     count = _node_input_port_count(node)
+    if getattr(node, "operation_id", "") == "estimate_registration" and count == 1:
+        return ["Time series"]
     if getattr(node, "operation_id", "") == "combine_channels":
         colors = _channel_color_names(node)
         return [f"Channel {index + 1}: {colors[index]}" for index in range(count)]
     spec = _operation_spec_for_node(node)
     if spec is not None:
-        labels = [port.label for port in spec.input_ports]
+        labels = [port.label for port in spec.input_ports][:count]
         if len(labels) == count:
             return labels
     return [f"Input {index + 1}" for index in range(count)]
@@ -6111,7 +6122,9 @@ def _node_input_port_colors(node) -> list[str | None]:
 def _node_input_port_types(node) -> list[str]:
     spec = _operation_spec_for_node(node)
     if spec is not None and spec.inputs:
-        return [port.input_type for port in spec.input_ports]
+        return [port.input_type for port in spec.input_ports][
+            :_node_input_port_count(node)
+        ]
     input_type = getattr(node, "input_type", None) or "any"
     return [input_type for _index in range(_node_input_port_count(node))]
 

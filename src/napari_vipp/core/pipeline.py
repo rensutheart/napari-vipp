@@ -189,6 +189,10 @@ from napari_vipp.core.operations import (
     yen_threshold,
 )
 from napari_vipp.core.progress import ProgressContext
+from napari_vipp.core.registration_nodes import (
+    REGISTRATION_RUNTIME_KEYWORDS,
+    registration_node_specs,
+)
 from napari_vipp.core.result_plots import PlotState, plot_results, plot_state_from_data
 from napari_vipp.core.source_items import SourceItem
 from napari_vipp.core.source_window import ExactSourceWindowData
@@ -1967,6 +1971,7 @@ def _analyze_label_skeleton_inputs(
 
 
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
+    *registration_node_specs(),
     OperationSpec(
         "input",
         "Image Source",
@@ -6894,6 +6899,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "png",
                     "svg",
                     "pdf",
+                    "json",
                 ),
             ),
             ParameterSpec("subfolder", "Subfolder", "text", "", 0, 0, 1),
@@ -8147,6 +8153,11 @@ class PrototypePipeline:
             }:
                 _operations._crop_margin_values(value, 0)
         node.params[name] = value
+        if (node.operation_id, name) in {
+            ("estimate_registration", "mode"),
+            ("compare_images", "use_mask"),
+        }:
+            self.trim_invalid_connections(node_id)
 
     def node_auto_recalculate(self, node_id: str) -> bool:
         node = self.nodes.get(node_id)
@@ -8426,6 +8437,8 @@ class PrototypePipeline:
         if node is None or not node.has_input:
             return ()
         spec = self.operation_spec(node.operation_id)
+        if node.operation_id in {"estimate_registration", "compare_images"}:
+            return spec.input_ports[: self._required_inputs_for(node)]
         if spec.inputs:
             return spec.input_ports
         count = self.input_port_count(node_id)
@@ -8442,6 +8455,18 @@ class PrototypePipeline:
     ) -> tuple[OutputSpec, ...]:
         spec = self.operation_spec(self.nodes[node_id].operation_id)
         node = self.nodes[node_id]
+        if node.operation_id == "apply_transform":
+            source = self._bypass_primary_connection(node_id)
+            if source is not None:
+                source_ports = self.output_ports(source.source_id)
+                if 0 <= source.source_port < len(source_ports):
+                    return (
+                        replace(
+                            ports[0],
+                            output_type=source_ports[source.source_port].output_type,
+                        ),
+                        *ports[1:],
+                    )
         resolve_primary_type = spec.preserves_input_type or (
             node.execution_mode == NODE_EXECUTION_BYPASS
             and spec.supports_bypass
@@ -10130,6 +10155,7 @@ class PrototypePipeline:
                             "",
                             source_payloads,
                             defer_statistics=True,
+                            metadata_only=True,
                         )
                     elif self.node_is_bypassed(node_id):
                         results = self.bypass_node_results(node_id)
@@ -10217,6 +10243,11 @@ class PrototypePipeline:
         call: PreparedNodeCall,
     ) -> list[tuple[Any, ImageState | TableState | None]] | None:
         """Project deterministic image shape/axis transforms without kernels."""
+        from napari_vipp.core.registration_planning import project_registration_outputs
+
+        registration_outputs = project_registration_outputs(self, call)
+        if registration_outputs is not None:
+            return list(registration_outputs)
         node = self.nodes[call.node_id]
         operation_id = call.operation_id
         input_state = call.input_states[0] if call.input_states else None
@@ -11178,6 +11209,7 @@ class PrototypePipeline:
         *,
         defer_statistics: bool = False,
         cancellation=None,
+        metadata_only: bool = False,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
         """Resolve one source boundary without invoking an operation callable."""
         node = self.nodes[node_id]
@@ -11197,6 +11229,7 @@ class PrototypePipeline:
         if payload is None:
             payload = SourcePayload(input_data, input_metadata, input_name)
         state = payload.image_state
+        prior_kind = getattr(state, "kind", "")
         exact_window = isinstance(payload.data, ExactSourceWindowData)
         if state is None or (
             state.value_range == DEFERRED_VALUE_RANGE and not exact_window
@@ -11213,6 +11246,11 @@ class PrototypePipeline:
                 source=(state.source if state is not None else None),
                 defer_statistics=defer_statistics,
             )
+        if state is not None and prior_kind == "label image":
+            dtype = np.dtype(state.dtype)
+            if dtype.kind not in "iu":
+                raise ValueError("Label image source requires integer label IDs.")
+            state = replace(state, kind=prior_kind)
         if not payload.axis_semantics_resolved:
             declaration = _metadata.AxisDeclaration.from_value(
                 node.params.get("axis_declaration")
@@ -11224,6 +11262,24 @@ class PrototypePipeline:
                     declaration_source="Image Source",
                 )
         state = with_channel_colors(state, node.params.get("channel_colors", ""))
+        if isinstance(state, ImageState) and any(
+            self.nodes[descendant].operation_id
+            in {"estimate_registration", "apply_transform"}
+            for descendant in self.descendants_inclusive({node_id})
+        ):
+            from napari_vipp.core.registration_nodes import registration_source_frame
+
+            if metadata_only and not (state.source.source_uuid or state.source.uri):
+                state = replace(
+                    state,
+                    source=replace(
+                        state.source, source_uuid=f"vipp-planning-frame:{node_id}"
+                    ),
+                )
+            else:
+                state = registration_source_frame(
+                    state, payload.data, node_id, cancellation
+                )
         return [(payload.data, state)]
 
     def prepare_node_call(
@@ -11456,6 +11512,8 @@ class PrototypePipeline:
         input_states: list[ImageState | TableState | None],
         kwargs: dict[str, Any],
     ) -> None:
+        if "input_states" in REGISTRATION_RUNTIME_KEYWORDS.get(node.operation_id, ()):
+            kwargs["input_states"] = tuple(input_states)
         if (
             node.operation_id == "intensity_histogram"
             and input_states
@@ -11682,6 +11740,34 @@ class PrototypePipeline:
             )
         spec = self.operation_spec(node.operation_id)
         input_states = list(call.input_states)
+        if node.operation_id == "estimate_registration":
+            transform, diagnostics = output
+            return [
+                (transform, transform.state),
+                (
+                    diagnostics,
+                    table_state_from_data(
+                        diagnostics,
+                        history=_table_history(input_states, node.title, diagnostics),
+                        source_name=_combined_source_name(input_states),
+                    ),
+                ),
+            ]
+        if node.operation_id == "apply_transform":
+            from napari_vipp.core.transforms import apply_transform_output_state
+
+            return [
+                (
+                    data,
+                    apply_transform_output_state(
+                        input_states[0],
+                        call.inputs[1],
+                        data,
+                        mask=index == 1,
+                    ),
+                )
+                for index, data in enumerate(output)
+            ]
         if spec.output_type == "plot":
             history = _combined_history(input_states) + (
                 f"{node.title}: {output.recipe.plot_type}; "
@@ -12161,6 +12247,8 @@ class PrototypePipeline:
         if node is None or not node.has_input:
             return 0
         spec = self.operation_spec(node.operation_id)
+        if node.operation_id in {"estimate_registration", "compare_images"}:
+            return self._required_inputs_for(node)
         if spec.inputs:
             return len(spec.inputs)
         if self._node_accepts_multiple_inputs(node):
@@ -12172,11 +12260,17 @@ class PrototypePipeline:
         return bool(spec.inputs) or node.max_inputs is None or node.max_inputs != 1
 
     def _max_inputs_for(self, node: GraphNode) -> int | None:
+        if node.operation_id in {"estimate_registration", "compare_images"}:
+            return self._required_inputs_for(node)
         if node.max_inputs is None:
             return None
         return max(int(node.max_inputs), 1)
 
     def _required_inputs_for(self, node: GraphNode) -> int:
+        if node.operation_id == "estimate_registration":
+            return 1 if node.params.get("mode") == "Time series" else 2
+        if node.operation_id == "compare_images":
+            return 3 if node.params.get("use_mask", False) else 2
         spec = self.operation_spec(node.operation_id)
         if node.operation_id == "analyze_skeleton_per_label":
             return 2 if any(

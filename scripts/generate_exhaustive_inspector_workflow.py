@@ -1373,10 +1373,76 @@ def build_workflow() -> tuple[
     wire(compartment_cells, compartment_cytoplasm)
     wire(compartment_nuclei, compartment_cytoplasm, target_port=1)
 
-    operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
-    expected = (
-        {spec.id for spec in PALETTE_NODE_LIBRARY} - EXHAUSTIVE_EXTERNAL_SOURCE_IDS
+    # Lane 10 uses independently evaluated registration phantoms, not one image
+    # silently shifted by Apply Transform. Keep estimation and resampling visible.
+    lane_note(
+        "lane_registration",
+        "10. REGISTRATION AND IMAGE COMPARISON\n"
+        "An asymmetric YX pair has known motion of Y=+4.25, X=-6.5 pixels, "
+        "plus changed brightness and light noise. Estimate Registration should "
+        "correct by Y=-4.25, X=+6.5 pixels. Apply Transform resamples the original "
+        "once; Compare Images checks only valid coverage, with intensity range 1. "
+        "Inspect the transform and diagnostics outputs; scores are not proof "
+        "of biological correspondence.",
+        -440,
+        11680,
     )
+    registration_moving = source("VIPP registration 2D translation moving", 0, 11800)
+    registration_reference = source(
+        "VIPP registration 2D translation reference", 0, 12370
+    )
+    registration_estimate = place(
+        "estimate_registration",
+        340,
+        12070,
+        mode="Two images",
+        model="Translation",
+        precision=20,
+    )
+    registration_apply = place(
+        "apply_transform",
+        840,
+        12070,
+        interpolation="Linear",
+        outside_value=0.0,
+    )
+    registration_compare = place(
+        "compare_images",
+        1240,
+        11800,
+        use_mask=True,
+        data_range=1.0,
+        window_size=7,
+    )
+    moving_tunnel = add_tunnel("Registration moving image", registration_moving)
+    reference_tunnel = add_tunnel(
+        "Registration reference image", registration_reference
+    )
+    aligned_tunnel = add_tunnel("Registration aligned image", registration_apply)
+    coverage_tunnel = add_tunnel("Registration valid coverage", registration_apply, 1)
+    wire(registration_moving, registration_estimate, target_port=0)
+    wire(registration_reference, registration_estimate, target_port=1)
+    wire(registration_moving, registration_apply, tunnel_name=moving_tunnel)
+    wire(registration_estimate, registration_apply, target_port=1)
+    wire(registration_reference, registration_compare, tunnel_name=reference_tunnel)
+    wire(
+        registration_apply,
+        registration_compare,
+        target_port=1,
+        tunnel_name=aligned_tunnel,
+    )
+    wire(
+        registration_apply,
+        registration_compare,
+        target_port=2,
+        source_port=1,
+        tunnel_name=coverage_tunnel,
+    )
+
+    operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
+    expected = {
+        spec.id for spec in PALETTE_NODE_LIBRARY
+    } - EXHAUSTIVE_EXTERNAL_SOURCE_IDS
     actual = set(operation_counts)
     if actual != expected:
         raise RuntimeError(
@@ -1401,7 +1467,7 @@ def build_workflow() -> tuple[
         raise RuntimeError("Every showcase node must have a canvas position.")
 
     # The authored 340-unit logical grid predates the wider multi-input cards
-    # and named channel badges. Keep the nine conceptual lanes and ordering,
+    # and named channel badges. Keep the conceptual lanes and ordering,
     # but reserve horizontal room for both cards and their tunnel labels.
     positions = {node_id: (x * 1.9, y) for node_id, (x, y) in positions.items()}
 

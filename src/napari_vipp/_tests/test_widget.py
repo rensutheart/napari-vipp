@@ -25276,7 +25276,17 @@ def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
     assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
 
 
-def test_isolated_tuning_status_panel_height_is_stable_across_messages(qtbot):
+@pytest.mark.parametrize("registration_visit", (None, "native", "portable"))
+def test_isolated_tuning_status_panel_height_is_stable_across_messages(
+    qtbot, monkeypatch, registration_visit,
+):
+    if registration_visit == "portable":
+        from napari_vipp.ui import inspector
+
+        monkeypatch.setattr(
+            inspector, "_independent_layout_constraints_available",
+            lambda _layout: False,
+        )
     widget = VippWidget(
         _Viewer(np.ones((10, 10), dtype=np.float32), metadata={"axes": "YX"})
     )
@@ -25286,6 +25296,9 @@ def test_isolated_tuning_status_panel_height_is_stable_across_messages(qtbot):
     widget.pipeline.nodes["gaussian"].title = (
         "Gaussian Blur with a deliberately long tuning title"
     )
+    if registration_visit is not None:
+        widget.add_node_from_palette("estimate_registration")
+        widget._parameter_widgets["operation_notice"].wrapped_height_changed.emit()
     widget.graph_view.select_node("gaussian")
     widget.isolated_tuning_checkbox.setChecked(True)
     candidates = set(widget._isolated_tuning_status_messages("gaussian"))

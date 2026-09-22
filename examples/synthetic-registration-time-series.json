@@ -1,0 +1,199 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "estimate",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP registration XYZ drift time series",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "labels",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP registration XYZ drift labels",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "estimate",
+      "operation_id": "estimate_registration",
+      "params": {
+        "mode": "Time series",
+        "model": "Translation",
+        "channel": 0,
+        "reference_channel": 0,
+        "reference_time": 0,
+        "precision": 20,
+        "max_shift": 0.25,
+        "minimum_overlap": 0.25,
+        "metric": "Correlation",
+        "iterations": 200
+      }
+    },
+    {
+      "id": "apply",
+      "operation_id": "apply_transform",
+      "params": {
+        "interpolation": "Linear",
+        "outside_value": 0.0
+      }
+    },
+    {
+      "id": "apply_labels",
+      "operation_id": "apply_transform",
+      "params": {
+        "interpolation": "Nearest",
+        "outside_value": 0.0
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "estimate",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input",
+      "target": "apply",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Original two-channel series"
+    },
+    {
+      "source": "estimate",
+      "target": "apply",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "labels",
+      "target": "apply_labels",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "estimate",
+      "target": "apply_labels",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Shared XYZ drift transforms"
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      100
+    ],
+    "estimate": [
+      640,
+      100
+    ],
+    "apply": [
+      1540,
+      100
+    ],
+    "labels": [
+      0,
+      720
+    ],
+    "apply_labels": [
+      1540,
+      720
+    ]
+  },
+  "tunnels": [
+    {
+      "name": "Original two-channel series",
+      "source": "input",
+      "source_port": 0
+    },
+    {
+      "name": "Shared XYZ drift transforms",
+      "source": "estimate",
+      "source_port": 0
+    }
+  ],
+  "notes": [
+    {
+      "id": "note_input",
+      "attached_node": "input",
+      "text": "1. SIX FULL VOLUMES, TWO CHANNELS\nEach timepoint is a complete XYZ volume. The second channel has different object intensities but exactly the same stage motion. There is no independent biological movement in this analytical sample.",
+      "position": [
+        0,
+        -220
+      ],
+      "width": 440
+    },
+    {
+      "id": "note_estimate",
+      "attached_node": "estimate",
+      "text": "2. ONE TRANSFORM PER TIMEPOINT\nUse channel 0 for estimation and timepoint 0 as the reference. The known apparent displacements in ZYX pixels are: (0,0,0), (0.6,-1.25,2.5), (1.2,-2.5,4.5), (-0.4,-0.75,2), (0.8,1.5,-2), (1.5,2.25,-3.5). Correcting shifts have the opposite sign.",
+      "position": [
+        640,
+        -240
+      ],
+      "width": 460
+    },
+    {
+      "id": "note_apply",
+      "attached_node": "apply",
+      "text": "3. REUSE ACROSS CHANNELS\nApply the estimated XYZ motion to both original channels. Time and channel axes are never spatial dimensions, and individual Z slices are never registered separately. Scrub T before and after correction.",
+      "position": [
+        1540,
+        -220
+      ],
+      "width": 450
+    },
+    {
+      "id": "note_labels",
+      "attached_node": "labels",
+      "text": "4. LABELS FOLLOW THE SAME COORDINATE FRAME\nThe companion TZYX labels share the same source coordinate identity as the two-channel image. Reuse the transform series with nearest-neighbour interpolation to preserve integer object IDs. Fractional shifts can still change voxelized object boundaries.",
+      "position": [
+        0,
+        1100
+      ],
+      "width": 480
+    },
+    {
+      "id": "note_apply_labels",
+      "attached_node": "apply_labels",
+      "text": "VALIDITY AND LIMITATIONS\nBoth Apply Transform nodes produce coverage masks. Keep them when comparing or measuring aligned data. Registration diagnostics are not confidence probabilities, and successful alignment does not prove biological equivalence.",
+      "position": [
+        1540,
+        1100
+      ],
+      "width": 430
+    }
+  ],
+  "view": {
+    "zoom": 0.8,
+    "pan": [
+      0.0,
+      0.0
+    ]
+  }
+}

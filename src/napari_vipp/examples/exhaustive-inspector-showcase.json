@@ -1383,6 +1383,67 @@
       "params": {
         "shrink_nuclei": true
       }
+    },
+    {
+      "id": "input_10",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP registration 2D translation moving",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "input_11",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP registration 2D translation reference",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "estimate_registration_1",
+      "operation_id": "estimate_registration",
+      "params": {
+        "mode": "Two images",
+        "model": "Translation",
+        "channel": 0,
+        "reference_channel": 0,
+        "reference_time": 0,
+        "precision": 20,
+        "max_shift": 0.25,
+        "minimum_overlap": 0.25,
+        "metric": "Correlation",
+        "iterations": 200
+      }
+    },
+    {
+      "id": "apply_transform_1",
+      "operation_id": "apply_transform",
+      "params": {
+        "interpolation": "Linear",
+        "outside_value": 0.0
+      }
+    },
+    {
+      "id": "compare_images_1",
+      "operation_id": "compare_images",
+      "params": {
+        "use_mask": true,
+        "data_range": 1.0,
+        "window_size": 7
+      }
     }
   ],
   "connections": [
@@ -2519,6 +2580,52 @@
       "target": "cellprofiler_cytoplasm_1",
       "target_port": 1,
       "source_port": 0
+    },
+    {
+      "source": "input_10",
+      "target": "estimate_registration_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input_11",
+      "target": "estimate_registration_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "input_10",
+      "target": "apply_transform_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Registration moving image"
+    },
+    {
+      "source": "estimate_registration_1",
+      "target": "apply_transform_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "input_11",
+      "target": "compare_images_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Registration reference image"
+    },
+    {
+      "source": "apply_transform_1",
+      "target": "compare_images_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Registration aligned image"
+    },
+    {
+      "source": "apply_transform_1",
+      "target": "compare_images_1",
+      "target_port": 2,
+      "source_port": 1,
+      "tunnel": "Registration valid coverage"
     }
   ],
   "tunnels": [
@@ -2556,6 +2663,26 @@
       "name": "Red channel",
       "source": "split_channels_1",
       "source_port": 0
+    },
+    {
+      "name": "Registration aligned image",
+      "source": "apply_transform_1",
+      "source_port": 0
+    },
+    {
+      "name": "Registration moving image",
+      "source": "input_10",
+      "source_port": 0
+    },
+    {
+      "name": "Registration reference image",
+      "source": "input_11",
+      "source_port": 0
+    },
+    {
+      "name": "Registration valid coverage",
+      "source": "apply_transform_1",
+      "source_port": 1
     },
     {
       "name": "Skeleton mask",
@@ -3156,6 +3283,26 @@
     "cellprofiler_cytoplasm_1": [
       5168.0,
       10700.0
+    ],
+    "input_10": [
+      0.0,
+      11800.0
+    ],
+    "input_11": [
+      0.0,
+      12370.0
+    ],
+    "estimate_registration_1": [
+      646.0,
+      12070.0
+    ],
+    "apply_transform_1": [
+      1596.0,
+      12070.0
+    ],
+    "compare_images_1": [
+      2356.0,
+      11800.0
     ]
   },
   "notes": [
@@ -3255,6 +3402,15 @@
       "position": [
         -440.0,
         10360.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_registration",
+      "text": "10. REGISTRATION AND IMAGE COMPARISON\nAn asymmetric YX pair has known motion of Y=+4.25, X=-6.5 pixels, plus changed brightness and light noise. Estimate Registration should correct by Y=-4.25, X=+6.5 pixels. Apply Transform resamples the original once; Compare Images checks only valid coverage, with intensity range 1. Inspect the transform and diagnostics outputs; scores are not proof of biological correspondence.",
+      "position": [
+        -440.0,
+        11680.0
       ],
       "width": 360.0
     }

@@ -103,7 +103,66 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "split_channels",
         "save_output",
         "batch_output",
+        "estimate_registration",
+        "apply_transform",
+        "compare_images",
     }
+
+
+@pytest.mark.parametrize(
+    "operation_id,reason,output_types",
+    [
+        ("estimate_registration", "multi-output boundary", ("transform", "table")),
+        ("apply_transform", "multi-output boundary", ("image", "mask")),
+        ("compare_images", "materializes a table", ("table",)),
+    ],
+)
+def test_registration_boundaries_cannot_silently_bypass_connected_scientific_outputs(
+    operation_id, reason, output_types
+) -> None:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    reference = pipeline.add_node("input")
+    estimate = pipeline.add_node("estimate_registration")
+    apply = pipeline.add_node("apply_transform")
+    comparison = pipeline.add_node("compare_images")
+    pipeline.set_param(comparison.id, "use_mask", True)
+    for source, target, source_port, target_port in (
+        ("input", estimate.id, 0, 0),
+        (reference.id, estimate.id, 0, 1),
+        ("input", apply.id, 0, 0),
+        (estimate.id, apply.id, 0, 1),
+        (reference.id, comparison.id, 0, 0),
+        (apply.id, comparison.id, 0, 1),
+        (apply.id, comparison.id, 1, 2),
+    ):
+        assert pipeline.connect(
+            source, target, source_port=source_port, target_port=target_port
+        ).success
+    node = next(
+        node for node in pipeline.nodes.values() if node.operation_id == operation_id
+    )
+    original_connections = tuple(pipeline.connections)
+    assert not NODE_LIBRARY_BY_ID[operation_id].supports_bypass
+    assert not pipeline.node_supports_bypass(node.id)
+    assert reason in pipeline.node_bypass_block_reason(node.id)
+    with pytest.raises(ValueError, match=reason):
+        pipeline.set_node_execution_mode(node.id, "bypass")
+    assert not pipeline.node_is_bypassed(node.id)
+    assert tuple(pipeline.connections) == original_connections
+    actual_types = tuple(port.output_type for port in pipeline.output_ports(node.id))
+    assert actual_types == output_types
+
+    # Persisted or externally modified workflows must also fail closed rather
+    # than forward an unregistered image as a transform, coverage mask or table.
+    invalid_nodes = [
+        replace(candidate, execution_mode="bypass")
+        if candidate.id == node.id
+        else candidate
+        for candidate in pipeline.nodes.values()
+    ]
+    with pytest.raises(ValueError, match=reason):
+        PrototypePipeline().restore_graph(invalid_nodes, original_connections)
 
 
 def test_mesh_creation_cannot_bypass_into_a_surface_consumer() -> None:

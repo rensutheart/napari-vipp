@@ -574,10 +574,18 @@ def image_state_from_array(
         acquisition = acquisition or carried_state.acquisition
         source = source or carried_state.source
 
+    kind = _lazy_kind_label(dtype, shape, axes) if lazy else _kind_label(arr, axes)
+    if carried_state is not None and carried_state.kind == "label image":
+        if dtype.kind not in "iu" or (arr is not None and arr.size and arr.min() < 0):
+            raise ValueError(
+                "Carried label-image metadata requires non-negative integer label IDs."
+            )
+        kind = "label image"
+
     return ImageState(
         shape=shape,
         dtype=dtype.name,
-        kind=_lazy_kind_label(dtype, shape, axes) if lazy else _kind_label(arr, axes),
+        kind=kind,
         axes=axes,
         bit_depth=_bit_depth_label(dtype),
         value_range=(
@@ -773,6 +781,12 @@ def transform_split_output_state(
 
 def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
+    transform_state = _coerce_transform_state(state_or_data)
+    if transform_state is not None:
+        return (
+            f"TRANSFORM: {transform_state.transform_count} · {transform_state.model}\n"
+            f"{''.join(transform_state.spatial_axes).upper()} moving → reference"
+        )
     plot_state = _coerce_plot_state(state_or_data)
     if plot_state is not None:
         return (
@@ -807,6 +821,20 @@ def format_compact_metadata(state_or_data) -> str:
 
 def metadata_table_rows(state_or_data) -> list[MetadataRow]:
     """Return display rows for the selected-node metadata table."""
+    transform_state = _coerce_transform_state(state_or_data)
+    if transform_state is not None:
+        return [
+            MetadataRow("Kind", "Spatial transform"),
+            MetadataRow("Motion model", transform_state.model),
+            MetadataRow("Transforms", str(transform_state.transform_count)),
+            MetadataRow(
+                "Spatial axes", " / ".join(transform_state.spatial_axes).upper()
+            ),
+            MetadataRow("Coordinates", transform_state.coordinate_unit),
+            MetadataRow("Direction", "Moving → reference"),
+            MetadataRow("Moving", transform_state.source_name),
+            MetadataRow("Reference", transform_state.reference_name),
+        ]
     plot_state = _coerce_plot_state(state_or_data)
     if plot_state is not None:
         return [
@@ -1047,6 +1075,9 @@ def _table_quality_rows(quality: TableQuality) -> list[MetadataRow]:
 
 def metadata_history_items(state_or_data) -> list[str]:
     """Return operation history entries for inspector display."""
+    transform_state = _coerce_transform_state(state_or_data)
+    if transform_state is not None:
+        return list(transform_state.history)
     plot_state = _coerce_plot_state(state_or_data)
     if plot_state is not None:
         return list(plot_state.history)
@@ -1066,7 +1097,8 @@ def metadata_history_items(state_or_data) -> list[str]:
 def format_detailed_metadata(state_or_data) -> str:
     """Multi-line metadata summary for the selected node inspector."""
     if (
-        _coerce_mesh_state(state_or_data) is not None
+        _coerce_transform_state(state_or_data) is not None
+        or _coerce_mesh_state(state_or_data) is not None
         or _coerce_plot_state(state_or_data) is not None
     ):
         return "\n".join(
@@ -3413,6 +3445,14 @@ def _channel_axis_index(axes: tuple[AxisMetadata, ...]) -> int | None:
         if axis.type == "channel" or axis.name.lower() == "c":
             return index
     return None
+
+
+def _coerce_transform_state(state_or_data):
+    from napari_vipp.core.transforms import TransformData, TransformState
+
+    if isinstance(state_or_data, TransformState):
+        return state_or_data
+    return state_or_data.state if isinstance(state_or_data, TransformData) else None
 
 
 def _coerce_mesh_state(state_or_data):
