@@ -853,8 +853,39 @@ def _drive_widget_session(
     finally:
         for restore in reversed(restore_observers):
             restore()
-        widget.close()
-        application.processEvents()
+        _dispose_benchmark_widget(
+            widget, application=application, timeout_seconds=spec.timeout_seconds
+        )
+
+
+def _dispose_benchmark_widget(
+    widget: object, *, application: object, timeout_seconds: float
+) -> None:
+    """Destroy the owned native tree while its QApplication is still alive.
+
+    close() stops publication but normally only hides a QWidget. Restored bound
+    methods also leave Python reference cycles, so scope exit/GC is not a safe
+    native destruction order. A terminal report can precede QRunnable.run()
+    returning; join only this widget's pools before its explicit deferred delete.
+    This blocking barrier belongs to the benchmark, not interactive app close.
+    """
+    from qtpy.QtCore import QEvent, QThreadPool
+
+    if not widget.close():
+        raise EvidenceError("Benchmark widget refused to close; teardown incomplete.")
+    deadline = time.perf_counter() + timeout_seconds
+    for pool in widget.findChildren(QThreadPool):
+        remaining_ms = max(0, int((deadline - time.perf_counter()) * 1000))
+        if not pool.waitForDone(remaining_ms):
+            raise EvidenceError(
+                "Benchmark workers did not stop before the teardown deadline."
+            )
+    widget.deleteLater()
+    # processEvents() alone does not guarantee delivery of DeferredDelete when
+    # this harness drives Qt without application.exec(). Keep application owned
+    # through this explicit barrier, including error paths and borrowed qapps.
+    application.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
+    application.processEvents()
 
 
 def _compute_device_selection(spec: WorkerSpec) -> dict[str, object]:
@@ -2462,6 +2493,8 @@ def _launch_mode_worker(spec: WorkerSpec) -> Mapping[str, object]:
         output = Path(directory) / "worker.json"
         command = [
             sys.executable,
+            "-X",
+            "faulthandler",
             str(Path(__file__).resolve()),
             "--_worker",
             "--output",
