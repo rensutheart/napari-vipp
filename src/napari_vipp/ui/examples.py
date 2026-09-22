@@ -187,6 +187,16 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "hull metrics, and sphericity.",
     ),
     ExampleWorkflowSpec(
+        "per-label-skeleton",
+        "Skeletons & Networks",
+        "Per-label Skeleton & Morphology",
+        "synthetic-per-label-skeleton.json",
+        ("VIPP synthetic skeleton network",),
+        "Keep each object's label through skeletonization, inspect component "
+        "and isolate counts, and join skeleton measurements to morphology "
+        "before plotting volume against skeleton length.",
+    ),
+    ExampleWorkflowSpec(
         "skeleton-qc",
         "Skeletons & Networks",
         "Skeleton QC",

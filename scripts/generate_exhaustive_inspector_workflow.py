@@ -899,6 +899,30 @@ def build_workflow() -> tuple[
     wire(combined_surface, smoothed_surface)
     wire(smoothed_surface, simplified_surface)
 
+    # Label-first measurements retain the morphology object's identity.
+    # The original skeleton-first QC lane below still assigns component IDs.
+    label_skeleton = place(
+        "skeletonize_labels", 6460, 5750,
+        spatial_mode="Auto from axes", method="Auto",
+    )
+    label_skeleton_table = place(
+        "analyze_skeleton_per_label", 6800, 5750,
+        spatial_mode="Auto from axes", method="Auto",
+    )
+    wire(relabel, label_skeleton, tunnel_name=object_labels_tunnel)
+    wire(relabel, label_skeleton_table, tunnel_name=object_labels_tunnel)
+    wire(label_skeleton, label_skeleton_table, target_port=1)
+    lane_note(
+        "label_skeleton_identity",
+        "PRESERVE ORIGINAL OBJECT IDS\n"
+        "Skeletonize Labels retains each filtered object's label. Analyze "
+        "Skeleton per Label receives both originals and skeletons, producing "
+        "one summary per object plus component details. The separate "
+        "skeleton-first lane still labels connected skeleton pieces.",
+        6460 * 1.9,
+        5370,
+    )
+
     # Lane 5: colocalization and spatial relationships on the same registered grid.
     lane_note(
         "lane_colocalization",

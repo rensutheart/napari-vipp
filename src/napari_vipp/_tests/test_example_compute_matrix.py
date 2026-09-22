@@ -581,6 +581,7 @@ def test_compute_matrix_covers_every_bundled_example():
         "derived-morphology",
         "mesh-morphology",
         "mesh-objects",
+        "per-label-skeleton",
         "skeleton-qc",
         "advanced-skeleton",
         "racc-colocalization",

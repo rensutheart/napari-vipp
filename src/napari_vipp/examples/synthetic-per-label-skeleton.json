@@ -1,0 +1,281 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "skeleton_measurements",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic skeleton network",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "threshold",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 1000,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "labels",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "filtered_labels",
+      "operation_id": "filter_labels_by_volume",
+      "params": {
+        "min_volume": 1,
+        "max_volume": 0,
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "morphology",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "include_shape_descriptors": true,
+        "include_axis_descriptors": true,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": true,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "skeleton_labels",
+      "operation_id": "skeletonize_labels",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "method": "Auto"
+      }
+    },
+    {
+      "id": "skeleton_measurements",
+      "operation_id": "analyze_skeleton_per_label",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "method": "Auto"
+      }
+    },
+    {
+      "id": "merged",
+      "operation_id": "merge_tables",
+      "params": {
+        "input_count": 2,
+        "join_mode": "Left join",
+        "join_keys": "label_id"
+      }
+    },
+    {
+      "id": "annotated",
+      "operation_id": "add_metadata_columns",
+      "params": {
+        "metadata_columns": "image_id=synthetic_network_01, condition=demonstration",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "plot_volume_length",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Scatter",
+        "y_column": "skeleton_length_physical",
+        "x_column": "volume_physical",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "image_id",
+        "summary": "Median",
+        "distribution": "Histogram",
+        "bins": 16,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Object volume and its own skeleton length",
+        "point_size": 7,
+        "show_grid": true
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "threshold",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "threshold",
+      "target": "labels",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "labels",
+      "target": "filtered_labels",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filtered_labels",
+      "target": "morphology",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Original filtered labels"
+    },
+    {
+      "source": "filtered_labels",
+      "target": "skeleton_labels",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filtered_labels",
+      "target": "skeleton_measurements",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Original filtered labels"
+    },
+    {
+      "source": "skeleton_labels",
+      "target": "skeleton_measurements",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "morphology",
+      "target": "merged",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "skeleton_measurements",
+      "target": "merged",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "merged",
+      "target": "annotated",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "annotated",
+      "target": "plot_volume_length",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      500
+    ],
+    "threshold": [
+      500,
+      500
+    ],
+    "labels": [
+      920,
+      500
+    ],
+    "filtered_labels": [
+      1370,
+      500
+    ],
+    "morphology": [
+      1970,
+      40
+    ],
+    "skeleton_labels": [
+      1970,
+      750
+    ],
+    "skeleton_measurements": [
+      2470,
+      750
+    ],
+    "merged": [
+      3100,
+      300
+    ],
+    "annotated": [
+      3540,
+      300
+    ],
+    "plot_volume_length": [
+      3970,
+      300
+    ]
+  },
+  "notes": [
+    {
+      "id": "objects",
+      "text": "1. KEEP THE SAME OBJECTS\nThis sparse 3D sample contains a branched network, a separate line and one isolated voxel. Label first; both measurements use the same filtered labels. The minimum volume of 1 keeps the isolate. Try 2 to remove it from both branches.",
+      "position": [
+        0,
+        -260
+      ],
+      "width": 620
+    },
+    {
+      "id": "identity",
+      "text": "2. PRESERVE LABEL IDENTITY\nSkeletonize Labels thins each original label independently. Analyze Skeleton per Label receives the original labels AND that skeleton. Its main table has one row per original label; the Skeleton components output lists any disconnected pieces within that label.",
+      "position": [
+        1450,
+        -260
+      ],
+      "width": 660
+    },
+    {
+      "id": "joins",
+      "text": "3. JOIN AND INSPECT\nJoin morphology and skeleton summaries by label_id for this one 3D image. Across images or timepoints, also include image and leading-axis identity. Isolated nodes are degree-zero skeleton voxels; they are not all separate objects. Keep raw columns.",
+      "position": [
+        2670,
+        -260
+      ],
+      "width": 640
+    },
+    {
+      "id": "calibration",
+      "text": "4. DESCRIPTIVE EXAMPLE\nSynthetic spacing is 0.45 micrometer in Z, Y and X. Volume and skeleton length use that same calibration. Inspect all three points, including the zero-length isolate. This is a fixture, not evidence of biological independence or valid segmentation of acquired images.",
+      "position": [
+        3820,
+        -260
+      ],
+      "width": 650
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Original filtered labels",
+      "source": "filtered_labels",
+      "source_port": 0
+    },
+    {
+      "name": "Skeleton component details",
+      "source": "skeleton_measurements",
+      "source_port": 1
+    }
+  ]
+}

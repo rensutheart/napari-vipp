@@ -66,6 +66,7 @@ _MEASUREMENT_OPERATION_IDS = frozenset(
         "measure_objects_intensity",
         "measure_3d_mesh_morphology",
         "analyze_skeleton",
+        "analyze_skeleton_per_label",
         "measure_skeleton_branches",
         "summarize_skeleton_branches",
         "skeleton_graph_tables",

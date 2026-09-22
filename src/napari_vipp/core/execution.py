@@ -176,6 +176,7 @@ _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
         "relabel_sequential": "same",
         "rescale_intensity": "same",
         "save_output": "same",
+        "skeletonize_labels": "same",
         "set_microscope_metadata": "same",
         "set_pixel_size": "same",
         "sobel_filter": "same",

@@ -4548,6 +4548,25 @@ def _table_int_value(value) -> int | None:
     return rounded if np.isclose(number, rounded) else None
 
 
+def _is_table_axis_index(table: TableData, column: str) -> bool:
+    if table.unit_for(column).strip().casefold() not in {"", "index"}:
+        return False
+    position = table.columns.index(column)
+    for row in table.rows:
+        value = row[position]
+        if isinstance(value, (bool, np.bool_)):
+            return False
+        if isinstance(value, (int, np.integer)):
+            if value < 0:
+                return False
+        elif isinstance(value, (float, np.floating)):
+            if not np.isfinite(value) or value < 0 or value != int(value):
+                return False
+        else:
+            return False
+    return True
+
+
 def _table_join_keys(
     tables: Sequence[TableData],
     join_keys: str,
@@ -4569,6 +4588,16 @@ def _table_join_keys(
     for table in tables[1:]:
         common &= set(table.columns)
     keys = tuple(column for column in IDENTITY_JOIN_COLUMNS if column in common)
+    # Leading-axis indices include positions/tiles beyond standard T/C/Z.
+    # A measured quantity such as fragmentation_index is not an identity key.
+    keys += tuple(
+        column
+        for column in tables[0].columns
+        if column in common
+        and column.endswith("_index")
+        and column not in keys
+        and all(_is_table_axis_index(table, column) for table in tables)
+    )
     if keys:
         return keys, False
     row_counts = {table.row_count for table in tables}

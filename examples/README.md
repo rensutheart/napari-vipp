@@ -40,6 +40,7 @@ registry):
 - `plot-morphology`
 - `mesh-morphology`
 - `mesh-objects`
+- `per-label-skeleton`
 - `skeleton-qc`
 - `advanced-skeleton`
 - `racc-colocalization`
@@ -78,6 +79,7 @@ example...**. Its actively maintained source also remains under
 | `synthetic-measurement-plots.json` | `VIPP synthetic measurement plots` | One calibrated 2D image with 60 separated synthetic ellipses. Threshold and label, join morphology/intensity tables, annotate image identity, then review histogram, scatter, points and cumulative Plot Results branches. Four canvas notes distinguish designed size/signal association from biological evidence. No output files are written by calculation. Open as `plot-morphology`. |
 | `synthetic-3d-mesh-morphology.json` | `VIPP synthetic 3D mesh morphology` | True-3D mesh morphology on anisotropic objects, including surface area, mesh volume, convex hull metrics, sphericity, and tiny-object status reporting. |
 | `synthetic-mesh-objects.json` | `VIPP synthetic 3D mesh morphology` | Saved interactive workflow: split a single mesh into five objects, colour by triangle count with Turbo, filter and combine, smooth at 2 iterations/strength 1, then simplify at 10%/aggressiveness 4. Retains layout and inspector profiles; no automatic file output. Open as `mesh-objects`; see the [mesh guide](https://rensutheart.github.io/vipp-mkdocs/nightly/workflows/mask-to-mesh/). |
+| `synthetic-per-label-skeleton.json` | `VIPP synthetic skeleton network` | Unreleased after 0.16.0a1: label and filter three objects, retain original IDs during skeletonization, inspect per-label summaries and component details, and join to morphology before plotting volume against skeleton length. The sample retains its isolated voxel at a minimum volume of 1 and has 0.45 micrometer spacing. Calculation writes no files. Open as `per-label-skeleton`. |
 | `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path using a `Skeleton mask` tunnel: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
 | `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test using a `Skeleton mask` tunnel for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
 | `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Focused whole-image and ROI-masked RACC review: manual thresholds 43,970.51 / 48,073.03, 30,000 red-channel ROI, Magma index views, threshold/scatter review, and notes explaining the method, theta and source paper. Open as `racc-colocalization`. |

@@ -205,7 +205,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         "Born-Wolf PSF": ("born_wolf_psf_1", 0, 1),
         "Expanded labels": ("expand_labels_1", 0, 1),
         "Green channel": ("split_channels_1", 1, 15),
-        "Object labels": ("relabel_sequential_1", 0, 4),
+        "Object labels": ("relabel_sequential_1", 0, 6),
         "ROI mask": ("binary_threshold_1", 0, 12),
         "Raw volume": ("input_2", 0, 4),
         "Red channel": ("split_channels_1", 0, 20),
@@ -232,8 +232,8 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 64
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 111
+    assert sum(tunnel_counts.values()) == 66
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 112
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:

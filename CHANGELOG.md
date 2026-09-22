@@ -12,6 +12,17 @@
 - Render logarithmic axis tick labels as powers of ten in measurement plots
   and exported figures, while keeping titles and category labels literal.
 
+- Add Skeletonize Labels and Analyze Skeleton per Label. Thin each original
+  object independently while preserving its label ID, then report object-level
+  skeleton measurements and component details, including isolates and objects
+  with no remaining skeleton. Preserve spatial calibration and leading-axis
+  identity when joining these results to morphology measurements.
+- Add a calibrated Per-label Skeleton & Morphology example. Keep the existing
+  Skeletonize → Label Skeleton Components workflow for independent component
+  labeling.
+- Include shared custom axis index columns in automatic table joins so repeated
+  label IDs from different image positions remain separate.
+
 ## 0.16.0a1 - 2026-09-21
 
 - Add Increase Decimal and Decrease Decimal controls to Results Workspace and
