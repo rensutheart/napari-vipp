@@ -9,6 +9,9 @@
   reproducibility records. Add installed-package smoke tests and a reproducible
   CPU qualification/benchmark harness; other filters are not automatically replaced.
 
+- Render logarithmic axis tick labels as powers of ten in measurement plots
+  and exported figures, while keeping titles and category labels literal.
+
 ## 0.16.0a1 - 2026-09-21
 
 - Add Increase Decimal and Decrease Decimal controls to Results Workspace and
