@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Accelerate qualified CPU **Median Filter** calls with SimpleITK 2.5.6,
+  preserving the existing XY-only footprint, reflected borders and data type.
+  Keep SciPy for unqualified inputs and leave GPU implementations unchanged.
+  Version the CPU dispatcher and track SimpleITK in scientific cache, batch and
+  reproducibility records. Add installed-package smoke tests and a reproducible
+  CPU qualification/benchmark harness; other filters are not automatically replaced.
+
 ## 0.16.0a1 - 2026-09-21
 
 - Add Increase Decimal and Decrease Decimal controls to Results Workspace and

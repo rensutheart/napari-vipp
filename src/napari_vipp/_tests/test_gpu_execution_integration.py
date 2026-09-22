@@ -441,8 +441,23 @@ def test_injected_planner_cannot_return_a_different_device_request():
 
 def test_prefer_gpu_then_auto_cpu_comparison_teaches_next_auto_assignment(
     tmp_path,
+    monkeypatch,
     validated_windows_compute_host,
 ):
+    # This tests learning with an admitted CPU comparison, not the machine's
+    # transient commit usage. The separate unsafe-headroom test covers refusal.
+    monkeypatch.setattr(
+        execution_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot(
+            platform="win32",
+            source="windows_global_memory_status_ex",
+            physical_total_bytes=32 * 1024**3,
+            physical_available_bytes=16 * 1024**3,
+            commit_limit_bytes=64 * 1024**3,
+            commit_available_bytes=32 * 1024**3,
+        ),
+    )
     pipeline = PrototypePipeline()
     gaussian = pipeline.add_node("gaussian_blur")
     pipeline.set_param(gaussian.id, "sigma", 0.0)

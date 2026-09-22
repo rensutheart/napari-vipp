@@ -45,7 +45,12 @@ from napari_vipp.core.compute_registry import (
     RuntimeMemorySnapshot,
     RuntimeProtocol,
 )
-from napari_vipp.core.compute_specs import AdmissionTier, OperationComputeSpec
+from napari_vipp.core.compute_specs import (
+    AdmissionTier,
+    OperationComputeSpec,
+    cpu_implementation_id,
+    cpu_implementation_version,
+)
 from napari_vipp.core.host_finalization import apply_host_finalizer
 from napari_vipp.core.measurements import (
     MEASUREMENT_TABLE_PARITY_OPERATION_IDS,
@@ -294,9 +299,9 @@ def build_registered_node_benchmark(
         for spec in specs
     )
     reference = BenchmarkImplementation(
-        implementation_id=f"cpu-{call.operation_id}-v1",
+        implementation_id=cpu_implementation_id(call.operation_id),
         execute=_execute_cpu_reference,
-        implementation_version="1",
+        implementation_version=cpu_implementation_version(call.operation_id),
     )
     request = NodeBenchmarkRequest(
         workload=workload,
@@ -585,8 +590,8 @@ def _benchmark_scientific_contract_digest(
             "identity_policy_id": "production-node-scientific-contract-v1",
             "operation_id": operation_id,
             "reference": {
-                "implementation_id": f"cpu-{operation_id}-v1",
-                "implementation_version": "1",
+                "implementation_id": cpu_implementation_id(operation_id),
+                "implementation_version": cpu_implementation_version(operation_id),
             },
             "ordered_candidates": tuple(
                 {

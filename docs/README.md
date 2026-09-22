@@ -29,6 +29,14 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Public data corpus](public-data-corpus.md)
 - [Source-aware loading qualification](source-aware-loading-0.14.0a1.md)
 - [Analytical phantom validation](analytical-phantom-validation.md)
+- [SimpleITK CPU qualification](simpleitk-cpu-qualification.md): exact median
+  compatibility, bounded dispatch, packaging and further-hotspot assessment.
+- [Background-subtraction comparison protocol](benchmarks/background-subtraction-protocol-2026-09-22.md):
+  full-operation CPU/GPU timings and scientific differences for exploratory
+  SimpleITK estimators; not production replacements.
+- [Completed background-subtraction comparison](benchmarks/background-subtraction-2026-09-22.md):
+  66 configurations, speed/quality trade-offs, exact GPU and box-control agreement,
+  normalized-input caveat and invalid-memory-measurement disclosure.
 - [Seeded segmentation](seeded-segmentation.md): 2D CellProfiler Propagation,
   acquired-image examples, existing 3D watershed and Random Walker evaluation.
 - [Statistics-paper reproduction](validation/statistics-paper-reproduction.md):

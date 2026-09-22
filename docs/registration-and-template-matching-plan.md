@@ -289,14 +289,17 @@ is generic round bright spots rather than resemblance to a specific patch,
 | Later | **Estimate Transform from Landmarks** | Useful for fiducials or different stains, but requires reproducible paired-point inputs, correspondence IDs, residuals, degeneracy checks, and outlier policy first. |
 | Defer | Deformable registration, optical flow, stitching, tracking, ORB/SIFT, rotation/scale template banks | Each introduces separate scientific assumptions, outputs, costs, or UX. Deformation can change the morphology being measured; these are not simple extensions of a shift node. |
 
-For rigid/affine, evaluate an optional SimpleITK integration in a bounded spike.
+For rigid/affine, evaluate the SimpleITK registration integration in a bounded spike.
 Its [registration framework](https://simpleitk.readthedocs.io/en/master/registrationOverview.html)
 supports global transforms, intensity metrics, and multiresolution optimization.
 Qualification must cover physical-axis conversion, initialization, sampling
 seed/threading reproducibility, convergence/failure reporting, package size,
 licensing, and supported desktop wheels. Correlation for similar contrast and
 mutual information for different contrast are candidates, not promises of
-successful registration. Do not add SimpleITK or OpenCV to core dependencies now.
+successful registration. SimpleITK 2.5.6 is now a core dependency for the separate
+[CPU median acceleration](simpleitk-cpu-qualification.md) work. This does not
+qualify its registration methods or implement any registration nodes. Do not
+add OpenCV as part of this work.
 
 ## Delivery gates
 

@@ -47,6 +47,10 @@ from napari_vipp.core.compute_planning import (
 )
 from napari_vipp.core.compute_policy import ArrayFacts, FactCompleteness
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.core.compute_specs import (
+    cpu_implementation_id,
+    cpu_implementation_version,
+)
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.operations import (
     median_filter,
@@ -739,8 +743,8 @@ def test_internal_operation_progress_is_forwarded_with_a_readable_backend_label(
             progress(
                 BenchmarkMeasurementProgress(
                     phase=BenchmarkMeasurementPhase.PARITY_COLD,
-                    implementation_id=f"cpu-{plan.operation_id}-v1",
-                    implementation_version="1",
+                    implementation_id=cpu_implementation_id(plan.operation_id),
+                    implementation_version=cpu_implementation_version(plan.operation_id),
                     completed=0,
                     total=1,
                     message="Measuring the CPU reference.",
@@ -763,7 +767,7 @@ def test_internal_operation_progress_is_forwarded_with_a_readable_backend_label(
         "scientific parity + cold timing."
     )
     assert internal.measurement_phase == BenchmarkMeasurementPhase.PARITY_COLD.value
-    assert internal.implementation_id == f"cpu-{plan.operation_id}-v1"
+    assert internal.implementation_id == cpu_implementation_id(plan.operation_id)
 
 
 def test_exact_saved_record_is_reused_across_different_abort_budgets(

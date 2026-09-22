@@ -55,6 +55,7 @@ from napari_vipp.core.sigma_filter import sigma_filter as sigma_filter
 from napari_vipp.core.sigma_filter import (
     sigma_filter_footprint as sigma_filter_footprint,
 )
+from napari_vipp.core.simpleitk_filters import median_filter as _cpu_median_filter
 from napari_vipp.core.tables import (
     HistogramResultMetadata,
     HistogramSeriesMetadata,
@@ -675,10 +676,9 @@ def median_filter(
         operation="Median filter",
     )
     size = _odd_size(size, minimum=1)
-    filter_size = [1] * arr.ndim
-    for axis in _xy_axes(arr, channel_axis=channel_axis):
-        filter_size[axis] = size
-    return ndi.median_filter(arr, size=filter_size)
+    return _cpu_median_filter(
+        arr, size=size, xy_axes=_xy_axes(arr, channel_axis=channel_axis)
+    )
 
 
 def bilateral_filter(

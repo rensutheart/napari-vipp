@@ -353,6 +353,7 @@ _DEPENDENCY_VERSIONS = {
     "numpy": "2.3.2",
     "scipy": "1.16.0",
     "scikit-image": "0.25.2",
+    "simpleitk": "2.5.6",
     "fast-simplification": "0.2.0",
     "matplotlib": "3.10.8",
     "cupy": "14.1.1",
@@ -365,7 +366,8 @@ _DEPENDENCY_VERSIONS = {
 @pytest.mark.parametrize(
     ("operation_id", "dependency"),
     [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib"),
-     ("cellprofiler_propagation", "centrosome")],
+     ("cellprofiler_propagation", "centrosome"),
+     ("median_filter", "simpleitk")],
 )
 def test_mesh_provider_versions_are_required_in_scientific_result_keys(
     operation_id, dependency
@@ -379,13 +381,16 @@ def test_mesh_provider_versions_are_required_in_scientific_result_keys(
     versions.pop(dependency)
     with pytest.raises(ValueError, match="missing required identifier"):
         _key(spec, dependency_versions=versions)
-    assert dependency not in required_scientific_dependency_ids(_spec())
+    assert dependency not in required_scientific_dependency_ids(
+        _spec(operation_id="gaussian_blur")
+    )
 
 
 @pytest.mark.parametrize(
     ("operation_id", "dependency"),
     [("simplify_mesh", "fast-simplification"), ("color_mesh_objects", "matplotlib"),
-     ("cellprofiler_propagation", "centrosome")],
+     ("cellprofiler_propagation", "centrosome"),
+     ("median_filter", "simpleitk")],
 )
 def test_mesh_provider_upgrade_invalidates_structural_and_downstream_caches(
     monkeypatch, operation_id, dependency
@@ -431,7 +436,7 @@ def test_mesh_dependencies_do_not_change_unrelated_structural_cache_identity(
         raise AssertionError("Unrelated CPU cache must not probe mesh providers")
 
     monkeypatch.setattr(module.importlib.metadata, "version", forbidden)
-    spec = compute_specs_for("median_filter")[0]
+    spec = compute_specs_for("gaussian_blur")[0]
     request = ComputeRequest(mode="cpu")
     provenance = build_cached_node_compute_provenance(
         _decision(spec), request, scientific_context_fingerprint="same-inputs"
@@ -441,7 +446,7 @@ def test_mesh_dependencies_do_not_change_unrelated_structural_cache_identity(
         provenance,
         request=request,
         node_id="node",
-        operation_id="median_filter",
+        operation_id="gaussian_blur",
         scientific_context_fingerprint="same-inputs",
     )
 
@@ -644,7 +649,7 @@ def test_key_is_canonical_for_mapping_order_and_upstream_keys():
     [
         (
             _spec(),
-            {"napari-vipp", "numpy", "scipy", "scikit-image"},
+            {"napari-vipp", "numpy", "scipy", "scikit-image", "simpleitk"},
         ),
         (
             _gpu_spec(),

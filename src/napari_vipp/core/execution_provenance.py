@@ -30,6 +30,8 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_specs import (
     OperationComputeSpec,
     compute_specs_for,
+    cpu_implementation_id,
+    cpu_implementation_version,
 )
 
 if TYPE_CHECKING:
@@ -407,14 +409,14 @@ def _cpu_decision(
         requested_preference=preference,
         runtime_id="cpu-numpy",
         implementation_library_id="cpu",
-        implementation_id=f"cpu-{operation_id}-v1",
+        implementation_id=cpu_implementation_id(operation_id),
         decision_kind=DecisionKind.POLICY_CPU,
         reason=reason,
         reason_text=(
             "The authoritative host implementation completed this node."
         ),
         fallback_reason=FallbackReason.NONE,
-        implementation_version="1",
+        implementation_version=cpu_implementation_version(operation_id),
     )
 
 

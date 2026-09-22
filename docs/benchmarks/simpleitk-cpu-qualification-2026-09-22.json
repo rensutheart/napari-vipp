@@ -1,0 +1,4896 @@
+{
+  "schema": "vipp-simpleitk-cpu-comparison-v1",
+  "status": "completed",
+  "specification": {
+    "profile": "full",
+    "rounds": 3,
+    "threads": 12,
+    "seed": 20260922,
+    "cases": [
+      "median-128x128-uint8-k3",
+      "median-128x128-uint8-k5",
+      "median-128x128-uint8-k11",
+      "median-128x128-uint16-k3",
+      "median-128x128-uint16-k5",
+      "median-128x128-uint16-k11",
+      "median-128x128-float32-k3",
+      "median-128x128-float32-k5",
+      "median-128x128-float32-k11",
+      "median-256x256-uint8-k3",
+      "median-256x256-uint8-k5",
+      "median-256x256-uint8-k11",
+      "median-256x256-uint16-k3",
+      "median-256x256-uint16-k5",
+      "median-256x256-uint16-k11",
+      "median-256x256-float32-k3",
+      "median-256x256-float32-k5",
+      "median-256x256-float32-k11",
+      "median-512x512-uint8-k3",
+      "median-512x512-uint8-k5",
+      "median-512x512-uint8-k11",
+      "median-512x512-uint16-k3",
+      "median-512x512-uint16-k5",
+      "median-512x512-uint16-k11",
+      "median-512x512-float32-k3",
+      "median-512x512-float32-k5",
+      "median-512x512-float32-k11",
+      "median-512x512-uint16-k21",
+      "median-512x512-float32-k21",
+      "median-2048x2048-uint16-k5",
+      "median-2048x2048-float32-k5",
+      "median-16x256x256-uint16-k5",
+      "median-16x256x256-float32-k5",
+      "median-32x512x512-uint16-k5",
+      "median-32x512x512-float32-k5",
+      "opening-512x512-bool-k5",
+      "opening-512x512-bool-k11",
+      "closing-512x512-bool-k5",
+      "closing-512x512-bool-k11",
+      "distance-512x512-bool",
+      "opening-2048x2048-bool-k5",
+      "opening-2048x2048-bool-k11",
+      "closing-2048x2048-bool-k5",
+      "closing-2048x2048-bool-k11",
+      "distance-2048x2048-bool",
+      "opening-16x256x256-bool-k5",
+      "opening-16x256x256-bool-k11",
+      "closing-16x256x256-bool-k5",
+      "closing-16x256x256-bool-k11",
+      "distance-16x256x256-bool"
+    ]
+  },
+  "environment": {
+    "utc": "2026-09-22T08:08:03.879243+00:00",
+    "python": "3.12.9 (tags/v3.12.9:fdb8142, Feb  4 2025, 15:27:58) [MSC v.1942 64 bit (AMD64)]",
+    "python_executable": "python.exe",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 165 Stepping 3, GenuineIntel",
+    "logical_cpus": 12,
+    "physical_cpus": 6,
+    "ram_total_bytes": 34257100800,
+    "ram_available_bytes": 7515377664,
+    "packages": {
+      "numpy": "2.5.1",
+      "scipy": "1.18.0",
+      "scikit-image": "0.26.0",
+      "SimpleITK": "2.5.6",
+      "psutil": "7.2.2"
+    },
+    "simpleitk_version": "SimpleITK Version: 2.5.6 (ITK 5.4)\nCompiled: Jul 29 2026 20:26:40\n",
+    "git_commit": "39edd4492cdd78ea73134b8a441361be945f9449",
+    "source_sha256": {
+      "scripts/benchmark_simpleitk_cpu.py": "e5263eca1b1cf31bc3789be032f08620ff99d3cb7b9acc580fa3f54b485984b3",
+      "src/napari_vipp/core/operations.py": "532beae9585887a3d9795375f0a708a40aba24d6605bb4b0d6b6d662c4e9cb94",
+      "src/napari_vipp/core/simpleitk_filters.py": "3dbeb710ca5d847106420a6d7093e4b1d75734f5aece7406d4f76d264823720c"
+    }
+  },
+  "results": [
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "uint8",
+        "size": 3
+      },
+      "name": "median-128x128-uint8-k3",
+      "status": "completed",
+      "input_sha256": "b34edbf4df113d42db9df66fa4744d48e20369932ce3a9f97ffac720892fae26",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.0022412000689655542,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0020329999970272183,
+            0.002046800102107227,
+            0.0020798000041395426
+          ],
+          "median_seconds": 0.002046800102107227,
+          "min_seconds": 0.0020329999970272183,
+          "max_seconds": 0.0020798000041395426
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.003481399966403842,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.003655599895864725,
+            0.0037492000265046954,
+            0.004056000034324825
+          ],
+          "median_seconds": 0.0037492000265046954,
+          "min_seconds": 0.003655599895864725,
+          "max_seconds": 0.004056000034324825
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.002141700009815395,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0020838999189436436,
+            0.002044399967417121,
+            0.0020378000335767865
+          ],
+          "median_seconds": 0.002044399967417121,
+          "min_seconds": 0.0020378000335767865,
+          "max_seconds": 0.0020838999189436436
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "uint8",
+        "size": 5
+      },
+      "name": "median-128x128-uint8-k5",
+      "status": "completed",
+      "input_sha256": "ad3da93cee8fa0b756e14a1374d157745c43c8a332501d96e01b303eac076daa",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.005359300062991679,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005307700019329786,
+            0.005280900048092008,
+            0.00525240006390959
+          ],
+          "median_seconds": 0.005280900048092008,
+          "min_seconds": 0.00525240006390959,
+          "max_seconds": 0.005307700019329786
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.003570099943317473,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.003648900077678263,
+            0.003464199951849878,
+            0.004106799955479801
+          ],
+          "median_seconds": 0.003648900077678263,
+          "min_seconds": 0.003464199951849878,
+          "max_seconds": 0.004106799955479801
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005321999895386398,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005316499969922006,
+            0.0052989000687375665,
+            0.005188400042243302
+          ],
+          "median_seconds": 0.0052989000687375665,
+          "min_seconds": 0.005188400042243302,
+          "max_seconds": 0.005316499969922006
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "uint8",
+        "size": 11
+      },
+      "name": "median-128x128-uint8-k11",
+      "status": "completed",
+      "input_sha256": "cfc3ecf63561555164e7a23ad28fd39b57b5011e994185b532a4db41a44bf41e",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.02016319998074323,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.020123800029978156,
+            0.02053670003078878,
+            0.02077810000628233
+          ],
+          "median_seconds": 0.02053670003078878,
+          "min_seconds": 0.020123800029978156,
+          "max_seconds": 0.02077810000628233
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.006265399977564812,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005691000027582049,
+            0.005823500105179846,
+            0.006415599957108498
+          ],
+          "median_seconds": 0.005823500105179846,
+          "min_seconds": 0.005691000027582049,
+          "max_seconds": 0.006415599957108498
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.022145200055092573,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02197380003053695,
+            0.0209422999760136,
+            0.02036780002526939
+          ],
+          "median_seconds": 0.0209422999760136,
+          "min_seconds": 0.02036780002526939,
+          "max_seconds": 0.02197380003053695
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "uint16",
+        "size": 3
+      },
+      "name": "median-128x128-uint16-k3",
+      "status": "completed",
+      "input_sha256": "5bd77ac4346f7e4567faaeabc0563dd4b89ce5290219bf97661fe420b096bb06",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.0022097000619396567,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0020717999432235956,
+            0.002036100020632148,
+            0.002044999971985817
+          ],
+          "median_seconds": 0.002044999971985817,
+          "min_seconds": 0.002036100020632148,
+          "max_seconds": 0.0020717999432235956
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.003740200074389577,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.003500099992379546,
+            0.0037028000224381685,
+            0.0034685999853536487
+          ],
+          "median_seconds": 0.003500099992379546,
+          "min_seconds": 0.0034685999853536487,
+          "max_seconds": 0.0037028000224381685
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.002117699943482876,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0021741000236943364,
+            0.002042599953711033,
+            0.002128200023435056
+          ],
+          "median_seconds": 0.002128200023435056,
+          "min_seconds": 0.002042599953711033,
+          "max_seconds": 0.0021741000236943364
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "uint16",
+        "size": 5
+      },
+      "name": "median-128x128-uint16-k5",
+      "status": "completed",
+      "input_sha256": "6344bd363062e5d25329bec905afd4fc499cc1716de4a2cba28ef48b237c02a0",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.005355500034056604,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.00527149997651577,
+            0.005331100081093609,
+            0.005324299912899733
+          ],
+          "median_seconds": 0.005324299912899733,
+          "min_seconds": 0.00527149997651577,
+          "max_seconds": 0.005331100081093609
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.004193100030533969,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.003925799974240363,
+            0.00470280006993562,
+            0.0034490000689402223
+          ],
+          "median_seconds": 0.003925799974240363,
+          "min_seconds": 0.0034490000689402223,
+          "max_seconds": 0.00470280006993562
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005222200066782534,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006000900059007108,
+            0.00525369995739311,
+            0.005310500040650368
+          ],
+          "median_seconds": 0.005310500040650368,
+          "min_seconds": 0.00525369995739311,
+          "max_seconds": 0.006000900059007108
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "uint16",
+        "size": 11
+      },
+      "name": "median-128x128-uint16-k11",
+      "status": "completed",
+      "input_sha256": "3c1de6f16589d97eb6dafb39b5310ddce49e9daed06811a3c36fd6002e246244",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.02021100011188537,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02011849998962134,
+            0.020456099999137223,
+            0.020320600015111268
+          ],
+          "median_seconds": 0.020320600015111268,
+          "min_seconds": 0.02011849998962134,
+          "max_seconds": 0.020456099999137223
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.00602420000359416,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005601199925877154,
+            0.006877099978737533,
+            0.006241200026124716
+          ],
+          "median_seconds": 0.006241200026124716,
+          "min_seconds": 0.005601199925877154,
+          "max_seconds": 0.006877099978737533
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.020612600026652217,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02016610000282526,
+            0.02259040006902069,
+            0.020311599946580827
+          ],
+          "median_seconds": 0.020311599946580827,
+          "min_seconds": 0.02016610000282526,
+          "max_seconds": 0.02259040006902069
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "float32",
+        "size": 3
+      },
+      "name": "median-128x128-float32-k3",
+      "status": "completed",
+      "input_sha256": "1ca21e2931e06017c6c41d83e706667eea3dda78db011b1fb1bd135c0b142920",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.0020911000901833177,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.002647800021804869,
+            0.002105899970047176,
+            0.00212009996175766
+          ],
+          "median_seconds": 0.00212009996175766,
+          "min_seconds": 0.002105899970047176,
+          "max_seconds": 0.002647800021804869
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.004607499926351011,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005187799921259284,
+            0.0037306000012904406,
+            0.0035912999883294106
+          ],
+          "median_seconds": 0.0037306000012904406,
+          "min_seconds": 0.0035912999883294106,
+          "max_seconds": 0.005187799921259284
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.002330099930986762,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0022012999979779124,
+            0.0021690999856218696,
+            0.0021599000319838524
+          ],
+          "median_seconds": 0.0021690999856218696,
+          "min_seconds": 0.0021599000319838524,
+          "max_seconds": 0.0022012999979779124
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "float32",
+        "size": 5
+      },
+      "name": "median-128x128-float32-k5",
+      "status": "completed",
+      "input_sha256": "1db9f775d272d813e44290cdfa0e51e13bc7049fe7e3130b3f2dfddd5ec2a89f",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.005274199997074902,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005518499994650483,
+            0.005439899978227913,
+            0.005224899970926344
+          ],
+          "median_seconds": 0.005439899978227913,
+          "min_seconds": 0.005224899970926344,
+          "max_seconds": 0.005518499994650483
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.003957199980504811,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.004023400018922985,
+            0.003969199955463409,
+            0.003880999982357025
+          ],
+          "median_seconds": 0.003969199955463409,
+          "min_seconds": 0.003880999982357025,
+          "max_seconds": 0.004023400018922985
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005801999941468239,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0053684000158682466,
+            0.005539300036616623,
+            0.005266300053335726
+          ],
+          "median_seconds": 0.0053684000158682466,
+          "min_seconds": 0.005266300053335726,
+          "max_seconds": 0.005539300036616623
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          128,
+          128
+        ],
+        "dtype": "float32",
+        "size": 11
+      },
+      "name": "median-128x128-float32-k11",
+      "status": "completed",
+      "input_sha256": "87e0e1efdba2654706579b1eb8741cad3b81adda101b7733764709e476caa5ee",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.02028749999590218,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.019799200003035367,
+            0.020309099927544594,
+            0.020011699991300702
+          ],
+          "median_seconds": 0.020011699991300702,
+          "min_seconds": 0.019799200003035367,
+          "max_seconds": 0.020309099927544594
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.006171999964863062,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006266599986702204,
+            0.006543700001202524,
+            0.007295099901966751
+          ],
+          "median_seconds": 0.006543700001202524,
+          "min_seconds": 0.006266599986702204,
+          "max_seconds": 0.007295099901966751
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.020449499948881567,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.021457399940118194,
+            0.020073499996215105,
+            0.02005370007827878
+          ],
+          "median_seconds": 0.020073499996215105,
+          "min_seconds": 0.02005370007827878,
+          "max_seconds": 0.021457399940118194
+        }
+      },
+      "runtime_backend": "scipy",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "uint8",
+        "size": 3
+      },
+      "name": "median-256x256-uint8-k3",
+      "status": "completed",
+      "input_sha256": "cdbfcee522bab3ec69042d091c27942453c15498432e0c4639fd494e3b7725bd",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.0077930999686941504,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.007726200041361153,
+            0.007890600012615323,
+            0.007851199945434928
+          ],
+          "median_seconds": 0.007851199945434928,
+          "min_seconds": 0.007726200041361153,
+          "max_seconds": 0.007890600012615323
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.0039016000228002667,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.004269900033250451,
+            0.004293199977837503,
+            0.003642900031991303
+          ],
+          "median_seconds": 0.004269900033250451,
+          "min_seconds": 0.003642900031991303,
+          "max_seconds": 0.004293199977837503
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.003930900013074279,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.003679599962197244,
+            0.0038867000257596374,
+            0.003877399954944849
+          ],
+          "median_seconds": 0.003877399954944849,
+          "min_seconds": 0.003679599962197244,
+          "max_seconds": 0.0038867000257596374
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "uint8",
+        "size": 5
+      },
+      "name": "median-256x256-uint8-k5",
+      "status": "completed",
+      "input_sha256": "63a4430f9bac8dda3f8c056303867f94cc69830f9e5494aa6d4a452135caa0c1",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.02077069994993508,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.021155099966563284,
+            0.02043720008805394,
+            0.02068139996845275
+          ],
+          "median_seconds": 0.02068139996845275,
+          "min_seconds": 0.02043720008805394,
+          "max_seconds": 0.021155099966563284
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.0053165999706834555,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005265400046482682,
+            0.007430500001646578,
+            0.005031000007875264
+          ],
+          "median_seconds": 0.005265400046482682,
+          "min_seconds": 0.005031000007875264,
+          "max_seconds": 0.007430500001646578
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005803400068543851,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005327800055965781,
+            0.005320800002664328,
+            0.004908900009468198
+          ],
+          "median_seconds": 0.005320800002664328,
+          "min_seconds": 0.004908900009468198,
+          "max_seconds": 0.005327800055965781
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "uint8",
+        "size": 11
+      },
+      "name": "median-256x256-uint8-k11",
+      "status": "completed",
+      "input_sha256": "37ae7c6d3d919268e67ab8cbb97d24b088331ec8a3943062717b2a842097e8d2",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.08239760005380958,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.07924069999717176,
+            0.0795219000428915,
+            0.07854530005715787
+          ],
+          "median_seconds": 0.07924069999717176,
+          "min_seconds": 0.07854530005715787,
+          "max_seconds": 0.0795219000428915
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.016221600002609193,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02041360002476722,
+            0.017314799944870174,
+            0.016573700006119907
+          ],
+          "median_seconds": 0.017314799944870174,
+          "min_seconds": 0.016573700006119907,
+          "max_seconds": 0.02041360002476722
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.01638819999061525,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.01493900001514703,
+            0.015631500049494207,
+            0.014336699969135225
+          ],
+          "median_seconds": 0.01493900001514703,
+          "min_seconds": 0.014336699969135225,
+          "max_seconds": 0.015631500049494207
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "uint16",
+        "size": 3
+      },
+      "name": "median-256x256-uint16-k3",
+      "status": "completed",
+      "input_sha256": "a775bd46813a8d382f26116789dd8ce92df04127ca4b5369986d8cb9285be753",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.007695100037381053,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.00795599992852658,
+            0.007911799941211939,
+            0.0079799999948591
+          ],
+          "median_seconds": 0.00795599992852658,
+          "min_seconds": 0.007911799941211939,
+          "max_seconds": 0.0079799999948591
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.0037082999479025602,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0035448999842628837,
+            0.004150000051595271,
+            0.003761200001463294
+          ],
+          "median_seconds": 0.003761200001463294,
+          "min_seconds": 0.0035448999842628837,
+          "max_seconds": 0.004150000051595271
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.0037528000539168715,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.00356599991209805,
+            0.0034724000142887235,
+            0.004535699961706996
+          ],
+          "median_seconds": 0.00356599991209805,
+          "min_seconds": 0.0034724000142887235,
+          "max_seconds": 0.004535699961706996
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "uint16",
+        "size": 5
+      },
+      "name": "median-256x256-uint16-k5",
+      "status": "completed",
+      "input_sha256": "be68dee1cec3dd86a75aa5f5b1f21bbdced966d2d712ca6400ef2496931a719c",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.020614200038835406,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.020950800040736794,
+            0.021003499976359308,
+            0.021070499904453754
+          ],
+          "median_seconds": 0.021003499976359308,
+          "min_seconds": 0.020950800040736794,
+          "max_seconds": 0.021070499904453754
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.006999499979428947,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006858399952761829,
+            0.005709800054319203,
+            0.006588099990040064
+          ],
+          "median_seconds": 0.006588099990040064,
+          "min_seconds": 0.005709800054319203,
+          "max_seconds": 0.006858399952761829
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005419200053438544,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006528300000354648,
+            0.007535899989306927,
+            0.0069485999410972
+          ],
+          "median_seconds": 0.0069485999410972,
+          "min_seconds": 0.006528300000354648,
+          "max_seconds": 0.007535899989306927
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "uint16",
+        "size": 11
+      },
+      "name": "median-256x256-uint16-k11",
+      "status": "completed",
+      "input_sha256": "e063628a278466a194902ae5c96c566cbccd12f61afb87e4e0be3e5d90ab8798",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.08288420003373176,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.08050619997084141,
+            0.07878310000523925,
+            0.08010469994042069
+          ],
+          "median_seconds": 0.08010469994042069,
+          "min_seconds": 0.07878310000523925,
+          "max_seconds": 0.08050619997084141
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.015900200000032783,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.01519830001052469,
+            0.017718300106935203,
+            0.022799500031396747
+          ],
+          "median_seconds": 0.017718300106935203,
+          "min_seconds": 0.01519830001052469,
+          "max_seconds": 0.022799500031396747
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.016073500039055943,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.018385599949397147,
+            0.016225900035351515,
+            0.014678999898023903
+          ],
+          "median_seconds": 0.016225900035351515,
+          "min_seconds": 0.014678999898023903,
+          "max_seconds": 0.018385599949397147
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "float32",
+        "size": 3
+      },
+      "name": "median-256x256-float32-k3",
+      "status": "completed",
+      "input_sha256": "23d7aac4d7c9b88e9b37f3b3f01c445044a0d890a81a0f7bc2ef13bb52cd6a99",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.008195700007490814,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.008228200022131205,
+            0.00862300000153482,
+            0.008266600081697106
+          ],
+          "median_seconds": 0.008266600081697106,
+          "min_seconds": 0.008228200022131205,
+          "max_seconds": 0.00862300000153482
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.0036808999720960855,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0036091000074520707,
+            0.003926899982616305,
+            0.003827500040642917
+          ],
+          "median_seconds": 0.003827500040642917,
+          "min_seconds": 0.0036091000074520707,
+          "max_seconds": 0.003926899982616305
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.003863799967803061,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0036708000116050243,
+            0.004358700010925531,
+            0.003522500046528876
+          ],
+          "median_seconds": 0.0036708000116050243,
+          "min_seconds": 0.003522500046528876,
+          "max_seconds": 0.004358700010925531
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "float32",
+        "size": 5
+      },
+      "name": "median-256x256-float32-k5",
+      "status": "completed",
+      "input_sha256": "8aed1fe3354dc669a9d6b87fd48bbaffe7d720df58b4eb9ac43a232c16051f52",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.022128200042061508,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.020761399995535612,
+            0.020994800026528537,
+            0.020954100065864623
+          ],
+          "median_seconds": 0.020954100065864623,
+          "min_seconds": 0.020761399995535612,
+          "max_seconds": 0.020994800026528537
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.007943900069221854,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.008171900059096515,
+            0.009166100062429905,
+            0.008248799946159124
+          ],
+          "median_seconds": 0.008248799946159124,
+          "min_seconds": 0.008171900059096515,
+          "max_seconds": 0.009166100062429905
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.008115399978123605,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.008345699985511601,
+            0.008323500049300492,
+            0.007819000049494207
+          ],
+          "median_seconds": 0.008323500049300492,
+          "min_seconds": 0.007819000049494207,
+          "max_seconds": 0.008345699985511601
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          256,
+          256
+        ],
+        "dtype": "float32",
+        "size": 11
+      },
+      "name": "median-256x256-float32-k11",
+      "status": "completed",
+      "input_sha256": "b349eb422194951f3a8a773c7469f538871a11cbfed023f6898e98f162594a1c",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.07998049992602319,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.08165000006556511,
+            0.07994570001028478,
+            0.08009369997307658
+          ],
+          "median_seconds": 0.08009369997307658,
+          "min_seconds": 0.07994570001028478,
+          "max_seconds": 0.08165000006556511
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.018728099996224046,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.018329299986362457,
+            0.01833049999549985,
+            0.023878599982708693
+          ],
+          "median_seconds": 0.01833049999549985,
+          "min_seconds": 0.018329299986362457,
+          "max_seconds": 0.023878599982708693
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.016938899992965162,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02436370006762445,
+            0.020005599944852293,
+            0.022544699953868985
+          ],
+          "median_seconds": 0.022544699953868985,
+          "min_seconds": 0.020005599944852293,
+          "max_seconds": 0.02436370006762445
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint8",
+        "size": 3
+      },
+      "name": "median-512x512-uint8-k3",
+      "status": "completed",
+      "input_sha256": "5b2f9cf93fb2fddc3e727471db9e5817baf2b75227fc667ade9eb9e5cb1ab8d8",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.030853200005367398,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.030953199951909482,
+            0.030539799947291613,
+            0.03094930003862828
+          ],
+          "median_seconds": 0.03094930003862828,
+          "min_seconds": 0.030539799947291613,
+          "max_seconds": 0.030953199951909482
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.00680800003465265,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.005190099938772619,
+            0.007237299927510321,
+            0.0068295999662950635
+          ],
+          "median_seconds": 0.0068295999662950635,
+          "min_seconds": 0.005190099938772619,
+          "max_seconds": 0.007237299927510321
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005814800038933754,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006050499971024692,
+            0.006752700079232454,
+            0.006735100061632693
+          ],
+          "median_seconds": 0.006735100061632693,
+          "min_seconds": 0.006050499971024692,
+          "max_seconds": 0.006752700079232454
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint8",
+        "size": 5
+      },
+      "name": "median-512x512-uint8-k5",
+      "status": "completed",
+      "input_sha256": "3fe818092ad618e7e6504f7613a386b9cdde754bfca47823c75aa077116d5342",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.08666499995160848,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.08467629994265735,
+            0.08256280003115535,
+            0.08193350001238286
+          ],
+          "median_seconds": 0.08256280003115535,
+          "min_seconds": 0.08193350001238286,
+          "max_seconds": 0.08467629994265735
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.01699539995752275,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.016424599918536842,
+            0.015695599955506623,
+            0.015504300012253225
+          ],
+          "median_seconds": 0.015695599955506623,
+          "min_seconds": 0.015504300012253225,
+          "max_seconds": 0.016424599918536842
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.018895899993367493,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.01529480004683137,
+            0.016027399920858443,
+            0.013951200060546398
+          ],
+          "median_seconds": 0.01529480004683137,
+          "min_seconds": 0.013951200060546398,
+          "max_seconds": 0.016027399920858443
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint8",
+        "size": 11
+      },
+      "name": "median-512x512-uint8-k11",
+      "status": "completed",
+      "input_sha256": "d6933b10c649ca59e0e21902a7b650809a561226b3f029b6d57fccc84a63c5a8",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.3238191999262199,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.31928669998887926,
+            0.32242540002334863,
+            0.31736630003433675
+          ],
+          "median_seconds": 0.31928669998887926,
+          "min_seconds": 0.31736630003433675,
+          "max_seconds": 0.32242540002334863
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.04783970001153648,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.04677729995455593,
+            0.06711279996670783,
+            0.07021849998272955
+          ],
+          "median_seconds": 0.06711279996670783,
+          "min_seconds": 0.04677729995455593,
+          "max_seconds": 0.07021849998272955
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.046635599923320115,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.06072990002576262,
+            0.04734429996460676,
+            0.05778739997185767
+          ],
+          "median_seconds": 0.05778739997185767,
+          "min_seconds": 0.04734429996460676,
+          "max_seconds": 0.06072990002576262
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint16",
+        "size": 3
+      },
+      "name": "median-512x512-uint16-k3",
+      "status": "completed",
+      "input_sha256": "0235f2f1d131ace28627706a3ae7145a0d272f4edab007dccc376bbb5efddaf6",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.03163199999835342,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.03128400002606213,
+            0.031011300045065582,
+            0.03239230008330196
+          ],
+          "median_seconds": 0.03128400002606213,
+          "min_seconds": 0.031011300045065582,
+          "max_seconds": 0.03239230008330196
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.005738800042308867,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.007620400050655007,
+            0.006224500015377998,
+            0.00600489997304976
+          ],
+          "median_seconds": 0.006224500015377998,
+          "min_seconds": 0.00600489997304976,
+          "max_seconds": 0.007620400050655007
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.005345799960196018,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.00551749998703599,
+            0.006924099987372756,
+            0.005508100031875074
+          ],
+          "median_seconds": 0.00551749998703599,
+          "min_seconds": 0.005508100031875074,
+          "max_seconds": 0.006924099987372756
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint16",
+        "size": 5
+      },
+      "name": "median-512x512-uint16-k5",
+      "status": "completed",
+      "input_sha256": "afb61069e73d729c44149be65af97584b4c4aa9e32f97436e1aea5c64afddac5",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.08257920003961772,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.08819269994273782,
+            0.08216799993533641,
+            0.08255100005771965
+          ],
+          "median_seconds": 0.08255100005771965,
+          "min_seconds": 0.08216799993533641,
+          "max_seconds": 0.08819269994273782
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.0212730000494048,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.01796309999190271,
+            0.02380090008955449,
+            0.023238499998115003
+          ],
+          "median_seconds": 0.023238499998115003,
+          "min_seconds": 0.01796309999190271,
+          "max_seconds": 0.02380090008955449
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.02261089999228716,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.025559899979270995,
+            0.024063499993644655,
+            0.02403319999575615
+          ],
+          "median_seconds": 0.024063499993644655,
+          "min_seconds": 0.02403319999575615,
+          "max_seconds": 0.025559899979270995
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint16",
+        "size": 11
+      },
+      "name": "median-512x512-uint16-k11",
+      "status": "completed",
+      "input_sha256": "15a66c79442e6a3c3c4f2ca04b703b7e16c9c854bedfd2e381b247056c7bec30",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.3212935000192374,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3200576000381261,
+            0.31922489998396486,
+            0.32000950002111495
+          ],
+          "median_seconds": 0.32000950002111495,
+          "min_seconds": 0.31922489998396486,
+          "max_seconds": 0.3200576000381261
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.049064100021496415,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.05677369993645698,
+            0.06432650005444884,
+            0.06833229993935674
+          ],
+          "median_seconds": 0.06432650005444884,
+          "min_seconds": 0.05677369993645698,
+          "max_seconds": 0.06833229993935674
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.054266100050881505,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.05927620001602918,
+            0.057809900026768446,
+            0.0688533999491483
+          ],
+          "median_seconds": 0.05927620001602918,
+          "min_seconds": 0.057809900026768446,
+          "max_seconds": 0.0688533999491483
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "float32",
+        "size": 3
+      },
+      "name": "median-512x512-float32-k3",
+      "status": "completed",
+      "input_sha256": "6a5db86735059ce5a77054667f7779ace031b3b4ca63cec40633ab97c7b0da6f",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.03303550009150058,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.03275479993317276,
+            0.03235049999784678,
+            0.032096800045110285
+          ],
+          "median_seconds": 0.03235049999784678,
+          "min_seconds": 0.032096800045110285,
+          "max_seconds": 0.03275479993317276
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.006836500018835068,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.007846000022254884,
+            0.006503599928691983,
+            0.006931500043720007
+          ],
+          "median_seconds": 0.006931500043720007,
+          "min_seconds": 0.006503599928691983,
+          "max_seconds": 0.007846000022254884
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.006850100005976856,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.00712199998088181,
+            0.009049199987202883,
+            0.008633300079964101
+          ],
+          "median_seconds": 0.008633300079964101,
+          "min_seconds": 0.00712199998088181,
+          "max_seconds": 0.009049199987202883
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "float32",
+        "size": 5
+      },
+      "name": "median-512x512-float32-k5",
+      "status": "completed",
+      "input_sha256": "a8a4bca3e3ec7c6b9c4434e4f3610e48b966e59f1df94acbf84d92c88ae2b053",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.08398879994638264,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.08360499993432313,
+            0.08329169999342412,
+            0.08537690003868192
+          ],
+          "median_seconds": 0.08360499993432313,
+          "min_seconds": 0.08329169999342412,
+          "max_seconds": 0.08537690003868192
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.030087699997238815,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0260808999883011,
+            0.02551629999652505,
+            0.025918699917383492
+          ],
+          "median_seconds": 0.025918699917383492,
+          "min_seconds": 0.02551629999652505,
+          "max_seconds": 0.0260808999883011
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.027215100009925663,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.0253098999382928,
+            0.027183600002899766,
+            0.026310999994166195
+          ],
+          "median_seconds": 0.026310999994166195,
+          "min_seconds": 0.0253098999382928,
+          "max_seconds": 0.027183600002899766
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "float32",
+        "size": 11
+      },
+      "name": "median-512x512-float32-k11",
+      "status": "completed",
+      "input_sha256": "884d33489841bcbf7cffb85c48d2c253d4e6c5f6a73aead72e808c7e747db74e",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.3189166000811383,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3181419000029564,
+            0.32764190004672855,
+            0.32808849995490164
+          ],
+          "median_seconds": 0.32764190004672855,
+          "min_seconds": 0.3181419000029564,
+          "max_seconds": 0.32808849995490164
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.06174989999271929,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.06046279997099191,
+            0.0666687999619171,
+            0.0710949000203982
+          ],
+          "median_seconds": 0.0666687999619171,
+          "min_seconds": 0.06046279997099191,
+          "max_seconds": 0.0710949000203982
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.06399679998867214,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.07345559995155782,
+            0.06508450000546873,
+            0.059691500035114586
+          ],
+          "median_seconds": 0.06508450000546873,
+          "min_seconds": 0.059691500035114586,
+          "max_seconds": 0.07345559995155782
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "uint16",
+        "size": 21
+      },
+      "name": "median-512x512-uint16-k21",
+      "status": "completed",
+      "input_sha256": "2eaddcca26e2b6e30c9965a7e5ce9b048fe54e9f71329dd8a9af18d0bab51fe4",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 1.0763274999335408,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            1.069978200015612,
+            1.077762399916537,
+            1.074537399923429
+          ],
+          "median_seconds": 1.074537399923429,
+          "min_seconds": 1.069978200015612,
+          "max_seconds": 1.077762399916537
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.16515100002288818,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.18961849994957447,
+            0.16812060005031526,
+            0.1988862999714911
+          ],
+          "median_seconds": 0.18961849994957447,
+          "min_seconds": 0.16812060005031526,
+          "max_seconds": 0.1988862999714911
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.17811520001851022,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.1675555999390781,
+            0.16750510002020746,
+            0.1715505999745801
+          ],
+          "median_seconds": 0.1675555999390781,
+          "min_seconds": 0.16750510002020746,
+          "max_seconds": 0.1715505999745801
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "float32",
+        "size": 21
+      },
+      "name": "median-512x512-float32-k21",
+      "status": "completed",
+      "input_sha256": "d335a1f7bfa7b906974d781ab4f6b6776eb4d57063b51949753274a25ae2ebca",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 1.0475252000615,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            1.053668300039135,
+            1.0987535999156535,
+            1.0792694000992924
+          ],
+          "median_seconds": 1.0792694000992924,
+          "min_seconds": 1.053668300039135,
+          "max_seconds": 1.0987535999156535
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.18422320007812232,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.2085104000288993,
+            0.1937065999954939,
+            0.2057253000093624
+          ],
+          "median_seconds": 0.2057253000093624,
+          "min_seconds": 0.1937065999954939,
+          "max_seconds": 0.2085104000288993
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.18602470005862415,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.1826925000641495,
+            0.1947691000532359,
+            0.21556119993329048
+          ],
+          "median_seconds": 0.1947691000532359,
+          "min_seconds": 0.1826925000641495,
+          "max_seconds": 0.21556119993329048
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "uint16",
+        "size": 5
+      },
+      "name": "median-2048x2048-uint16-k5",
+      "status": "completed",
+      "input_sha256": "40d58c4ff58788787166831023f0d8f0f2e16cbc923bc708d6dedf9a288bef2c",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 1.3383120000362396,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            1.3217179999919608,
+            1.335559400031343,
+            1.3289483999833465
+          ],
+          "median_seconds": 1.3289483999833465,
+          "min_seconds": 1.3217179999919608,
+          "max_seconds": 1.335559400031343
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.3714971999870613,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.2389387000584975,
+            0.42314860003534704,
+            0.29165259993169457
+          ],
+          "median_seconds": 0.29165259993169457,
+          "min_seconds": 0.2389387000584975,
+          "max_seconds": 0.42314860003534704
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.3369599001016468,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.29514850000850856,
+            0.30262740002945065,
+            0.19198780006263405
+          ],
+          "median_seconds": 0.29514850000850856,
+          "min_seconds": 0.19198780006263405,
+          "max_seconds": 0.30262740002945065
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "float32",
+        "size": 5
+      },
+      "name": "median-2048x2048-float32-k5",
+      "status": "completed",
+      "input_sha256": "00e695105e744a5f2ac6b6feee3fc6dca81586f6265bbeae7d6219ff87ea26e5",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 1.3359295999398455,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            1.341490100021474,
+            1.349625299917534,
+            1.3447701000841334
+          ],
+          "median_seconds": 1.3447701000841334,
+          "min_seconds": 1.341490100021474,
+          "max_seconds": 1.349625299917534
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.37155339994933456,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3782433000160381,
+            0.38045379996765405,
+            0.35045619995798916
+          ],
+          "median_seconds": 0.3782433000160381,
+          "min_seconds": 0.35045619995798916,
+          "max_seconds": 0.38045379996765405
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.37659480003640056,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.38785039994399995,
+            0.3773225999902934,
+            0.3718132999492809
+          ],
+          "median_seconds": 0.3773225999902934,
+          "min_seconds": 0.3718132999492809,
+          "max_seconds": 0.38785039994399995
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "uint16",
+        "size": 5
+      },
+      "name": "median-16x256x256-uint16-k5",
+      "status": "completed",
+      "input_sha256": "2757c220598ee43552e5b0dd28c9470404e606838c4c1aae8b288fe4b1994b43",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.3344968999736011,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3311688000103459,
+            0.3328829000238329,
+            0.3315364000154659
+          ],
+          "median_seconds": 0.3315364000154659,
+          "min_seconds": 0.3311688000103459,
+          "max_seconds": 0.3328829000238329
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.05562329990789294,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.10630210000090301,
+            0.10090499999932945,
+            0.061576299951411784
+          ],
+          "median_seconds": 0.10090499999932945,
+          "min_seconds": 0.061576299951411784,
+          "max_seconds": 0.10630210000090301
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.11972990003414452,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.06040749989915639,
+            0.06371719995513558,
+            0.0671909999800846
+          ],
+          "median_seconds": 0.06371719995513558,
+          "min_seconds": 0.06040749989915639,
+          "max_seconds": 0.0671909999800846
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "float32",
+        "size": 5
+      },
+      "name": "median-16x256x256-float32-k5",
+      "status": "completed",
+      "input_sha256": "21a8acf6892e5777e42495b0cdd1a4bc385bcc8fa3efa00f05b2efc73c7bb07b",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 0.3347239000722766,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3366846999851987,
+            0.3355640999507159,
+            0.3352166999829933
+          ],
+          "median_seconds": 0.3355640999507159,
+          "min_seconds": 0.3352166999829933,
+          "max_seconds": 0.3366846999851987
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.11561570002231747,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.12008020002394915,
+            0.09547729999758303,
+            0.10090349998790771
+          ],
+          "median_seconds": 0.10090349998790771,
+          "min_seconds": 0.09547729999758303,
+          "max_seconds": 0.12008020002394915
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.12949800002388656,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.1131421000463888,
+            0.1258976999670267,
+            0.1210107000079006
+          ],
+          "median_seconds": 0.1210107000079006,
+          "min_seconds": 0.1131421000463888,
+          "max_seconds": 0.1258976999670267
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          32,
+          512,
+          512
+        ],
+        "dtype": "uint16",
+        "size": 5
+      },
+      "name": "median-32x512x512-uint16-k5",
+      "status": "completed",
+      "input_sha256": "74331d046d80b69f83b6c91c61d708f4abbefe30e5e0f352f79044ba4e7cc710",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 2.6572057999437675,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            2.6842939999187365,
+            2.677023999975063,
+            2.658943299902603
+          ],
+          "median_seconds": 2.677023999975063,
+          "min_seconds": 2.658943299902603,
+          "max_seconds": 2.6842939999187365
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.6625570999458432,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.6746746998978779,
+            0.7140659000724554,
+            0.6547589999390766
+          ],
+          "median_seconds": 0.6746746998978779,
+          "min_seconds": 0.6547589999390766,
+          "max_seconds": 0.7140659000724554
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.7849899000721052,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.4545038000214845,
+            0.6368178999982774,
+            0.6740575999720022
+          ],
+          "median_seconds": 0.6368178999982774,
+          "min_seconds": 0.4545038000214845,
+          "max_seconds": 0.6740575999720022
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "median",
+        "shape": [
+          32,
+          512,
+          512
+        ],
+        "dtype": "float32",
+        "size": 5
+      },
+      "name": "median-32x512x512-float32-k5",
+      "status": "completed",
+      "input_sha256": "967d28984150d704216a2e86c80e03462cceb88af76d4b4f29b281df23b9b8eb",
+      "backends": {
+        "scipy_reference": {
+          "warmup_seconds": 2.714657200034708,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            2.6809482000535354,
+            2.685898899915628,
+            2.6830795999849215
+          ],
+          "median_seconds": 2.6830795999849215,
+          "min_seconds": 2.6809482000535354,
+          "max_seconds": 2.685898899915628
+        },
+        "simpleitk_forced": {
+          "warmup_seconds": 0.726984600070864,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.7570916999829933,
+            0.718710899935104,
+            0.7522853999398649
+          ],
+          "median_seconds": 0.7522853999398649,
+          "min_seconds": 0.718710899935104,
+          "max_seconds": 0.7570916999829933
+        },
+        "vipp_runtime": {
+          "warmup_seconds": 0.7644454999826849,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.7574288999894634,
+            0.7594107000622898,
+            0.8201408999739215
+          ],
+          "median_seconds": 0.7594107000622898,
+          "min_seconds": 0.7574288999894634,
+          "max_seconds": 0.8201408999739215
+        }
+      },
+      "runtime_backend": "simpleitk",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "opening",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "bool",
+        "size": 5
+      },
+      "name": "opening-512x512-bool-k5",
+      "status": "completed",
+      "input_sha256": "105aed6c033f6a071404888688ac9f663c1e731b91a6ada9d370666e4f703f01",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.00673100003041327,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006916800048202276,
+            0.0067550999810919166,
+            0.006629300070926547
+          ],
+          "median_seconds": 0.0067550999810919166,
+          "min_seconds": 0.006629300070926547,
+          "max_seconds": 0.006916800048202276
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.019005000009201467,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.018898200010880828,
+            0.018794399918988347,
+            0.01974710007198155
+          ],
+          "median_seconds": 0.018898200010880828,
+          "min_seconds": 0.018794399918988347,
+          "max_seconds": 0.01974710007198155
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "opening",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "bool",
+        "size": 11
+      },
+      "name": "opening-512x512-bool-k11",
+      "status": "completed",
+      "input_sha256": "b5453f33a42bb3f183f8b3079265baaee2b63c1c60826f464418cc5cf51c84bf",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.022690400015562773,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02787790005095303,
+            0.022545300074853003,
+            0.021688699955120683
+          ],
+          "median_seconds": 0.022545300074853003,
+          "min_seconds": 0.021688699955120683,
+          "max_seconds": 0.02787790005095303
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.017934200004674494,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.018405599985271692,
+            0.018107199924997985,
+            0.01780600007623434
+          ],
+          "median_seconds": 0.018107199924997985,
+          "min_seconds": 0.01780600007623434,
+          "max_seconds": 0.018405599985271692
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "closing",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "bool",
+        "size": 5
+      },
+      "name": "closing-512x512-bool-k5",
+      "status": "completed",
+      "input_sha256": "105aed6c033f6a071404888688ac9f663c1e731b91a6ada9d370666e4f703f01",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.006893400102853775,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.006664799991995096,
+            0.006725899991579354,
+            0.007986400043591857
+          ],
+          "median_seconds": 0.006725899991579354,
+          "min_seconds": 0.006664799991995096,
+          "max_seconds": 0.007986400043591857
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.01905899995472282,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.019029100076295435,
+            0.018454300006851554,
+            0.020877699949778616
+          ],
+          "median_seconds": 0.019029100076295435,
+          "min_seconds": 0.018454300006851554,
+          "max_seconds": 0.020877699949778616
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "closing",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "bool",
+        "size": 11
+      },
+      "name": "closing-512x512-bool-k11",
+      "status": "completed",
+      "input_sha256": "b5453f33a42bb3f183f8b3079265baaee2b63c1c60826f464418cc5cf51c84bf",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.02374700002837926,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02312070003245026,
+            0.022411400103010237,
+            0.02155299996957183
+          ],
+          "median_seconds": 0.022411400103010237,
+          "min_seconds": 0.02155299996957183,
+          "max_seconds": 0.02312070003245026
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.018077599932439625,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.017712300061248243,
+            0.017765600001439452,
+            0.019651399925351143
+          ],
+          "median_seconds": 0.017765600001439452,
+          "min_seconds": 0.017712300061248243,
+          "max_seconds": 0.019651399925351143
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "distance",
+        "shape": [
+          512,
+          512
+        ],
+        "dtype": "bool",
+        "size": 0
+      },
+      "name": "distance-512x512-bool",
+      "status": "completed",
+      "input_sha256": "0b91da57827537ca3609d1af5718f690cbf6bf604e3007bdf77f6f363f184e6c",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.01656140002887696,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.01735079998616129,
+            0.01694370002951473,
+            0.01765370008070022
+          ],
+          "median_seconds": 0.01735079998616129,
+          "min_seconds": 0.01694370002951473,
+          "max_seconds": 0.01765370008070022
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.014114000019617379,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.01343970000743866,
+            0.014718800084665418,
+            0.013060900033451617
+          ],
+          "median_seconds": 0.01343970000743866,
+          "min_seconds": 0.013060900033451617,
+          "max_seconds": 0.014718800084665418
+        }
+      },
+      "runtime_backend": "candidate-only; not used by VIPP",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "opening",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "bool",
+        "size": 5
+      },
+      "name": "opening-2048x2048-bool-k5",
+      "status": "completed",
+      "input_sha256": "4855eaaa755e43687af15ed9e49e22041c1703b9b698bd254fb6488b271f1a90",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.10844069998711348,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.10592180001549423,
+            0.10582649998832494,
+            0.10672849998809397
+          ],
+          "median_seconds": 0.10592180001549423,
+          "min_seconds": 0.10582649998832494,
+          "max_seconds": 0.10672849998809397
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.283531800028868,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.2905814000405371,
+            0.28443700005300343,
+            0.29836080002132803
+          ],
+          "median_seconds": 0.2905814000405371,
+          "min_seconds": 0.28443700005300343,
+          "max_seconds": 0.29836080002132803
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "opening",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "bool",
+        "size": 11
+      },
+      "name": "opening-2048x2048-bool-k11",
+      "status": "completed",
+      "input_sha256": "28135c76d5bdc3526f53d6a667493b52251cad1e178845109254afdc5cbc741f",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.3538690001005307,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3541818999219686,
+            0.3662160000531003,
+            0.35826010000891984
+          ],
+          "median_seconds": 0.35826010000891984,
+          "min_seconds": 0.3541818999219686,
+          "max_seconds": 0.3662160000531003
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.2745823999866843,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.2730129000265151,
+            0.26786050002556294,
+            0.2669951000716537
+          ],
+          "median_seconds": 0.26786050002556294,
+          "min_seconds": 0.2669951000716537,
+          "max_seconds": 0.2730129000265151
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "closing",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "bool",
+        "size": 5
+      },
+      "name": "closing-2048x2048-bool-k5",
+      "status": "completed",
+      "input_sha256": "4855eaaa755e43687af15ed9e49e22041c1703b9b698bd254fb6488b271f1a90",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.10552720003761351,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.10817130003124475,
+            0.10525350004900247,
+            0.10712629999034107
+          ],
+          "median_seconds": 0.10712629999034107,
+          "min_seconds": 0.10525350004900247,
+          "max_seconds": 0.10817130003124475
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.27238569990731776,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.28375709999818355,
+            0.27937650005333126,
+            0.2741630000527948
+          ],
+          "median_seconds": 0.27937650005333126,
+          "min_seconds": 0.2741630000527948,
+          "max_seconds": 0.28375709999818355
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "closing",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "bool",
+        "size": 11
+      },
+      "name": "closing-2048x2048-bool-k11",
+      "status": "completed",
+      "input_sha256": "28135c76d5bdc3526f53d6a667493b52251cad1e178845109254afdc5cbc741f",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.3527373999822885,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3495642999187112,
+            0.3479251000098884,
+            0.3513721999479458
+          ],
+          "median_seconds": 0.3495642999187112,
+          "min_seconds": 0.3479251000098884,
+          "max_seconds": 0.3513721999479458
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.27320339996367693,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.2588167000794783,
+            0.2591097999829799,
+            0.2623277000384405
+          ],
+          "median_seconds": 0.2591097999829799,
+          "min_seconds": 0.2588167000794783,
+          "max_seconds": 0.2623277000384405
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "distance",
+        "shape": [
+          2048,
+          2048
+        ],
+        "dtype": "bool",
+        "size": 0
+      },
+      "name": "distance-2048x2048-bool",
+      "status": "completed",
+      "input_sha256": "4e96d00b2c5322f91f629f977b5d8a61934810975004b14f9ffb30ae7a0d0847",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.42693810001946986,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.4212058000266552,
+            0.42613719997461885,
+            0.4184497999958694
+          ],
+          "median_seconds": 0.4212058000266552,
+          "min_seconds": 0.4184497999958694,
+          "max_seconds": 0.42613719997461885
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.10554849996697158,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.09631650010123849,
+            0.09436990006361157,
+            0.11041500000283122
+          ],
+          "median_seconds": 0.09631650010123849,
+          "min_seconds": 0.09436990006361157,
+          "max_seconds": 0.11041500000283122
+        }
+      },
+      "runtime_backend": "candidate-only; not used by VIPP",
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "opening",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "bool",
+        "size": 5
+      },
+      "name": "opening-16x256x256-bool-k5",
+      "status": "completed",
+      "input_sha256": "340cb5cff3e9a3d071f44a72a3292fa769e017a192d1ca336c01b679e6cffc57",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.029110200004652143,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.02674930007196963,
+            0.026959100039675832,
+            0.027168500004336238
+          ],
+          "median_seconds": 0.026959100039675832,
+          "min_seconds": 0.02674930007196963,
+          "max_seconds": 0.027168500004336238
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.3139563000295311,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3132616000948474,
+            0.3160931000020355,
+            0.337860899977386
+          ],
+          "median_seconds": 0.3160931000020355,
+          "min_seconds": 0.3132616000948474,
+          "max_seconds": 0.337860899977386
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "opening",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "bool",
+        "size": 11
+      },
+      "name": "opening-16x256x256-bool-k11",
+      "status": "completed",
+      "input_sha256": "5ab79b67a8ab2e60b40e17710da60bb6473dee063c5da3184cd36ddfaf26b787",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.09384019998833537,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.09032940003089607,
+            0.0893130999756977,
+            0.08892040001228452
+          ],
+          "median_seconds": 0.0893130999756977,
+          "min_seconds": 0.08892040001228452,
+          "max_seconds": 0.09032940003089607
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.3779019999783486,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.3750751999905333,
+            0.3672551999334246,
+            0.37869509996380657
+          ],
+          "median_seconds": 0.3750751999905333,
+          "min_seconds": 0.3672551999334246,
+          "max_seconds": 0.37869509996380657
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "closing",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "bool",
+        "size": 5
+      },
+      "name": "closing-16x256x256-bool-k5",
+      "status": "completed",
+      "input_sha256": "340cb5cff3e9a3d071f44a72a3292fa769e017a192d1ca336c01b679e6cffc57",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.0266915000975132,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.026674299966543913,
+            0.027819199953228235,
+            0.027381200110539794
+          ],
+          "median_seconds": 0.027381200110539794,
+          "min_seconds": 0.026674299966543913,
+          "max_seconds": 0.027819199953228235
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.30777579999994487,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.30907449999358505,
+            0.3113014999544248,
+            0.303982499986887
+          ],
+          "median_seconds": 0.30907449999358505,
+          "min_seconds": 0.303982499986887,
+          "max_seconds": 0.3113014999544248
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "closing",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "bool",
+        "size": 11
+      },
+      "name": "closing-16x256x256-bool-k11",
+      "status": "completed",
+      "input_sha256": "5ab79b67a8ab2e60b40e17710da60bb6473dee063c5da3184cd36ddfaf26b787",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.08551109989639372,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.08938889997079968,
+            0.08864730002824217,
+            0.08463749999646097
+          ],
+          "median_seconds": 0.08864730002824217,
+          "min_seconds": 0.08463749999646097,
+          "max_seconds": 0.08938889997079968
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.39043320005293936,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.37205869995523244,
+            0.3655340999830514,
+            0.36896670004352927
+          ],
+          "median_seconds": 0.36896670004352927,
+          "min_seconds": 0.3655340999830514,
+          "max_seconds": 0.37205869995523244
+        }
+      },
+      "all_checked_outputs_exact": true
+    },
+    {
+      "case": {
+        "operation": "distance",
+        "shape": [
+          16,
+          256,
+          256
+        ],
+        "dtype": "bool",
+        "size": 0
+      },
+      "name": "distance-16x256x256-bool",
+      "status": "completed",
+      "input_sha256": "35f5997af1c052f418c85808c8f452e66827a9f419268e125bb2a8a16ea62a91",
+      "backends": {
+        "vipp_reference": {
+          "warmup_seconds": 0.1394635000033304,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.1403017999837175,
+            0.1404672000790015,
+            0.17118049995042384
+          ],
+          "median_seconds": 0.1404672000790015,
+          "min_seconds": 0.1403017999837175,
+          "max_seconds": 0.17118049995042384
+        },
+        "simpleitk_candidate": {
+          "warmup_seconds": 0.03876749996561557,
+          "agreement": {
+            "shape_equal": true,
+            "dtype_equal": true,
+            "exact_values": true,
+            "bitwise_equal": true,
+            "different_values": 0,
+            "max_absolute_difference": 0
+          },
+          "seconds": [
+            0.03646420000586659,
+            0.036222899914719164,
+            0.034235999919474125
+          ],
+          "median_seconds": 0.036222899914719164,
+          "min_seconds": 0.034235999919474125,
+          "max_seconds": 0.03646420000586659
+        }
+      },
+      "runtime_backend": "candidate-only; not used by VIPP",
+      "all_checked_outputs_exact": true
+    }
+  ],
+  "method": {
+    "timing": "One warmup then seeded shuffled backend order; imports/data generation/hash checks/garbage collection excluded from timing. Input conversion, symmetric halo, ITK execution, output conversion/copies and the actual runtime gate included. CPU only; no GPU timings here.",
+    "correctness": "Checked warmup outputs only; exact shape/dtype/value and byte comparisons. Read-only input and no-alias checks. Adversarial small phantoms plus larger timed fixtures. This screen does not qualify all dtypes, axes or production lifecycle contracts.",
+    "distance": "Voxel-centre distances, unit spacing, float32 output, 2D plane or 3D volume. Invert before SignedMaurer; zero original background. Preserve all-foreground/empty SciPy behavior with explicit fallback.",
+    "morphology": "XY box, odd width, leading Z slices independent, zero boundary on both composed primitive stages. Even widths excluded: SciPy origin is not a radius conversion.",
+    "median": "Forced candidate bypasses the performance gate; vipp_runtime includes the selected production gate. Values, borders, dtype and XY-only semantics must match reference exactly.",
+    "memory": "Conservative admission estimate of 48 bytes/input voxel plus 512MiB reserve; no measured peak memory claim. Candidate/ITK memory copies exceed the adapter's padded-input chunk size."
+  },
+  "excluded": {
+    "rolling_ball_background_and_subtract_background": "No matching SimpleITK rolling-ball exposed filter. Morphological opening is not an equivalent replacement. Mean presmoothing separately checked; median acceleration does not speed these nodes.",
+    "gaussian_rl_connected_components": "Already investigated; intentionally outside this exact-replacement follow-on."
+  },
+  "current_activity": {
+    "utc": "2026-09-22T08:10:11.966248+00:00",
+    "message": "Comparison completed"
+  },
+  "updated_utc": "2026-09-22T08:10:11.966248+00:00",
+  "qualification": {
+    "checks": [
+      {
+        "case": "opening-1x7-bool-k3",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k5",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k11",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k3",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k5",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k11",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-1x7-bool",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k3",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k5",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k11",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k3",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k5",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k11",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-1x7-bool",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k3",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k5",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k11",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k3",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k5",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k11",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-1x7-bool",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k3",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k5",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k11",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k3",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k5",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k11",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-1x7-bool",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k3",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k5",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-1x7-bool-k11",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k3",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k5",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-1x7-bool-k11",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-1x7-bool",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k3",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k5",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k11",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k3",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k5",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k11",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-9x11-bool",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k3",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k5",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k11",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k3",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k5",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k11",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-9x11-bool",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k3",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k5",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k11",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k3",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k5",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k11",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-9x11-bool",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k3",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k5",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k11",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k3",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k5",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k11",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-9x11-bool",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k3",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k5",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-9x11-bool-k11",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k3",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k5",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-9x11-bool-k11",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-9x11-bool",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k3",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k5",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k11",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k3",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k5",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k11",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-3x9x11-bool",
+        "pattern": "empty",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k3",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k5",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k11",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k3",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k5",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k11",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-3x9x11-bool",
+        "pattern": "full",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k3",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k5",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k11",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k3",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k5",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k11",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-3x9x11-bool",
+        "pattern": "checkerboard",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k3",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k5",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k11",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k3",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k5",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k11",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-3x9x11-bool",
+        "pattern": "edge-touching",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k3",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k5",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "opening-3x9x11-bool-k11",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k3",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k5",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "closing-3x9x11-bool-k11",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      },
+      {
+        "case": "distance-3x9x11-bool",
+        "pattern": "random",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": true,
+        "bitwise_equal": true,
+        "different_values": 0,
+        "max_absolute_difference": 0,
+        "input_unchanged": true,
+        "output_detached": true
+      }
+    ],
+    "background_mean_checks": [
+      {
+        "shape": [
+          13,
+          17
+        ],
+        "dtype": "float32",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": false,
+        "bitwise_equal": false,
+        "different_values": 20,
+        "max_absolute_difference": 0.00390625
+      },
+      {
+        "shape": [
+          13,
+          17
+        ],
+        "dtype": "float64",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": false,
+        "bitwise_equal": false,
+        "different_values": 170,
+        "max_absolute_difference": 2.1827872842550278e-11
+      },
+      {
+        "shape": [
+          5,
+          13,
+          17
+        ],
+        "dtype": "float32",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": false,
+        "bitwise_equal": false,
+        "different_values": 169,
+        "max_absolute_difference": 0.00390625
+      },
+      {
+        "shape": [
+          5,
+          13,
+          17
+        ],
+        "dtype": "float64",
+        "shape_equal": true,
+        "dtype_equal": true,
+        "exact_values": false,
+        "bitwise_equal": false,
+        "different_values": 829,
+        "max_absolute_difference": 2.9103830456733704e-11
+      }
+    ]
+  },
+  "cold_start": {
+    "case": "median-512x512-uint16-k5",
+    "simpleitk_imported_before": false,
+    "simpleitk_imported_after": true,
+    "first_call_seconds": 0.1237587999785319,
+    "second_call_seconds": 0.022576099960133433,
+    "includes": "first-call lazy ITK import and complete operation, not Python/VIPP startup"
+  }
+}

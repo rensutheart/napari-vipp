@@ -564,6 +564,7 @@ def _environment() -> dict:
         "numpy",
         "scipy",
         "scikit-image",
+        "simpleitk",
         "napari",
         "qtpy",
         "tifffile",

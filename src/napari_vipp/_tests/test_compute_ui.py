@@ -158,7 +158,7 @@ def test_strict_custom_intent_rejects_previous_fallback_result():
         operation_id="median_filter",
         runtime_id="cpu-numpy",
         library_id="cpu",
-        implementation_id="cpu-median_filter-v1",
+        implementation_id="cpu-median_filter-v2",
         fallback=FallbackReason.DEPENDENCY_UNAVAILABLE,
     )
     request = ComputeRequest(
@@ -544,7 +544,7 @@ def test_actual_fallback_decision_is_amber_cpu_badge():
         operation_id="median_filter",
         runtime_id="cpu-numpy",
         library_id="cpu",
-        implementation_id="cpu-median_filter-v1",
+        implementation_id="cpu-median_filter-v2",
         fallback=FallbackReason.DEPENDENCY_UNAVAILABLE,
     )
 

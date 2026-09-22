@@ -42,6 +42,10 @@ from napari_vipp.core.compute_registry import (
     RuntimeDevice,
     RuntimeProbeResult,
 )
+from napari_vipp.core.compute_specs import (
+    cpu_implementation_id,
+    cpu_implementation_version,
+)
 from napari_vipp.core.execution import (
     PipelineRunRequest,
     execute_pipeline_request,
@@ -298,10 +302,11 @@ def _cached_cpu_provenance(
             requested_preference=run_request.compute_request.preference_for(node_id),
             runtime_id="cpu-numpy",
             implementation_library_id="cpu",
-            implementation_id=f"cpu-{node.operation_id}-v1",
+            implementation_id=cpu_implementation_id(node.operation_id),
             decision_kind=DecisionKind.POLICY_CPU,
             reason=DecisionReason.AUTO_CPU,
             reason_text="Test fixture produced this cached result on CPU.",
+            implementation_version=cpu_implementation_version(node.operation_id),
         )
         decisions.append(decision)
     captured_source_contexts = execution_module._capture_source_scientific_contexts(

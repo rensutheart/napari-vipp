@@ -58,6 +58,17 @@ study documentation must remain optional so simple analyses stay accessible.
 
 ## Current Baseline
 
+### Post-0.16.0a1 CPU acceleration work
+
+The next bounded implementation step is [SimpleITK CPU qualification](simpleitk-cpu-qualification.md):
+package the library, accelerate exactly compatible Median Filter calls, and
+assess other heavy CPU operations before adopting them. Existing GPU choices
+remain unchanged. Rolling-ball background is not a median-based method, and
+Gaussian/deconvolution changes require separate scientific review. Registration
+follows later; including its library is not registration qualification.
+
+The following baseline text records the earlier 0.15 planning context:
+
 The published `0.15.0a5` is the released baseline. Its official
 [GitHub prerelease](https://github.com/rensutheart/napari-vipp/releases/tag/v0.15.0a5),
 checksum sidecars, [PyPI package](https://pypi.org/project/napari-vipp/0.15.0a5/),
