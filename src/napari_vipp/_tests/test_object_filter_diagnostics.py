@@ -10,12 +10,31 @@ import numpy as np
 import pytest
 from qtpy.QtCore import QCoreApplication, QEvent, QObject, QThread
 
+import napari_vipp.core.object_filter_counts as counts_module
+from napari_vipp.core.host_memory import HostMemorySnapshot
 from napari_vipp.core.object_filter_counts import ObjectFilterCounts
 from napari_vipp.ui import object_filter_diagnostics as module
 from napari_vipp.ui.object_filter_diagnostics import (
     ObjectFilterDiagnosticKey,
     ObjectFilterDiagnostics,
 )
+
+
+@pytest.fixture(autouse=True)
+def stable_memory_headroom(monkeypatch):
+    """Exercise async/cache behavior independently of other processes' RAM use."""
+    monkeypatch.setattr(
+        counts_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot(
+            platform="win32",
+            source="windows_global_memory_status_ex",
+            physical_total_bytes=64 * 1024**3,
+            physical_available_bytes=48 * 1024**3,
+            commit_limit_bytes=96 * 1024**3,
+            commit_available_bytes=80 * 1024**3,
+        ),
+    )
 
 
 def _pair():
@@ -44,6 +63,32 @@ def test_exact_counts_use_actual_read_only_pair(diagnostics, qtbot):
     np.testing.assert_array_equal(before, [[1, 1, 0, 9], [0, 0, 0, 9]])
     np.testing.assert_array_equal(after, [[1, 1, 0, 0], [0, 0, 0, 0]])
     assert not before.flags.writeable and not after.flags.writeable
+
+
+def test_low_commit_headroom_is_reported_as_error_not_zero_counts(
+    diagnostics, qtbot, monkeypatch,
+):
+    monkeypatch.setattr(
+        counts_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot(
+            platform="win32",
+            source="windows_global_memory_status_ex",
+            physical_total_bytes=32 * 1024**3,
+            physical_available_bytes=8 * 1024**3,
+            commit_limit_bytes=78 * 1024**3,
+            commit_available_bytes=7 * 1024**3 // 2,
+        ),
+    )
+    pair = _pair()
+    with qtbot.waitSignal(diagnostics.ready):
+        diagnostics.request(*pair, 2)
+    assert diagnostics.cached(*pair, 2) is None
+    assert diagnostics.error(*pair, 2).startswith(
+        "MemoryError: Skipped exact object-filter counts:"
+    )
+    assert "commit headroom" in diagnostics.error(*pair, 2)
+    assert "safety reserve" in diagnostics.error(*pair, 2)
 
 
 def test_duplicate_requests_count_once_off_gui_thread(

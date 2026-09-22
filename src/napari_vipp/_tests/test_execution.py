@@ -305,7 +305,7 @@ def test_cpu_report_keeps_pruned_intermediate_implementation_decisions():
         for decision in result.execution_report.actual_decisions
     ) == (
         (gaussian.id, "cpu-gaussian_blur-v1"),
-        (median.id, "cpu-median_filter-v1"),
+        (median.id, "cpu-median_filter-v2"),
     )
     assert result.pipeline.outputs[gaussian.id] is None
     assert gaussian.id not in result.pipeline.completed_node_ids

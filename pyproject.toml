@@ -57,6 +57,8 @@ dependencies = [
     "qtpy>=2.4",
     "scikit-image>=0.21",
     "scipy>=1.10",
+    # Exact CPU median implementation qualification; review before upgrading.
+    "simpleitk==2.5.6",
     "tifffile>=2023.8",
     "xlsxwriter>=3.2,<4",
     "zarr>=3.0",

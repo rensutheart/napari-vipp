@@ -56,6 +56,9 @@ _ADDITIONAL_CPU_DEPENDENCIES_BY_OPERATION = MappingProxyType(
             for operation_id in CELLPROFILER_2D_OPERATION_IDS
         },
         "simplify_mesh": ("fast-simplification",),
+        # The CPU median is a versioned SimpleITK/SciPy dispatcher. Even
+        # fallback results must not reuse evidence from a different stack.
+        "median_filter": ("simpleitk",),
         # These colours are carried output data, not an inspector-only LUT.
         "color_mesh_objects": ("matplotlib",),
     }

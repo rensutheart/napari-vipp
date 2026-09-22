@@ -518,6 +518,8 @@ def test_registered_adapter_is_transactional_synchronized_and_memory_observed(
 ):
     clock, runtime, _registry, live, built = _fake_registered_benchmark(monkeypatch)
     before = live.copy()
+    assert built.request.reference.implementation_id == "cpu-median_filter-v2"
+    assert built.request.reference.implementation_version == "2"
 
     record = NodeBenchmarkService(clock=clock).benchmark(built.request)
 

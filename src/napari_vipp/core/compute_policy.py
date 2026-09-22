@@ -3146,6 +3146,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
         },
         PolicyKind.PARAMETER: {
             "cpu-reference-parameters-v1",
+            "cpu-median-xy-dispatch-v1",
             "background-parameters-v1",
             "median-parameters-v1",
             "sigma-filter-parameters-v1",

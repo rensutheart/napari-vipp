@@ -39,7 +39,12 @@ from napari_vipp.core.compute_specs import (
 
 
 def test_synthesized_cpu_spec_uses_registered_policies():
-    validate_spec_policy_references(compute_specs_for("gaussian_blur")[0])
+    from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
+
+    # CPU declarations are synthesized and are not covered by the static GPU
+    # catalog check below. Include the median dispatcher's versioned policy.
+    for operation_id in NODE_LIBRARY_BY_ID:
+        validate_spec_policy_references(compute_specs_for(operation_id)[0])
 
 
 def test_all_builtin_accelerator_specs_use_versioned_registered_policies():

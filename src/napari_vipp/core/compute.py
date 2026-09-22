@@ -280,6 +280,7 @@ _SCIENTIFIC_STACK_DISTRIBUTIONS = (
     "numpy",
     "scipy",
     "scikit-image",
+    "simpleitk",
     "fast-simplification",
     "matplotlib",
 )

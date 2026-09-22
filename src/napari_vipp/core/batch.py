@@ -5080,6 +5080,7 @@ def _runtime_versions() -> dict[str, object]:
         "numpy",
         "scipy",
         "scikit-image",
+        "simpleitk",
         "dask",
         "tifffile",
         "zarr",

@@ -184,6 +184,7 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
             "numpy": "2.5.1",
             "scipy": "1.18.0",
             "scikit-image": "0.26.0",
+            "simpleitk": "2.5.6",
             "fast-simplification": "0.2.0",
             "matplotlib": "3.10.8",
         }[distribution]
@@ -197,6 +198,7 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
         "numpy": "2.5.1",
         "scipy": "1.18.0",
         "scikit-image": "0.26.0",
+        "simpleitk": "2.5.6",
         "fast-simplification": "0.2.0",
         "matplotlib": "3.10.8",
     }
@@ -205,6 +207,7 @@ def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
         "numpy",
         "scipy",
         "scikit-image",
+        "simpleitk",
         "fast-simplification",
         "matplotlib",
     ]
@@ -1030,6 +1033,7 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
     registry = ComputeRegistry()
     scientific_stack = {
         "centrosome": "1.3.4",
+        "simpleitk": "2.5.6",
         "numpy": "2.5.1",
         "scipy": "1.18.0",
         "scikit-image": "0.26.0",

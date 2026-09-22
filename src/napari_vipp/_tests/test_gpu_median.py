@@ -10,6 +10,7 @@ import pytest
 import napari_vipp.core.gpu.cupy_median as cupy_median
 from napari_vipp.core.gpu.cupy_median import median_filter as gpu_median_filter
 from napari_vipp.core.operations import median_filter as cpu_median_filter
+from napari_vipp.core.simpleitk_filters import median_filter_backend
 
 
 @pytest.fixture(scope="module")
@@ -65,6 +66,20 @@ _VALIDATED_LAYOUTS = (
     ((2, 9, 3, 11), 2),
     ((2, 3, 4, 9, 11), 2),
 )
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+def test_real_gpu_and_simpleitk_both_match_original_scipy(cupy_module, dtype):
+    from scipy import ndimage as ndi
+
+    host = _finite_fixture(dtype, (2, 512, 512))
+    host.flags.writeable = False
+    assert median_filter_backend(host, size=5, xy_axes=(1, 2)) == "simpleitk"
+    reference = ndi.median_filter(host, size=(1, 5, 5), mode="reflect")
+    cpu = cpu_median_filter(host, size=5)
+    gpu = cupy_module.asnumpy(gpu_median_filter(cupy_module.asarray(host), size=5))
+    _assert_bitwise_equal(reference, cpu)
+    _assert_bitwise_equal(reference, gpu)
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])

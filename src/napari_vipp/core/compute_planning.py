@@ -47,7 +47,11 @@ from napari_vipp.core.compute_policy import (
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
 from napari_vipp.core.compute_repairs import suggest_compute_repairs
-from napari_vipp.core.compute_specs import OperationComputeSpec
+from napari_vipp.core.compute_specs import (
+    OperationComputeSpec,
+    cpu_implementation_id,
+    cpu_implementation_version,
+)
 
 CPU_RUNTIME_ID = "cpu-numpy"
 CPU_LIBRARY_ID = "cpu"
@@ -431,7 +435,7 @@ def actual_cpu_fallback_decision(
         decision.requested_preference,
         CPU_RUNTIME_ID,
         CPU_LIBRARY_ID,
-        _cpu_implementation_id(decision.operation_id),
+        cpu_implementation_id(decision.operation_id),
         DecisionKind.FALLBACK_CPU,
         reason,
         text,
@@ -439,7 +443,7 @@ def actual_cpu_fallback_decision(
         benchmark_record_digest=decision.benchmark_record_digest,
         performance_evidence_kind=decision.performance_evidence_kind,
         performance_evidence_digest=decision.performance_evidence_digest,
-        implementation_version="1",
+        implementation_version=cpu_implementation_version(decision.operation_id),
     )
 
 
@@ -1104,17 +1108,13 @@ def _cpu_decision(
         preference,
         CPU_RUNTIME_ID,
         CPU_LIBRARY_ID,
-        _cpu_implementation_id(workload.operation_id),
+        cpu_implementation_id(workload.operation_id),
         decision_kind,
         reason,
         reason_text,
         fallback_reason=fallback_reason,
-        implementation_version="1",
+        implementation_version=cpu_implementation_version(workload.operation_id),
     )
-
-
-def _cpu_implementation_id(operation_id: str) -> str:
-    return f"cpu-{operation_id}-v1"
 
 
 def _is_forced_gpu_preference(

@@ -70,6 +70,10 @@ from napari_vipp.core.compute_policy import (
     evaluate_candidate_workload_support,
     propagate_output_descriptors,
 )
+from napari_vipp.core.compute_specs import (
+    cpu_implementation_id,
+    cpu_implementation_version,
+)
 from napari_vipp.core.execution_telemetry import (
     DeviceExecutionObservation,
     DeviceExecutionTelemetryConfig,
@@ -2926,8 +2930,10 @@ def _historical_auto_compute_request(
         if decision.runtime_id == "cpu-numpy":
             if (
                 decision.implementation_library_id != "cpu"
-                or decision.implementation_id != f"cpu-{workload.operation_id}-v1"
-                or decision.implementation_version != "1"
+                or decision.implementation_id
+                != cpu_implementation_id(workload.operation_id)
+                or decision.implementation_version
+                != cpu_implementation_version(workload.operation_id)
             ):
                 return request
             preferences[node_id] = NodeComputePreference(NodePreferenceKind.CPU)
@@ -5555,12 +5561,12 @@ def _local_actual_cpu_fallback_decision(
         decision,
         runtime_id="cpu-numpy",
         implementation_library_id="cpu",
-        implementation_id=f"cpu-{decision.operation_id}-v1",
+        implementation_id=cpu_implementation_id(decision.operation_id),
         decision_kind=DecisionKind.FALLBACK_CPU,
         reason=DecisionReason.OUT_OF_MEMORY_FALLBACK,
         reason_text=reason_text,
         fallback_reason=fallback_reason,
-        implementation_version="1",
+        implementation_version=cpu_implementation_version(decision.operation_id),
         parity_warnings=(),
     )
 
@@ -6374,13 +6380,13 @@ def _publish_cpu_compute_provenance(
                 requested_preference=preference,
                 runtime_id="cpu-numpy",
                 implementation_library_id="cpu",
-                implementation_id=f"cpu-{node.operation_id}-v1",
+                implementation_id=cpu_implementation_id(node.operation_id),
                 decision_kind=DecisionKind.POLICY_CPU,
                 reason=DecisionReason.EXPLICIT_CPU,
                 reason_text=(
                     "The CPU policy selected the authoritative host implementation."
                 ),
-                implementation_version="1",
+                implementation_version=cpu_implementation_version(node.operation_id),
             )
         )
     resolved_decisions = _with_bypass_execution_decisions(

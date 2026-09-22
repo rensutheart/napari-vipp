@@ -32,12 +32,16 @@ from napari_vipp.core.compute_specs import (
     ValueKind,
     accelerator_compute_specs,
     compute_specs_for,
+    cpu_implementation_id,
+    cpu_implementation_version,
     validate_compute_specs,
 )
 
 
-@pytest.mark.parametrize("dependency", ["fast-simplification", "matplotlib"])
-def test_mesh_dependency_versions_change_environment_fingerprint(
+@pytest.mark.parametrize(
+    "dependency", ["fast-simplification", "matplotlib", "simpleitk"]
+)
+def test_scientific_dependency_versions_change_environment_fingerprint(
     monkeypatch, dependency
 ):
     import napari_vipp.core.compute as module
@@ -138,6 +142,9 @@ def test_contract_import_does_not_import_optional_accelerators():
                 "from napari_vipp.core.compute_registry import ComputeRegistry; "
                 "ComputeEnvironment(); "
                 "ComputeRegistry(); "
+                "assert napari_vipp.core.compute_specs.cpu_implementation_id"
+                "('median_filter') == 'cpu-median_filter-v2'; "
+                "assert 'SimpleITK' not in sys.modules; "
                 "assert 'cupy' not in sys.modules; "
                 "assert 'cupyx' not in sys.modules; "
                 "assert 'cucim' not in sys.modules; "
@@ -328,10 +335,11 @@ def test_fallback_is_typed_and_distinct_from_a_policy_cpu_choice():
         NodeComputePreference("auto"),
         "cpu-numpy",
         "cpu",
-        "cpu-median-filter-v1",
+        cpu_implementation_id("median_filter"),
         DecisionKind.POLICY_CPU,
         DecisionReason.PERFORMANCE_GATE,
         "CPU is faster for this workload.",
+        implementation_version=cpu_implementation_version("median_filter"),
     )
     assert not policy_cpu.fallback_used
 
@@ -507,6 +515,56 @@ def test_compute_spec_validation_can_cross_check_a_lightweight_catalog():
             (_candidate_spec(operation_id="missing"),),
             known_operation_ids=known,
         )
+
+
+def test_every_cpu_declaration_and_planning_path_share_versioned_identity():
+    from napari_vipp.core.compute_planning import (
+        actual_cpu_fallback_decision,
+        plan_compute_decisions,
+    )
+    from napari_vipp.core.execution import _local_actual_cpu_fallback_decision
+    from napari_vipp.core.execution_provenance import _cpu_decision
+    from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
+
+    request = ComputeRequest(mode="cpu")
+    workloads = tuple(
+        WorkloadDescriptor(operation_id, operation_id, ((8, 9),), ("uint16",))
+        for operation_id in NODE_LIBRARY_BY_ID
+    )
+    planned = plan_compute_decisions(request, workloads).decisions
+    assert len(planned) == len(workloads)
+    for decision in planned:
+        operation_id = decision.operation_id
+        expected_version = "2" if operation_id == "median_filter" else "1"
+        expected_id = f"cpu-{operation_id}-v{expected_version}"
+        declared = compute_specs_for(operation_id)[0]
+        reconstructed = _cpu_decision(
+            request, node_id=operation_id, operation_id=operation_id
+        )
+        fallbacks = tuple(
+            fallback(
+                decision,
+                FallbackReason.OUT_OF_MEMORY,
+                reason_text="Synthetic native failure.",
+            )
+            for fallback in (
+                actual_cpu_fallback_decision,
+                _local_actual_cpu_fallback_decision,
+            )
+        )
+        for identity in (declared, decision, reconstructed, *fallbacks):
+            assert identity.implementation_id == expected_id
+            assert identity.implementation_version == expected_version
+
+
+def test_cpu_median_spec_describes_exact_composite_dispatcher_not_one_backend():
+    cpu, gpu = compute_specs_for("median_filter")
+    assert cpu.implementation_library_id == "cpu"
+    assert cpu.parameter_policy_id == "cpu-median-xy-dispatch-v1"
+    assert cpu.boundary_policy_id == "scipy-reflect-v1"
+    assert cpu.precision_policy_id == "median-bitwise-v1"
+    assert gpu.implementation_id == "cupy-median-filter-v1"
+    assert gpu.implementation_version == "1"
 
 
 def test_host_finalizer_contract_is_optional_lazy_and_device_resident_only():

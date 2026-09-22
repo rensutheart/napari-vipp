@@ -167,7 +167,11 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.compute_history import default_pipeline_timing_history_path
-from napari_vipp.core.compute_specs import compute_specs_for
+from napari_vipp.core.compute_specs import (
+    compute_specs_for,
+    cpu_implementation_id,
+    cpu_implementation_version,
+)
 from napari_vipp.core.diagnostics import (
     PSF_EDGE_MASS_WARNING_FRACTION,
     PsfPreflightResult,
@@ -10002,7 +10006,7 @@ class VippWidget(QWidget):
                 preference,
                 "cpu-numpy",
                 "cpu",
-                f"cpu-{node.operation_id}-v1",
+                cpu_implementation_id(node.operation_id),
                 DecisionKind.POLICY_CPU,
                 DecisionReason.EXPLICIT_CPU if explicit else DecisionReason.AUTO_CPU,
                 (
@@ -10011,7 +10015,7 @@ class VippWidget(QWidget):
                     else "Auto kept this interactive update on CPU; accelerator "
                     "dispatch is reserved for background-eligible workloads."
                 ),
-                implementation_version="1",
+                implementation_version=cpu_implementation_version(node.operation_id),
             )
             self._accepted_compute_decisions[node_id] = decision
             self._compute_decision_environments[node_id] = environment

@@ -33,6 +33,7 @@ from napari_vipp.core.compute_registry import (
     RuntimeDevice,
     RuntimeProbeResult,
 )
+from napari_vipp.core.compute_specs import cpu_implementation_id
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.meshes import MeshData
 from napari_vipp.core.pipeline import (
@@ -715,8 +716,8 @@ def test_full_synthetic_batch_demo_completes_in_each_compute_mode(tmp_path, mode
             actual = node["actual_implementation"]
             assert actual["runtime_id"] == "cpu-numpy"
             assert actual["implementation_library_id"] == "cpu"
-            assert actual["implementation_id"] == (
-                f"cpu-{node['operation_id']}-v1"
+            assert actual["implementation_id"] == cpu_implementation_id(
+                node["operation_id"]
             )
 
         if mode is ComputeMode.CPU:

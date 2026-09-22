@@ -228,7 +228,7 @@ Start with complete 2D/3D workflows, not a menu of disconnected algorithms.
 | Template Match | `skimage.feature.match_template` | Calibrated center-based score grid, valid-score handling, and explicit template scope. Promoted from Defer; fixed size/orientation first. |
 | Find Peaks | Local maxima plus deterministic suppression | Locations/values table and inspector overlay first; reusable points ports remain a separate contract. |
 | Estimate Drift | Repeated phase cross-correlation | Explicit time axis/reference frame, indexed transform series, shared-channel application, and failure policy. |
-| Estimate Rigid / Affine Transform | Optional SimpleITK evaluation | Qualified reusable transforms/resampling first; no new required dependency committed. |
+| Estimate Rigid / Affine Transform | SimpleITK evaluation | Qualified reusable transforms/resampling first; SimpleITK is now included for CPU median acceleration, not yet qualified for registration. |
 
 Registration should not start as several disconnected image-output nodes. It
 needs a transform contract, label-safe interpolation, metadata updates, and

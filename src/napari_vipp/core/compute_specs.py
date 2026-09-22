@@ -24,6 +24,21 @@ from napari_vipp.core.richardson_lucy_compute import richardson_lucy_compute_spe
 _MICROSCOPY_DTYPES = ("uint8", "uint16", "float32")
 
 
+def cpu_implementation_version(operation_id: str) -> str:
+    """Version the canonical host implementation without importing a provider.
+
+    Median v2 is the exact XY SimpleITK/SciPy dispatcher, not a claim that every
+    input executes SimpleITK. Its dependency versions remain in the environment
+    fingerprint. Unchanged operation implementations retain their v1 identity.
+    """
+    return "2" if operation_id == "median_filter" else "1"
+
+
+def cpu_implementation_id(operation_id: str) -> str:
+    """Return the shared decision, cache and provenance ID for a CPU operation."""
+    return f"cpu-{operation_id}-v{cpu_implementation_version(operation_id)}"
+
+
 def _gpu_image_port(
     port_index: int,
     *,
@@ -1357,8 +1372,8 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         )
     return OperationComputeSpec(
         operation_id=operation_id,
-        implementation_id=f"cpu-{operation_id}-v1",
-        implementation_version="1",
+        implementation_id=cpu_implementation_id(operation_id),
+        implementation_version=cpu_implementation_version(operation_id),
         runtime_id="cpu-numpy",
         array_domain="host-numpy",
         implementation_library_id=(
@@ -1370,13 +1385,25 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         validated_environment_policy_id="vipp-cpu-supported-v1",
         input_ports=input_contracts,
         output_ports=output_contracts,
-        parameter_policy_id="cpu-reference-parameters-v1",
+        parameter_policy_id=(
+            "cpu-median-xy-dispatch-v1"
+            if operation_id == "median_filter"
+            else "cpu-reference-parameters-v1"
+        ),
         workload_policy_id="cpu-reference-v1",
         parity_policy_id="authoritative-cpu-v1",
         memory_model_id="host-reference-v1",
         shape_policy_id="cpu-reference-v1",
-        boundary_policy_id="cpu-reference-v1",
-        precision_policy_id="scientific-default-v1",
+        boundary_policy_id=(
+            "scipy-reflect-v1"
+            if operation_id == "median_filter"
+            else "cpu-reference-v1"
+        ),
+        precision_policy_id=(
+            "median-bitwise-v1"
+            if operation_id == "median_filter"
+            else "scientific-default-v1"
+        ),
         progress_policy_id="cpu-reference-v1",
         cancellation_policy_id="cpu-reference-v1",
         side_effect_policy_id=(
@@ -1418,5 +1445,7 @@ __all__ = [
     "ValueKind",
     "accelerator_compute_specs",
     "compute_specs_for",
+    "cpu_implementation_id",
+    "cpu_implementation_version",
     "validate_compute_specs",
 ]
