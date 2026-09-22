@@ -406,12 +406,9 @@ def build_plot_figure(
     axes.set_title(title, color=palette["text"], fontsize=font_size + 2, pad=12)
     axes.set_xlabel(result.x_label, color=palette["text"], fontsize=font_size)
     axes.set_ylabel(result.y_label, color=palette["text"], fontsize=font_size)
-    for text in (
-        axes.title,
-        axes.xaxis.label,
-        axes.yaxis.label,
-        *axes.get_xticklabels(),
-    ):
+    # Keep authored labels literal. Numeric ticks retain Matplotlib's math
+    # rendering for log/scientific notation; group ticks are handled above.
+    for text in (axes.title, axes.xaxis.label, axes.yaxis.label):
         text.set_parse_math(False)
     if recipe.plot_type != "Compare groups" and len(result.series) > 1:
         legend = axes.legend(

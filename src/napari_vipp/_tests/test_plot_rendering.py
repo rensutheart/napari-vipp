@@ -2,9 +2,11 @@
 
 import csv
 import json
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
+from matplotlib import rc_context
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from PIL import Image
 
@@ -59,6 +61,63 @@ def test_all_plot_modes_render_without_gui(mode, distribution):
     assert figure.axes[0].get_ylabel() == result.y_label
     assert figure.axes[0].get_title()
     figure.clear()
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"plot_type": "Scatter", "log_x": True, "log_y": True},
+        {"plot_type": "Distribution", "log_x": True},
+        {"plot_type": "Distribution", "distribution": "Cumulative", "log_x": True},
+        {"plot_type": "Compare groups", "log_y": True},
+    ],
+)
+@pytest.mark.parametrize("style", [{}, {"compact": True}, {"publication": True}])
+def test_log_ticks_render_as_math_after_resize(params, style, monkeypatch):
+    figure = build_plot_figure(_log_result(**params), **style)
+    canvas = FigureCanvasAgg(figure)
+    renderer = canvas.get_renderer()
+    draw_text = type(renderer).draw_text
+    rendered_math = []
+
+    def record_text(self, gc, x, y, s, prop, angle, ismath=False, mtext=None):
+        if r"\mathdefault" in s:
+            rendered_math.append(ismath)
+        return draw_text(self, gc, x, y, s, prop, angle, ismath, mtext)
+
+    monkeypatch.setattr(type(renderer), "draw_text", record_text)
+    for size in ((6.8, 4.6), (3.6, 3), (9, 6)):
+        rendered_math.clear()
+        figure.set_size_inches(*size)
+        canvas.draw()
+        assert rendered_math and all(rendered_math)
+
+
+def test_exported_log_ticks_have_no_visible_math_source(tmp_path):
+    target = tmp_path / "log-axis.svg"
+    with rc_context({"svg.fonttype": "none"}):
+        export_plot_result(_log_result(plot_type="Scatter", log_x=True), target)
+    root = ET.parse(target).getroot()
+    # Matplotlib preserves source in SVG comments; inspect only visible text.
+    texts = [
+        "".join(element.itertext())
+        for element in root.iter("{http://www.w3.org/2000/svg}text")
+    ]
+    assert texts
+    assert not any(r"\mathdefault" in text for text in texts)
+
+
+def _log_result(**params):
+    return build_plot_result(
+        TableData(
+            ("value", "condition"),
+            ((0.1, "A"), (1.0, "A"), (10.0, "B"), (100.0, "B")),
+        ),
+        y_column="value",
+        x_column="value",
+        group_column="condition",
+        **params,
+    )
 
 
 def test_scatter_artist_preserves_object_identity():

@@ -166,7 +166,7 @@ def test_adjacent_float_groups_are_not_merged_by_display_rounding():
 
 
 def test_numeric_looking_string_identifiers_remain_literal():
-    groups = ("001", "1", "1.0", "0.0001", "1e-04", "$5")
+    groups = ("001", "1", "1.0", "0.0001", "1e-04", "$5", r"$\badmacro$")
     result = _result_for_groups(groups)
     figure = build_plot_figure(result)
     FigureCanvasAgg(figure).draw()
