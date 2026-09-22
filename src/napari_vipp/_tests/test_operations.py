@@ -147,6 +147,7 @@ from napari_vipp.core.pipeline import (
     operation_call_parameter_value,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.registration_nodes import REGISTRATION_RUNTIME_KEYWORDS
 from napari_vipp.core.tables import save_table_output, table_from_columns
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -366,6 +367,7 @@ def test_edge_threshold_nodes_expose_scalar_default_channel_contract(operation_i
 def test_registered_operation_specs_match_callable_and_ui_contracts():
     operation_ids = [spec.id for spec in NODE_LIBRARY]
     assert len(operation_ids) == len(set(operation_ids))
+    assert REGISTRATION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
 
     for spec in NODE_LIBRARY:
         assert spec.execution_policy in EXECUTION_POLICIES, spec.id
@@ -377,6 +379,8 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
                 inspect.signature(spec.function).parameters.values()
             )
             declared = {param.name for param in spec.parameters}
+            injected = REGISTRATION_RUNTIME_KEYWORDS.get(spec.id, frozenset())
+            assert not declared & injected, spec.id
             required = {
                 param.name
                 for param in signature_params[1:]
@@ -392,11 +396,13 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
             # keyword to be spelled out in the function signature.
             try:
                 inspect.signature(spec.function).bind(
-                    object(), **{param.name: param.default for param in spec.parameters}
+                    object(),
+                    **{param.name: param.default for param in spec.parameters},
+                    **{name: object() for name in injected},
                 )
             except TypeError as exc:
                 pytest.fail(f"{spec.id}: declared settings cannot be called: {exc}")
-            assert required <= declared, spec.id
+            assert required <= declared | injected, spec.id
 
         output_names = [port.name for port in spec.output_ports]
         assert len(output_names) == len(set(output_names)), spec.id
@@ -417,6 +423,53 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
                     spec.id,
                     param.name,
                 )
+
+
+@pytest.mark.parametrize("operation_id", sorted(REGISTRATION_RUNTIME_KEYWORDS))
+def test_runtime_input_metadata_is_injected_and_remains_required(operation_id):
+    from napari_vipp.core.metadata import SourceMetadata
+    from napari_vipp.core.transforms import (
+        TransformData,
+        TransformState,
+        registration_grid,
+    )
+
+    data = np.arange(64, dtype=np.float32).reshape(8, 8)
+    state = image_state_from_array(
+        data,
+        axes=(AxisMetadata("y", "space"), AxisMetadata("x", "space")),
+        source=SourceMetadata(source_uuid="contract-source"),
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node(operation_id)
+    reference = pipeline.add_node("input")
+    second_source = reference
+    inputs, states = (data, data), (state, state)
+    if operation_id == "apply_transform":
+        second_source = pipeline.add_node("estimate_registration")
+        assert pipeline.connect("input", second_source.id, target_port=0).success
+        assert pipeline.connect(reference.id, second_source.id, target_port=1).success
+        grid = registration_grid(state)
+        transform = TransformData(
+            (np.eye(3),),
+            grid,
+            grid,
+            TransformState("Translation", grid.axes, 1, grid.unit),
+        )
+        inputs, states = (data, transform), (state, transform.state)
+    assert pipeline.connect("input", node.id, target_port=0).success
+    assert pipeline.connect(second_source.id, node.id, target_port=1).success
+    prepared = pipeline.prepare_node_call(node.id, inputs, states)
+    assert prepared is not None
+    assert prepared.kwargs["input_states"] == states
+    assert "input_states" not in node.params
+    signature = inspect.signature(prepared.cpu_function)
+    signature.bind(prepared.positional_input(), **prepared.keyword_arguments())
+    missing_metadata = prepared.keyword_arguments()
+    missing_metadata.pop("input_states")
+    with pytest.raises(TypeError, match="input_states"):
+        signature.bind(prepared.positional_input(), **missing_metadata)
 
 
 def test_pipeline_runs_mask_to_labels_to_label_volume_filter_in_3d():

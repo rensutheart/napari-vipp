@@ -3,11 +3,13 @@
 import numpy as np
 import pytest
 
+import napari_vipp.core.object_filter_counts as counts_module
 from napari_vipp._tests.test_ui_inspector_widget_integration import (
     _publish_array_output,
     _select,
     _widget,
 )
+from napari_vipp.core.host_memory import HostMemorySnapshot
 from napari_vipp.core.pipeline import EXECUTION_STALE, NODE_EXECUTION_BYPASS
 from napari_vipp.ui.inspector import (
     FILTER_RESULT_SECTION,
@@ -15,6 +17,23 @@ from napari_vipp.ui.inspector import (
     OBJECT_FILTER_OPERATION_IDS,
     PARAMETERS_SECTION,
 )
+
+
+@pytest.fixture(autouse=True)
+def stable_memory_headroom(monkeypatch):
+    """Keep inspector-count checks independent of machine-wide memory pressure."""
+    monkeypatch.setattr(
+        counts_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot(
+            platform="win32",
+            source="windows_global_memory_status_ex",
+            physical_total_bytes=64 * 1024**3,
+            physical_available_bytes=48 * 1024**3,
+            commit_limit_bytes=96 * 1024**3,
+            commit_available_bytes=80 * 1024**3,
+        ),
+    )
 
 
 def _ready_filter(qtbot, operation, source=None, *, axes="YX"):
@@ -98,6 +117,25 @@ def test_ready_cached_sibling_counts_survive_latest_run_completion_set(qtbot):
     widget._pending_dirty_node_ids.add(node.id)
     widget._sync_execution_ui()
     assert "Awaiting calculation" in panel.counts_label.text()
+
+
+def test_low_memory_feedback_preserves_calculated_output(qtbot, monkeypatch):
+    monkeypatch.setattr(
+        counts_module,
+        "capture_host_memory",
+        lambda: HostMemorySnapshot.unavailable("win32", "Test memory probe failed"),
+    )
+    widget, node, _source, result = _ready_filter(qtbot, "clear_border_objects")
+    panel = widget.object_filter_feedback
+    qtbot.waitUntil(
+        lambda: panel.counts_label.text().startswith(
+            "Object counts unavailable: MemoryError:"
+        )
+    )
+    assert "exact object-filter counts" in panel.counts_label.text()
+    assert "0 input objects" not in panel.counts_label.text()
+    assert widget.pipeline.outputs[node.id] is result
+    assert not result.flags.writeable
 
 
 def test_filter_counts_count_same_id_in_separate_frames(qtbot):

@@ -152,9 +152,7 @@ def _set_inspector_width(widget, width: int) -> None:
     QApplication.processEvents()
 
 
-def test_stacked_parameter_label_uses_full_row_before_wrapping(qtbot):
-    widget = _selected_sigma_filter(qtbot)
-
+def _assert_stacked_parameter_label_uses_full_row_before_wrapping(widget):
     control = widget._parameter_widgets["minimum_pixel_fraction"]
     label = widget.parameter_form.labelForField(control)
     assert isinstance(label, QLabel)
@@ -183,6 +181,50 @@ def test_stacked_parameter_label_uses_full_row_before_wrapping(qtbot):
     form_margins = widget.parameter_form.contentsMargins()
     usable_form_width = form_width - form_margins.left() - form_margins.right()
     assert narrow_label_width >= usable_form_width - 2
+
+
+def test_stacked_parameter_label_uses_full_row_before_wrapping(qtbot):
+    _assert_stacked_parameter_label_uses_full_row_before_wrapping(
+        _selected_sigma_filter(qtbot)
+    )
+
+
+@pytest.mark.parametrize("legacy_api", (False, True))
+def test_registration_help_restores_ordinary_form_before_queued_resize(
+    qtbot, monkeypatch, legacy_api,
+):
+    from napari_vipp.ui import inspector
+
+    if legacy_api:
+        monkeypatch.setattr(
+            inspector, "_independent_layout_constraints_available",
+            lambda _layout: False,
+        )
+    widget = _selected_sigma_filter(qtbot)
+    sigma_id = widget._selected_node_id
+    layouts = widget._registration_guidance_layouts()
+    original = [
+        (layout.sizeConstraint(), layout.parentWidget().minimumSize())
+        for layout in layouts
+    ]
+    registration = widget.add_node_from_palette("estimate_registration")
+    for model in ("Translation", "Affine", "Rigid"):
+        _select(widget, registration.id)
+        widget._on_param_changed("model", model)
+        note = widget._parameter_widgets["operation_notice"]
+        note._sync_wrapped_minimum_height()
+        # A note notification queued just before switching must not later
+        # relayout the unrelated node using retired registration geometry.
+        note.wrapped_height_changed.emit()
+        _select(widget, sigma_id)
+        assert [
+            (layout.sizeConstraint(), layout.parentWidget().minimumSize())
+            for layout in layouts
+        ] == original
+        assert all(
+            not hasattr(layout, "_vipp_minimum_height_state") for layout in layouts
+        )
+        _assert_stacked_parameter_label_uses_full_row_before_wrapping(widget)
 
 
 @pytest.mark.parametrize("font_pixels", [14, 20])

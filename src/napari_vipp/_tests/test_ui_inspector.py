@@ -22,9 +22,42 @@ from napari_vipp.ui.inspector import (
     TABLE_RESULTS_SECTION,
     WRITER_STATUS_SECTION,
     InspectorSection,
+    constrain_layout_minimum_height,
     inspector_profile,
 )
 from napari_vipp.ui.palette_roles import theme_colors
+
+
+@pytest.mark.parametrize("legacy_api", (False, True))
+def test_vertical_layout_minimum_preserves_shrinkage_and_tracks_children(
+    qtbot, legacy_api,
+):
+    class LegacyVBoxLayout(QVBoxLayout):
+        # Model the supported Qt 6.9 binding, which has no per-axis setter.
+        setSizeConstraints = None
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    layout = (LegacyVBoxLayout if legacy_api else QVBoxLayout)(host)
+    layout.setContentsMargins(6, 6, 6, 6)
+    label = QLabel("A long label must not force the inspector to be wider.")
+    label.setMinimumWidth(800)
+    label.setMinimumHeight(160)
+    layout.addWidget(label)
+    constrain_layout_minimum_height(layout)
+    host.show()
+    host.resize(180, 100)
+    qtbot.waitUntil(lambda: host.minimumHeight() >= 172)
+    assert host.width() == 180
+    assert host.minimumWidth() == 0
+
+    label.setMinimumHeight(260)
+    qtbot.waitUntil(lambda: host.minimumHeight() >= 272)
+    assert host.width() == 180
+    label.hide()
+    qtbot.waitUntil(lambda: host.minimumHeight() <= 12)
+    assert host.width() == 180
+
 
 _COMMON_TRAILING_SECTIONS = (
     BEHAVIOR_SECTION,
@@ -74,6 +107,7 @@ _DISPLAYABLE_ACTION_KINDS = frozenset(
 )
 _RUNTIME_ACTION_KINDS = frozenset({"runtime", "multi_runtime"})
 _TABLE_ACTION_KINDS = frozenset({"table", "multi_table"})
+_TRANSFORM_ACTION_KINDS = frozenset({"transform", "multi_transform"})
 
 
 def _profile(operation_id: str):
@@ -135,16 +169,20 @@ def test_every_registered_operation_resolves_one_complete_inspector_profile():
             "multi_mask",
             "multi_runtime",
             "multi_table",
+            "multi_transform",
+            "transform",
             "none",
             "runtime",
             "table",
             "plot",
         }
         assert profile.execution_is_manual is (spec.execution_policy == "manual")
-        assert profile.show_output_selector is spec.is_multi_output
+        assert profile.show_output_selector is (
+            spec.is_multi_output and spec.id != "estimate_registration"
+        )
         assert profile.supports_all_outputs_action is spec.is_multi_output
         assert (OUTPUT_SELECTOR_SECTION in profile.primary_sections) is (
-            spec.is_multi_output
+            spec.is_multi_output and spec.id != "estimate_registration"
         )
 
 
@@ -327,18 +365,22 @@ def test_every_effective_output_profile_has_only_valid_actions_and_pinning():
                 if spec.output_type == "table"
                 else (
                     f"multi_{spec.output_type}"
-                    if spec.output_type in {"image", "labels", "mask"}
+                    if spec.output_type in {"image", "labels", "mask", "transform"}
                     else "multi_runtime"
                 )
             )
-        elif spec.output_type in {"image", "labels", "mask", "table", "plot", "mesh"}:
+        elif spec.output_type in {
+            "image", "labels", "mask", "table", "plot", "mesh", "transform"
+        }:
             expected_action = spec.output_type
         else:
             expected_action = "runtime"
 
         assert profile.output_action_kind == expected_action, spec.id
 
-        if expected_action in _TABLE_ACTION_KINDS | {"none", "plot"}:
+        if expected_action in (
+            _TABLE_ACTION_KINDS | _TRANSFORM_ACTION_KINDS | {"none", "plot"}
+        ):
             assert not profile.supports_pin, spec.id
         elif expected_action in _DISPLAYABLE_ACTION_KINDS:
             assert profile.supports_pin, spec.id
@@ -395,6 +437,7 @@ def test_mesh_profiles_use_surface_actions_without_image_diagnostics(operation_i
         ("mask", "mask", MASK_SUMMARY_SECTION, True),
         ("labels", "labels", LABEL_DISTRIBUTION_SECTION, True),
         ("table", "table", TABLE_RESULTS_SECTION, False),
+        ("transform", "transform", METADATA_SECTION, False),
         ("any", "runtime", HISTOGRAMS_SECTION, True),
     ),
 )
@@ -471,17 +514,22 @@ def test_source_and_writers_ignore_runtime_payload_action_overrides(
 def test_multi_output_actions_exist_only_for_multi_output_operations():
     for spec in NODE_LIBRARY:
         profile = inspector_profile(spec)
-        assert profile.show_output_selector is spec.is_multi_output, spec.id
+        assert profile.show_output_selector is (
+            spec.is_multi_output and spec.id != "estimate_registration"
+        ), spec.id
         assert profile.supports_all_outputs_action is spec.is_multi_output, spec.id
         assert (profile.output_action_kind.startswith("multi_")) is (
             spec.is_multi_output
         ), spec.id
         assert (OUTPUT_SELECTOR_SECTION in profile.primary_sections) is (
-            spec.is_multi_output
+            spec.is_multi_output and spec.id != "estimate_registration"
         ), spec.id
 
         if spec.is_multi_output and spec.output_type == "table":
             assert profile.output_action_kind == "multi_table", spec.id
+            assert not profile.supports_pin, spec.id
+        elif spec.is_multi_output and spec.output_type == "transform":
+            assert profile.output_action_kind == "multi_transform", spec.id
             assert not profile.supports_pin, spec.id
         elif spec.is_multi_output:
             assert profile.output_action_kind in (

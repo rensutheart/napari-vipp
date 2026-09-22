@@ -564,6 +564,9 @@ def test_compute_matrix_covers_every_bundled_example():
     # Explicit release inventory: a removed or renamed example cannot make
     # registry-driven parametrization silently shrink the exercised matrix.
     assert set(ids) == {
+        "registration-translation",
+        "registration-rigid-3d",
+        "registration-time-series",
         "exhaustive-inspector",
         "graph-authoring",
         "responsive-crop",

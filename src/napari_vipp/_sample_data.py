@@ -42,7 +42,110 @@ def make_sample_data():
         _gpu_segmentation_cleanup_sample(),
         _threshold_gallery_sample(),
         _measurement_plot_sample(),
+        *make_registration_sample_data(),
     ]
+
+
+def make_registration_sample_data():
+    """Return analytical registration pairs and whole-volume time-lapse data."""
+    from dataclasses import replace
+
+    from .core.metadata import SourceMetadata, image_state_from_array
+    from .core.registration_samples import (
+        drift_series,
+        rigid_volume_pair,
+        translation_pair,
+    )
+
+    samples = []
+
+    def add(phantom, data, name, axes, *, reference=False, labels=False):
+        spacing = {
+            key: value
+            for key, value in zip(
+                "ZYX"[-len(phantom.spacing) :], phantom.spacing, strict=True
+            )
+        }
+        origins = {
+            key: value
+            for key, value in zip(
+                "ZYX"[-len(phantom.origin) :], phantom.origin, strict=True
+            )
+        }
+        scale = [spacing.get(axis, 2.0 if axis == "T" else 1.0) for axis in axes]
+        translation = [origins.get(axis, 0.0) for axis in axes]
+        metadata = _ome_image_metadata(axes, data.shape)
+        metadata["ome"]["multiscales"][0]["datasets"][0][
+            "coordinateTransformations"
+        ] = [
+            {"type": "scale", "scale": scale},
+            {"type": "translation", "translation": translation},
+        ]
+        metadata.update(
+            napari_vipp_sample=True,
+            napari_vipp_preferred_input=False,
+            description=phantom.description,
+            registration_ground_truth={
+                "schema_version": 1,
+                "matrix_direction": "moving to reference",
+                "spatial_axis_order": "ZYX"[-len(phantom.spacing) :],
+                "unit": "micrometer",
+                "matrices": phantom.moving_to_reference,
+                "reference_landmarks": phantom.reference_landmarks,
+                "moving_landmarks": phantom.moving_landmarks,
+            },
+        )
+        state = image_state_from_array(
+            data,
+            layer_metadata=metadata,
+            source_name=name,
+            # The source selector also creates these payloads when listing names.
+            # Carry calibration now; calculate display statistics on execution.
+            defer_statistics=True,
+            source=SourceMetadata(
+                uri=f"vipp-synthetic:{phantom.name}",
+                format="analytical phantom",
+                source_uuid=(
+                    f"vipp-registration-{phantom.name}-"
+                    f"{'reference' if reference else 'moving'}-v1"
+                ),
+            ),
+        )
+        if labels:
+            state = replace(state, kind="label image")
+        metadata["vipp_image_state"] = state.to_dict()
+        if "C" in axes:
+            metadata["channel_names"] = ["Registration channel", "Independent reporter"]
+        samples.append(
+            (
+                data,
+                {"name": name, "visible": False, "metadata": metadata},
+                "labels" if labels else "image",
+            )
+        )
+
+    for phantom, title in (
+        (translation_pair(), "2D translation"),
+        (rigid_volume_pair(), "3D rigid"),
+    ):
+        add(
+            phantom,
+            phantom.reference,
+            f"VIPP registration {title} reference",
+            phantom.axes,
+            reference=True,
+        )
+        add(phantom, phantom.moving, f"VIPP registration {title} moving", phantom.axes)
+    phantom = drift_series()
+    add(phantom, phantom.moving, "VIPP registration XYZ drift time series", "TCZYX")
+    add(
+        phantom,
+        phantom.labels,
+        "VIPP registration XYZ drift labels",
+        "TZYX",
+        labels=True,
+    )
+    return samples
 
 
 def _multichannel_volume_sample(z, y, x, rng):

@@ -12,7 +12,7 @@ from napari_vipp.ui.examples import EXAMPLE_WORKFLOWS, ExampleWorkflowSpec
 
 
 def test_every_bundled_example_has_curated_guidance():
-    assert len(EXAMPLE_WORKFLOWS) == 23
+    assert len(EXAMPLE_WORKFLOWS) == 26
     assert set(EXAMPLE_GUIDANCE_BY_ID) == {spec.id for spec in EXAMPLE_WORKFLOWS}
     for spec in EXAMPLE_WORKFLOWS:
         assert spec.guidance is EXAMPLE_GUIDANCE_BY_ID[spec.id]

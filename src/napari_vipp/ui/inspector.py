@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from qtpy.QtCore import QEvent, QRectF, QSize, Qt, QTimer
+from qtpy.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
 from qtpy.QtGui import QPainter, QPalette, QPen
 from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -23,6 +24,8 @@ from napari_vipp.ui.palette_roles import theme_colors
 PARAMETERS_SECTION = "parameters"
 SOURCE_REPRESENTATION_SECTION = "source_representation"
 OUTPUT_SELECTOR_SECTION = "output_selector"
+NEXT_STEP_SECTION = "next_step"
+REGISTRATION_RESULTS_SECTION = "registration_results"
 COLOCALIZATION_SECTION = "colocalization"
 LABEL_DISTRIBUTION_SECTION = "label_distribution"
 FILTER_RESULT_SECTION = "filter_result"
@@ -111,6 +114,92 @@ _THRESHOLD_DIAGNOSTIC_OPERATION_IDS = frozenset(
         "canny_edges",
     }
 )
+
+
+def _independent_layout_constraints_available(layout: QLayout) -> bool:
+    return callable(getattr(layout, "setSizeConstraints", None))
+
+
+class _MinimumHeightConstraint(QObject):
+    """Qt < 6.10 equivalent of a vertical-only minimum layout constraint."""
+
+    def __init__(self, layout: QLayout) -> None:
+        parent = layout.parentWidget()
+        super().__init__(parent)
+        self._layout = layout
+        self._syncing = False
+        layout.setSizeConstraint(QLayout.SetNoConstraint)
+        parent.installEventFilter(self)
+        self._sync_height()
+
+    def _sync_height(self) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            self._layout.activate()
+            parent = self.parent()
+            height = max(self._layout.totalMinimumSize().height(), 0)
+            if parent.minimumHeight() != height:
+                parent.setMinimumHeight(height)
+                parent.updateGeometry()
+        finally:
+            self._syncing = False
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() in {QEvent.LayoutRequest, QEvent.Resize, QEvent.Show}:
+            self._sync_height()
+        return False
+
+
+def constrain_layout_minimum_height(layout: QLayout) -> None:
+    """Reserve wrapped content height without preventing horizontal shrinkage.
+
+    Qt 6.10 introduced independent axis constraints. The equivalent portable
+    path updates only the owning widget's minimum height on layout changes;
+    neither path turns a long label/button into a minimum inspector width.
+    """
+    if hasattr(layout, "_vipp_minimum_height_state"):
+        return
+    parent = layout.parentWidget()
+    layout._vipp_minimum_height_state = (
+        layout.sizeConstraint(), parent.minimumSize(),
+    )
+    if _independent_layout_constraints_available(layout):
+        layout.setSizeConstraints(QLayout.SetNoConstraint, QLayout.SetMinimumSize)
+    else:
+        parent._vipp_minimum_height_constraint = _MinimumHeightConstraint(layout)
+
+
+def release_layout_minimum_height(layout: QLayout) -> None:
+    """Restore the layout's exact pre-reservation minimum-size contract."""
+    state = getattr(layout, "_vipp_minimum_height_state", None)
+    if state is None:
+        return
+    del layout._vipp_minimum_height_state
+    parent = layout.parentWidget()
+    guard = getattr(parent, "_vipp_minimum_height_constraint", None)
+    if guard is not None:
+        parent.removeEventFilter(guard)
+        guard.deleteLater()
+        del parent._vipp_minimum_height_constraint
+    constraint, minimum_size = state
+    layout.setSizeConstraint(constraint)
+    parent.setMinimumSize(minimum_size)
+
+
+def sync_reserved_layout_height(layout: QLayout) -> None:
+    """Propagate an active height reservation in the current layout turn."""
+    if not hasattr(layout, "_vipp_minimum_height_state"):
+        return
+    parent = layout.parentWidget()
+    guard = getattr(parent, "_vipp_minimum_height_constraint", None)
+    if guard is not None:
+        # A descendant can change its fixed height after the parent's queued
+        # LayoutRequest was handled. Commit that newer minimum bottom-up rather
+        # than depending on another event that Qt may coalesce away.
+        guard._sync_height()
+    parent.updateGeometry()
 
 
 class _InspectorBusySpinner(QWidget):
@@ -231,6 +320,12 @@ def inspector_profile(
         parameter_title = "Colocalization"
     elif operation_id == "plot_results":
         parameter_title = "Plot results"
+    elif operation_id == "estimate_registration":
+        parameter_title = "Registration"
+    elif operation_id == "apply_transform":
+        parameter_title = "Resampling"
+    elif operation_id == "compare_images":
+        parameter_title = "Comparison"
     elif operation_id in _TABLE_TRANSFORM_OPERATION_IDS:
         parameter_title = "Table settings"
     elif operation_id in _MEASUREMENT_OPERATION_IDS:
@@ -246,10 +341,15 @@ def inspector_profile(
         primary.append(WRITER_STATUS_SECTION)
         distribution_kind = "none"
     else:
-        if is_multi_output:
+        if is_multi_output and operation_id != "estimate_registration":
             primary.append(OUTPUT_SELECTOR_SECTION)
 
-        if operation_id == "intensity_histogram":
+        if operation_id == "estimate_registration":
+            primary.extend((
+                NEXT_STEP_SECTION, TABLE_RESULTS_SECTION, REGISTRATION_RESULTS_SECTION,
+            ))
+            distribution_kind = "none"
+        elif operation_id == "intensity_histogram":
             # The plot is the primary scientific result; the table remains
             # immediately available for exact bin inspection and export.
             primary.extend((HISTOGRAMS_SECTION, TABLE_RESULTS_SECTION))
@@ -280,7 +380,7 @@ def inspector_profile(
         elif operation_id == "filter_mesh_objects":
             primary.extend((LABEL_DISTRIBUTION_SECTION, METADATA_SECTION))
             distribution_kind = "mesh_filter"
-        elif output_type in {"mesh", "plot"}:
+        elif output_type in {"mesh", "plot", "transform"}:
             primary.append(METADATA_SECTION)
             distribution_kind = "none"
         elif is_table:
@@ -352,6 +452,9 @@ def inspector_profile(
         if is_table:
             action_kind = "multi_table"
             supports_pin = False
+        elif output_type == "transform":
+            action_kind = "multi_transform"
+            supports_pin = False
         elif output_type in {"image", "mask", "labels"}:
             action_kind = f"multi_{output_type}"
             supports_pin = True
@@ -360,6 +463,9 @@ def inspector_profile(
             supports_pin = True
     elif output_type == "plot":
         action_kind = "plot"
+        supports_pin = False
+    elif output_type == "transform":
+        action_kind = "transform"
         supports_pin = False
     elif is_table:
         action_kind = "table"
@@ -399,7 +505,9 @@ def inspector_profile(
         output_action_kind=action_kind,
         supports_pin=supports_pin,
         execution_is_manual=spec.execution_policy == "manual",
-        show_output_selector=is_multi_output,
+        show_output_selector=(
+            is_multi_output and operation_id != "estimate_registration"
+        ),
         supports_all_outputs_action=is_multi_output,
         distribution_kind=distribution_kind,
     )
@@ -629,7 +737,7 @@ class InspectorSection(QWidget):
             return "histogram"
         if "colocalization" in title or "scatter" in title:
             return "overlap"
-        if "result" in title:
+        if "result" in title or "diagnostic" in title:
             return "table"
         if "metadata" in title:
             return "database"

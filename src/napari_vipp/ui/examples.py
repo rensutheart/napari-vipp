@@ -26,6 +26,42 @@ class ExampleWorkflowSpec:
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
     ExampleWorkflowSpec(
+        "registration-translation",
+        "Registration & Alignment",
+        "Subpixel 2D Registration",
+        "synthetic-registration-translation.json",
+        (
+            "VIPP registration 2D translation reference",
+            "VIPP registration 2D translation moving",
+        ),
+        "Recover a known fractional-pixel displacement, apply the reusable "
+        "transform, and inspect the valid coverage mask and alignment diagnostics.",
+    ),
+    ExampleWorkflowSpec(
+        "registration-rigid-3d",
+        "Registration & Alignment",
+        "Anisotropic 3D Rigid Registration",
+        "synthetic-registration-rigid-3d.json",
+        (
+            "VIPP registration 3D rigid reference",
+            "VIPP registration 3D rigid moving",
+        ),
+        "Align a true 3D volume with rotation and translation in physical space. "
+        "The synthetic voxels have unequal Z, Y and X spacing and a nonzero origin.",
+    ),
+    ExampleWorkflowSpec(
+        "registration-time-series",
+        "Registration & Alignment",
+        "Whole-volume XYZ Drift Correction",
+        "synthetic-registration-time-series.json",
+        (
+            "VIPP registration XYZ drift time series",
+            "VIPP registration XYZ drift labels",
+        ),
+        "Estimate one XYZ transform for each of six timepoints from one channel, "
+        "then apply the same motion to both channels and companion object labels.",
+    ),
+    ExampleWorkflowSpec(
         "exhaustive-inspector",
         "Comprehensive Review",
         "Exhaustive Inspector Showcase",
@@ -39,8 +75,10 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
             "VIPP synthetic 3D deconvolution volume",
             "VIPP synthetic 3D measured PSF",
             "VIPP synthetic deconvolution image",
+            "VIPP registration 2D translation moving",
+            "VIPP registration 2D translation reference",
         ),
-        "Inspect image and measurement tools in one nine-lane workflow with "
+        "Inspect image and measurement tools in one ten-lane workflow with "
         "representative synthetic inputs, curated tunnels, canvas notes, "
         "and saved inspector display settings. Table Source is reviewed "
         "separately using collected batch measurements.",

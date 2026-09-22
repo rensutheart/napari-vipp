@@ -36,6 +36,7 @@ from qtpy.QtCore import (
     Qt,
     QThreadPool,
     QTimer,
+    Signal,
 )
 from qtpy.QtGui import (
     QAction,
@@ -380,6 +381,7 @@ from napari_vipp.core.thumbnail_statistics import (
     ThumbnailStatisticsEngine,
     ThumbnailStatisticsRequest,
 )
+from napari_vipp.core.transforms import is_transform_data, save_transform_output
 from napari_vipp.core.workflow import (
     deserialize_workflow,
     load_workflow,
@@ -594,6 +596,7 @@ from napari_vipp.ui.dialogs import (
     TunnelManagerDialog,
     TunnelSummary,
 )
+from napari_vipp.ui.dropdown_wheel import route_closed_dropdown_wheel
 from napari_vipp.ui.examples import (
     EXAMPLE_WORKFLOWS as EXAMPLE_WORKFLOWS,
 )
@@ -639,15 +642,20 @@ from napari_vipp.ui.inspector import (
     LABEL_DISTRIBUTION_SECTION,
     MASK_SUMMARY_SECTION,
     METADATA_SECTION,
+    NEXT_STEP_SECTION,
     OBJECT_FILTER_OPERATION_IDS,
     OUTPUT_SELECTOR_SECTION,
     PARAMETERS_SECTION,
     READER_SUPPORT_SECTION,
+    REGISTRATION_RESULTS_SECTION,
     SOURCE_REPRESENTATION_SECTION,
     TABLE_RESULTS_SECTION,
     WRITER_STATUS_SECTION,
     InspectorSection,
+    constrain_layout_minimum_height,
     inspector_profile,
+    release_layout_minimum_height,
+    sync_reserved_layout_height,
 )
 from napari_vipp.ui.lifecycle import WidgetLifecycle
 from napari_vipp.ui.mesh_diagnostics import MeshMeasurementDiagnostics
@@ -709,6 +717,8 @@ from napari_vipp.ui.presentation_settings import (
     save_thumbnail_statistics_policy,
     thumbnail_resolution_preset,
 )
+from napari_vipp.ui.registration_next_step import RegistrationNextStepController
+from napari_vipp.ui.registration_results import RegistrationResultsController
 from napari_vipp.ui.result_table_dialog import (
     ResultTableDialog,
     choose_table_export_target,
@@ -1056,6 +1066,9 @@ COLOCALIZATION_THRESHOLD_VALUE_PARAMETERS = {
 }
 COLOCALIZATION_SCATTER_OPERATIONS = COLOCALIZATION_COSTES_OPERATIONS
 BACKGROUND_PIPELINE_OPERATIONS = {
+    "estimate_registration",
+    "apply_transform",
+    "compare_images",
     "table_source",
     "auto_watershed_from_mask",
     "born_wolf_psf",
@@ -1543,6 +1556,8 @@ class _ToolbarChevronButton(_ToolbarCommandButton):
 class _InspectorNoteLabel(QLabel):
     """Wrapped inspector text that always reserves its rendered height."""
 
+    wrapped_height_changed = Signal()
+
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
         self._height_sync_active = False
@@ -1590,6 +1605,7 @@ class _InspectorNoteLabel(QLabel):
                 width = parent_width
         if width <= 0 or not self.hasHeightForWidth():
             return
+        previous_height = self.minimumHeight()
         self._height_sync_active = True
         try:
             # QLabel.heightForWidth() includes the current minimum height.  A
@@ -1603,6 +1619,8 @@ class _InspectorNoteLabel(QLabel):
             self.updateGeometry()
         finally:
             self._height_sync_active = False
+        if required_height != previous_height:
+            self.wrapped_height_changed.emit()
 
 
 class _InspectorParameterLabel(QLabel):
@@ -4602,6 +4620,10 @@ class VippWidget(QWidget):
             self._workflow_save_in_progress = False
 
     def eventFilter(self, watched, event):  # noqa: N802
+        if event.type() == QEvent.Wheel and route_closed_dropdown_wheel(
+            self.inspector_content, watched, event,
+        ):
+            return True
         workflow_drop = getattr(self, "_workflow_file_drop", None)
         if workflow_drop is not None and workflow_drop.handle_event(watched, event):
             return True
@@ -5607,6 +5629,7 @@ class VippWidget(QWidget):
                 or is_table_data(data)
                 or is_mesh_data(data)
                 or is_plot_data(data)
+                or is_transform_data(data)
             ):
                 continue
             if thumbnail_has_stack(tuple(getattr(data, "shape", ())), state):
@@ -6669,8 +6692,12 @@ class VippWidget(QWidget):
         writer_status_layout.addWidget(self.writer_status_label)
         writer_status_layout.addWidget(self.batch_output_status_panel)
 
+        self._registration_next_step = RegistrationNextStepController(self)
+        self._registration_results = RegistrationResultsController(self)
         self._inspector_sections = {
             PARAMETERS_SECTION: self.parameter_group,
+            NEXT_STEP_SECTION: self._registration_next_step.section,
+            REGISTRATION_RESULTS_SECTION: self._registration_results.section,
             SOURCE_REPRESENTATION_SECTION: self.source_representation_section,
             OUTPUT_SELECTOR_SECTION: self.output_selector_section,
             COLOCALIZATION_SECTION: self.colocalization_scatter_group,
@@ -21293,10 +21320,42 @@ class VippWidget(QWidget):
         if self._selected_node_id in {source_id, target_id}:
             self._refresh_selected_parameter_controls()
             self._sync_inspector_presentation()
-        if self._mark_pipeline_dirty(target_id):
+        frame_sources = self._registration_frame_sources_to_refresh(target_id)
+        dirty = (
+            self._mark_pipeline_branches_dirty({target_id, *frame_sources})
+            if frame_sources else self._mark_pipeline_dirty(target_id)
+        )
+        if dirty:
             self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(result.message)
+
+    def _registration_frame_sources_to_refresh(self, target_id: str) -> set[str]:
+        """Refresh anonymous cached sources when registration joins a branch.
+
+        The worker creates source-frame IDs, never the UI. Refreshing the source
+        also invalidates its sibling labels/channels so they receive that same
+        identity. Existing UUID/URI frames do not require another calculation.
+        Normal manual barriers still govern Estimate/Apply execution.
+        """
+        registrations = {
+            node_id for node_id in self.pipeline.descendants_inclusive({target_id})
+            if self.pipeline.nodes[node_id].operation_id in {
+                "estimate_registration", "apply_transform"
+            }
+        }
+        if not registrations:
+            return set()
+        refresh = set()
+        for node_id in self.pipeline.ancestors_inclusive(registrations):
+            if self.pipeline.nodes[node_id].operation_id != "input":
+                continue
+            state = self.pipeline.output_states.get(node_id)
+            if isinstance(state, ImageState) and not (
+                state.source.source_uuid or state.source.uri
+            ):
+                refresh.add(node_id)
+        return refresh
 
     def _disconnect_nodes(
         self,
@@ -22058,6 +22117,8 @@ class VippWidget(QWidget):
         self._sync_source_representation_ui(profile)
         self._sync_reader_support_ui(profile)
         self._sync_output_selector_ui(profile)
+        self._registration_next_step.refresh()
+        self._registration_results.refresh()
         self._sync_writer_status_ui(profile)
         self._update_object_filter_feedback()
         self._sync_histogram_interaction_hint()
@@ -22168,6 +22229,8 @@ class VippWidget(QWidget):
             )
         )
         primary_visibility = {
+            NEXT_STEP_SECTION: node.operation_id == "estimate_registration",
+            REGISTRATION_RESULTS_SECTION: node.operation_id == "estimate_registration",
             PARAMETERS_SECTION: (
                 not self.parameter_group.isHidden()
                 or not self.connected_inputs_panel.isHidden()
@@ -22717,10 +22780,15 @@ class VippWidget(QWidget):
             "multi_labels": "Save labels…",
             "multi_runtime": "Save output…",
             "multi_table": "Export table…",
+            "transform": "Export transform…",
+            "multi_transform": "Export transform…",
         }
         action_label = action_labels.get(profile.output_action_kind)
         self.save_button.setVisible(action_label is not None)
         self.save_button.setEnabled(action_label is not None and data is not None)
+        if node.operation_id == "estimate_registration":
+            # Registration exposes named export actions beside its two results.
+            self.save_button.hide()
         if action_label is not None:
             self.save_button.setText(action_label)
             self.save_button.setToolTip(
@@ -23059,7 +23127,7 @@ class VippWidget(QWidget):
         output_port = 0
         expected_table = False
         if node is not None:
-            data, _output_state, output_port = self._node_display_payload(node_id)
+            data, _output_state, output_port = self._inspector_table_payload(node_id)
             expected_table = (
                 self._node_output_type_for_payload(node_id, data, output_port)
                 == "table"
@@ -23177,6 +23245,9 @@ class VippWidget(QWidget):
             )
 
     def _sync_execution_ui(self) -> None:
+        if hasattr(self, "_registration_next_step"):
+            self._registration_next_step.refresh()
+            self._registration_results.refresh()
         self._sync_node_names()
         for node_id in self.pipeline.nodes:
             self.graph_view.set_node_bypassed(
@@ -23349,11 +23420,13 @@ class VippWidget(QWidget):
             and dialog_context[0] in affected
         ):
             dialog_node_id, expected_port = dialog_context
-            data, _state, output_port = self._node_display_payload(dialog_node_id)
-            if is_table_data(data) and int(output_port) == int(expected_port):
+            data, _state = self._node_output_payload_for_port(
+                dialog_node_id, expected_port,
+            )
+            if is_table_data(data):
                 self._sync_result_table_dialog(
                     data,
-                    output_port,
+                    expected_port,
                     node_id=dialog_node_id,
                 )
             else:
@@ -24780,6 +24853,18 @@ class VippWidget(QWidget):
         tooltip: str = "",
     ) -> None:
         note = _InspectorNoteLabel(text, self.parameter_form_widget)
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is not None and node.operation_id in {
+            "estimate_registration", "apply_transform", "compare_images"
+        }:
+            # Registration has unusually long, contextual safety guidance.
+            # Reserve its height only while that guidance is present; ordinary
+            # forms retain their established responsive/tuning geometry.
+            for layout in self._registration_guidance_layouts():
+                constrain_layout_minimum_height(layout)
+            note.wrapped_height_changed.connect(
+                self._sync_registration_guidance_height, Qt.QueuedConnection
+            )
         note.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
         )
@@ -24789,6 +24874,11 @@ class VippWidget(QWidget):
         note.setToolTip(tooltip)
         note.setAccessibleDescription(tooltip)
         self._style_operation_note(note, status)
+        if (
+            status == "Warning" and node is not None
+            and node.operation_id == "estimate_registration"
+        ):
+            _set_palette_text_tone(note, "warning")
         self.parameter_form.addRow(note)
         self._parameter_widgets["operation_notice"] = note
 
@@ -24850,6 +24940,44 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id == "estimate_registration":
+            scope = (
+                "Each time point is registered as one complete XY image or XYZ "
+                "volume against the selected reference time. Z slices are never "
+                "registered separately. "
+                if node.params.get("mode", "Two images") == "Time series"
+                else "The moving image is registered to the reference image. "
+            )
+            model_note = (
+                "Affine registration changes scale and shear as well as position. "
+                "It can alter object shape and size; prefer Translation or Rigid "
+                "for drift correction. "
+                if node.params.get("model", "Translation") == "Affine"
+                else ""
+            )
+            return (
+                scope + model_note
+                + "Review the diagnostics and the aligned image; a matching "
+                "score is not proof of correct alignment."
+            )
+        if node.operation_id == "apply_transform":
+            return (
+                "Applies the estimated transform once, on the reference grid. "
+                "The same transform can align compatible sibling channels, "
+                "masks and labels. Automatic interpolation preserves mask and "
+                "label IDs with nearest neighbours and uses linear interpolation "
+                "for intensity images. The Valid coverage output marks pixels "
+                "supported by the original image, excluding filled borders."
+            )
+        if node.operation_id == "compare_images":
+            return (
+                "Compares images already on the same physical grid; it does not "
+                "align or normalize them. Set the intensity range explicitly "
+                "for SSIM and PSNR. To exclude resampling borders, enable Use "
+                "valid-coverage mask and connect Apply Transform's Valid coverage "
+                "output. Compare before and after on the same valid region. "
+                "A higher similarity score is not proof of biological correspondence."
+            )
         if node.operation_id == "convex_hull":
             return (
                 "One hull around all foreground in each slice or volume. "
@@ -24930,6 +25058,15 @@ class VippWidget(QWidget):
 
     def _operation_help_note_status(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id in {
+            "estimate_registration", "apply_transform", "compare_images"
+        }:
+            return (
+                "Warning"
+                if node.operation_id == "estimate_registration"
+                and node.params.get("model", "Translation") == "Affine"
+                else "Info"
+            )
         if node is not None and node.operation_id in {
             "minimum_threshold",
             "convex_hull",
@@ -30760,6 +30897,15 @@ class VippWidget(QWidget):
             return primary_data, primary_state, 0
         outputs = list(outputs or [])
         output_states = list(output_states or [])
+        if node.operation_id == "estimate_registration":
+            # Its inspector presents both results, never a user-selected port.
+            return (
+                outputs[0] if outputs and outputs[0] is not None else primary_data,
+                output_states[0]
+                if output_states and output_states[0] is not None
+                else primary_state,
+                0,
+            )
         if not outputs and primary_data is None:
             return primary_data, primary_state, 0
         port_count = max(len(outputs), len(self.pipeline.output_ports(node_id)), 1)
@@ -33786,6 +33932,8 @@ class VippWidget(QWidget):
         )
 
     def _clear_parameter_form(self) -> None:
+        for layout in self._registration_guidance_layouts():
+            release_layout_minimum_height(layout)
         self._release_colocalization_inspector_geometry()
         if self._active_parameter_slider_scrub is not None:
             self._active_parameter_slider_scrub = None
@@ -33818,6 +33966,20 @@ class VippWidget(QWidget):
                 widget.deleteLater()
         self.parameter_form.invalidate()
         self.parameter_form_widget.setFixedHeight(0)
+
+    def _registration_guidance_layouts(self) -> tuple:
+        return (
+            self.parameter_group.content_widget.layout(),
+            self.parameter_group.layout(),
+            self._inspector_layout,
+        )
+
+    def _sync_registration_guidance_height(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is not None and node.operation_id in {
+            "estimate_registration", "apply_transform", "compare_images"
+        }:
+            self._sync_parameter_form_height()
 
     def _present_parameter_form(self) -> None:
         """Expose every newly authored row before deferred selection work starts."""
@@ -33880,6 +34042,7 @@ class VippWidget(QWidget):
                 if layout is not None:
                     layout.invalidate()
                     layout.activate()
+                    sync_reserved_layout_height(layout)
         finally:
             self._parameter_form_height_sync_active = False
 
@@ -34067,7 +34230,11 @@ class VippWidget(QWidget):
                 "lock_xy",
             }:
                 self._refresh_selected_parameter_controls()
-        if name == "input_count":
+        if name == "input_count" or (
+            node.operation_id == "estimate_registration" and name == "mode"
+        ) or (
+            node.operation_id == "compare_images" and name == "use_mask"
+        ):
             for connection in self.pipeline.trim_invalid_connections(
                 self._selected_node_id
             ):
@@ -34078,6 +34245,9 @@ class VippWidget(QWidget):
                     notify=False,
                 )
             self._sync_node_input_ports(self._selected_node_id)
+        if node.operation_id == "estimate_registration" and name in {"mode", "model"}:
+            self._render_parameters(self._selected_node_id)
+            self._sync_inspector_presentation()
         if name in {"axis", "boundary_mode", "channel_axis", "spatial_mode"}:
             self._refresh_selected_parameter_controls()
         if node.operation_id == "clear_border_objects" and name == "boundary_mode":
@@ -37825,6 +37995,25 @@ class VippWidget(QWidget):
             output_port,
         )
         metadata_text = format_compact_metadata(scientific_state)
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "estimate_registration":
+            diagnostics, diagnostic_state = self._node_output_payload_for_port(
+                node_id, 1,
+            )
+            count = (
+                diagnostics.row_count if is_table_data(diagnostics)
+                else getattr(diagnostic_state, "row_count", None)
+            )
+            if is_transform_data(scientific_data):
+                summary = scientific_data.state
+                metadata_text = (
+                    f"{summary.transform_count} "
+                    f"{''.join(summary.spatial_axes).upper()} "
+                    f"{summary.model.lower()} transform"
+                    f"{'s' if summary.transform_count != 1 else ''}"
+                    f"\nDiagnostics: {count} rows" if count is not None
+                    else format_compact_metadata(summary)
+                )
         batch_text = self._interactive_collection_card_metadata(node_id)
         if batch_text:
             metadata_text = (
@@ -37847,7 +38036,7 @@ class VippWidget(QWidget):
             return
         preview_enabled = (
             mode.lower() != "off"
-            and preview_output_type not in {"table", "mesh"}
+            and preview_output_type not in {"table", "mesh", "transform"}
             and node_id not in self._preview_disabled_node_ids
         )
         self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
@@ -38375,6 +38564,16 @@ class VippWidget(QWidget):
             state,
             output_port,
         )
+        if node.operation_id == "estimate_registration":
+            rows = []
+            for port, label in ((0, "Transform"), (1, "Diagnostics")):
+                result, result_state = self._node_output_payload_for_port(node.id, port)
+                rows.extend(
+                    MetadataRow(f"{label} · {row.label}", row.value)
+                    for row in self._selected_output_metadata_rows(
+                        node, result, result_state, port,
+                    )
+                )
         if node.operation_id == "input" and self._file_source_path_for_node(node):
             source_item = self._file_source_item_for_node(node)
             if source_item is None:
@@ -38949,7 +39148,10 @@ class VippWidget(QWidget):
             None,
             log_scale=False,
         )
-        if is_table_data(data) or is_mesh_data(data) or is_plot_data(data):
+        if (
+            is_table_data(data) or is_mesh_data(data) or is_plot_data(data)
+            or is_transform_data(data)
+        ):
             self._current_output_histogram_key = None
             self._pending_output_histogram_request = None
             self.rescale_input_histogram_group.setHidden(True)
@@ -39264,6 +39466,7 @@ class VippWidget(QWidget):
             or is_table_data(data)
             or is_mesh_data(data)
             or is_plot_data(data)
+            or is_transform_data(data)
         ):
             self._current_input_histogram_key = None
             self._pending_input_histogram_request = None
@@ -41342,6 +41545,7 @@ class VippWidget(QWidget):
             or is_table_data(data)
             or is_mesh_data(data)
             or is_plot_data(data)
+            or is_transform_data(data)
         ):
             self._current_input_histogram_key = None
             self._pending_input_histogram_request = None
@@ -42049,7 +42253,9 @@ class VippWidget(QWidget):
     def _open_result_table_dialog(self) -> None:
         """Open the selected complete table in a reusable nonmodal window."""
 
-        data, _state, output_port = self._node_display_payload(self._selected_node_id)
+        data, _state, output_port = self._inspector_table_payload(
+            self._selected_node_id,
+        )
         if not is_table_data(data):
             self._set_status(
                 "Calculate or select a table output before opening it.",
@@ -42101,6 +42307,12 @@ class VippWidget(QWidget):
             default_export_name=default_name,
             context_key=(node.id, int(output_port)),
         )
+        dialog.export_guard = (
+            lambda node_id=node.id, table=data, port=int(output_port): (
+                self.pipeline.node_execution_states.get(node_id) == EXECUTION_READY
+                and self._node_output_payload_for_port(node_id, port)[0] is table
+            )
+        ) if node.operation_id == "estimate_registration" else None
         self._sync_result_table_dialog_attention(node.id)
 
     def _calculate_result_table_dialog_node(self) -> None:
@@ -42130,6 +42342,10 @@ class VippWidget(QWidget):
             return
 
         state, detail = self._node_execution_ui_state(dialog_node_id)
+        if dialog.export_guard is not None:
+            dialog.export_button.setEnabled(
+                dialog.export_guard() and dialog._active_export_worker is None
+            )
         if state == EXECUTION_READY:
             dialog.set_result_status()
             return
@@ -42186,8 +42402,22 @@ class VippWidget(QWidget):
             ),
         )
 
+    def _inspector_table_payload(self, node_id: str):
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "estimate_registration":
+            data, state = self._node_output_payload_for_port(node_id, 1)
+            return data, state, 1
+        return self._node_display_payload(node_id)
+
     def _update_table_preview(self) -> None:
-        data, _output_state, output_port = self._node_display_payload(
+        registration = (
+            self._selected_node_id in self.pipeline.nodes
+            and self.pipeline.nodes[self._selected_node_id].operation_id
+            == "estimate_registration"
+        )
+        self.table_group.setTitle("Diagnostics" if registration else "Results")
+        self.results_workspace_button.setVisible(not registration)
+        data, _output_state, output_port = self._inspector_table_payload(
             self._selected_node_id
         )
         is_table_output = (
@@ -43055,6 +43285,16 @@ class VippWidget(QWidget):
             if len(ports) > 1 and 0 <= output_port < len(ports)
             else ""
         )
+        if is_transform_data(selected_data):
+            path, _selected_filter = QFileDialog.getSaveFileName(
+                self,
+                "Export registration transform",
+                f"{safe_batch_filename(self._node_title(node_id))}{port_suffix}.json",
+                "VIPP registration transform (*.json)",
+            )
+            if path:
+                self._save_node_output(node_id, path, format="json")
+            return
         if is_mesh_data(selected_data):
             path, selected_filter = QFileDialog.getSaveFileName(
                 self,
@@ -43147,6 +43387,17 @@ class VippWidget(QWidget):
         ports = self.pipeline.output_ports(node_id)
         if node is None or len(ports) <= 1:
             return
+        if node.operation_id == "estimate_registration" and (
+            self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY
+            or any(
+                self._node_output_payload_for_port(node_id, port)[0] is None
+                for port in (0, 1)
+            )
+        ):
+            self.status_label.setText(
+                "Recalculate registration before exporting both results."
+            )
+            return
         if not self._prepare_crop_pixel_output_boundary(
             {node_id},
             action="Export all outputs",
@@ -43169,7 +43420,17 @@ class VippWidget(QWidget):
                 f"{self._node_title(node_id)}_{port.label or port.name}"
             )
             try:
-                if is_mesh_data(data):
+                if is_transform_data(data):
+                    if (
+                        self.pipeline.node_execution_states.get(node_id)
+                        != EXECUTION_READY
+                    ):
+                        raise ValueError(
+                            "Recalculate the registration before exporting "
+                            "its transform."
+                        )
+                    output_path = save_transform_output(data, root / f"{stem}.json")
+                elif is_mesh_data(data):
                     output_path = save_mesh_output(data, root / f"{stem}.obj")
                 elif is_table_data(data):
                     output_path = save_table_output(
@@ -43258,6 +43519,7 @@ class VippWidget(QWidget):
             or is_table_data(data)
             or is_mesh_data(data)
             or is_plot_data(data)
+            or is_transform_data(data)
         ):
             return False
         shape = getattr(data, "shape", None)
@@ -43275,18 +43537,43 @@ class VippWidget(QWidget):
         path: str,
         *,
         format: str = "auto",
+        output_port: int | None = None,
     ) -> Path | None:
         if not self._prepare_crop_pixel_output_boundary(
             {node_id},
             action="Save output",
         ):
             return None
-        data, state, _output_port = self._node_display_payload(node_id)
+        if output_port is None:
+            data, state, _output_port = self._node_display_payload(node_id)
+        else:
+            data, state = self._node_output_payload_for_port(node_id, output_port)
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "estimate_registration" and (
+            self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY
+        ):
+            self._set_status(
+                "Calculate the updated registration before exporting; "
+                "no file was written.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return None
         if data is None:
             self.status_label.setText("That node has no output to save yet.")
             return None
         try:
-            if is_mesh_data(data):
+            if is_transform_data(data):
+                if self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY:
+                    self._set_status(
+                        "Calculate the updated registration before exporting; "
+                        "no file was written.",
+                        severity=MessageSeverity.WARNING,
+                        actionable=True,
+                    )
+                    return None
+                output_path = save_transform_output(data, path)
+            elif is_mesh_data(data):
                 if self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY:
                     self._set_status(
                         "Calculate the updated mesh before saving; "
@@ -43407,6 +43694,14 @@ class VippWidget(QWidget):
 
     def inspect_node(self, node_id: str) -> None:
         data, state, output_port = self._node_display_payload(node_id)
+        if is_transform_data(data):
+            self._discard_inspect_layers()
+            self.status_label.setText(
+                "This output is a registration transform, not an image. "
+                "Use Apply Transform to view aligned images. "
+                "Review the Diagnostics table in the inspector."
+            )
+            return
         if is_plot_data(data):
             self.status_label.setText(
                 f"'{self._node_title(node_id)}' is shown in the plot inspector."
@@ -43466,7 +43761,7 @@ class VippWidget(QWidget):
     def _reset_selected_inspect_display(self) -> None:
         node_id = self._selected_node_id
         data, _state, output_port = self._node_display_payload(node_id)
-        if data is None or is_table_data(data):
+        if data is None or is_table_data(data) or is_transform_data(data):
             self.status_label.setText(
                 "The selected node has no image display to reset."
             )
@@ -45156,6 +45451,8 @@ class VippWidget(QWidget):
         node_id: str | None = None,
         output_port: int = 0,
     ) -> str:
+        if is_transform_data(data):
+            return "transform"
         if is_plot_data(data):
             return "plot"
         if is_mesh_data(data):
@@ -45188,6 +45485,7 @@ class VippWidget(QWidget):
             or is_table_data(data)
             or is_mesh_data(data)
             or is_plot_data(data)
+            or is_transform_data(data)
         ):
             return False
         if self._node_image_colormap_override(node_id):
@@ -45197,7 +45495,10 @@ class VippWidget(QWidget):
         return _image_state_displays_as_rgb(state, tuple(arr.shape))
 
     def _display_data(self, data, *, as_labels: bool = False):
-        if is_table_data(data) or is_mesh_data(data) or is_plot_data(data):
+        if (
+            is_table_data(data) or is_mesh_data(data) or is_plot_data(data)
+            or is_transform_data(data)
+        ):
             raise ValueError(
                 "Non-image outputs cannot be displayed as napari image layers."
             )
@@ -45280,6 +45581,7 @@ class VippWidget(QWidget):
             and not is_table_data(data)
             and not is_mesh_data(data)
             and not is_plot_data(data)
+            and not is_transform_data(data)
         ):
             for layer in self._generated_layers_for_name(self._inspect_layer_name):
                 try:
@@ -45524,7 +45826,7 @@ class VippWidget(QWidget):
             )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
-        if self._node_output_type(node_id) in {"table", "mesh"}:
+        if self._node_output_type(node_id) in {"table", "mesh", "transform"}:
             return False
         return node_id not in self._preview_disabled_node_ids
 
@@ -45533,7 +45835,11 @@ class VippWidget(QWidget):
         if node is None:
             return False
         data, _state, output_port = self._node_display_payload(node_id)
-        if is_plot_data(data) or self._node_output_type(node_id) == "plot":
+        if (
+            is_plot_data(data)
+            or is_transform_data(data)
+            or self._node_output_type(node_id) in {"plot", "transform"}
+        ):
             return False
         if is_mesh_data(data):
             return bool(data.faces.size)

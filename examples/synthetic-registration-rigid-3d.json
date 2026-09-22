@@ -1,0 +1,248 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "estimate",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP registration 3D rigid moving",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "reference",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP registration 3D rigid reference",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "estimate",
+      "operation_id": "estimate_registration",
+      "params": {
+        "mode": "Two images",
+        "model": "Rigid",
+        "channel": 0,
+        "reference_channel": 0,
+        "reference_time": 0,
+        "precision": 20,
+        "max_shift": 0.25,
+        "minimum_overlap": 0.25,
+        "metric": "Correlation",
+        "iterations": 200
+      }
+    },
+    {
+      "id": "apply",
+      "operation_id": "apply_transform",
+      "params": {
+        "interpolation": "Linear",
+        "outside_value": 0.0
+      }
+    },
+    {
+      "id": "compare_after",
+      "operation_id": "compare_images",
+      "params": {
+        "use_mask": true,
+        "data_range": 1.0,
+        "window_size": 7
+      }
+    },
+    {
+      "id": "compare_before",
+      "operation_id": "compare_images",
+      "params": {
+        "use_mask": true,
+        "data_range": 1.0,
+        "window_size": 7
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "estimate",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "reference",
+      "target": "estimate",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "input",
+      "target": "apply",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Original moving image"
+    },
+    {
+      "source": "estimate",
+      "target": "apply",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "reference",
+      "target": "compare_after",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Reference image"
+    },
+    {
+      "source": "apply",
+      "target": "compare_after",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Aligned image"
+    },
+    {
+      "source": "apply",
+      "target": "compare_after",
+      "target_port": 2,
+      "source_port": 1,
+      "tunnel": "Same valid coverage"
+    },
+    {
+      "source": "reference",
+      "target": "compare_before",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Reference image"
+    },
+    {
+      "source": "input",
+      "target": "compare_before",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Original moving image"
+    },
+    {
+      "source": "apply",
+      "target": "compare_before",
+      "target_port": 2,
+      "source_port": 1,
+      "tunnel": "Same valid coverage"
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      80
+    ],
+    "reference": [
+      0,
+      650
+    ],
+    "estimate": [
+      620,
+      350
+    ],
+    "apply": [
+      1520,
+      350
+    ],
+    "compare_after": [
+      2260,
+      80
+    ],
+    "compare_before": [
+      2260,
+      650
+    ]
+  },
+  "tunnels": [
+    {
+      "name": "Original moving image",
+      "source": "input",
+      "source_port": 0
+    },
+    {
+      "name": "Reference image",
+      "source": "reference",
+      "source_port": 0
+    },
+    {
+      "name": "Aligned image",
+      "source": "apply",
+      "source_port": 0
+    },
+    {
+      "name": "Same valid coverage",
+      "source": "apply",
+      "source_port": 1
+    }
+  ],
+  "notes": [
+    {
+      "id": "note_input",
+      "attached_node": "input",
+      "text": "KNOWN 3D MOTION\nThe entire volume is rotated about all three physical axes (3, -4 and 6 degrees in the authored ZYX rotation order), then displaced by (Z=0.8, Y=-0.7, X=1.2) micrometres. Voxel spacing is (1.1, 0.4, 0.3) micrometres. Translation alone cannot undo this motion.",
+      "position": [
+        0,
+        -260
+      ],
+      "width": 460
+    },
+    {
+      "id": "note_estimate",
+      "attached_node": "estimate",
+      "text": "1. ESTIMATE, THEN APPLY\nCalculate Estimate Registration and inspect its diagnostics output. The first output is a reusable transform; Apply Transform resamples the original image once onto the reference grid. All processing is CPU in this first implementation.",
+      "position": [
+        640,
+        -240
+      ],
+      "width": 450
+    },
+    {
+      "id": "note_apply",
+      "attached_node": "apply",
+      "text": "2. VALID COVERAGE\nApply Transform also returns a Boolean mask describing valid source support. Outside fill is 0 and must not be mistaken for measured background. Intensities use linear interpolation; labels should use nearest neighbour.",
+      "position": [
+        1530,
+        -240
+      ],
+      "width": 450
+    },
+    {
+      "id": "note_compare_after",
+      "attached_node": "compare_after",
+      "text": "3. SAME-REGION COMPARISON\nThe upper comparison uses the aligned image; the lower uses the original moving image. Both use the SAME coverage mask from Apply Transform. SSIM and PSNR use an explicit nominal intensity range of 1. Scores describe agreement, not biological validity.",
+      "position": [
+        2820,
+        100
+      ],
+      "width": 440
+    }
+  ],
+  "view": {
+    "zoom": 0.8,
+    "pan": [
+      0.0,
+      0.0
+    ]
+  }
+}

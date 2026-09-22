@@ -14,6 +14,15 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
+Development update, 2026-09-22: registration is now implemented after 0.16.0a1
+in an isolated feature branch. Final local Windows qualification passed; native
+Linux/macOS and release qualification remain pending. The approved scope
+is Estimate Registration (translation/rigid/affine; pairs or whole-volume time
+series), Apply Transform and Compare Images, with analytical examples.
+See [current contracts](registration-implementation.md) and
+[synthetic evidence](registration-synthetic-qualification.md). Template matching
+and peak detection are deferred; earlier scope wording below is superseded.
+
 VIPP is a napari-native visual workflow builder for reproducible bioimage
 analysis. The graph is the primary work surface: a user should be able to build,
 inspect, tune, batch-run, export, and publish a workflow without losing the
@@ -1057,6 +1066,13 @@ exact scientific region reads.
   microscope metadata, interrupted batch, and OME-Zarr round-tripping.
 
 ## Planned 0.16: Registration, Image Comparison, And Template Matching
+
+**Superseded delivery order (2026-09-22):** reusable transforms, pairwise and
+whole-volume fixed-reference time-series translation, rigid, affine, and Compare
+Images are implemented in development. Final validation remains a release gate.
+Template/detection nodes, previous-frame chaining and nonrigid work are deferred.
+The following original proposal is retained as historical planning context;
+[registration implementation](registration-implementation.md) is authoritative.
 
 The [detailed implementation proposal](registration-and-template-matching-plan.md)
 defines the alignment/detection part of **0.16**. The goal is to align images, assess

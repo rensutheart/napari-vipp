@@ -1,0 +1,1226 @@
+{
+  "scope": "Four analytical fixtures; no real-data or general accuracy claim.",
+  "method": "Independent continuous object evaluation; no resampling to manufacture moving data.",
+  "comparison": "RMSE before and after uses the same valid-coverage region.",
+  "results": [
+    {
+      "fixture": "translation-2d",
+      "shape": [
+        128,
+        160
+      ],
+      "axes": "YX",
+      "spacing": [
+        0.4,
+        0.3
+      ],
+      "origin": [
+        11.0,
+        -7.0
+      ],
+      "model": "Translation",
+      "landmark_error_unit": "micrometer",
+      "maximum_landmark_error": 0.0,
+      "landmark_errors": [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "valid_fraction": 0.918896484375,
+      "estimate_seconds": 0.010429600020870566,
+      "apply_seconds": 0.0017628000350669026,
+      "known_matrices": [
+        [
+          [
+            1.0,
+            0.0,
+            -1.7000000000000002
+          ],
+          [
+            0.0,
+            1.0,
+            1.95
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      ],
+      "estimated_transform": {
+        "schema_version": 1,
+        "direction": "moving-to-reference",
+        "matrices": [
+          [
+            [
+              1.0,
+              0.0,
+              -1.7000000000000002
+            ],
+            [
+              0.0,
+              1.0,
+              1.95
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        ],
+        "moving_grid": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "shape": [
+            128,
+            160
+          ],
+          "spacing": [
+            0.4,
+            0.3
+          ],
+          "origin": [
+            11.0,
+            -7.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "translation-2dFalse"
+        },
+        "reference_grid": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "shape": [
+            128,
+            160
+          ],
+          "spacing": [
+            0.4,
+            0.3
+          ],
+          "origin": [
+            11.0,
+            -7.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "translation-2dTrue"
+        },
+        "state": {
+          "model": "Translation",
+          "spatial_axes": [
+            "y",
+            "x"
+          ],
+          "transform_count": 1,
+          "coordinate_unit": "micrometer",
+          "source_name": "translation-2d moving",
+          "reference_name": "translation-2d reference",
+          "history": [
+            "Two images: Translation; CPU; whole spatial volume; fixed reference",
+            "scikit-image 0.26.0; VIPP registration v1"
+          ],
+          "kind": "spatial transform",
+          "metadata_source": "VIPP registration",
+          "direction": "moving-to-reference",
+          "schema_version": 1
+        },
+        "time_axis": null,
+        "reference_time": null,
+        "settings": {
+          "mode": "Two images",
+          "model": "Translation",
+          "channel": 0,
+          "reference_channel": 0,
+          "reference_time": 0,
+          "precision": 20,
+          "max_shift": 0.25,
+          "minimum_overlap": 0.25,
+          "iterations": 200,
+          "metric": "Correlation",
+          "estimator_conditioning": "mean subtraction for translation; no input-array modification",
+          "sampling": "all voxels; no random samples",
+          "interpolation_for_diagnostics": "linear float64"
+        },
+        "implementation": "scikit-image 0.26.0; VIPP registration v1"
+      },
+      "same_coverage_rmse": [
+        {
+          "time": 0,
+          "channel": 0,
+          "valid_voxels": 18819,
+          "before": 0.1431833654642105,
+          "after": 0.0373762716513699
+        }
+      ],
+      "diagnostics": [
+        {
+          "time_index": 0,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": 0.005818969413321429,
+          "correlation": 0.9999917379638472,
+          "valid_overlap_fraction": 0.918896484375,
+          "center_displacement_y": -1.7000000000000028,
+          "center_displacement_x": 1.9499999999999993,
+          "stop_reason": "subpixel cross-correlation; displacement/overlap-constrained periodic disambiguation",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        }
+      ]
+    },
+    {
+      "fixture": "rigid-3d",
+      "shape": [
+        32,
+        64,
+        80
+      ],
+      "axes": "ZYX",
+      "spacing": [
+        1.1,
+        0.4,
+        0.3
+      ],
+      "origin": [
+        8.0,
+        -4.0,
+        12.0
+      ],
+      "model": "Rigid",
+      "landmark_error_unit": "micrometer",
+      "maximum_landmark_error": 0.005762318467882207,
+      "landmark_errors": [
+        [
+          0.005130633305073313,
+          0.005762318467882207,
+          0.003140792054163387,
+          0.004777516174735045,
+          0.0029956507407594736,
+          0.005216136674984876,
+          0.0021708645263638494
+        ]
+      ],
+      "valid_fraction": 0.860302734375,
+      "estimate_seconds": 0.7522021000040695,
+      "apply_seconds": 0.019434900023043156,
+      "known_matrices": [
+        [
+          [
+            0.992099290015652,
+            0.10075443819372708,
+            0.07474986243937755,
+            -3.2642107627414543
+          ],
+          [
+            -0.10427383718471567,
+            0.9935405472364119,
+            0.04476771019324864,
+            2.3250772277163665
+          ],
+          [
+            -0.0697564737441253,
+            -0.05220846848393199,
+            0.9961969233988567,
+            1.1109188161673402
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      ],
+      "estimated_transform": {
+        "schema_version": 1,
+        "direction": "moving-to-reference",
+        "matrices": [
+          [
+            [
+              0.9921281181861541,
+              0.10051861775591009,
+              0.07468470116993499,
+              -3.2583473586968763
+            ],
+            [
+              -0.10403582626749924,
+              0.993564486285002,
+              0.044790160147721254,
+              2.320560213464333
+            ],
+            [
+              -0.06970182176414057,
+              -0.05220746189637063,
+              0.9962008015280348,
+              1.1107271933873246
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        ],
+        "moving_grid": {
+          "axes": [
+            "z",
+            "y",
+            "x"
+          ],
+          "shape": [
+            32,
+            64,
+            80
+          ],
+          "spacing": [
+            1.1,
+            0.4,
+            0.3
+          ],
+          "origin": [
+            8.0,
+            -4.0,
+            12.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "rigid-3dFalse"
+        },
+        "reference_grid": {
+          "axes": [
+            "z",
+            "y",
+            "x"
+          ],
+          "shape": [
+            32,
+            64,
+            80
+          ],
+          "spacing": [
+            1.1,
+            0.4,
+            0.3
+          ],
+          "origin": [
+            8.0,
+            -4.0,
+            12.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "rigid-3dTrue"
+        },
+        "state": {
+          "model": "Rigid",
+          "spatial_axes": [
+            "z",
+            "y",
+            "x"
+          ],
+          "transform_count": 1,
+          "coordinate_unit": "micrometer",
+          "source_name": "rigid-3d moving",
+          "reference_name": "rigid-3d reference",
+          "history": [
+            "Two images: Rigid; CPU; whole spatial volume; fixed reference",
+            "SimpleITK 2.5.6; VIPP registration v1"
+          ],
+          "kind": "spatial transform",
+          "metadata_source": "VIPP registration",
+          "direction": "moving-to-reference",
+          "schema_version": 1
+        },
+        "time_axis": null,
+        "reference_time": null,
+        "settings": {
+          "mode": "Two images",
+          "model": "Rigid",
+          "channel": 0,
+          "reference_channel": 0,
+          "reference_time": 0,
+          "precision": 20,
+          "max_shift": 0.25,
+          "minimum_overlap": 0.25,
+          "iterations": 200,
+          "metric": "Correlation",
+          "estimator_conditioning": "mean subtraction for translation; no input-array modification",
+          "sampling": "all voxels; no random samples",
+          "interpolation_for_diagnostics": "linear float64"
+        },
+        "implementation": "SimpleITK 2.5.6; VIPP registration v1"
+      },
+      "same_coverage_rmse": [
+        {
+          "time": 0,
+          "channel": 0,
+          "valid_voxels": 140952,
+          "before": 0.05709657818078995,
+          "after": 0.0016262985982868781
+        }
+      ],
+      "diagnostics": [
+        {
+          "time_index": 0,
+          "reference_time": 0,
+          "model": "Rigid",
+          "optimizer_score": -0.9996551075584929,
+          "correlation": 0.9998274942720092,
+          "valid_overlap_fraction": 0.860302734375,
+          "center_displacement_z": -0.809847762529941,
+          "center_displacement_y": 0.7273626670376458,
+          "center_displacement_x": -1.1748984976695525,
+          "stop_reason": "RegularStepGradientDescentOptimizerv4: Step too small after 26 iterations. Current step (6.10352e-05) is less than minimum step (0.0001).",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        }
+      ]
+    },
+    {
+      "fixture": "affine-2d",
+      "shape": [
+        128,
+        160
+      ],
+      "axes": "YX",
+      "spacing": [
+        0.4,
+        0.3
+      ],
+      "origin": [
+        11.0,
+        -7.0
+      ],
+      "model": "Affine",
+      "landmark_error_unit": "micrometer",
+      "maximum_landmark_error": 0.0025596703701315747,
+      "landmark_errors": [
+        [
+          0.001933945387404054,
+          0.0019404830668037507,
+          0.002463319261174592,
+          0.0010171764640805982,
+          0.0009437973825199697,
+          0.0025596703701315747,
+          0.002343121950679154
+        ]
+      ],
+      "valid_fraction": 0.9484375,
+      "estimate_seconds": 17.181357899913564,
+      "apply_seconds": 0.0020446000853553414,
+      "known_matrices": [
+        [
+          [
+            0.9749303621169917,
+            -0.03481894150417829,
+            0.6809888579387174
+          ],
+          [
+            0.019896538002387592,
+            1.0196975726223638,
+            0.049612017508954026
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      ],
+      "estimated_transform": {
+        "schema_version": 1,
+        "direction": "moving-to-reference",
+        "matrices": [
+          [
+            [
+              0.9747861193548932,
+              -0.03472558345931832,
+              0.6845095765837959
+            ],
+            [
+              0.019896778981639534,
+              1.0196150137632103,
+              0.05183647056191016
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        ],
+        "moving_grid": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "shape": [
+            128,
+            160
+          ],
+          "spacing": [
+            0.4,
+            0.3
+          ],
+          "origin": [
+            11.0,
+            -7.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "affine-2dFalse"
+        },
+        "reference_grid": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "shape": [
+            128,
+            160
+          ],
+          "spacing": [
+            0.4,
+            0.3
+          ],
+          "origin": [
+            11.0,
+            -7.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "affine-2dTrue"
+        },
+        "state": {
+          "model": "Affine",
+          "spatial_axes": [
+            "y",
+            "x"
+          ],
+          "transform_count": 1,
+          "coordinate_unit": "micrometer",
+          "source_name": "affine-2d moving",
+          "reference_name": "affine-2d reference",
+          "history": [
+            "Two images: Affine; CPU; whole spatial volume; fixed reference",
+            "SimpleITK 2.5.6; VIPP registration v1"
+          ],
+          "kind": "spatial transform",
+          "metadata_source": "VIPP registration",
+          "direction": "moving-to-reference",
+          "schema_version": 1
+        },
+        "time_axis": null,
+        "reference_time": null,
+        "settings": {
+          "mode": "Two images",
+          "model": "Affine",
+          "channel": 0,
+          "reference_channel": 0,
+          "reference_time": 0,
+          "precision": 20,
+          "max_shift": 0.25,
+          "minimum_overlap": 0.25,
+          "iterations": 200,
+          "metric": "Correlation",
+          "estimator_conditioning": "mean subtraction for translation; no input-array modification",
+          "sampling": "all voxels; no random samples",
+          "interpolation_for_diagnostics": "linear float64"
+        },
+        "implementation": "SimpleITK 2.5.6; VIPP registration v1"
+      },
+      "same_coverage_rmse": [
+        {
+          "time": 0,
+          "channel": 0,
+          "valid_voxels": 19424,
+          "before": 0.07422489672899246,
+          "after": 0.0005151954992866128
+        }
+      ],
+      "diagnostics": [
+        {
+          "time_index": 0,
+          "reference_time": 0,
+          "model": "Affine",
+          "optimizer_score": -0.999994091842017,
+          "correlation": 0.9999970427702988,
+          "valid_overlap_fraction": 0.9484375,
+          "center_displacement_y": -0.818401760187605,
+          "center_displacement_x": 1.1065922074036827,
+          "stop_reason": "GradientDescentLineSearchOptimizerv4Template: Maximum number of iterations (200) exceeded.",
+          "review_note": "Maximum iterations reached; inspect alignment"
+        }
+      ]
+    },
+    {
+      "fixture": "drift-series",
+      "shape": [
+        6,
+        2,
+        24,
+        64,
+        80
+      ],
+      "axes": "TCZYX",
+      "spacing": [
+        1.1,
+        0.4,
+        0.3
+      ],
+      "origin": [
+        8.0,
+        -4.0,
+        12.0
+      ],
+      "model": "Translation",
+      "landmark_error_unit": "micrometer",
+      "maximum_landmark_error": 1.7763568394002505e-15,
+      "landmark_errors": [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.7763568394002505e-15,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.7763568394002505e-15
+        ],
+        [
+          1.7763568394002505e-15,
+          4.440892098500626e-16,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.7763568394002505e-15
+        ]
+      ],
+      "valid_fraction": 0.8946044921875,
+      "estimate_seconds": 0.3027292999904603,
+      "apply_seconds": 0.18252289993688464,
+      "known_matrices": [
+        [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        [
+          [
+            1.0,
+            0.0,
+            0.0,
+            -0.66
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            0.5
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            -0.75
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        [
+          [
+            1.0,
+            0.0,
+            0.0,
+            -1.32
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            -1.3499999999999999
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        [
+          [
+            1.0,
+            0.0,
+            0.0,
+            0.44000000000000006
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            0.30000000000000004
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            -0.6
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        [
+          [
+            1.0,
+            0.0,
+            0.0,
+            -0.8800000000000001
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            -0.6000000000000001
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.6
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        [
+          [
+            1.0,
+            0.0,
+            0.0,
+            -1.6500000000000001
+          ],
+          [
+            0.0,
+            1.0,
+            0.0,
+            -0.9
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            1.05
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ]
+      ],
+      "estimated_transform": {
+        "schema_version": 1,
+        "direction": "moving-to-reference",
+        "matrices": [
+          [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          [
+            [
+              1.0,
+              0.0,
+              0.0,
+              -0.66
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.5
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              -0.75
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          [
+            [
+              1.0,
+              0.0,
+              0.0,
+              -1.32
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              1.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              -1.3499999999999999
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          [
+            [
+              1.0,
+              0.0,
+              0.0,
+              0.44000000000000006
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              0.30000000000000004
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              -0.6
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          [
+            [
+              1.0,
+              0.0,
+              0.0,
+              -0.8800000000000001
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              -0.6000000000000001
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.6
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          [
+            [
+              1.0,
+              0.0,
+              0.0,
+              -1.6500000000000001
+            ],
+            [
+              0.0,
+              1.0,
+              0.0,
+              -0.9
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              1.05
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ]
+        ],
+        "moving_grid": {
+          "axes": [
+            "z",
+            "y",
+            "x"
+          ],
+          "shape": [
+            24,
+            64,
+            80
+          ],
+          "spacing": [
+            1.1,
+            0.4,
+            0.3
+          ],
+          "origin": [
+            8.0,
+            -4.0,
+            12.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "drift-seriesFalse"
+        },
+        "reference_grid": {
+          "axes": [
+            "z",
+            "y",
+            "x"
+          ],
+          "shape": [
+            24,
+            64,
+            80
+          ],
+          "spacing": [
+            1.1,
+            0.4,
+            0.3
+          ],
+          "origin": [
+            8.0,
+            -4.0,
+            12.0
+          ],
+          "unit": "micrometer",
+          "frame_id": "drift-seriesFalse"
+        },
+        "state": {
+          "model": "Translation",
+          "spatial_axes": [
+            "z",
+            "y",
+            "x"
+          ],
+          "transform_count": 6,
+          "coordinate_unit": "micrometer",
+          "source_name": "drift-series moving",
+          "reference_name": "drift-series moving",
+          "history": [
+            "Time series: Translation; CPU; whole spatial volume; fixed reference",
+            "scikit-image 0.26.0; VIPP registration v1"
+          ],
+          "kind": "spatial transform",
+          "metadata_source": "VIPP registration",
+          "direction": "moving-to-reference",
+          "schema_version": 1
+        },
+        "time_axis": {
+          "name": "t",
+          "type": "time",
+          "scale": 2.0,
+          "translation": 0.0,
+          "confidence": "explicit",
+          "unit": "second",
+          "source_axis": 0
+        },
+        "reference_time": 0,
+        "settings": {
+          "mode": "Time series",
+          "model": "Translation",
+          "channel": 0,
+          "reference_channel": 0,
+          "reference_time": 0,
+          "precision": 20,
+          "max_shift": 0.25,
+          "minimum_overlap": 0.25,
+          "iterations": 200,
+          "metric": "Correlation",
+          "estimator_conditioning": "mean subtraction for translation; no input-array modification",
+          "sampling": "all voxels; no random samples",
+          "interpolation_for_diagnostics": "linear float64"
+        },
+        "implementation": "scikit-image 0.26.0; VIPP registration v1"
+      },
+      "same_coverage_rmse": [
+        {
+          "time": 0,
+          "channel": 0,
+          "valid_voxels": 122880,
+          "before": 0.0,
+          "after": 0.0
+        },
+        {
+          "time": 0,
+          "channel": 1,
+          "valid_voxels": 122880,
+          "before": 0.0,
+          "after": 0.0
+        },
+        {
+          "time": 1,
+          "channel": 0,
+          "valid_voxels": 109802,
+          "before": 0.03646794706583023,
+          "after": 0.003243999173318411
+        },
+        {
+          "time": 1,
+          "channel": 1,
+          "valid_voxels": 109802,
+          "before": 0.0333251953125,
+          "after": 0.0034398309334664405
+        },
+        {
+          "time": 2,
+          "channel": 0,
+          "valid_voxels": 100650,
+          "before": 0.064505435526371,
+          "after": 0.0025533716538522393
+        },
+        {
+          "time": 2,
+          "channel": 1,
+          "valid_voxels": 100650,
+          "before": 0.05820855125784874,
+          "after": 0.002623891209601725
+        },
+        {
+          "time": 3,
+          "channel": 0,
+          "valid_voxels": 113022,
+          "before": 0.02678779698908329,
+          "after": 0.003014297553655592
+        },
+        {
+          "time": 3,
+          "channel": 1,
+          "valid_voxels": 113022,
+          "before": 0.024732664227485657,
+          "after": 0.0032239869644103644
+        },
+        {
+          "time": 4,
+          "channel": 0,
+          "valid_voxels": 111228,
+          "before": 0.0373636893928051,
+          "after": 0.0022245516896293198
+        },
+        {
+          "time": 4,
+          "channel": 1,
+          "valid_voxels": 111228,
+          "before": 0.03399302810430527,
+          "after": 0.002309672012883753
+        },
+        {
+          "time": 5,
+          "channel": 0,
+          "valid_voxels": 101992,
+          "before": 0.061194099485874176,
+          "after": 0.00348499297256819
+        },
+        {
+          "time": 5,
+          "channel": 1,
+          "valid_voxels": 101992,
+          "before": 0.05583969131112099,
+          "after": 0.003701254877652569
+        }
+      ],
+      "diagnostics": [
+        {
+          "time_index": 0,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": null,
+          "correlation": 1.0000000000000002,
+          "valid_overlap_fraction": 1.0,
+          "center_displacement_z": 0.0,
+          "center_displacement_y": 0.0,
+          "center_displacement_x": 0.0,
+          "stop_reason": "reference time: identity by definition",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        },
+        {
+          "time_index": 1,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": 0.0016452442592327936,
+          "correlation": 0.9992147036854877,
+          "valid_overlap_fraction": 0.8935709635416667,
+          "center_displacement_z": -0.6600000000000001,
+          "center_displacement_y": 0.5,
+          "center_displacement_x": -0.75,
+          "stop_reason": "subpixel cross-correlation; displacement/overlap-constrained periodic disambiguation",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        },
+        {
+          "time_index": 2,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": 0.0022224775704896864,
+          "correlation": 0.999600752233681,
+          "valid_overlap_fraction": 0.819091796875,
+          "center_displacement_z": -1.3200000000000003,
+          "center_displacement_y": 1.0,
+          "center_displacement_x": -1.3500000000000014,
+          "stop_reason": "subpixel cross-correlation; displacement/overlap-constrained periodic disambiguation",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        },
+        {
+          "time_index": 3,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": 0.0014887086482332302,
+          "correlation": 0.9992503371795373,
+          "valid_overlap_fraction": 0.919775390625,
+          "center_displacement_z": 0.4400000000000013,
+          "center_displacement_y": 0.3000000000000007,
+          "center_displacement_x": -0.6000000000000014,
+          "stop_reason": "subpixel cross-correlation; displacement/overlap-constrained periodic disambiguation",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        },
+        {
+          "time_index": 4,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": 0.0012918439209808686,
+          "correlation": 0.9996309696932646,
+          "valid_overlap_fraction": 0.90517578125,
+          "center_displacement_z": -0.879999999999999,
+          "center_displacement_y": -0.5999999999999996,
+          "center_displacement_x": 0.6000000000000014,
+          "stop_reason": "subpixel cross-correlation; displacement/overlap-constrained periodic disambiguation",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        },
+        {
+          "time_index": 5,
+          "reference_time": 0,
+          "model": "Translation",
+          "optimizer_score": 0.0025856707149562322,
+          "correlation": 0.999150706545628,
+          "valid_overlap_fraction": 0.8300130208333333,
+          "center_displacement_z": -1.6499999999999986,
+          "center_displacement_y": -0.9000000000000004,
+          "center_displacement_x": 1.0500000000000007,
+          "stop_reason": "subpixel cross-correlation; displacement/overlap-constrained periodic disambiguation",
+          "review_note": "Review alignment; scores do not establish biological correspondence"
+        }
+      ]
+    }
+  ]
+}

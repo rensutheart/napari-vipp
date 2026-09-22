@@ -1,8 +1,18 @@
 # Registration, image comparison, and template matching
 
-Status: planned feature scope for the **0.16 release series**; not implemented.
-No release date or alpha milestone is assigned. Later phases are not release gates.
-Reviewed: 2026-09-07.
+Status updated: 2026-09-22. **Registration implemented in development after
+0.16.0a1; local Windows validation passed, while native Linux/macOS and release
+qualification remain pending.** The approved scope supersedes
+the earlier proposal below: whole-volume time-series registration is core,
+not stretch; translation, rigid and affine share one Estimate Registration node.
+Apply Transform consumes the saved reference grid, so it needs no third image
+input. Compare Images is implemented. Template Match, Find Peaks, previous-frame
+chaining, deformable registration, stitching and tracking are deferred.
+
+Current contracts and remaining gates: [registration implementation](registration-implementation.md).
+Independent fixtures and measured accuracy: [synthetic qualification](registration-synthetic-qualification.md).
+
+## Earlier proposal (historical design rationale, not current delivery scope)
 
 ## Recommendation
 

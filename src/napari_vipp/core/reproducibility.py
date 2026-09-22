@@ -561,6 +561,7 @@ def _environment() -> dict:
     packages = {"napari-vipp": __version__}
     for name in (
         "centrosome",
+        "SimpleITK",
         "numpy",
         "scipy",
         "scikit-image",

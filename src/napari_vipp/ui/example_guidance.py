@@ -32,6 +32,95 @@ class ExampleGuidance:
 
 EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
     {
+        "registration-translation": ExampleGuidance(
+            purpose="Align two images without changing their object shapes.",
+            data=(
+                "Analytical 2D objects with a known subpixel shift, "
+                "brightness change and light noise"
+            ),
+            explore=(
+                "Compare the reference image with the displaced moving image.",
+                "Estimate their translation, then apply it to the moving image.",
+                "Use the coverage mask to check which pixels have valid input support.",
+                "Compare the diagnostic table's measured shift with the canvas note.",
+            ),
+            results=(
+                "Reusable 2D transform",
+                "Aligned image",
+                "Valid coverage mask",
+                "Registration diagnostics",
+            ),
+            try_this=(
+                "Increase subpixel precision, recalculate, and compare the "
+                "recovered displacement with the known shift."
+            ),
+            caution=(
+                "A better alignment score is not evidence of biological "
+                "correspondence. Border fill is not measured signal."
+            ),
+        ),
+        "registration-rigid-3d": ExampleGuidance(
+            purpose=(
+                "Align a rotated volume as one 3D object, "
+                "respecting its physical calibration."
+            ),
+            data=(
+                "Asymmetric 32 × 64 × 80 volume; "
+                "voxel spacing Z=1.1, Y=0.4, X=0.3 micrometres"
+            ),
+            explore=(
+                "Inspect the rotated moving volume and fixed reference in 3D.",
+                "Estimate rotation and translation with the Rigid model.",
+                "Apply the transform once and inspect the valid coverage mask.",
+                "Compare aligned structures across several Z positions, not one slice.",
+            ),
+            results=(
+                "Reusable 3D rigid transform",
+                "Aligned volume on the reference grid",
+                "Valid coverage mask",
+                "Registration diagnostics",
+            ),
+            try_this=(
+                "Compare Translation with Rigid: translation alone cannot "
+                "correct the deliberately introduced rotation."
+            ),
+            caution=(
+                "Rigid alignment preserves shapes in physical space. Affine can "
+                "change scale and shear, so is not the default for drift."
+            ),
+        ),
+        "registration-time-series": ExampleGuidance(
+            purpose=(
+                "Remove shared XYZ drift over time while keeping channels "
+                "and labels aligned."
+            ),
+            data=(
+                "Six timepoints, two channels, full 3D volumes "
+                "and matching integer object labels"
+            ),
+            explore=(
+                "Use channel 0 to estimate whole-volume displacement from timepoint 0.",
+                "Transform both channels together, without aligning separate Z slices.",
+                "Reuse the transforms for labels with nearest-neighbour interpolation.",
+                "Scrub time before and after correction and inspect the diagnostics.",
+            ),
+            results=(
+                "One XYZ transform per timepoint",
+                "Aligned two-channel time series",
+                "Aligned object labels",
+                "Valid coverage masks",
+                "Per-timepoint diagnostics",
+            ),
+            try_this=(
+                "Choose another reference timepoint and calculate again. Both "
+                "channels and labels should follow that shared reference."
+            ),
+            caution=(
+                "This sample contains only shared stage drift, not independent "
+                "biological movement. Real data may require another model "
+                "or fail alignment."
+            ),
+        ),
         "label-cleanup": ExampleGuidance(
             purpose="Turn the red channel into a clean set of labelled 3D objects.",
             data="Synthetic multichannel volume",
@@ -583,22 +672,25 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "testing workflow."
             ),
             data=(
-                "Eight synthetic samples spanning images, volumes, skeletons and "
-                "deconvolution"
+                "Ten synthetic samples spanning images, volumes, skeletons, "
+                "deconvolution and a known-motion registration pair"
             ),
             explore=(
                 (
-                    "Browse the nine labelled lanes to find different types of "
+                    "Browse the ten labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",
                 "Follow the canvas notes to review the saved display settings.",
+                "Estimate the known image shift, apply it once, and compare the "
+                "aligned image with its reference using valid coverage.",
             ),
             results=(
                 "Images",
                 "Masks and labels",
                 "Meshes",
                 "Measurement tables",
+                "Reusable spatial transforms and alignment diagnostics",
             ),
             try_this=(
                 "Select an image node, a measurement node and a mesh node. Calculate "

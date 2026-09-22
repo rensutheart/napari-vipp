@@ -125,6 +125,7 @@ from napari_vipp.core.source_resolution import (
 )
 from napari_vipp.core.source_window_planning import plan_exact_source_crop_window
 from napari_vipp.core.tables import is_table_data, save_table_output
+from napari_vipp.core.transforms import is_transform_data, save_transform_output
 from napari_vipp.core.workflow import deserialize_workflow
 
 if TYPE_CHECKING:
@@ -157,6 +158,7 @@ _KNOWN_SUFFIXES = (
     ".png",
     ".svg",
     ".pdf",
+    ".json",
 )
 _IMAGE_SUFFIXES = {
     "ome-tiff": ".ome.tif",
@@ -169,7 +171,14 @@ _TABLE_FORMATS = frozenset(("csv", "tsv"))
 _MESH_FORMATS = frozenset(("obj", "3mf"))
 _PLOT_FORMATS = frozenset(("png", "tiff", "svg", "pdf"))
 _OUTPUT_FORMATS = frozenset(
-    ("batch default", *_IMAGE_FORMATS, *_TABLE_FORMATS, *_MESH_FORMATS, *_PLOT_FORMATS)
+    (
+        "batch default",
+        "json",
+        *_IMAGE_FORMATS,
+        *_TABLE_FORMATS,
+        *_MESH_FORMATS,
+        *_PLOT_FORMATS,
+    )
 )
 _OVERWRITE_VALUES = frozenset(("batch default", "yes", "no"))
 _HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -369,12 +378,16 @@ class BatchOutputConfig:
         _require_text(self.node_id, "Batch output node_id")
         _require_text(self.node_title, "Batch output node_title")
         _require_text(self.tag, "Batch output tag")
-        if self.kind not in {"image", "table", "mesh", "plot"}:
+        if self.kind not in {"image", "table", "mesh", "plot", "transform"}:
             raise ValueError(
-                "Batch output kind must be 'image', 'table', 'mesh', or 'plot'."
+                "Batch output kind must be image, table, mesh, plot, or transform."
             )
         if self.format not in _OUTPUT_FORMATS:
             raise ValueError(f"Unsupported batch output format: {self.format!r}.")
+        if self.kind == "transform" and self.format not in {"batch default", "json"}:
+            raise ValueError("Transform batch outputs require JSON format.")
+        if self.kind != "transform" and self.format == "json":
+            raise ValueError("Only transform batch outputs can use JSON format.")
         if self.kind == "table" and self.format not in {
             "batch default",
             *_TABLE_FORMATS,
@@ -3596,7 +3609,9 @@ def _validate_effective_batch_output_contract(
             )
         effective_type = ports[0].output_type
         effective_kind = (
-            effective_type if effective_type in {"table", "mesh", "plot"} else "image"
+            effective_type
+            if effective_type in {"table", "mesh", "plot", "transform"}
+            else "image"
         )
         if output.kind == effective_kind:
             continue
@@ -3669,7 +3684,8 @@ def _plan_output(
     resolved_format = _resolved_output_format(config, output)
     suffix = (
         f".{resolved_format}"
-        if resolved_format in _MESH_FORMATS or resolved_format in {"png", "svg", "pdf"}
+        if resolved_format in _MESH_FORMATS
+        or resolved_format in {"png", "svg", "pdf", "json"}
         else ".tsv"
         if resolved_format == "tsv"
         else ".csv"
@@ -3708,6 +3724,8 @@ def _resolved_output_format(config: BatchConfig, output: BatchOutputConfig) -> s
         return output.format
     if output.kind == "mesh":
         return "obj"
+    if output.kind == "transform":
+        return "json"
     if output.kind == "plot":
         return "png"
     return "csv" if output.kind == "table" else config.default_image_format
@@ -3732,7 +3750,7 @@ def _resolved_existing_file_policy(
 
 def _filename_suffix_matches_format(filename: str, output_format: str) -> bool:
     lower = filename.lower()
-    if output_format in _MESH_FORMATS or output_format in {"png", "svg", "pdf"}:
+    if output_format in _MESH_FORMATS or output_format in {"png", "svg", "pdf", "json"}:
         return lower.endswith(f".{output_format}")
     if output_format == "ome-tiff":
         return lower.endswith((".ome.tif", ".ome.tiff", ".tif", ".tiff"))
@@ -3839,7 +3857,9 @@ def _validate_pipeline_config(
         ports = pipeline.output_ports(output.node_id)
         output_type = ports[0].output_type if ports else "any"
         expected_kind = (
-            output_type if output_type in {"table", "mesh", "plot"} else "image"
+            output_type
+            if output_type in {"table", "mesh", "plot", "transform"}
+            else "image"
         )
         if output.kind != expected_kind:
             raise ValueError(
@@ -4605,7 +4625,11 @@ def _save_planned_output(
     saved_temporary = temporary
     table_metadata = {}
     try:
-        if is_plot_data(data):
+        if is_transform_data(data):
+            if output.format != "json":
+                raise ValueError("Transform batch outputs require JSON format.")
+            saved_temporary = save_transform_output(data, temporary)
+        elif is_plot_data(data):
             from napari_vipp.core.plot_rendering import save_plot_output
 
             if output.format not in _PLOT_FORMATS:

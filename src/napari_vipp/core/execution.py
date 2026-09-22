@@ -2382,9 +2382,18 @@ def _execute_accelerated_pipeline(
             # The transaction keeps only host metadata.  Retaining ``call``
             # directly would retain its opaque device inputs beyond the
             # runtime scope and prevent private-pool cleanup.
+            from napari_vipp.core.transforms import TransformData
+
+            # Apply Transform's final host metadata pass needs the reference
+            # lattice carried by its transform. TransformData is a deeply
+            # immutable tuple/scalar artifact and owns no image/device arrays;
+            # preserve that typed artifact while releasing every array input.
             calls_by_node[node_id] = replace(
                 call,
-                inputs=(None,) * len(call.inputs),
+                inputs=tuple(
+                    value if isinstance(value, TransformData) else None
+                    for value in call.inputs
+                ),
             )
             return call
 
@@ -3588,7 +3597,13 @@ def _assemble_workloads(
                 projected_outputs
             ):
                 port = OutputPortKey(node_id, port_index)
-                values[port] = projected_value
+                # Some typed host outputs have exact metadata but no planned
+                # numerical value (for example registration diagnostics). Do
+                # not advertise these unknown ports as resolved downstream.
+                if projected_value is not None:
+                    values[port] = projected_value
+                else:
+                    values.pop(port, None)
                 states[port] = projected_state
                 if (
                     node.operation_id in _FACT_PROPAGATION_OPERATIONS
@@ -3599,7 +3614,11 @@ def _assemble_workloads(
                         connection.source_id,
                         connection.source_port,
                     )
-                if complete_input_facts := facts_by_node.get(node_id):
+                if (
+                    getattr(projected_value, "shape", None) is not None
+                    and getattr(projected_value, "dtype", None) is not None
+                    and (complete_input_facts := facts_by_node.get(node_id))
+                ):
                     propagated = _propagate_shape_preserving_facts(
                         node.operation_id,
                         complete_input_facts[0],
@@ -3772,6 +3791,15 @@ def _project_host_planning_outputs(
     """
     if planning_call is None:
         return None
+
+    from napari_vipp.core.registration_planning import project_registration_outputs
+
+    try:
+        registration_outputs = project_registration_outputs(pipeline, planning_call)
+    except (TypeError, ValueError):
+        return None
+    if registration_outputs is not None:
+        return registration_outputs
 
     try:
         contract_results = pipeline._axis_contract_transform_results(planning_call)
@@ -4843,6 +4871,15 @@ def _facts_describe_array(facts: ArrayFacts, value: np.ndarray) -> bool:
 
 
 def _shape_and_dtype(value: object, state: object) -> tuple[tuple[int, ...], str]:
+    from napari_vipp.core.registration_planning import TransformPlan
+    from napari_vipp.core.transforms import TransformData, TransformState
+
+    if isinstance(value, (TransformData, TransformPlan)) or isinstance(
+        state, TransformState
+    ):
+        # A transform is a typed host artifact, not a scalar object array.
+        # Never fabricate image dimensions or read matrix/pixel data for it.
+        return (), "object"
     raw_shape = getattr(state, "shape", None)
     if raw_shape is None:
         raw_shape = getattr(value, "shape", ())
@@ -5885,6 +5922,10 @@ def _scientific_array_identity(
     *,
     cancel_callback: Callable[[], bool] | None,
 ) -> object:
+    from napari_vipp.core.transforms import TransformData
+
+    if isinstance(value, TransformData):
+        return {"schema_id": "vipp-exact-transform-v1", "transform": value.to_dict()}
     if isinstance(value, PlotData):
         return {
             "schema_id": "vipp-exact-plot-v1",
@@ -5948,6 +5989,10 @@ def _scientific_array_identity(
 
 
 def _scientific_array_reuse_envelope(value: object) -> object:
+    from napari_vipp.core.transforms import TransformData
+
+    if isinstance(value, TransformData):
+        return _scientific_array_identity(value, cancel_callback=None)
     if isinstance(value, (TableData, PlotData)):
         return _scientific_array_identity(value, cancel_callback=None)
     if isinstance(value, ExactSourceWindowData):

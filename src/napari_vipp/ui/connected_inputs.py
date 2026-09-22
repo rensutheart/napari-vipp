@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.core.transforms import TransformState, is_transform_data
 from napari_vipp.ui.iconography import data_type_icon
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -78,6 +79,15 @@ def _physical_sampling_summary(state) -> str:
 def connected_input_scientific_summary(data, state) -> str:
     """Return lazy-safe shape/type/sampling context for one graph binding."""
 
+    transform_state = data.state if is_transform_data(data) else state
+    if isinstance(transform_state, TransformState):
+        count = transform_state.transform_count
+        axes = "".join(transform_state.spatial_axes).upper()
+        return (
+            f"{transform_state.model} · {axes} · "
+            f"{count} {'transform' if count == 1 else 'time-point transforms'} · "
+            "moving → reference"
+        )
     table_source = state if state is not None else data
     row_count = getattr(table_source, "row_count", None)
     column_count = getattr(table_source, "column_count", None)

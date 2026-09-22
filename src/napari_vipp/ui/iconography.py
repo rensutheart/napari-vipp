@@ -42,6 +42,9 @@ _OPERATION_ICON_KINDS = {
     "split_axis": "axes",
     "reorder_axes": "axes",
     "rescale_axes": "axes",
+    "estimate_registration": "registration",
+    "apply_transform": "registration",
+    "compare_images": "overlap",
     "set_pixel_size": "ruler",
     "extract_channel": "channels",
     "combine_channels": "channels",
@@ -173,6 +176,8 @@ def data_type_icon(
         kind = "tag"
     elif normalized == "table":
         kind = "table"
+    elif normalized == "transform":
+        kind = "registration"
     elif normalized in {"image", "array"}:
         kind = "image"
     else:
@@ -389,6 +394,13 @@ def _draw_glyph(painter: QPainter, kind: str, color: QColor) -> None:
         painter.drawLine(QPointF(6.5, 9.0), QPointF(10, 12.5))
         painter.drawLine(QPointF(13.5, 9.0), QPointF(10, 12.5))
         painter.drawLine(QPointF(3, 16.5), QPointF(17, 16.5))
+        return
+    if kind == "registration":
+        painter.drawRect(QRectF(3, 7, 9, 9))
+        painter.drawRect(QRectF(7, 3, 9, 9))
+        painter.drawLine(QPointF(5, 5), QPointF(9, 5))
+        painter.drawLine(QPointF(9, 5), QPointF(7, 3))
+        painter.drawLine(QPointF(9, 5), QPointF(7, 7))
         return
     if kind == "axes":
         painter.drawLine(QPointF(4, 16), QPointF(4, 4))

@@ -1314,6 +1314,9 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         "save_output",
         "batch_output",
         "plot_results",
+        "estimate_registration",
+        "apply_transform",
+        "compare_images",
     }
     if operation.function is None:
         callable_ref = ""
@@ -1350,7 +1353,11 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
                 port_name=item.name,
                 shape_policy_id="cpu-reference-v1",
                 schema_id=(
-                    "plot-results-v1" if item.output_type == "plot" else "array-v1"
+                    "spatial-transform-v1"
+                    if item.output_type == "transform"
+                    else "plot-results-v1"
+                    if item.output_type == "plot"
+                    else "array-v1"
                 ),
             )
             for index, item in enumerate(operation.output_ports)
@@ -1404,6 +1411,7 @@ def _value_kind(value: str) -> ValueKind:
         "labels": ValueKind.LABELS,
         "mask": ValueKind.MASK,
         "mesh": ValueKind.MESH,
+        "transform": ValueKind.TRANSFORM,
         "table": ValueKind.TABLE,
         "plot": ValueKind.PLOT,
         "scalar": ValueKind.SCALAR,

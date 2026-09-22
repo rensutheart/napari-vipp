@@ -254,6 +254,18 @@ def build_node_presentations(
             automatic, summary = _statistics(params, table)
         elif node.operation_id == "plot_results":
             automatic, summary = _plot(params, table)
+        elif node.operation_id == "estimate_registration":
+            automatic = node.title or spec.title
+            mode = params.get("mode", "Two images")
+            target = (
+                f"reference time {params.get('reference_time', 0)}"
+                if mode == "Time series"
+                else f"reference channel {params.get('reference_channel', 0)}"
+            )
+            summary = (
+                f"{params.get('model', 'Translation')} · {mode} · "
+                f"Channel {params.get('channel', 0)} → {target}"
+            )
         else:
             automatic = node.title or spec.title
             summary = " · ".join(

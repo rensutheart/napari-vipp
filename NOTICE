@@ -1,6 +1,12 @@
 napari-vipp is distributed under the BSD 3-Clause License.
 Copyright (c) 2026, Rensu P. Theart.
 
+Rigid and affine registration call SimpleITK, distributed separately under
+the Apache License 2.0. SimpleITK is copyright NumFOCUS and wraps the Insight
+Toolkit (ITK). Its dependency packages retain their upstream license and
+third-party notices; VIPP does not redistribute copied SimpleITK source.
+See https://github.com/SimpleITK/SimpleITK for its source and license.
+
 Grow Regions from Seeds — CellProfiler Propagation calls the Centrosome
 library (CellProfiler project), distributed separately under the BSD 3-Clause
 License. See https://github.com/CellProfiler/centrosome for its source and license.
