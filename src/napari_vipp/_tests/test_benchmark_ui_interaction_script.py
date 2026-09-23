@@ -273,6 +273,7 @@ def test_fresh_worker_command_forwards_explicit_device_without_provider_probe(
     monkeypatch.setattr(benchmark_script.subprocess, "run", fake_run)
 
     assert benchmark_script._launch_mode_worker(spec) == {"worker": "synthetic"}
+    assert captured_command[1:3] == ["-X", "faulthandler"]
     index = captured_command.index("--device-id")
     assert captured_command[index + 1] == "cuda:7"
 
@@ -915,6 +916,8 @@ def test_exact_cpu_worker_runs_headless_without_gpu_execution(tmp_path) -> None:
     completed = subprocess.run(
         [
             sys.executable,
+            "-X",
+            "faulthandler",
             str(SCRIPT_PATH),
             "--_worker",
             "--output",
@@ -960,6 +963,128 @@ def test_exact_cpu_worker_runs_headless_without_gpu_execution(tmp_path) -> None:
     assert session["telemetry"]["thumbnail_device_affinity"].startswith("CPU mode")
     assert session["summary"]["rapid_superseded_count"] == 2
     assert session["summary"]["started_in_flight_supersession"] == "not_exercised"
+
+
+def test_driver_destroys_native_widget_before_releasing_application(
+    benchmark_script, qapp, monkeypatch
+) -> None:
+    from qtpy.compat import isalive
+    from qtpy.QtCore import QEvent
+    from qtpy.QtWidgets import QApplication
+
+    from napari_vipp import _widget
+
+    original_widget = _widget.VippWidget
+    widgets = []
+
+    def create_widget(*args, **kwargs):
+        widget = original_widget(*args, **kwargs)
+        # Keep the Python wrapper alive deliberately: cleanup must not depend
+        # on refcounts or cyclic GC to destroy the native widget tree.
+        widgets.append(widget)
+        return widget
+
+    class SessionFailure(RuntimeError):
+        pass
+
+    def fail_loading(widget, _path):
+        # The real loader/observers likewise restore bound methods on the
+        # instance, creating a widget -> bound method -> widget reference cycle.
+        widget.run_pipeline = widget.run_pipeline
+        raise SessionFailure("synthetic session failure")
+
+    monkeypatch.setattr(_widget, "VippWidget", create_widget)
+    monkeypatch.setattr(benchmark_script, "_load_without_eager_run", fail_loading)
+    spec = benchmark_script.WorkerSpec(
+        mode="cpu", **_normalization_kwargs(benchmark_script)
+    )
+    try:
+        with pytest.raises(SessionFailure, match="synthetic session failure"):
+            benchmark_script._drive_widget_session(
+                spec=spec,
+                workflow_document=json.loads(spec.workflow_path.read_text("utf-8")),
+                workflow_facts={},
+            )
+        assert QApplication.instance() is qapp
+        assert len(widgets) == 1
+        assert not isalive(widgets[0])
+    finally:
+        for widget in widgets:
+            if isalive(widget):
+                widget.deleteLater()
+                qapp.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
+
+
+def test_benchmark_teardown_joins_worker_tail_before_native_deletion(
+    benchmark_script, qapp
+) -> None:
+    from qtpy.compat import isalive
+    from qtpy.QtCore import QEvent, QRunnable, QThreadPool
+    from qtpy.QtWidgets import QWidget
+
+    completed = threading.Event()
+    release_tail = threading.Event()
+    returned = threading.Event()
+    widget = QWidget()
+    waits = []
+
+    class ObservedPool(QThreadPool):
+        def waitForDone(self, milliseconds):  # noqa: N802
+            waits.append(returned.is_set())
+            release_tail.set()
+            return super().waitForDone(milliseconds)
+
+    pool = ObservedPool(widget)
+
+    class Worker(QRunnable):
+        def run(self):
+            # A result signal/telemetry publication can happen before run exits.
+            completed.set()
+            release_tail.wait(5)
+            returned.set()
+
+    pool.start(Worker())
+    assert completed.wait(5)
+    assert not returned.is_set()
+    destroyed_after_tail = []
+    widget.destroyed.connect(lambda: destroyed_after_tail.append(returned.is_set()))
+    try:
+        benchmark_script._dispose_benchmark_widget(
+            widget, application=qapp, timeout_seconds=5
+        )
+        assert waits == [False]
+        assert returned.is_set()
+        assert destroyed_after_tail == [True]
+        assert not isalive(widget)
+    finally:
+        release_tail.set()
+        if isalive(widget):
+            assert pool.waitForDone(5000)
+            widget.deleteLater()
+            qapp.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
+
+
+@pytest.mark.parametrize("close_accepted", [False, True])
+def test_benchmark_teardown_fails_closed_without_destroying_live_workers(
+    benchmark_script, close_accepted
+) -> None:
+    actions = []
+    pool = SimpleNamespace(waitForDone=lambda _timeout: False)
+    widget = SimpleNamespace(
+        close=lambda: close_accepted,
+        findChildren=lambda _kind: [pool],
+        deleteLater=lambda: actions.append("delete"),
+    )
+    application = SimpleNamespace(
+        sendPostedEvents=lambda *_args: actions.append("events"),
+        processEvents=lambda: actions.append("process"),
+    )
+    message = "workers did not stop" if close_accepted else "refused to close"
+    with pytest.raises(benchmark_script.EvidenceError, match=message):
+        benchmark_script._dispose_benchmark_widget(
+            widget, application=application, timeout_seconds=0.1
+        )
+    assert actions == []
 
 
 def _normalization_kwargs(benchmark_script) -> dict[str, object]:

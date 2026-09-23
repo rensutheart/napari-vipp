@@ -1,8 +1,9 @@
 # 0.16.0a2 integration readiness
 
-Integration review: 2026-09-22 UTC. This is an unreleased development integration,
-not a published 0.16.0a2 artifact. Package metadata remains 0.16.0a1 until release
-preparation. No additional feature is required for this alpha's agreed scope.
+Integration review: 2026-09-22 UTC. The user subsequently authorized publication
+on 2026-09-23 local time. Metadata is prepared for 0.16.0a2; this record does not
+claim that any artifact has been published. No additional feature is required
+for this alpha's agreed scope.
 
 ## Included work
 
@@ -61,15 +62,17 @@ overlap; their counts must not be added into a claimed complete-suite total.
    SimpleITK dependency. Windows evidence does not qualify either architecture.
    The affected Windows installer dependency-install path must also pass when
    its a2 artifact is prepared; the current installed VIPP was not modified.
-3. Version/changelog/release notes and numbered manual preparation, followed by
-   exact final main CI, immutable tag, artifact metadata/reproducibility/hash
-   checks and publication according to the alpha release runbook.
+3. Version/changelog/release notes and numbered manual preparation are part of
+   the release candidate, followed by exact final main CI, immutable tag and
+   artifact metadata/reproducibility/hash checks and publication according to
+   the alpha release runbook.
 
 Changed domains are core/UI, scientific CPU dispatch, workflow/export/provenance,
 dependency/toolchain, packaging/native installers and documentation. GPU kernels,
 Gaussian/background subtraction/deconvolution methods and installer UX are not
 replaced by this integration. Carry forward unchanged-domain evidence only within
-the release runbook's explicit limits. This review does not authorize publication.
+the release runbook's explicit limits. Publication is user-authorized only after
+the required gates pass; it is not established by this readiness record.
 
 ## Preserved historical work
 

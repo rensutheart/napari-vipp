@@ -190,7 +190,9 @@ jobs:
   tests:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # Hosted Windows runners need room for the complete Qt-heavy suite.
+    # This is the job budget, not a relaxation of individual test deadlines.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:

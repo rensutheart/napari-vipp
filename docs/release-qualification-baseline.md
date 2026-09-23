@@ -1,6 +1,76 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-21
+Last reviewed: 2026-09-23
+
+## 0.16.0a2 qualification declaration
+
+This alpha covers the union of changes from published `v0.16.0a1`: calibrated
+registration and comparison, whole-volume time-series alignment, exact CPU median
+acceleration, label-preserving skeleton measurements and joins, closed-dropdown
+wheel protection and logarithmic tick rendering. The user accepted registration
+and authorized publication on 2026-09-23 local time. This declaration records
+scope and evidence boundaries, not a receipt for future publication gates.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  cpu_scientific: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_execution: true
+  source_reader_packaging: false
+  windows_installer_runtime_dependencies: true
+  macos_installer_runtime_dependencies: true
+  dependencies_toolchain: true
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_gpu_kernels_readers_and_installer_ux: v0.16.0a1
+```
+
+- [Registration qualification](registration-synthetic-qualification.md) uses
+  independent analytical motion, calibrated anisotropic 3D fixtures, original
+  wide integer labels, valid coverage and source preservation. The original
+  Windows full suite passed 11,877 tests, with 30 skips and two known expected
+  failures; later inspector/Next step changes have separate focused evidence.
+- [Exact CPU median qualification](simpleitk-cpu-qualification.md) compares bytes,
+  dtype and shape against SciPy, preserving the explicit fallback domain and GPU
+  implementation. Its independent Windows full suite passed 12,134 tests, with
+  30 skips and two known expected failures. These branch-local results do not
+  replace complete exact-final-main CI on supported platforms.
+- The [combined integration record](release-readiness-0.16.0a2.md) reports 891
+  core/cache/numerical/plot, 157 example/golden, 130 UI/bypass/packaging and 28
+  documentation/architecture passing checks. Counts overlap, so they are not a
+  claimed full-suite total. All 27 examples are retained. Per-label skeleton
+  identity, calibration and morphology-join contracts have independent focused
+  tests and generated/batch checks, not a new biological-accuracy claim.
+- The combined wheel passed private installed native Windows median and
+  registration smoke checks. That reused dependency environment is not a clean
+  resolver qualification. Exact-main CI must pass clean wheel/source installation,
+  dependency consistency and both native smoke scripts on Windows, Linux and
+  macOS. SimpleITK 2.5.6 is pinned once and mirrored by the offline macOS recipe.
+- Shared CPU implementation identity, cache, planning and provenance changed;
+  retain affected GPU interoperability checks despite unchanged GPU kernels.
+  A bounded Windows RTX 5090 canary passed all 15 tests without skips, covering
+  exact median dtype parity and affected GPU/shared execution paths. All 561
+  fingerprinted core/test files stayed unchanged. This source/private dependency
+  environment check is separate from exact-release installed-artifact evidence.
+  Do not infer a new full GPU catalogue qualification from CPU-only evidence.
+- Native macOS package installation/launch and native SimpleITK checks must pass
+  independently on Apple Silicon and Intel. New Windows runtime-dependency risk
+  requires a bounded production resolver/install-path check in a disposable
+  environment; it must not be described as a full frozen-installer GUI lifecycle.
+  Carry forward only unchanged launcher/setup UX and lifecycle inputs from a1.
+- Final-main CI must qualify reproducible Python distributions. Retain its exact
+  wheel/source bytes, build all three unsigned installers against the immutable
+  tag, and verify architecture, embedded wheel, metadata and checksum inventories.
+  Publish those same Python bytes to GitHub and PyPI, then the numbered/default
+  manual. No development artifact can substitute for the release artifact.
+- No registration GPU provider, deformable registration, template matching or new
+  background/Gaussian/deconvolution method is included. Preserve current scientific
+  tolerances, unsupported-input failures and visible convergence diagnostics.
+
+## Earlier declarations
 
 ## 0.16.0a1 qualification declaration
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.0a2 - 2026-09-23
+
 - Accelerate qualified CPU **Median Filter** calls with SimpleITK 2.5.6,
   preserving the existing XY-only footprint, reflected borders and data type.
   Keep SciPy for unqualified inputs and leave GPU implementations unchanged.
