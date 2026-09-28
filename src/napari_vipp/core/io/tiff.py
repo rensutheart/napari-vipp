@@ -11,6 +11,12 @@ import numpy as np
 from ome_types import from_xml
 from tifffile import TiffFile, imwrite
 
+from napari_vipp.core.grid import _normalized_unit
+from napari_vipp.core.io.detection_state import (
+    TEMPLATE_STATE_KEY,
+    restore_template_state,
+    template_state_payload,
+)
 from napari_vipp.core.io.model import (
     ImageDataset,
     ImageSeriesInfo,
@@ -116,7 +122,7 @@ def _tiff_image_state(
         imagej=imagej,
         resolution=resolution,
     )
-    return image_state_from_array(
+    state = image_state_from_array(
         data,
         source_name=selected.name or path.name,
         axes=axes,
@@ -131,6 +137,48 @@ def _tiff_image_state(
             source_uuid=str(getattr(ome, "uuid", "") or ""),
         ),
     )
+    payload = _saved_template_state(tif, selected.index, ome)
+    return restore_template_state(
+        payload, state, data, native_sampling=inspection.format == "ome-tiff"
+    )
+
+
+def _saved_template_state(tif, series_index, ome):
+    if ome is not None:
+        if series_index >= len(ome.images):
+            return None
+        references = {ref.id for ref in ome.images[series_index].annotation_refs}
+        annotations = ome.structured_annotations.map_annotations
+        for annotation in annotations:
+            if (
+                annotation.id in references
+                and annotation.namespace
+                == "https://github.com/rensutheart/napari-vipp/provenance/1"
+            ):
+                values = annotation.value.model_dump()
+                if TEMPLATE_STATE_KEY in values:
+                    payload = json.loads(values[TEMPLATE_STATE_KEY])
+                    if not isinstance(payload, dict):
+                        raise ValueError("Invalid OME-TIFF Template Match state.")
+                    return payload
+                if "Template Match:" in str(values.get("history", "")):
+                    raise ValueError(
+                        "OME-TIFF Template Match provenance is incomplete."
+                    )
+        return None
+    description = tif.series[series_index].pages[0].description
+    try:
+        values = json.loads(description) if description else {}
+    except (TypeError, ValueError) as exc:
+        if TEMPLATE_STATE_KEY in str(description):
+            raise ValueError("Invalid TIFF Template Match provenance JSON.") from exc
+        return None
+    if isinstance(values, dict) and TEMPLATE_STATE_KEY in values:
+        payload = values[TEMPLATE_STATE_KEY]
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid TIFF Template Match state.")
+        return payload
+    return None
 
 
 class _MetadataOnlyArray:
@@ -156,6 +204,18 @@ def write_tiff(
     if selected not in TIFF_FORMATS:
         raise ValueError(f"Unsupported TIFF format: {format}")
     state = _coerce_state(image_state)
+    if state is not None and state.template_match_metadata is not None:
+        template_state_payload(state, data)
+        if selected == "imagej-tiff":
+            raise ValueError(
+                "ImageJ TIFF cannot preserve float64 Template Match scores and "
+                "Boolean validity. Use TIFF, OME-TIFF, or OME-Zarr."
+            )
+        if len(data.shape) == 3 and data.shape[0] == 1:
+            raise ValueError(
+                "TIFF readers squeeze a singleton Z axis; use OME-Zarr "
+                "to preserve this Template Match score-grid rank."
+            )
     if selected == "ome-tiff":
         _write_ome_tiff(data, path, state)
     elif selected == "imagej-tiff":
@@ -216,10 +276,14 @@ def _write_conventional_tiff(
 ) -> None:
     arr = _tiff_writable_array(np.asarray(data), binary_values=False)
     axes = _axes_for_array(arr, state, ome=False)
+    metadata = {"axes": axes}
+    detection = template_state_payload(state, arr)
+    if detection is not None:
+        metadata[TEMPLATE_STATE_KEY] = detection
     imwrite(
         path,
         arr,
-        metadata={"axes": axes},
+        metadata=metadata,
         resolution=_xy_resolution(state),
         photometric=(
             "rgb" if axes.endswith("S") and arr.shape[-1] in (3, 4) else "minisblack"
@@ -249,7 +313,7 @@ def _ome_write_metadata(
         if axis is not None:
             metadata[key] = axis.scale
             if axis.unit:
-                metadata[unit_key] = axis.unit
+                metadata[unit_key] = _ome_length_unit(axis.unit)
     time_axis = _axis_by_name(state, "t")
     if time_axis is not None:
         metadata["TimeIncrement"] = time_axis.scale
@@ -278,11 +342,27 @@ def _ome_write_metadata(
         "source_format": state.source.format,
         "source_series": state.source.series_name,
     }
+    if state.template_match_metadata is not None:
+        provenance[TEMPLATE_STATE_KEY] = json.dumps(state.to_dict(), allow_nan=False)
     metadata["MapAnnotation"] = {
         "Namespace": "https://github.com/rensutheart/napari-vipp/provenance/1",
         "Value": {key: value for key, value in provenance.items() if value},
     }
     return metadata
+
+
+def _ome_length_unit(unit):
+    """Encode recognized equivalent length aliases using OME enum symbols."""
+    return {
+        "meter": "m",
+        "centimeter": "cm",
+        "millimeter": "mm",
+        "micrometer": "µm",
+        "nanometer": "nm",
+        "picometer": "pm",
+        "angstrom": "Å",
+        "pixel": "pixel",
+    }.get(_normalized_unit(unit), unit)
 
 
 def _ome_channel_write_metadata(
@@ -642,7 +722,10 @@ def _coerce_state(value: ImageState | dict[str, Any] | None) -> ImageState | Non
     if isinstance(value, ImageState):
         return value
     if isinstance(value, dict):
-        return ImageState.from_dict(value)
+        state = ImageState.from_dict(value)
+        if state is None and value.get("template_match_metadata") is not None:
+            raise ValueError("Invalid Template Match state supplied for TIFF export.")
+        return state
     return None
 
 

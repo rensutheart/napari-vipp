@@ -1439,6 +1439,58 @@ def build_workflow() -> tuple[
         tunnel_name=coverage_tunnel,
     )
 
+    # Lane 11 explicitly removes T and C before native 2D template matching.
+    lane_note(
+        "lane_detection",
+        "11. FIXED-TEMPLATE DETECTION\nSelect T=1 and Repeated pattern (C=1), "
+        "crop one complete 13 x 11 pattern and match its unchanged size and "
+        "orientation. Pass valid support into Find Peaks. Expect five source "
+        "centers; noise, a nearby pair, a clipped border copy and an absent site "
+        "exercise the limits. The output is a coordinate table, not labels.",
+        -440,
+        13200,
+    )
+    detection_source = source("VIPP synthetic 2D template detection", 0, 13300)
+    detection_time = place(
+        "select_axis_slice", 340, 13300, axis=0, index=1,
+        range_mode=True, remove_axes="0", remove_indices="1",
+    )
+    detection_channel = place("extract_channel", 680, 13300, channel=1)
+    detection_template = place(
+        "crop_stack",
+        1020,
+        13300,
+        top=14,
+        bottom=61,
+        left=15,
+        right=86,
+    )
+    detection_match = place("template_match", 1420, 13300)
+    detection_peaks = place(
+        "find_peaks",
+        1820,
+        13300,
+        use_mask=True,
+        minimum_value=0.8,
+        minimum_separation=8.0,
+        maximum_detections=100,
+    )
+    detection_input_tunnel = add_tunnel("Detection selected image", detection_channel)
+    detection_valid_tunnel = add_tunnel("Detection valid support", detection_match, 1)
+    wire(detection_source, detection_time)
+    wire(detection_time, detection_channel)
+    wire(detection_channel, detection_template)
+    wire(detection_channel, detection_match, tunnel_name=detection_input_tunnel)
+    wire(detection_template, detection_match, target_port=1)
+    wire(detection_match, detection_peaks)
+    wire(
+        detection_match,
+        detection_peaks,
+        target_port=1,
+        source_port=1,
+        tunnel_name=detection_valid_tunnel,
+    )
+
     operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
     expected = {
         spec.id for spec in PALETTE_NODE_LIBRARY
@@ -1461,6 +1513,9 @@ def build_workflow() -> tuple[
         "convert_dtype": 2,
         "rescale_intensity": 2,
         "cellprofiler_propagation": 2,
+        "crop_stack": 2,
+        "select_axis_slice": 2,
+        "extract_channel": 2,
     }:
         raise RuntimeError(f"Non-source operation duplicates: {duplicates}")
     if set(positions) != set(pipeline.nodes):

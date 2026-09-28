@@ -366,6 +366,11 @@ def _assert_equivalent(actual, expected, *, path: str) -> None:
         assert actual.source_name == expected.source_name, path
         assert actual.column_units == expected.column_units, path
         _assert_equivalent(
+            actual.detection_metadata,
+            expected.detection_metadata,
+            path=f"{path}.detection_metadata",
+        )
+        _assert_equivalent(
             actual.records(),
             expected.records(),
             path=f"{path}.records",
@@ -506,6 +511,11 @@ def test_fresh_example_cpu_and_prefer_gpu_outputs_match(spec, sample_catalog):
     if spec.id == "mesh-objects":
         for pipeline in (cpu_pipeline, prefer_gpu_pipeline):
             _assert_mesh_example_result(pipeline)
+    if spec.id in {"template-detection-2d", "template-detection-3d"}:
+        data, layer_kwargs = sample_catalog[spec.samples[0]]
+        truth = layer_kwargs["metadata"]["detection_ground_truth"]
+        for pipeline in (cpu_pipeline, prefer_gpu_pipeline):
+            _assert_detection_example_result(pipeline, data, truth)
 
     assert cpu_pipeline.topological_order() == prefer_gpu_pipeline.topological_order()
     for node_id in cpu_pipeline.topological_order():
@@ -557,6 +567,64 @@ def _assert_mesh_example_result(pipeline: PrototypePipeline) -> None:
     assert outputs["batch_output_1"] is refined
 
 
+def _assert_detection_example_result(
+    pipeline: PrototypePipeline,
+    data: np.ndarray,
+    truth: Mapping,
+) -> None:
+    """Both modes must recover planted truth, not merely agree with each other."""
+    # The known answer comes from seeded sample construction, independently of
+    # matching: T=1 / named channel 1 contains the planted full patterns, while
+    # the other time/channel, absent pattern and clipped border are distractors.
+    np.testing.assert_array_equal(pipeline.outputs["channel"], data[1, 1])
+    axes = truth["spatial_axis_order"].lower()
+    template_shape = tuple(truth["template_shape"])
+    expected = {tuple(center) for center in truth["centers"]}
+    table = pipeline.outputs["peaks"]
+    assert isinstance(table, TableData)
+    assert table.table_kind == "detections"
+    records = table.records()
+    assert table.row_count == len(expected)
+    found = {tuple(row[f"{axis}_index"] for axis in axes) for row in records}
+    assert found == expected
+    assert tuple(truth["missing_center"]) not in found
+    assert tuple(truth["border_center"]) not in found
+    assert [row["detection_id"] for row in records] == list(range(1, len(expected) + 1))
+    assert all(0.8 <= row["score"] <= 1 for row in records)
+    scores, valid = pipeline.node_outputs["match"]
+    assert scores.dtype == np.float64
+    assert scores.shape == tuple(
+        n - k + 1 for n, k in zip(data.shape[2:], template_shape, strict=True)
+    )
+    assert valid.dtype == bool and valid.shape == scores.shape
+    assert pipeline.outputs["template"].shape == template_shape
+    for row in records:
+        starts = []
+        for axis, spacing, origin, extent in zip(
+            axes, truth["spacing"], truth["origin"], template_shape, strict=True
+        ):
+            assert row[f"{axis}_physical"] == pytest.approx(
+                origin + spacing * row[f"{axis}_index"]
+            )
+            start = row[f"template_{axis}_start"]
+            assert start == row[f"{axis}_index"] - (extent - 1) / 2
+            assert row[f"template_{axis}_stop"] == start + extent
+            starts.append(int(start))
+        assert valid[tuple(starts)]
+        assert row["score"] == scores[tuple(starts)]
+    evidence = table.detection_metadata
+    assert evidence is not None
+    assert evidence.axes == tuple(axes)
+    assert evidence.source_shape == data.shape[2:]
+    assert evidence.source_scale == tuple(truth["spacing"])
+    assert evidence.source_origin == tuple(truth["origin"])
+    assert evidence.template_shape == template_shape
+    assert evidence.candidate_count == evidence.accepted_count == len(expected)
+    assert evidence.returned_count == len(expected) and not evidence.truncated
+    assert pipeline.output_states["peaks"].detection_metadata == evidence
+    assert pipeline.outputs["scores"] is not None  # score-distribution plot
+
+
 def test_compute_matrix_covers_every_bundled_example():
     ids = [spec.id for spec in EXAMPLE_WORKFLOWS]
     filenames = [spec.filename for spec in EXAMPLE_WORKFLOWS]
@@ -568,6 +636,8 @@ def test_compute_matrix_covers_every_bundled_example():
         "registration-translation",
         "registration-rigid-3d",
         "registration-time-series",
+        "template-detection-2d",
+        "template-detection-3d",
         "exhaustive-inspector",
         "graph-authoring",
         "responsive-crop",

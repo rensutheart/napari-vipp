@@ -2595,6 +2595,21 @@ def _execute_accelerated_pipeline(
                             ),
                         ),
                     )
+                elif call.operation_id == "template_match":
+                    # Correlation's paired revision/grid evidence was finalized
+                    # while the real host inputs were available in observe_outputs.
+                    # Reuse that immutable state after runtime cleanup: the stored
+                    # call deliberately no longer owns source image arrays.
+                    states = tuple(state_by_port[port] for port in ports)
+                    if any(
+                        not isinstance(state, _metadata.ImageState)
+                        or state.template_match_metadata is None
+                        for state in states
+                    ):
+                        raise RuntimeError(
+                            "Template Match lost its finalized evidence."
+                        )
+                    results = list(zip(outputs, states, strict=True))
                 else:
                     raw_output = outputs[0] if output_count == 1 else outputs
                     results = pipeline.finalize_node_call(call, raw_output)

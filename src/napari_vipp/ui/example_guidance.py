@@ -32,6 +32,68 @@ class ExampleGuidance:
 
 EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
     {
+        "template-detection-2d": ExampleGuidance(
+            purpose=(
+                "Locate repeated fixed-size, fixed-orientation structures "
+                "without segmenting them."
+            ),
+            data=(
+                "Two timepoints, two named channels; five noisy asymmetric 2D "
+                "copies, a clipped border copy and an absent site."
+            ),
+            explore=(
+                "Select T=1 and Repeated pattern; inspect the 13 × 11 template.",
+                "Compare the smaller correlation map with its valid-support mask.",
+                "Inspect five detection rows and their source-coordinate overlay.",
+                "Open the score histogram; correlation is not detection probability.",
+            ),
+            results=(
+                "Correlation scores",
+                "Valid-support mask",
+                "Detection table",
+                "Score histogram",
+            ),
+            try_this=(
+                "Increase minimum separation from 8 to 13 pixels: "
+                "the nearby pair becomes one retained detection."
+            ),
+            caution=(
+                "The border copy lacks a full template window; the absent site "
+                "is not a detection. No labels, scale search or rotation search "
+                "are created."
+            ),
+        ),
+        "template-detection-3d": ExampleGuidance(
+            purpose=(
+                "Locate volumetric patterns and separate detections using "
+                "calibrated physical distances."
+            ),
+            data=(
+                "Four noisy 3D patterns; spacing Z=1.5, Y=0.5, X=0.4 "
+                "micrometres and a nonzero physical origin."
+            ),
+            explore=(
+                "Select T=1 and Repeated pattern, preserving the explicit Z axis.",
+                "Inspect the 7 × 9 × 11 template as a volume, not a projection.",
+                "Read four centers in source indices and physical coordinates.",
+                "Compare nearby peaks, clipped borders and the missing pattern.",
+            ),
+            results=(
+                "Volumetric correlation scores",
+                "Valid-support mask",
+                "3D detection table",
+                "Score histogram",
+            ),
+            try_this=(
+                "Increase minimum separation from 5 to 7 micrometres to "
+                "suppress one of the nearby pair 6.4 micrometres apart."
+            ),
+            caution=(
+                "Voxel and physical distances differ in anisotropic data. "
+                "These synthetic checks do not establish performance on "
+                "biological images."
+            ),
+        ),
         "registration-translation": ExampleGuidance(
             purpose="Align two images without changing their object shapes.",
             data=(
@@ -702,12 +764,12 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "testing workflow."
             ),
             data=(
-                "Ten synthetic samples spanning images, volumes, skeletons, "
-                "deconvolution and a known-motion registration pair"
+                "Eleven synthetic samples spanning images, volumes, skeletons, "
+                "deconvolution, known-motion registration and template detection"
             ),
             explore=(
                 (
-                    "Browse the ten labelled lanes to find different types of "
+                    "Browse the eleven labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",

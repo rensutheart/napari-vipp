@@ -413,6 +413,7 @@ def load_frozen_file_source_snapshot(
             channels=source_state.channels,
             acquisition=source_state.acquisition,
             source=source_state.source,
+            template_match_metadata=source_state.template_match_metadata,
         )
     except Exception as exc:
         annotate_image_source_exception(

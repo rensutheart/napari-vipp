@@ -25,6 +25,10 @@ from napari_vipp.core.cellprofiler_compartments import (
 )
 from napari_vipp.core.cellprofiler_contracts import CELLPROFILER_2D_OPERATION_IDS
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
+from napari_vipp.core.detection_nodes import (
+    DETECTION_RUNTIME_KEYWORDS,
+    detection_node_specs,
+)
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
     validate_mask_broadcast_image_states,
@@ -1972,6 +1976,7 @@ def _analyze_label_skeleton_inputs(
 
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
     *registration_node_specs(),
+    *detection_node_specs(),
     OperationSpec(
         "input",
         "Image Source",
@@ -8156,6 +8161,7 @@ class PrototypePipeline:
         if (node.operation_id, name) in {
             ("estimate_registration", "mode"),
             ("compare_images", "use_mask"),
+            ("find_peaks", "use_mask"),
         }:
             self.trim_invalid_connections(node_id)
 
@@ -8437,7 +8443,11 @@ class PrototypePipeline:
         if node is None or not node.has_input:
             return ()
         spec = self.operation_spec(node.operation_id)
-        if node.operation_id in {"estimate_registration", "compare_images"}:
+        if node.operation_id in {
+            "estimate_registration",
+            "compare_images",
+            "find_peaks",
+        }:
             return spec.input_ports[: self._required_inputs_for(node)]
         if spec.inputs:
             return spec.input_ports
@@ -10243,8 +10253,12 @@ class PrototypePipeline:
         call: PreparedNodeCall,
     ) -> list[tuple[Any, ImageState | TableState | None]] | None:
         """Project deterministic image shape/axis transforms without kernels."""
+        from napari_vipp.core.detection_planning import project_detection_outputs
         from napari_vipp.core.registration_planning import project_registration_outputs
 
+        detection_outputs = project_detection_outputs(self, call)
+        if detection_outputs is not None:
+            return list(detection_outputs)
         registration_outputs = project_registration_outputs(self, call)
         if registration_outputs is not None:
             return list(registration_outputs)
@@ -11512,7 +11526,10 @@ class PrototypePipeline:
         input_states: list[ImageState | TableState | None],
         kwargs: dict[str, Any],
     ) -> None:
-        if "input_states" in REGISTRATION_RUNTIME_KEYWORDS.get(node.operation_id, ()):
+        if "input_states" in (
+            REGISTRATION_RUNTIME_KEYWORDS.get(node.operation_id, ())
+            or DETECTION_RUNTIME_KEYWORDS.get(node.operation_id, ())
+        ):
             kwargs["input_states"] = tuple(input_states)
         if (
             node.operation_id == "intensity_histogram"
@@ -11740,6 +11757,24 @@ class PrototypePipeline:
             )
         spec = self.operation_spec(node.operation_id)
         input_states = list(call.input_states)
+        if node.operation_id == "template_match":
+            from napari_vipp.core.detection import template_match_states_from_outputs
+
+            scores, valid = output
+            score_state, mask_state = template_match_states_from_outputs(
+                call.inputs[0],
+                call.inputs[1],
+                input_states[0],
+                input_states[1],
+                scores,
+                valid,
+                progress_context=call.kwargs.get("progress"),
+            )
+            history = _combined_history(input_states)
+            return [
+                (scores, replace(score_state, history=history + score_state.history)),
+                (valid, replace(mask_state, history=history + mask_state.history)),
+            ]
         if node.operation_id == "estimate_registration":
             transform, diagnostics = output
             return [
@@ -12247,7 +12282,11 @@ class PrototypePipeline:
         if node is None or not node.has_input:
             return 0
         spec = self.operation_spec(node.operation_id)
-        if node.operation_id in {"estimate_registration", "compare_images"}:
+        if node.operation_id in {
+            "estimate_registration",
+            "compare_images",
+            "find_peaks",
+        }:
             return self._required_inputs_for(node)
         if spec.inputs:
             return len(spec.inputs)
@@ -12260,7 +12299,11 @@ class PrototypePipeline:
         return bool(spec.inputs) or node.max_inputs is None or node.max_inputs != 1
 
     def _max_inputs_for(self, node: GraphNode) -> int | None:
-        if node.operation_id in {"estimate_registration", "compare_images"}:
+        if node.operation_id in {
+            "estimate_registration",
+            "compare_images",
+            "find_peaks",
+        }:
             return self._required_inputs_for(node)
         if node.max_inputs is None:
             return None
@@ -12271,6 +12314,8 @@ class PrototypePipeline:
             return 1 if node.params.get("mode") == "Time series" else 2
         if node.operation_id == "compare_images":
             return 3 if node.params.get("use_mask", False) else 2
+        if node.operation_id == "find_peaks":
+            return 2 if node.params.get("use_mask", False) else 1
         spec = self.operation_spec(node.operation_id)
         if node.operation_id == "analyze_skeleton_per_label":
             return 2 if any(

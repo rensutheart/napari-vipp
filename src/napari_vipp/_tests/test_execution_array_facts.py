@@ -2835,9 +2835,70 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
         | set(REGISTRATION_PLANNING_OPERATIONS)
         # Dedicated projections include both primary-object label ports.
         | {"prepare_validate_psf", "cellprofiler_primary_objects"}
+        # Full-placement score and validity lattices are checked below with
+        # unreadable pixel descriptors and forbidden correlation kernels.
+        | {"template_match"}
     )
 
     assert cpu_only - handled == set()
+
+
+@pytest.mark.parametrize("rank", [2, 3])
+def test_template_match_projects_both_ports_without_reading_pixels(rank, monkeypatch):
+    from napari_vipp.core import detection
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Planning must not read pixels or calculate correlation.")
+
+    class UnreadableImage:
+        def __init__(self, shape, dtype):
+            self.shape, self.dtype = shape, np.dtype(dtype)
+
+        def __array__(self, *args, **kwargs):
+            forbidden()
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node("template_match")
+    template_source = pipeline.add_node("input")
+    assert pipeline.connect("input", node.id, target_port=0).success
+    assert pipeline.connect(template_source.id, node.id, target_port=1).success
+    search_shape = (8, 12, 15)[-rank:]
+    template_shape = (4, 4, 6)[-rank:]
+    axes = tuple(
+        AxisMetadata(
+            name, "space", "micrometer", 0.5 * (i + 1), -3.0 + i, source_axis=i
+        )
+        for i, name in enumerate("zyx"[-rank:])
+    )
+    arrays = tuple(np.zeros(shape) for shape in (search_shape, template_shape))
+    states = tuple(image_state_from_array(array, axes=axes) for array in arrays)
+    call = pipeline.prepare_node_call(node.id, arrays, states)
+    assert call is not None
+    descriptors = tuple(UnreadableImage(array.shape, array.dtype) for array in arrays)
+    for name in ("template_match", "template_match_arrays", "match_template"):
+        monkeypatch.setattr(detection, name, forbidden)
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "template_match",
+        replace(call, cpu_function=forbidden, inputs=descriptors),
+        (search_shape, template_shape),
+        ("float64", "float64"),
+    )
+    assert projected is not None and len(projected) == 2
+    expected_shape = tuple(
+        s - t + 1 for s, t in zip(search_shape, template_shape, strict=True)
+    )
+    expected_axes = tuple(
+        replace(axis, translation=axis.translation + (size - 1) / 2 * axis.scale)
+        for axis, size in zip(axes, template_shape, strict=True)
+    )
+    for (description, state), dtype in zip(projected, (np.float64, bool), strict=True):
+        assert description.shape == expected_shape
+        assert description.dtype == np.dtype(dtype)
+        assert state.shape == expected_shape and state.dtype == np.dtype(dtype).name
+        assert state.axes == expected_axes
+        assert state.template_match_metadata is None  # no invented computed evidence
 
 
 def test_scientific_preflight_uses_the_same_boolean_contract_as_execution():

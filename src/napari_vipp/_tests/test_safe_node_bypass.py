@@ -106,6 +106,8 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "estimate_registration",
         "apply_transform",
         "compare_images",
+        "template_match",
+        "find_peaks",
     }
 
 
@@ -175,6 +177,51 @@ def test_mesh_creation_cannot_bypass_into_a_surface_consumer() -> None:
         assert not pipeline.operation_spec(creator).supports_bypass
         with pytest.raises(ValueError):
             pipeline.set_node_execution_mode(surface.id, "bypass")
+
+
+@pytest.mark.parametrize(
+    "operation_id,reason,output_types",
+    [
+        ("template_match", "multi-output boundary", ("image", "mask")),
+        ("find_peaks", "materializes a table", ("table",)),
+    ],
+)
+def test_detection_boundaries_reject_live_and_persisted_bypass(
+    operation_id, reason, output_types
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    template = pipeline.add_node("input")
+    match = pipeline.add_node("template_match")
+    peaks = pipeline.add_node("find_peaks")
+    pipeline.set_param(peaks.id, "use_mask", True)
+    for source, target, source_port, target_port in (
+        ("input", match.id, 0, 0),
+        (template.id, match.id, 0, 1),
+        (match.id, peaks.id, 0, 0),
+        (match.id, peaks.id, 1, 1),
+    ):
+        assert pipeline.connect(
+            source, target, source_port=source_port, target_port=target_port
+        ).success
+    node = match if operation_id == "template_match" else peaks
+    original_connections = tuple(pipeline.connections)
+    assert not NODE_LIBRARY_BY_ID[operation_id].supports_bypass
+    assert not pipeline.node_supports_bypass(node.id)
+    assert reason in pipeline.node_bypass_block_reason(node.id)
+    with pytest.raises(ValueError, match=reason):
+        pipeline.set_node_execution_mode(node.id, "bypass")
+    assert not pipeline.node_is_bypassed(node.id)
+    assert tuple(pipeline.connections) == original_connections
+    assert tuple(p.output_type for p in pipeline.output_ports(node.id)) == output_types
+    invalid_nodes = [
+        replace(candidate, execution_mode="bypass")
+        if candidate.id == node.id
+        else candidate
+        for candidate in pipeline.nodes.values()
+    ]
+    with pytest.raises(ValueError, match=reason):
+        PrototypePipeline().restore_graph(invalid_nodes, original_connections)
 
 
 def test_type_changing_node_rejects_bypass_when_consumer_needs_native_output() -> None:

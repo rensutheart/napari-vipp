@@ -27,6 +27,8 @@ registry):
 - `registration-translation`
 - `registration-rigid-3d`
 - `registration-time-series`
+- `template-detection-2d`
+- `template-detection-3d`
 - `exhaustive-inspector`
 - `graph-authoring`
 - `responsive-crop`
@@ -66,10 +68,12 @@ example...**. Its actively maintained source also remains under
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
+| `synthetic-template-detection-2d.json` | `VIPP synthetic 2D template detection` | Unreleased after 0.16.0a2: select T=1/C=1, crop a 13×11 asymmetric pattern, match it and find five known source-index centers. Includes variable amplitudes, noise, a nearby pair, a clipped border copy and an absent site. Table-first result and descriptive score histogram; no labels or automatic files. Open as `template-detection-2d`. |
+| `synthetic-template-detection-3d.json` | `VIPP synthetic 3D template detection` | Unreleased after 0.16.0a2: select T=1/C=1, crop a 7×9×11 volume, match four known patterns at anisotropic spacing (1.5,0.5,0.4) micrometres and use physical-distance suppression. Nonzero origin, noise, nearby/border/absent cases, coordinate table and score histogram. Open as `template-detection-3d`. |
 | `synthetic-registration-translation.json` | `VIPP registration 2D translation reference` and `moving` | Known subpixel shift with an intensity gain, offset and light noise. Estimates and applies a reusable translation, then compares before/after on the same valid-coverage mask with an explicit intensity range of 1. Open as `registration-translation`. |
 | `synthetic-registration-rigid-3d.json` | `VIPP registration 3D rigid reference` and `moving` | True 3D physical rotation and translation with unequal Z/Y/X spacing and nonzero origin. Checks rigid alignment, valid support and same-region comparison; no slice-by-slice registration. Open as `registration-rigid-3d`. |
 | `synthetic-registration-time-series.json` | `VIPP registration XYZ drift time series` and `labels` | Six timepoints with two channels sharing whole-volume XYZ drift. One estimated transform per timepoint is reused across both channels and companion labels, with nearest-neighbour label resampling and separate coverage outputs. Open as `registration-time-series`. |
-| `exhaustive-inspector-showcase.json` | Ten bundled VIPP synthetic samples | Ten-lane comprehensive review graph covering palette operations except **Table Source**, which requires a separately saved batch measurement dataset and has dedicated collection/reopen tests. Includes label-preserving skeleton analysis beside the original object-label lane, plus 2D CellProfiler Propagation, compartment-profile and known-motion registration lanes, representative connections and tunnels, canvas notes, and saved inspector display settings. The registration lane estimates a reusable transform, applies it once, and compares the aligned image using valid coverage. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
+| `exhaustive-inspector-showcase.json` | Eleven bundled VIPP synthetic samples | Eleven-lane comprehensive review graph covering palette operations except **Table Source**, which requires a separately saved batch measurement dataset and has dedicated collection/reopen tests. Includes label-preserving skeleton analysis beside the original object-label lane, plus 2D CellProfiler Propagation, compartment-profile and known-motion registration lanes, representative connections and tunnels, canvas notes, and saved inspector display settings. The detection lane explicitly selects T/C, crops a fixed template, and returns five known centers through valid-score-masked Find Peaks. The registration lane estimates a reusable transform, applies it once, and compares the aligned image using valid coverage. **Save Image** is disabled, so opening or calculating the workflow cannot write an image unexpectedly. Open it as `exhaustive-inspector`. |
 | `graph-authoring-acceptance.json` | `VIPP synthetic object morphology` | Numbered, on-canvas acceptance recipe for inserting a node before a shared tunnel, copying settings between matching nodes, copying and moving a connected node group, pasting at a chosen location, checking one-step undo/redo, and using **Add conversion** to make a `uint16` Gaussian input GPU eligible on a qualified GPU setup. It opens with Auto compute intent so that qualified systems can show the real tip; CPU-only systems continue normally without it. Open it as `graph-authoring`. |
 | `responsive-volume-crop-acceptance.json` | `VIPP synthetic time-lapse multichannel` | Numbered acceptance path for the responsive TCZYX Crop Stack. It verifies explicit-Z controls, an immediate constant-size crop box and current-slice outline during rapid slider movement, one committed calculation and undo after release or idle, exact T/C preservation and physical-origin shifts, draft flushing before calculation/save/export/batch/tab/close boundaries, inferred-QYX rejection, and the explained CPU assignment under Prefer GPU. The authored margins crop `(5, 3, 12, 96, 128)` to `(5, 3, 9, 87, 115)`. Open it as `responsive-crop`. |
 | `safe-node-bypass-acceptance.json` | `VIPP synthetic volume` | Focused Crop Stack acceptance path for the exact scientific alias, would-run card thumbnail, bypass styling, undo/save/export, GPU-neutral status, and batch Run/Bypass profile. Open it as `safe-node-bypass`. |
@@ -95,6 +99,15 @@ example...**. Its actively maintained source also remains under
 | `synthetic-3d-deconvolution-rl-tv.json` | `VIPP synthetic 3D deconvolution volume` plus `VIPP synthetic 3D measured PSF` | Volumetric PSF-aware review path with one shared, visible `float32` Preserve conversion feeding matched 25-iteration RL/RL-TV branches, a matched ZYX PSF, the authored `1e-12` filter epsilon, and conservative `0.002` TV regularization. The conversion does not rescale intensity. GPU agreement is a backend check, not proof that the PSF, iteration count, or restored structures are scientifically valid. |
 
 ## Validation Expectations
+
+Detection fixtures are directly planted seeded patterns; construction coordinates
+are stored in sample `detection_ground_truth` metadata before any matching.
+`test_detection_examples.py` checks exact retained coordinates, missing/border
+exclusion, calibrated positions, nearby-pair suppression, reproducible seeds,
+round-trip/export execution and no automatic files. Regenerate paired JSON with
+`scripts/generate_detection_examples.py`; the template's own match is not an
+independent detection validation. User instructions live in the
+[nightly detection guide](https://rensutheart.github.io/vipp-mkdocs/nightly/how-to/detect-patterns/).
 
 The registration fixtures are independently evaluated continuous phantoms, not
 images manufactured by the registration resampler. Their known physical

@@ -26,6 +26,24 @@ class ExampleWorkflowSpec:
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
     ExampleWorkflowSpec(
+        "template-detection-2d",
+        "Detection & Peaks",
+        "Repeated 2D Pattern Detection",
+        "synthetic-template-detection-2d.json",
+        ("VIPP synthetic 2D template detection",),
+        "Crop one asymmetric pattern, match its fixed size and orientation, "
+        "then inspect five known detection centers and their correlation scores.",
+    ),
+    ExampleWorkflowSpec(
+        "template-detection-3d",
+        "Detection & Peaks",
+        "Anisotropic 3D Pattern Detection",
+        "synthetic-template-detection-3d.json",
+        ("VIPP synthetic 3D template detection",),
+        "Find four known volumetric patterns with unequal Z/Y/X spacing; "
+        "compare physical separation, clipped borders and an absent site.",
+    ),
+    ExampleWorkflowSpec(
         "registration-translation",
         "Registration & Alignment",
         "Subpixel 2D Registration",
@@ -77,8 +95,9 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
             "VIPP synthetic deconvolution image",
             "VIPP registration 2D translation moving",
             "VIPP registration 2D translation reference",
+            "VIPP synthetic 2D template detection",
         ),
-        "Inspect image and measurement tools in one ten-lane workflow with "
+        "Inspect image and measurement tools in one eleven-lane workflow with "
         "representative synthetic inputs, curated tunnels, canvas notes, "
         "and saved inspector display settings. Table Source is reviewed "
         "separately using collected batch measurements.",

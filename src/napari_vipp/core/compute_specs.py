@@ -1332,6 +1332,8 @@ def _cpu_compute_spec(operation_id: str) -> OperationComputeSpec:
         "estimate_registration",
         "apply_transform",
         "compare_images",
+        "template_match",
+        "find_peaks",
     }
     if operation.function is None:
         callable_ref = ""

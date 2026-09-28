@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Add **Template Match** for complete, fixed-size/orientation 2D/3D normalized
+  correlation, with a paired valid-score mask and calibrated template-centre
+  coordinates. Scores describe resemblance, not detection probability.
+- Add **Find Peaks** for scalar images or template scores, with explicit
+  thresholds, pixel/physical separation, deterministic plateau handling and
+  exact pre-limit counts. Detection tables retain source coordinates and
+  validity evidence through workflow, batch and generated-Python execution.
+- Add a one-click, undoable **Add Find Peaks** next step and read-only detection
+  inspection linking table rows to image markers, with explicit Z-plane review.
+- Add synthetic 2D/3D detection examples with independently recorded locations,
+  edge and crowded cases, and noise-only controls.
+
 ## 0.16.0a2 - 2026-09-23
 
 - Accelerate qualified CPU **Median Filter** calls with SimpleITK 2.5.6,

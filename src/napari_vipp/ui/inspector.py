@@ -26,6 +26,8 @@ SOURCE_REPRESENTATION_SECTION = "source_representation"
 OUTPUT_SELECTOR_SECTION = "output_selector"
 NEXT_STEP_SECTION = "next_step"
 REGISTRATION_RESULTS_SECTION = "registration_results"
+DETECTION_NEXT_STEP_SECTION = "detection_next_step"
+DETECTION_RESULTS_SECTION = "detection_results"
 COLOCALIZATION_SECTION = "colocalization"
 LABEL_DISTRIBUTION_SECTION = "label_distribution"
 FILTER_RESULT_SECTION = "filter_result"
@@ -327,6 +329,10 @@ def inspector_profile(
         parameter_title = "Resampling"
     elif operation_id == "compare_images":
         parameter_title = "Comparison"
+    elif operation_id == "template_match":
+        parameter_title = "Template matching"
+    elif operation_id == "find_peaks":
+        parameter_title = "Peak detection"
     elif operation_id in _TABLE_TRANSFORM_OPERATION_IDS:
         parameter_title = "Table settings"
     elif operation_id in _MEASUREMENT_OPERATION_IDS:
@@ -350,6 +356,12 @@ def inspector_profile(
                 NEXT_STEP_SECTION, TABLE_RESULTS_SECTION, REGISTRATION_RESULTS_SECTION,
             ))
             distribution_kind = "none"
+        elif operation_id == "template_match":
+            primary.extend((DETECTION_NEXT_STEP_SECTION, HISTOGRAMS_SECTION))
+            distribution_kind = "analysis_intensity"
+        elif operation_id == "find_peaks":
+            primary.extend((DETECTION_RESULTS_SECTION, TABLE_RESULTS_SECTION))
+            distribution_kind = "table"
         elif operation_id == "intensity_histogram":
             # The plot is the primary scientific result; the table remains
             # immediately available for exact bin inspection and export.

@@ -59,8 +59,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Statistics contract](statistics.md): descriptive methods, weighting,
   exclusions, output counts/units, and explicit legacy-recipe migration.
 - [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
-  earlier design rationale and revised delivery scope; template detection is deferred.
-- [Registration implementation](registration-implementation.md): unreleased reusable
+  earlier design rationale and staged delivery scope.
+- [Detection implementation](detection-implementation.md): unreleased fixed-template
+  correlation and peak detection, coordinate/validity contracts and qualification.
+- [Registration implementation](registration-implementation.md): reusable
   transforms, pairwise and whole-volume time-series alignment, label-safe application
   and comparison contracts. [Synthetic qualification](registration-synthetic-qualification.md)
   records independently known motion and measured landmark error.

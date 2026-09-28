@@ -3859,6 +3859,39 @@ def merge_tables(
     )
 
 
+def _detection_evidence_for_columns(table, columns, *, overwritten=()):
+    """Keep detection lineage only while its original measurement fields survive.
+
+    Ordinary annotation and column reordering leave row identity, score and
+    source coordinates unchanged. Editing or removing those fields produces a
+    general table with an explicit type warning, never stale overlay evidence.
+    """
+    evidence = table.detection_metadata
+    if evidence is None:
+        return None, ""
+    protected = {"detection_id", evidence.score_column, *evidence.coordinate_columns}
+    protected.update(
+        f"{axis}_physical"
+        for axis in evidence.axes
+        if f"{axis}_physical" in table.columns
+    )
+    if evidence.template_shape is not None:
+        protected.update(
+            f"template_{axis}_{side}"
+            for axis in evidence.axes
+            for side in ("start", "stop")
+        )
+    altered = protected.intersection(overwritten)
+    missing = protected.difference(columns)
+    if altered or missing:
+        reason = "overwritten" if altered else "removed"
+        return (
+            None,
+            f" (detection evidence cleared: protected fields {reason})",
+        )
+    return evidence, ""
+
+
 def add_metadata_columns(
     data,
     metadata_columns: str = "condition=control",
@@ -3875,6 +3908,7 @@ def add_metadata_columns(
             table_kind=table.table_kind,
             source_name=table.source_name,
             column_units=table.column_units,
+            detection_metadata=table.detection_metadata,
         )
 
     should_overwrite = str(overwrite).strip().lower().startswith("y")
@@ -3902,13 +3936,17 @@ def add_metadata_columns(
         for column, unit in table.column_units
         if column in columns and column not in overwritten
     )
+    detection_metadata, evidence_note = _detection_evidence_for_columns(
+        table, columns, overwritten=overwritten
+    )
     return TableData(
         columns=tuple(columns),
         rows=tuple(tuple(row) for row in rows),
         name=table.name or "Annotated table",
-        table_kind=f"{table.table_kind} + metadata",
+        table_kind=f"{table.table_kind} + metadata{evidence_note}",
         source_name=table.source_name,
         column_units=units,
+        detection_metadata=detection_metadata,
     )
 
 
@@ -3953,13 +3991,15 @@ def select_table_columns(
         for column in selected
         if table.unit_for(column)
     )
+    detection_metadata, evidence_note = _detection_evidence_for_columns(table, selected)
     return TableData(
         columns=tuple(selected),
         rows=rows,
         name=table.name or "Selected table columns",
-        table_kind=f"{table.table_kind} + column selection",
+        table_kind=f"{table.table_kind} + column selection{evidence_note}",
         source_name=table.source_name,
         column_units=units,
+        detection_metadata=detection_metadata,
     )
 
 

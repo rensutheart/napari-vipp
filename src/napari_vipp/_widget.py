@@ -539,6 +539,8 @@ from napari_vipp.ui.controls import (
 from napari_vipp.ui.controls import (
     _configure_numeric_spin_box as _configure_numeric_spin_box,
 )
+from napari_vipp.ui.detection_next_step import DetectionNextStepController
+from napari_vipp.ui.detection_results import DetectionResultsController
 from napari_vipp.ui.diagnostic_workers import (
     AutoContrastRequest as AutoContrastRequest,
 )
@@ -640,6 +642,8 @@ from napari_vipp.ui.inspector import (
     BEHAVIOR_SECTION,
     COLOCALIZATION_SECTION,
     COMPUTE_SECTION,
+    DETECTION_NEXT_STEP_SECTION,
+    DETECTION_RESULTS_SECTION,
     FILTER_RESULT_SECTION,
     HISTOGRAMS_SECTION,
     HISTORY_SECTION,
@@ -3889,6 +3893,8 @@ class VippWidget(QWidget):
         self._results_workspace.close()
         self._result_plots.close()
         self._statistics.close()
+        if hasattr(self, "_detection_results"):
+            self._detection_results.close()
         self._mesh_measurement_diagnostics.close()
         self.object_filter_feedback.diagnostics.close()
         self.version_label.shutdown()
@@ -4049,6 +4055,8 @@ class VippWidget(QWidget):
             self.connected_inputs_panel.refresh_theme(palette)
             if self._result_table_dialog is not None:
                 self._result_table_dialog.refresh_theme(palette)
+            if hasattr(self, "_detection_results"):
+                self._detection_results.refresh_theme(palette)
             interaction_hint_style = (
                 f"color: {color(colors.info.foreground)};"
                 " font-size: 10px; padding: 2px 3px;"
@@ -6700,10 +6708,14 @@ class VippWidget(QWidget):
 
         self._registration_next_step = RegistrationNextStepController(self)
         self._registration_results = RegistrationResultsController(self)
+        self._detection_next_step = DetectionNextStepController(self)
+        self._detection_results = DetectionResultsController(self)
         self._inspector_sections = {
             PARAMETERS_SECTION: self.parameter_group,
             NEXT_STEP_SECTION: self._registration_next_step.section,
             REGISTRATION_RESULTS_SECTION: self._registration_results.section,
+            DETECTION_NEXT_STEP_SECTION: self._detection_next_step.section,
+            DETECTION_RESULTS_SECTION: self._detection_results.section,
             SOURCE_REPRESENTATION_SECTION: self.source_representation_section,
             OUTPUT_SELECTOR_SECTION: self.output_selector_section,
             COLOCALIZATION_SECTION: self.colocalization_scatter_group,
@@ -11606,6 +11618,7 @@ class VippWidget(QWidget):
         *,
         current_snapshot: WorkflowHistorySnapshot | None = None,
         prefer_parameter_restore: bool = False,
+        schedule_run: bool = True,
     ) -> None:
         if (
             prefer_parameter_restore
@@ -11711,7 +11724,8 @@ class VippWidget(QWidget):
             self._refresh_graph_search_matches(reset_index=True)
             self._sync_pin_ui()
             self._invalidate_pipeline_cache()
-            self.run_pipeline()
+            if schedule_run:
+                self.run_pipeline()
             # A small Auto run enters a nested Qt event loop while its detached
             # worker completes.  That loop may settle parent layouts and resize
             # the viewport after build_graph restored its center.  Reapply the
@@ -22125,6 +22139,8 @@ class VippWidget(QWidget):
         self._sync_output_selector_ui(profile)
         self._registration_next_step.refresh()
         self._registration_results.refresh()
+        self._detection_next_step.refresh()
+        self._detection_results.refresh()
         self._sync_writer_status_ui(profile)
         self._update_object_filter_feedback()
         self._sync_histogram_interaction_hint()
@@ -22237,6 +22253,8 @@ class VippWidget(QWidget):
         primary_visibility = {
             NEXT_STEP_SECTION: node.operation_id == "estimate_registration",
             REGISTRATION_RESULTS_SECTION: node.operation_id == "estimate_registration",
+            DETECTION_NEXT_STEP_SECTION: node.operation_id == "template_match",
+            DETECTION_RESULTS_SECTION: node.operation_id == "find_peaks",
             PARAMETERS_SECTION: (
                 not self.parameter_group.isHidden()
                 or not self.connected_inputs_panel.isHidden()
@@ -23254,6 +23272,8 @@ class VippWidget(QWidget):
         if hasattr(self, "_registration_next_step"):
             self._registration_next_step.refresh()
             self._registration_results.refresh()
+            self._detection_next_step.refresh()
+            self._detection_results.refresh()
         self._sync_node_names()
         for node_id in self.pipeline.nodes:
             self.graph_view.set_node_bypassed(
@@ -24946,6 +24966,24 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id == "template_match":
+            return (
+                "Matches a fixed template without rotation or scale search. "
+                "A normalized correlation score is not a probability or proof of an "
+                "object. Use a representative, non-constant template at the same "
+                "sampling as the search image. Only complete, valid windows receive "
+                "scores. Connect both Scores and Valid scores to Find Peaks. "
+                "Even-sized templates have half-pixel/voxel centers."
+            )
+        if node.operation_id == "find_peaks":
+            return (
+                "Finds local-maximum candidates, not segmented objects. Set the "
+                "minimum value in the input's units (correlation scores are not "
+                "probabilities) and choose minimum separation for the expected "
+                "object spacing. Review candidates on the original source image. "
+                "Use the valid-scores mask with Template Match. Change parameters, "
+                "then calculate explicitly; review any reported detection limit."
+            )
         if node.operation_id == "estimate_registration":
             scope = (
                 "Each time point is registered as one complete XY image or XYZ "
@@ -25064,6 +25102,8 @@ class VippWidget(QWidget):
 
     def _operation_help_note_status(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id in {"template_match", "find_peaks"}:
+            return "Info"
         if node is not None and node.operation_id in {
             "estimate_registration", "apply_transform", "compare_images"
         }:
@@ -34241,7 +34281,7 @@ class VippWidget(QWidget):
         if name == "input_count" or (
             node.operation_id == "estimate_registration" and name == "mode"
         ) or (
-            node.operation_id == "compare_images" and name == "use_mask"
+            node.operation_id in {"compare_images", "find_peaks"} and name == "use_mask"
         ):
             for connection in self.pipeline.trim_invalid_connections(
                 self._selected_node_id

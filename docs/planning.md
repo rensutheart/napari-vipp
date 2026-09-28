@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-17
+Last reviewed: 2026-09-28
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -14,14 +14,20 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
-Development update, 2026-09-22: registration is now implemented after 0.16.0a1
-and integrated for the next alpha. Final local Windows qualification passed; native
-Linux/macOS and release qualification remain pending. The approved scope
-is Estimate Registration (translation/rigid/affine; pairs or whole-volume time
-series), Apply Transform and Compare Images, with analytical examples.
-See [current contracts](registration-implementation.md) and
-[synthetic evidence](registration-synthetic-qualification.md). Template matching
-and peak detection are deferred; earlier scope wording below is superseded.
+Development update, 2026-09-28: registration, Apply Transform and Compare Images
+shipped in 0.16.0a2. The next approved slice, **Template Match → Find Peaks**, is
+implemented with a clean local Windows full-suite pass,
+with fixed supplied template size/orientation, scalar YX/ZYX inputs, calibrated
+source-centre coordinates, valid-score masks and read-only image/table inspection.
+Find Peaks also accepts ordinary scalar intensity images. Native Linux/macOS,
+minimum dependencies, large-volume memory/performance and acquired microscopy
+accuracy remain unqualified; this is not a published release. See the
+[detection contract](detection-implementation.md) and
+[tracking issue](https://github.com/rensutheart/napari-vipp/issues/70).
+Rotation/scale template banks, editable point workflows, new registration models
+and inferential statistics are not part of this slice. Registration contracts and
+analytical evidence remain in [implementation](registration-implementation.md)
+and [qualification](registration-synthetic-qualification.md).
 
 VIPP is a napari-native visual workflow builder for reproducible bioimage
 analysis. The graph is the primary work surface: a user should be able to build,

@@ -1444,6 +1444,71 @@
         "data_range": 1.0,
         "window_size": 7
       }
+    },
+    {
+      "id": "input_12",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 2D template detection",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "select_axis_slice_2",
+      "operation_id": "select_axis_slice",
+      "params": {
+        "axis": 0,
+        "index": 1,
+        "axes": "",
+        "indices": "",
+        "ranges": "",
+        "range_mode": true,
+        "remove_axes": "0",
+        "remove_indices": "1"
+      }
+    },
+    {
+      "id": "extract_channel_2",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 1
+      }
+    },
+    {
+      "id": "crop_stack_2",
+      "operation_id": "crop_stack",
+      "params": {
+        "z_start": 0,
+        "z_end": 0,
+        "top": 14,
+        "bottom": 61,
+        "left": 15,
+        "right": 86,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "template_match_1",
+      "operation_id": "template_match",
+      "params": {}
+    },
+    {
+      "id": "find_peaks_1",
+      "operation_id": "find_peaks",
+      "params": {
+        "use_mask": true,
+        "minimum_value": 0.8,
+        "minimum_separation": 8.0,
+        "separation_units": "Pixels",
+        "maximum_detections": 100,
+        "border_exclusion": 0
+      }
     }
   ],
   "connections": [
@@ -2626,6 +2691,50 @@
       "target_port": 2,
       "source_port": 1,
       "tunnel": "Registration valid coverage"
+    },
+    {
+      "source": "input_12",
+      "target": "select_axis_slice_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "select_axis_slice_2",
+      "target": "extract_channel_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_2",
+      "target": "crop_stack_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_2",
+      "target": "template_match_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Detection selected image"
+    },
+    {
+      "source": "crop_stack_2",
+      "target": "template_match_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "template_match_1",
+      "target": "find_peaks_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "template_match_1",
+      "target": "find_peaks_1",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Detection valid support"
     }
   ],
   "tunnels": [
@@ -2633,6 +2742,16 @@
       "name": "Born-Wolf PSF",
       "source": "born_wolf_psf_1",
       "source_port": 0
+    },
+    {
+      "name": "Detection selected image",
+      "source": "extract_channel_2",
+      "source_port": 0
+    },
+    {
+      "name": "Detection valid support",
+      "source": "template_match_1",
+      "source_port": 1
     },
     {
       "name": "Expanded labels",
@@ -3303,6 +3422,30 @@
     "compare_images_1": [
       2356.0,
       11800.0
+    ],
+    "input_12": [
+      0.0,
+      13300.0
+    ],
+    "select_axis_slice_2": [
+      646.0,
+      13300.0
+    ],
+    "extract_channel_2": [
+      1292.0,
+      13300.0
+    ],
+    "crop_stack_2": [
+      1938.0,
+      13300.0
+    ],
+    "template_match_1": [
+      2698.0,
+      13300.0
+    ],
+    "find_peaks_1": [
+      3458.0,
+      13300.0
     ]
   },
   "notes": [
@@ -3411,6 +3554,15 @@
       "position": [
         -440.0,
         11680.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_detection",
+      "text": "11. FIXED-TEMPLATE DETECTION\nSelect T=1 and Repeated pattern (C=1), crop one complete 13 x 11 pattern and match its unchanged size and orientation. Pass valid support into Find Peaks. Expect five source centers; noise, a nearby pair, a clipped border copy and an absent site exercise the limits. The output is a coordinate table, not labels.",
+      "position": [
+        -440.0,
+        13200.0
       ],
       "width": 360.0
     }

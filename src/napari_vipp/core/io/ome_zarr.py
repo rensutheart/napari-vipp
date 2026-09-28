@@ -27,6 +27,11 @@ from ome_zarr.writer import (
     write_labels as write_ome_zarr_labels,
 )
 
+from napari_vipp.core.io.detection_state import (
+    TEMPLATE_STATE_KEY,
+    restore_template_state,
+    template_state_payload,
+)
 from napari_vipp.core.io.model import (
     AnalysisLabel,
     ImageDataset,
@@ -405,6 +410,19 @@ def _ome_zarr_image_state(
         raise ValueError(f"Could not build image metadata for {path}")
     if selected.kind == "labels":
         state = replace(state, kind="label image")
+    if selected.key == ".":
+        vipp = _normalised_root_metadata(location.root_attrs).get("vipp", {})
+        payload = vipp.get(TEMPLATE_STATE_KEY) if isinstance(vipp, dict) else None
+        if isinstance(vipp, dict) and (
+            (TEMPLATE_STATE_KEY in vipp and not isinstance(payload, dict))
+            or (payload is None and "Template Match:" in str(vipp.get("history", "")))
+        ):
+            raise ValueError(
+                "OME-Zarr Template Match provenance is incomplete or invalid."
+            )
+        state = restore_template_state(
+            payload, state, data, native_sampling=True, native_origin=True
+        )
     return state
 
 
@@ -417,6 +435,7 @@ def write_ome_zarr(
 ) -> Path:
     """Write one local OME-Zarr image using version 0.4 or 0.5."""
     state = _coerce_state(image_state)
+    detection = template_state_payload(state, data)
     arr, axes = _canonical_payload(data, state)
     fmt = FormatV04() if version == "0.4" else FormatV05()
     axis_records = [
@@ -435,6 +454,14 @@ def write_ome_zarr(
     units = {
         axis.name: unit for axis in axes if (unit := _ngff_unit(axis.unit)) is not None
     }
+    if detection is not None:
+        # NGFF has length units, not a 'pixel' spatial unit. An absent native
+        # unit retains index coordinates; the exact authored spelling remains
+        # in paired VIPP state. Do not invent a physical calibration.
+        for record in axis_records:
+            if record.get("unit") == "pixel":
+                record.pop("unit")
+        units = {name: unit for name, unit in units.items() if unit != "pixel"}
     omero_metadata = _omero_metadata(state, axes, arr.shape, np.dtype(arr.dtype))
     write_ome_zarr_image(
         arr,
@@ -448,6 +475,24 @@ def write_ome_zarr(
         omero=omero_metadata,
     )
     metadata = {"vipp": _vipp_metadata(state)}
+    if detection is not None:
+        # ome-zarr's current writer accepts but ignores its deprecated
+        # coordinate_transformations argument. Preserve the center translation
+        # explicitly in native NGFF metadata as well as VIPP's paired evidence.
+        attrs = zarr.open_group(str(path), mode="r").attrs.asdict()
+        multiscales = _normalised_root_metadata(attrs).get("multiscales")
+        if not isinstance(multiscales, list) or len(multiscales) != 1:
+            raise ValueError("Cannot preserve the Template Match NGFF score grid.")
+        datasets = multiscales[0].get("datasets", ())
+        if len(datasets) != 1:
+            raise ValueError("Template Match export requires one exact NGFF level.")
+        transforms = datasets[0].get("coordinateTransformations", ())
+        datasets[0]["coordinateTransformations"] = [
+            dict(transform)
+            for transform in transforms
+            if transform.get("type") != "translation"
+        ] + [{"type": "translation", "translation": [a.translation for a in axes]}]
+        metadata["multiscales"] = multiscales
     if omero_metadata.get("channels"):
         metadata["omero"] = omero_metadata
     _with_zarr_metadata_retries(add_metadata, str(path), metadata, fmt=fmt)
@@ -1427,6 +1472,7 @@ def _exact_window_image_state(
         channels=channels,
         acquisition=base_state.acquisition,
         source=base_state.source,
+        template_match_metadata=base_state.template_match_metadata,
     )
     if state is None:
         raise ValueError("Could not build exact scientific source-window metadata.")
@@ -1805,6 +1851,11 @@ def _vipp_metadata(state: ImageState | None) -> dict[str, Any]:
         "source": state.source.to_dict(),
         "acquisition": state.acquisition.to_dict(),
         "metadata_source": state.metadata_source,
+        **(
+            {TEMPLATE_STATE_KEY: state.to_dict()}
+            if state.template_match_metadata is not None
+            else {}
+        ),
     }
 
 
@@ -1880,7 +1931,12 @@ def _coerce_state(value: ImageState | dict[str, Any] | None) -> ImageState | Non
     if isinstance(value, ImageState):
         return value
     if isinstance(value, dict):
-        return ImageState.from_dict(value)
+        state = ImageState.from_dict(value)
+        if state is None and value.get("template_match_metadata") is not None:
+            raise ValueError(
+                "Invalid Template Match state supplied for OME-Zarr export."
+            )
+        return state
     return None
 
 

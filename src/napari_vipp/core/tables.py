@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from napari_vipp.core.detection_metadata import DetectionMetadata
+
 
 @dataclass(frozen=True)
 class HistogramSeriesMetadata:
@@ -239,6 +241,7 @@ class TableData:
     source_name: str = ""
     column_units: tuple[tuple[str, str], ...] = ()
     histogram_metadata: HistogramResultMetadata | None = None
+    detection_metadata: DetectionMetadata | None = None
 
     @property
     def row_count(self) -> int:
@@ -282,6 +285,7 @@ class TableState:
     nonfinite_row_count: int | None = None
     nonfinite_columns: tuple[str, ...] = ()
     histogram_metadata: HistogramResultMetadata | None = None
+    detection_metadata: DetectionMetadata | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = {
@@ -304,6 +308,8 @@ class TableState:
             data["nonfinite_columns"] = list(self.nonfinite_columns)
         if self.histogram_metadata is not None:
             data["histogram_metadata"] = self.histogram_metadata.to_dict()
+        if self.detection_metadata is not None:
+            data["detection_metadata"] = self.detection_metadata.to_dict()
         return data
 
 
@@ -327,6 +333,7 @@ def table_from_columns(
     source_name: str = "",
     column_units: Mapping[str, str] | None = None,
     histogram_metadata: HistogramResultMetadata | None = None,
+    detection_metadata: DetectionMetadata | None = None,
 ) -> TableData:
     """Build a :class:`TableData` from equally sized column vectors."""
     names = tuple(str(name) for name in columns.keys())
@@ -355,6 +362,7 @@ def table_from_columns(
         source_name=source_name,
         column_units=units,
         histogram_metadata=histogram_metadata,
+        detection_metadata=detection_metadata,
     )
 
 
@@ -383,6 +391,7 @@ def table_state_from_data(
         nonfinite_row_count=quality.nonfinite_rows,
         nonfinite_columns=quality.nonfinite_columns,
         histogram_metadata=table.histogram_metadata,
+        detection_metadata=table.detection_metadata,
     )
 
 

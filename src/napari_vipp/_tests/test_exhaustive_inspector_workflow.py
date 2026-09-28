@@ -74,6 +74,9 @@ def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
         "convert_dtype": 2,
         "rescale_intensity": 2,
         "cellprofiler_propagation": 2,
+        "crop_stack": 2,
+        "select_axis_slice": 2,
+        "extract_channel": 2,
     }
 
 
@@ -215,6 +218,8 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         "Registration reference image": ("input_11", 0, 1),
         "Registration aligned image": ("apply_transform_1", 0, 1),
         "Registration valid coverage": ("apply_transform_1", 1, 1),
+        "Detection selected image": ("extract_channel_2", 0, 1),
+        "Detection valid support": ("template_match_1", 1, 1),
     }
     actual_tunnels = {
         tunnel.name: (tunnel.source_id, tunnel.source_port)
@@ -236,8 +241,8 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 70
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 115
+    assert sum(tunnel_counts.values()) == 72
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 120
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:
@@ -334,6 +339,35 @@ def test_showcase_registration_lane_executes_known_motion_and_coverage():
     for node_id, payload in sources.items():
         assert not payload.data.flags.writeable
         np.testing.assert_array_equal(payload.data, copies[node_id])
+
+
+def test_showcase_detection_lane_executes_known_centers():
+    from napari_vipp._sample_data import make_detection_sample_data
+
+    graph = workflow_snapshot_from_document(_showcase_document()).graph.to_pipeline()
+    node_ids = {
+        "input_12", "select_axis_slice_2", "extract_channel_2", "crop_stack_2",
+        "template_match_1", "find_peaks_1",
+    }
+    branch = PrototypePipeline()
+    branch.restore_graph(
+        [node for node in graph.nodes.values() if node.id in node_ids],
+        [edge for edge in graph.connections
+         if edge.source_id in node_ids and edge.target_id in node_ids],
+        [tunnel for tunnel in graph.output_tunnel_list()
+         if tunnel.source_id in node_ids],
+    )
+    image, kwargs, _kind = make_detection_sample_data()[0]
+    sources = {"input_12": SourcePayload(image, kwargs["metadata"], kwargs["name"])}
+    branch.preflight_axis_contract(sources)
+    branch.run(None, source_payloads=sources)
+    records = branch.outputs["find_peaks_1"].records()
+    truth = kwargs["metadata"]["detection_ground_truth"]
+    assert {(row["y_index"], row["x_index"]) for row in records} == {
+        tuple(center) for center in truth["centers"]
+    }
+    assert branch.outputs["crop_stack_2"].shape == (13, 11)
+    assert branch.node_outputs["template_match_1"][1].dtype == bool
 
 
 def test_showcase_propagation_lane_executes_on_real_yx_inputs():

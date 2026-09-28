@@ -22,6 +22,7 @@ from types import MappingProxyType
 
 from napari_vipp.core.atomic_io import atomic_replace
 from napari_vipp.core.batch_resume import document_digest, seal_document
+from napari_vipp.core.detection_metadata import DetectionMetadata
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     SourceChangedError,
@@ -89,12 +90,23 @@ class CollectionItem:
     effective_workflow_sha256: str = ""
     execution_provenance_sha256: str = ""
     resumed_from_run_id: str = ""
+    detection_metadata: Mapping[str, object] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "sources", _freeze(self.sources))
         object.__setattr__(
             self, "parameter_overrides", _freeze(self.parameter_overrides)
         )
+        if self.detection_metadata is not None:
+            try:
+                evidence = DetectionMetadata.from_dict(_thaw(self.detection_metadata))
+                if evidence.returned_count != self.row_count:
+                    raise ValueError("Detection counts differ from the item row count.")
+            except (TypeError, ValueError, KeyError) as exc:
+                raise MeasurementCollectionError(
+                    f"Invalid per-item detection evidence: {exc}"
+                ) from exc
+            object.__setattr__(self, "detection_metadata", _freeze(evidence.to_dict()))
 
 
 @dataclass(frozen=True)
@@ -501,6 +513,11 @@ def table_measurement_metadata(table: TableData, *, cancellation=None) -> dict:
             "cell_types": runs,
             "name": table.name,
             "table_kind": table.table_kind,
+            **(
+                {"detection_metadata": table.detection_metadata.to_dict()}
+                if table.detection_metadata is not None
+                else {}
+            ),
         }
     except (MeasurementCollectionError, TypeError) as exc:
         return {"version": 1, "available": False, "reason": str(exc)}
@@ -630,12 +647,35 @@ def _read_table(data, metadata, format, limits, cancellation):
         raise MeasurementCollectionError(
             f"Cannot decode the exact saved table: {exc}"
         ) from exc
+    try:
+        detection = (
+            DetectionMetadata.from_dict(metadata["detection_metadata"])
+            if metadata.get("detection_metadata") is not None
+            else None
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise MeasurementCollectionError(f"Invalid detection evidence: {exc}") from exc
+    if detection is not None:
+        required = {
+            "detection_id", detection.score_column, *detection.coordinate_columns
+        }
+        if detection.template_shape is not None:
+            required.update(
+                f"template_{axis}_{side}"
+                for axis in detection.axes
+                for side in ("start", "stop")
+            )
+        if detection.returned_count != count or not required <= set(columns):
+            raise MeasurementCollectionError(
+                "Detection evidence differs from the table."
+            )
     return TableData(
         columns,
         tuple(rows),
         name=str(metadata.get("name", "")),
         table_kind=str(metadata.get("table_kind", "table")),
         column_units=units,
+        detection_metadata=detection,
     )
 
 
@@ -829,6 +869,11 @@ def inspect_collection(
                 status="ready" if table.row_count else "empty",
                 row_count=table.row_count,
                 table=table,
+                detection_metadata=(
+                    table.detection_metadata.to_dict()
+                    if table.detection_metadata is not None
+                    else None
+                ),
             )
         except FileNotFoundError:
             item = replace(
@@ -1043,6 +1088,7 @@ def _snapshot_document(collection, cancellation=None):
                     name: _thaw(value)
                     for name, value in vars(item).items()
                     if name != "table"
+                    and not (name == "detection_metadata" and value is None)
                 }
                 for item in collection.items
             ],
@@ -1206,9 +1252,13 @@ def _load_snapshot(document, limits, cancellation=None):
         raise MeasurementCollectionError("Invalid snapshot item inventory.")
     inventory = []
     for item in items:
-        if not isinstance(item, dict) or set(item) != set(
-            CollectionItem.__dataclass_fields__
-        ) - {"table"}:
+        required_item_fields = set(CollectionItem.__dataclass_fields__) - {
+            "table", "detection_metadata"
+        }
+        if not isinstance(item, dict) or not (
+            required_item_fields <= set(item)
+            <= required_item_fields | {"detection_metadata"}
+        ):
             raise MeasurementCollectionError("Invalid snapshot inventory record.")
         for name in (
             "key",

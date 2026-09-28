@@ -10,17 +10,17 @@ access in the app.
 Choose **Open example... → Exhaustive Inspector Showcase**, or open
 `exhaustive-inspector-showcase.json` here with **Load workflow...**. The graph
 contains every processing operation currently exposed in the node palette:
-135 distinct operations across 150 nodes, with eleven source nodes bound to ten
+139 distinct operations across 158 nodes, with twelve source nodes bound to eleven
 distinct bundled samples. **Table Source** needs a saved batch collection and
 has separate save/reopen coverage. Processing operations appear once except
 the explicit preparation and propagation stages needed by the two native-2D
-CellProfiler lanes.
+CellProfiler lanes and the explicit T/C selection and crop in the detection lane.
 
 The logical columns reserve room for wide multi-input cards and tunnel labels.
 The full catalogue layout audit also checks this showcase before and after
 ready-result controls appear; no scientific operation is run by that visual audit.
 
-The graph is arranged as ten labelled horizontal lanes:
+The graph is arranged as eleven labelled horizontal lanes:
 
 1. axes, regions, metadata, projections, and generated PSF;
 2. intensity transformations and filtering;
@@ -30,13 +30,14 @@ The graph is arranged as ten labelled horizontal lanes:
 6. skeleton QC and network measurements;
 7. PSF preparation and deconvolution;
 8. native-2D seeded CellProfiler Propagation;
-9. explicit CellProfiler compartment-profile stages; and
-10. known-motion registration, resampling, valid coverage and image comparison.
+9. explicit CellProfiler compartment-profile stages;
+10. known-motion registration, resampling, valid coverage and image comparison; and
+11. fixed-template matching, valid scores and table-first peak detection.
 
 The lanes are independent where combining them would be scientifically
 artificial. Fan-outs indicate alternative analyses of the same data rather than
-an intended sequence. Thirteen named tunnels carry the longest reused inputs across
-lanes; 114 nearby connections remain as ordinary wires so each lane's main path
+an intended sequence. Fifteen named tunnels carry the longest reused inputs across
+lanes; 120 nearby connections remain as ordinary wires so each lane's main path
 is still visible.
 
 The workflow is safe to inspect after loading. **Save Image** is disabled and

@@ -16,6 +16,7 @@ from napari_vipp.core.channel_colors import (
     channel_color_int,
     channel_color_names,
 )
+from napari_vipp.core.detection_metadata import TemplateMatchMetadata
 from napari_vipp.core.tables import (
     TableData,
     TableQuality,
@@ -401,6 +402,7 @@ class ImageState:
     channels: tuple[ChannelMetadata, ...] = ()
     acquisition: AcquisitionMetadata = AcquisitionMetadata()
     source: SourceMetadata = SourceMetadata()
+    template_match_metadata: TemplateMatchMetadata | None = None
 
     @property
     def axis_confidence(self) -> str:
@@ -449,6 +451,11 @@ class ImageState:
             "channels": [channel.to_dict() for channel in self.channels],
             "acquisition": self.acquisition.to_dict(),
             "source": self.source.to_dict(),
+            **(
+                {"template_match_metadata": self.template_match_metadata.to_dict()}
+                if self.template_match_metadata is not None
+                else {}
+            ),
         }
 
     @classmethod
@@ -503,6 +510,11 @@ class ImageState:
                 channels=channels,
                 acquisition=acquisition,
                 source=source,
+                template_match_metadata=(
+                    TemplateMatchMetadata.from_dict(data["template_match_metadata"])
+                    if data.get("template_match_metadata") is not None
+                    else None
+                ),
             )
         except Exception:
             return None
@@ -525,6 +537,7 @@ def image_state_from_array(
     channels: tuple[ChannelMetadata, ...] | None = None,
     acquisition: AcquisitionMetadata | None = None,
     source: SourceMetadata | None = None,
+    template_match_metadata: TemplateMatchMetadata | None = None,
     defer_statistics: bool = False,
 ) -> ImageState | None:
     """Create a carried image state from array data and optional metadata."""
@@ -603,6 +616,13 @@ def image_state_from_array(
         channels=channels or (),
         acquisition=acquisition or AcquisitionMetadata(),
         source=source or SourceMetadata(),
+        template_match_metadata=(
+            template_match_metadata
+            if template_match_metadata is not None
+            else carried_state.template_match_metadata
+            if carried_state is not None
+            else None
+        ),
     )
 
 
@@ -660,6 +680,7 @@ def transform_image_state(
         channels=_transformed_channels(input_state, operation_id, params),
         acquisition=_transformed_acquisition(input_state, operation_id, params),
         source=input_state.source,
+        template_match_metadata=input_state.template_match_metadata,
     )
     if operation_id in KIND_PRESERVING_OPERATIONS:
         state = replace(state, kind=input_state.kind)
@@ -710,6 +731,14 @@ def transform_multi_input_image_state(
         channels=_multi_input_channels(states, operation_id, params),
         acquisition=first.acquisition,
         source=first.source,
+        template_match_metadata=next(
+            (
+                s.template_match_metadata
+                for s in states
+                if isinstance(s, ImageState) and s.template_match_metadata is not None
+            ),
+            None,
+        ),
     )
     if operation_id in {
         "colocalization_scatter_plot",
@@ -776,6 +805,7 @@ def transform_split_output_state(
         ),
         acquisition=input_state.acquisition,
         source=input_state.source,
+        template_match_metadata=input_state.template_match_metadata,
     )
 
 
@@ -891,6 +921,22 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
         if table_state.source_name:
             rows.append(MetadataRow("Source", table_state.source_name))
         histogram = table_state.histogram_metadata
+        detection = table_state.detection_metadata
+        if detection is not None:
+            rows.extend(
+                (
+                    MetadataRow("Detections", f"{detection.returned_count:,}"),
+                    MetadataRow("Before count limit", f"{detection.accepted_count:,}"),
+                    MetadataRow(
+                        "Count limited", "Yes" if detection.truncated else "No"
+                    ),
+                    MetadataRow(
+                        "Minimum separation",
+                        f"{detection.minimum_separation:g} "
+                        f"{detection.separation_units}",
+                    ),
+                )
+            )
         if histogram is not None:
             ignored_nonfinite = (
                 int(histogram.nan_value_count)
