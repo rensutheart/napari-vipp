@@ -201,6 +201,11 @@ from napari_vipp.core.result_plots import PlotState, plot_results, plot_state_fr
 from napari_vipp.core.source_items import SourceItem
 from napari_vipp.core.source_window import ExactSourceWindowData
 from napari_vipp.core.tables import TableState, table_state_from_data
+from napari_vipp.core.time_detection_nodes import (
+    TIME_DETECTION_RUNTIME_KEYWORDS,
+    time_detection_node_specs,
+)
+from napari_vipp.core.tracking_nodes import tracking_node_specs
 
 
 @dataclass(frozen=True)
@@ -1977,6 +1982,8 @@ def _analyze_label_skeleton_inputs(
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
     *registration_node_specs(),
     *detection_node_specs(),
+    *time_detection_node_specs(),
+    *tracking_node_specs(),
     OperationSpec(
         "input",
         "Image Source",
@@ -7142,6 +7149,11 @@ def graph_node_from_persisted_params(
 
     required_params = {parameter.name for parameter in spec.parameters}
     missing_params = required_params - saved_params.keys()
+    if operation_id == "estimate_registration":
+        # Missing strategy fields retain the original fixed-reference contract.
+        # Do not insert defaults into old workflows: their saved identity and
+        # batch resume fingerprint must remain unchanged.
+        missing_params -= {"time_strategy", "cumulative_quality_policy"}
     if missing_params:
         missing = ", ".join(sorted(missing_params))
         raise ValueError(f"Node {node_id!r} is missing required parameters: {missing}.")
@@ -7163,6 +7175,8 @@ def graph_node_from_persisted_params(
     # snapshots pass a defensive deep copy into this shared validator.
     params = dict(saved_params)
     for parameter in spec.parameters:
+        if operation_id == "estimate_registration" and parameter.name not in params:
+            continue
         validate_parameter_value(
             parameter,
             params[parameter.name],
@@ -8162,6 +8176,7 @@ class PrototypePipeline:
             ("estimate_registration", "mode"),
             ("compare_images", "use_mask"),
             ("find_peaks", "use_mask"),
+            ("detect_spots_per_frame", "mode"),
         }:
             self.trim_invalid_connections(node_id)
 
@@ -8447,6 +8462,7 @@ class PrototypePipeline:
             "estimate_registration",
             "compare_images",
             "find_peaks",
+            "detect_spots_per_frame",
         }:
             return spec.input_ports[: self._required_inputs_for(node)]
         if spec.inputs:
@@ -11529,6 +11545,7 @@ class PrototypePipeline:
         if "input_states" in (
             REGISTRATION_RUNTIME_KEYWORDS.get(node.operation_id, ())
             or DETECTION_RUNTIME_KEYWORDS.get(node.operation_id, ())
+            or TIME_DETECTION_RUNTIME_KEYWORDS.get(node.operation_id, ())
         ):
             kwargs["input_states"] = tuple(input_states)
         if (
@@ -11757,6 +11774,28 @@ class PrototypePipeline:
             )
         spec = self.operation_spec(node.operation_id)
         input_states = list(call.input_states)
+        if node.operation_id in {"measure_objects", "measure_objects_intensity"}:
+            from napari_vipp.core.observation_series import (
+                OBJECT_OBSERVATION_REVISION_KEY,
+                attach_object_observations,
+            )
+
+            output = attach_object_observations(
+                output,
+                call.inputs[0],
+                input_states[0],
+                progress_context=call.kwargs.get("progress"),
+                source_revision=call.kwargs.get(OBJECT_OBSERVATION_REVISION_KEY),
+            )
+        if node.operation_id == "build_tracks":
+            return [
+                (table, table_state_from_data(
+                    table,
+                    history=_table_history(input_states, node.title, table),
+                    source_name=_combined_source_name(input_states),
+                ))
+                for table in output
+            ]
         if node.operation_id == "template_match":
             from napari_vipp.core.detection import template_match_states_from_outputs
 
@@ -12286,6 +12325,7 @@ class PrototypePipeline:
             "estimate_registration",
             "compare_images",
             "find_peaks",
+            "detect_spots_per_frame",
         }:
             return self._required_inputs_for(node)
         if spec.inputs:
@@ -12303,6 +12343,7 @@ class PrototypePipeline:
             "estimate_registration",
             "compare_images",
             "find_peaks",
+            "detect_spots_per_frame",
         }:
             return self._required_inputs_for(node)
         if node.max_inputs is None:
@@ -12316,6 +12357,8 @@ class PrototypePipeline:
             return 3 if node.params.get("use_mask", False) else 2
         if node.operation_id == "find_peaks":
             return 2 if node.params.get("use_mask", False) else 1
+        if node.operation_id == "detect_spots_per_frame":
+            return 2 if node.params.get("mode") == "Template match" else 1
         spec = self.operation_spec(node.operation_id)
         if node.operation_id == "analyze_skeleton_per_label":
             return 2 if any(

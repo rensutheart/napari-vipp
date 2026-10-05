@@ -922,6 +922,32 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
             rows.append(MetadataRow("Source", table_state.source_name))
         histogram = table_state.histogram_metadata
         detection = table_state.detection_metadata
+        observations = table_state.observation_metadata
+        tracking = table_state.tracking_metadata
+        if observations is not None:
+            rows.extend((
+                MetadataRow("Time frames", str(observations.frame_count)),
+                MetadataRow("Frame-local ID", observations.id_column),
+                MetadataRow("Count limited", "Yes" if observations.truncated else "No"),
+                MetadataRow(
+                    "Time sampling",
+                    f"{observations.time_scale:g} {observations.time_unit or 'frames'}",
+                ),
+            ))
+        if tracking is not None:
+            rows.extend((
+                MetadataRow("Linking", tracking.assignment_policy),
+                MetadataRow(
+                    "Maximum displacement",
+                    f"{tracking.maximum_displacement:g} "
+                    f"{tracking.distance_units} per frame",
+                ),
+                MetadataRow("Maximum gap", f"{tracking.maximum_gap} missing frames"),
+                MetadataRow(
+                    "Interpretation",
+                    "One-to-one tracks; no divisions, fusions or confidence estimates",
+                ),
+            ))
         if detection is not None:
             rows.extend(
                 (

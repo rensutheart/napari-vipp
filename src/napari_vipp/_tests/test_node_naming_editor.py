@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QTextDocument
+from qtpy.QtWidgets import QScrollArea
 
 from napari_vipp.core.node_names import MAX_NODE_NAME_LENGTH, normalize_node_name
 from napari_vipp.ui.node_labels import NodePresentation
@@ -164,12 +165,26 @@ def test_markup_in_names_and_settings_remains_literal(editor):
     assert "&amp; intensity &gt; 2" in editor.summary_label.toolTip()
 
 
-def test_long_summary_is_shortened_visibly_but_retained_in_tooltip(editor):
+def test_long_summary_is_fully_visible_and_retained_in_tooltip(editor, qtbot):
+    panel = QScrollArea()
+    qtbot.addWidget(panel)
+    panel.setWidgetResizable(True)
+    panel.setWidget(editor)
+    panel.resize(520, 180)
+    panel.show()
     summary = "Grouped measurements and exact settings " * 20
     editor.set_node("first", "", _presentation(summary=summary))
-    assert len(editor.summary_label.text()) < len(summary)
-    assert editor.summary_label.text().endswith("…")
+    qtbot.waitUntil(lambda: editor.summary_label.height() >= (
+        editor.summary_label.heightForWidth(editor.summary_label.width())
+    ))
+    assert editor.summary_label.text() == summary
+    assert (
+        editor.summary_label.height()
+        > 3 * editor.summary_label.fontMetrics().lineSpacing()
+    )
+    assert editor.rect().contains(editor.summary_label.geometry())
     assert summary in editor.summary_label.toolTip()
+    assert panel.verticalScrollBar().maximum() > 0
 
 
 @pytest.mark.parametrize(
@@ -208,7 +223,7 @@ def test_narrow_inspector_gives_name_full_width_and_shows_its_beginning(
     assert tooltip.toPlainText().startswith(name + "\n\n")
 
 
-def test_narrow_inspector_summary_uses_three_lines_and_retains_full_context(
+def test_narrow_inspector_summary_wraps_all_context_and_reflows_on_resize(
     editor, qtbot
 ):
     summary = (
@@ -222,23 +237,25 @@ def test_narrow_inspector_summary_uses_three_lines_and_retains_full_context(
     qtbot.waitUntil(lambda: editor.summary_label.width() == 230)
 
     label = editor.summary_label
-    assert label.height() <= 3 * label.fontMetrics().lineSpacing()
-    assert label.text().endswith("…")
-    assert len(label.text()) < len(summary)
+    qtbot.waitUntil(lambda: label.height() >= label.heightForWidth(label.width()))
+    assert label.height() > 3 * label.fontMetrics().lineSpacing()
+    assert label.text() == summary
     assert editor.rect().contains(label.geometry())
     assert label.accessibleDescription() == summary
     tooltip = QTextDocument()
     tooltip.setHtml(label.toolTip())
     assert tooltip.toPlainText() == summary
-    narrow_text = label.text()
+    narrow_height = label.height()
 
     editor.resize(460, 180)
     qtbot.waitUntil(lambda: editor.summary_label.width() == 460)
-    assert len(label.text()) > len(narrow_text)
-    assert label.height() <= 3 * label.fontMetrics().lineSpacing()
+    qtbot.waitUntil(lambda: label.height() < narrow_height)
+    assert label.text() == summary
+    assert label.height() >= label.heightForWidth(label.width())
     editor.resize(230, 180)
     qtbot.waitUntil(lambda: editor.summary_label.width() == 230)
-    assert label.text() == narrow_text
+    qtbot.waitUntil(lambda: label.height() == narrow_height)
+    assert label.text() == summary
     assert label.accessibleDescription() == summary
 
 

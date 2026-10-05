@@ -77,6 +77,15 @@ class RegistrationResultsController:
                 f"{reference}\n"
                 "Movement instructions only; Apply Transform creates the aligned image."
             )
+            if transform.is_time_series:
+                text += f"\nTime-series strategy: {transform.time_strategy}."
+                if transform.time_strategy == "Previous frame":
+                    policy = dict(transform.settings)["cumulative_quality_policy"]
+                    text += (
+                        f" Cumulative quality: {policy}. "
+                        "Adjacent-pair errors can accumulate; review local and "
+                        "cumulative diagnostics and valid coverage."
+                    )
             if not ready:
                 text = "Previous result — recalculate before exporting.\n" + text
             self.summary.setText(text)

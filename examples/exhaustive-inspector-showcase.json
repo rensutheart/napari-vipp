@@ -1509,6 +1509,55 @@
         "maximum_detections": 100,
         "border_exclusion": 0
       }
+    },
+    {
+      "id": "input_13",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 2D spot tracking",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item",
+        "axis_declaration": ""
+      }
+    },
+    {
+      "id": "extract_channel_3",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 1
+      }
+    },
+    {
+      "id": "detect_spots_per_frame_1",
+      "operation_id": "detect_spots_per_frame",
+      "params": {
+        "mode": "Local peaks",
+        "minimum_value": 0.5,
+        "minimum_separation": 3.0,
+        "separation_units": "Pixels",
+        "maximum_detections": 100,
+        "border_exclusion": 0
+      }
+    },
+    {
+      "id": "build_tracks_1",
+      "operation_id": "build_tracks",
+      "params": {
+        "maximum_displacement": 8.0,
+        "distance_units": "Pixels",
+        "maximum_gap": 1
+      }
+    },
+    {
+      "id": "select_table_columns_2",
+      "operation_id": "select_table_columns",
+      "params": {
+        "columns": "auto"
+      }
     }
   ],
   "connections": [
@@ -2735,6 +2784,30 @@
       "target_port": 1,
       "source_port": 1,
       "tunnel": "Detection valid support"
+    },
+    {
+      "source": "input_13",
+      "target": "extract_channel_3",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "extract_channel_3",
+      "target": "detect_spots_per_frame_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "detect_spots_per_frame_1",
+      "target": "build_tracks_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "build_tracks_1",
+      "target": "select_table_columns_2",
+      "target_port": 0,
+      "source_port": 1
     }
   ],
   "tunnels": [
@@ -3446,6 +3519,26 @@
     "find_peaks_1": [
       3458.0,
       13300.0
+    ],
+    "input_13": [
+      0.0,
+      14400.0
+    ],
+    "extract_channel_3": [
+      646.0,
+      14400.0
+    ],
+    "detect_spots_per_frame_1": [
+      1292.0,
+      14400.0
+    ],
+    "build_tracks_1": [
+      2128.0,
+      14400.0
+    ],
+    "select_table_columns_2": [
+      2926.0,
+      14400.0
     ]
   },
   "notes": [
@@ -3563,6 +3656,15 @@
       "position": [
         -440.0,
         13200.0
+      ],
+      "width": 360.0
+    },
+    {
+      "id": "lane_tracking",
+      "text": "12. TIME-SERIES DETECTION AND TRACKING\nSelect Moving spots (C=1), keeping all seven timepoints. Detect Spots per Frame returns 24 observations, including an exact empty-frame record for T=3. Build Tracks permits one missing frame with an eight-pixel per-frame gate: four tracks, six observations each. The lower crossing pair has ambiguous identities: review flags are not confidence or biological truth. Select Table Columns passes the second output's track summary unchanged to a primary result.",
+      "position": [
+        -440.0,
+        14300.0
       ],
       "width": 360.0
     }

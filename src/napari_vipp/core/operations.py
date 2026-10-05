@@ -3909,6 +3909,8 @@ def add_metadata_columns(
             source_name=table.source_name,
             column_units=table.column_units,
             detection_metadata=table.detection_metadata,
+            observation_metadata=table.observation_metadata,
+            tracking_metadata=table.tracking_metadata,
         )
 
     should_overwrite = str(overwrite).strip().lower().startswith("y")
@@ -3939,14 +3941,21 @@ def add_metadata_columns(
     detection_metadata, evidence_note = _detection_evidence_for_columns(
         table, columns, overwritten=overwritten
     )
+    from napari_vipp.core.observation_series import retained_series_evidence
+
+    observations, tracking, series_note = retained_series_evidence(
+        table, columns, overwritten=overwritten
+    )
     return TableData(
         columns=tuple(columns),
         rows=tuple(tuple(row) for row in rows),
         name=table.name or "Annotated table",
-        table_kind=f"{table.table_kind} + metadata{evidence_note}",
+        table_kind=f"{table.table_kind} + metadata{evidence_note}{series_note}",
         source_name=table.source_name,
         column_units=units,
         detection_metadata=detection_metadata,
+        observation_metadata=observations,
+        tracking_metadata=tracking,
     )
 
 
@@ -3992,14 +4001,19 @@ def select_table_columns(
         if table.unit_for(column)
     )
     detection_metadata, evidence_note = _detection_evidence_for_columns(table, selected)
+    from napari_vipp.core.observation_series import retained_series_evidence
+
+    observations, tracking, series_note = retained_series_evidence(table, selected)
     return TableData(
         columns=tuple(selected),
         rows=rows,
         name=table.name or "Selected table columns",
-        table_kind=f"{table.table_kind} + column selection{evidence_note}",
+        table_kind=f"{table.table_kind} + column selection{evidence_note}{series_note}",
         source_name=table.source_name,
         column_units=units,
         detection_metadata=detection_metadata,
+        observation_metadata=observations,
+        tracking_metadata=tracking,
     )
 
 

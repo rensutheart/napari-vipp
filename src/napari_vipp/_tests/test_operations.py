@@ -150,6 +150,7 @@ from napari_vipp.core.pipeline import (
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.registration_nodes import REGISTRATION_RUNTIME_KEYWORDS
 from napari_vipp.core.tables import save_table_output, table_from_columns
+from napari_vipp.core.time_detection_nodes import TIME_DETECTION_RUNTIME_KEYWORDS
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -370,6 +371,7 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
     assert len(operation_ids) == len(set(operation_ids))
     assert REGISTRATION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
     assert DETECTION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
+    assert TIME_DETECTION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
 
     for spec in NODE_LIBRARY:
         assert spec.execution_policy in EXECUTION_POLICIES, spec.id
@@ -383,7 +385,9 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
             declared = {param.name for param in spec.parameters}
             injected = REGISTRATION_RUNTIME_KEYWORDS.get(
                 spec.id, frozenset()
-            ) | DETECTION_RUNTIME_KEYWORDS.get(spec.id, frozenset())
+            ) | DETECTION_RUNTIME_KEYWORDS.get(
+                spec.id, frozenset()
+            ) | TIME_DETECTION_RUNTIME_KEYWORDS.get(spec.id, frozenset())
             assert not declared & injected, spec.id
             required = {
                 param.name

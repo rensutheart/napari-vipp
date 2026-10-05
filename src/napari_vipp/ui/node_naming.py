@@ -2,7 +2,7 @@
 
 from html import escape
 
-from qtpy.QtCore import QRect, QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -18,48 +18,25 @@ from napari_vipp.ui.node_labels import NodePresentation
 
 
 class _SettingsSummary(QLabel):
-    """Keep the live summary compact, with its complete text available on hover."""
+    """Wrap the complete live summary to the inspector's available width."""
 
     def __init__(self):
         super().__init__()
-        self._full_text = ""
         self.setTextFormat(Qt.PlainText)
         self.setWordWrap(True)
+        self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
     def set_summary(self, text: str):
-        self._full_text = text
+        if self.text() != text:
+            self.setText(text)
         self.setToolTip(f"<qt>{escape(text)}</qt>" if text else "")
         self.setAccessibleDescription(text)
-        self._fit_text()
         self.setVisible(bool(text))
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._fit_text()
-
-    def _fit_text(self):
-        metrics = self.fontMetrics()
-        height = metrics.lineSpacing() * 3
-        self.setMaximumHeight(height)
-        bounds = QRect(0, 0, max(self.width(), 20), 100000)
-
-        def fits(value):
-            return (
-                metrics.boundingRect(bounds, Qt.TextWordWrap, value).height() <= height
-            )
-
-        text = self._full_text
-        if not fits(text):
-            low, high = 0, len(text)
-            while low < high:
-                middle = (low + high + 1) // 2
-                if fits(text[:middle].rstrip() + "…"):
-                    low = middle
-                else:
-                    high = middle - 1
-            text = text[:low].rstrip() + "…"
-        self.setText(text)
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
 
 
 class NodeNameEditor(QWidget):

@@ -1,0 +1,223 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "tracks",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D label tracking",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "foreground",
+      "operation_id": "binary_threshold",
+      "params": {
+        "foreground": "Above",
+        "threshold": 0,
+        "low_threshold": 0.25,
+        "high_threshold": 0.75,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "labels",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "objects",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "tracks",
+      "operation_id": "build_tracks",
+      "params": {
+        "maximum_displacement": 2,
+        "distance_units": "Physical (micrometers)",
+        "maximum_gap": 1
+      }
+    },
+    {
+      "id": "summary",
+      "operation_id": "select_table_columns",
+      "params": {
+        "columns": "auto"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "foreground",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "foreground",
+      "target": "labels",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "labels",
+      "target": "objects",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "objects",
+      "target": "tracks",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "tracks",
+      "target": "summary",
+      "target_port": 0,
+      "source_port": 1
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      100
+    ],
+    "foreground": [
+      600,
+      100
+    ],
+    "labels": [
+      1200,
+      100
+    ],
+    "objects": [
+      1830,
+      100
+    ],
+    "tracks": [
+      2490,
+      100
+    ],
+    "summary": [
+      3160,
+      100
+    ]
+  },
+  "tunnels": [
+    {
+      "name": "Independent frame labels",
+      "source": "labels",
+      "source_port": 0
+    },
+    {
+      "name": "Frame-local object centroids",
+      "source": "objects",
+      "source_port": 0
+    },
+    {
+      "name": "Tracked object observations",
+      "source": "tracks",
+      "source_port": 0
+    },
+    {
+      "name": "Object track summary",
+      "source": "tracks",
+      "source_port": 1
+    }
+  ],
+  "notes": [
+    {
+      "id": "note_input",
+      "attached_node": "input",
+      "text": "1. ANALYTICAL 3D OBJECTS\nSix TZYX volumes of separate 3 x 3 x 3 cubes. Z/Y/X sampling is 1.5/0.5/0.4 micrometers and the time interval is 2.5 seconds. Original integer labels are an authored phantom, not biological segmentation evidence.",
+      "position": [
+        0,
+        -280
+      ],
+      "width": 500
+    },
+    {
+      "id": "note_labels",
+      "attached_node": "labels",
+      "text": "2. EXPLICIT PER-FRAME SEGMENTATION\nThreshold > 0 intentionally discards the supplied label numbers. Label Connected Components creates fresh frame-local IDs for each 3D volume; it does not connect objects through time. Cube geometry and centroids remain unchanged. When C appears before A in voxel order, A's local label ID changes.",
+      "position": [
+        1160,
+        -300
+      ],
+      "width": 540
+    },
+    {
+      "id": "note_objects",
+      "attached_node": "objects",
+      "text": "3. KNOWN CENTROIDS\nPer-frame object counts: 2,2,1,3,3,3 (14 observations). A moves one Z and X sample per frame; B moves one X sample and is absent at T=2; C first appears at T=3. Measure Objects supplies t_index, local label_id and full-volume index centroids, not per-Z-slice rows.",
+      "position": [
+        1800,
+        -320
+      ],
+      "width": 550
+    },
+    {
+      "id": "note_tracks",
+      "attached_node": "tracks",
+      "text": "4. PHYSICAL ASSOCIATIONS\nLink with two micrometers per elapsed frame and at most one missing frame. Expect three tracks with 6,5,3 observations. A's per-frame displacement is sqrt(1.5^2 + 0.4^2) micrometers; B's is 0.4. The B gap spans two intervals. No interpolation, split/merge lineage or confidence score is claimed.",
+      "position": [
+        2460,
+        -330
+      ],
+      "width": 550
+    },
+    {
+      "id": "note_review",
+      "attached_node": "tracks",
+      "text": "5. CHECK BOTH OUTPUTS\nTracked observations retain every measured row and add track IDs, displacement, speed and review flags. The separate Track summary reports durations, path lengths and gap counts. Source-index centroids plus carried origin/scale drive the geometry; historical measurement physical-centroid columns have their existing meanings. This example writes no files.",
+      "position": [
+        2450,
+        520
+      ],
+      "width": 570
+    },
+    {
+      "id": "note_summary",
+      "attached_node": "summary",
+      "text": "UNCHANGED SUMMARY HANDOFF\nThis Select Table Columns node keeps every summary column (auto = all) without calculation or aggregation. It exposes the second Build Tracks output as its own primary node result for generated Python and downstream table/export workflows. The source Track summary port remains separately inspectable.",
+      "position": [
+        3130,
+        -280
+      ],
+      "width": 540
+    }
+  ],
+  "view": {
+    "zoom": 0.65,
+    "pan": [
+      0,
+      0
+    ]
+  }
+}

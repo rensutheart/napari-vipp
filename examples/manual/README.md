@@ -10,17 +10,18 @@ access in the app.
 Choose **Open example... → Exhaustive Inspector Showcase**, or open
 `exhaustive-inspector-showcase.json` here with **Load workflow...**. The graph
 contains every processing operation currently exposed in the node palette:
-139 distinct operations across 158 nodes, with twelve source nodes bound to eleven
+141 distinct operations across 163 nodes, with thirteen source nodes bound to twelve
 distinct bundled samples. **Table Source** needs a saved batch collection and
 has separate save/reopen coverage. Processing operations appear once except
 the explicit preparation and propagation stages needed by the two native-2D
-CellProfiler lanes and the explicit T/C selection and crop in the detection lane.
+CellProfiler lanes, the explicit T/C selection and crop in the detection lane,
+and channel selection and unchanged summary handoff in the tracking lane.
 
 The logical columns reserve room for wide multi-input cards and tunnel labels.
 The full catalogue layout audit also checks this showcase before and after
 ready-result controls appear; no scientific operation is run by that visual audit.
 
-The graph is arranged as eleven labelled horizontal lanes:
+The graph is arranged as twelve labelled horizontal lanes:
 
 1. axes, regions, metadata, projections, and generated PSF;
 2. intensity transformations and filtering;
@@ -31,13 +32,14 @@ The graph is arranged as eleven labelled horizontal lanes:
 7. PSF preparation and deconvolution;
 8. native-2D seeded CellProfiler Propagation;
 9. explicit CellProfiler compartment-profile stages;
-10. known-motion registration, resampling, valid coverage and image comparison; and
-11. fixed-template matching, valid scores and table-first peak detection.
+10. known-motion registration, resampling, valid coverage and image comparison;
+11. fixed-template matching, valid scores and table-first peak detection; and
+12. time-series spot detection, gap-aware linking and track-summary handoff.
 
 The lanes are independent where combining them would be scientifically
 artificial. Fan-outs indicate alternative analyses of the same data rather than
 an intended sequence. Fifteen named tunnels carry the longest reused inputs across
-lanes; 120 nearby connections remain as ordinary wires so each lane's main path
+lanes; 124 nearby connections remain as ordinary wires so each lane's main path
 is still visible.
 
 The workflow is safe to inspect after loading. **Save Image** is disabled and
@@ -64,6 +66,12 @@ inside valid coverage. SSIM and PSNR use the explicit nominal intensity range 1;
 scores describe image agreement, not biological validity. The three dedicated
 registration examples add before/after, true 3D rotation and multi-channel
 whole-volume time-series review paths.
+
+The tracking lane keeps all seven timepoints after explicit channel selection.
+It checks 24 observations across four tracks, an empty frame and one-frame gaps
+without inserting observations. The two crossing trajectories require review:
+position-only associations do not establish biological identity. A downstream
+Select Table Columns node retains every summary column unchanged.
 
 The focused regression test checks current-schema canonicalization, graph
 validity, complete palette coverage, node placement, required connections, the

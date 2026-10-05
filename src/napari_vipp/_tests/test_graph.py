@@ -39,6 +39,151 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     return view, pipeline
 
 
+@pytest.mark.parametrize(
+    "operation_id,label",
+    [
+        ("intensity_histogram", "Open histogram…"),
+        *[
+            (operation_id, "Open measurements…")
+            for operation_id in (
+                "measure_objects",
+                "measure_objects_intensity",
+                "measure_3d_mesh_morphology",
+                "analyze_skeleton",
+                "analyze_skeleton_per_label",
+                "measure_skeleton_branches",
+                "summarize_skeleton_branches",
+                "skeleton_graph_tables",
+                "measure_overall_skeleton_network",
+                "object_colocalization_metrics",
+                "label_overlap_association",
+                "nearest_object_distance",
+                "event_localization",
+                "summarize_measurements",
+                "colocalization_metrics",
+                "masked_colocalization_metrics",
+                "find_peaks",
+                "detect_spots_per_frame",
+                "build_tracks",
+            )
+        ],
+        ("plot_results", ""),
+        ("input", ""),
+        ("table_source", ""),
+        ("merge_tables", ""),
+        ("select_table_columns", ""),
+        ("add_metadata_columns", ""),
+        ("save_output", ""),
+        ("estimate_registration", ""),
+        ("template_match", ""),
+        ("median_filter", ""),
+    ],
+)
+def test_node_cards_offer_result_shortcuts_for_semantic_measurements(
+    qtbot, operation_id, label,
+):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    node = pipeline.add_node(operation_id)
+    view.add_node(node, QPointF(0, 0))
+    card = view._cards[node.id]
+
+    assert card.result_button.text() == label
+    assert card.result_button.isHidden() == (not label)
+    assert card.plot_button.isHidden() == (operation_id != "plot_results")
+    if label:
+        assert "does not calculate" in card.result_button.toolTip()
+        with qtbot.waitSignal(view.node_result_requested) as signal:
+            card.result_button.click()
+        assert signal.args == [node.id]
+    if operation_id == "plot_results":
+        assert card.plot_button.text() == "Open plot…"
+        with qtbot.waitSignal(view.node_plot_requested) as signal:
+            card.plot_button.click()
+        assert signal.args == [node.id]
+
+
+@pytest.mark.parametrize("operation_id", ("intensity_histogram", "measure_objects"))
+def test_result_shortcut_mouse_click_does_not_select_or_drag_the_node(
+    qtbot, operation_id,
+):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    node = pipeline.add_node(operation_id)
+    view.add_node(node, QPointF(1_400, 0))
+    view.show()
+    qtbot.waitExposed(view)
+    view.select_node("gaussian")
+    selected = []
+    view.node_selected.connect(selected.append)
+    proxy = view._proxies[node.id]
+    old_position = QPointF(proxy.pos())
+    view.centerOn(proxy)
+    card = view._cards[node.id]
+    button_center = QPointF(card.result_button.geometry().center())
+    point = view.mapFromScene(proxy.mapToScene(button_center))
+
+    with qtbot.waitSignal(view.node_result_requested) as signal:
+        qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+
+    assert signal.args == [node.id]
+    assert selected == []
+    assert proxy.pos() == old_position
+    assert not view.node_drag_in_progress()
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    ("detect_spots_per_frame", "build_tracks", "measure_objects", "input"),
+)
+def test_trajectory_shortcut_is_present_for_time_series_nodes(qtbot, operation_id):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    node = pipeline.add_node(operation_id)
+    view.add_node(node, QPointF(0, 0))
+    card = view._cards[node.id]
+
+    assert card.trajectory_review_button.text() == "Review trajectories…"
+    visible = operation_id in {"detect_spots_per_frame", "build_tracks"}
+    assert card.trajectory_review_button.isHidden() == (not visible)
+    if visible:
+        assert not card.result_button.isHidden()
+        assert "does not calculate" in card.trajectory_review_button.toolTip()
+        with qtbot.waitSignal(view.node_trajectory_review_requested) as signal:
+            card.trajectory_review_button.click()
+        assert signal.args == [node.id]
+
+
+@pytest.mark.parametrize("operation_id", ("detect_spots_per_frame", "build_tracks"))
+@pytest.mark.parametrize("dark", (False, True))
+def test_trajectory_shortcut_mouse_click_does_not_select_or_drag(
+    qtbot, operation_id, dark,
+):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=dark))
+    node = pipeline.add_node(operation_id)
+    view.add_node(node, QPointF(1_400, 0))
+    view.show()
+    qtbot.waitExposed(view)
+    view.select_node("gaussian")
+    selected = []
+    view.node_selected.connect(selected.append)
+    proxy = view._proxies[node.id]
+    old_position = QPointF(proxy.pos())
+    view.centerOn(proxy)
+    button = view._cards[node.id].trajectory_review_button
+    point = view.mapFromScene(proxy.mapToScene(QPointF(button.geometry().center())))
+
+    with qtbot.waitSignal(view.node_trajectory_review_requested) as signal:
+        qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
+
+    assert signal.args == [node.id]
+    assert selected == []
+    assert proxy.pos() == old_position
+    assert not view.node_drag_in_progress()
+
+
 def _graph_palette(*, dark: bool) -> QPalette:
     palette = QPalette()
     surface = "#20242b" if dark else "#ffffff"

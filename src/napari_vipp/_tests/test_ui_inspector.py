@@ -20,6 +20,7 @@ from napari_vipp.ui.inspector import (
     PARAMETERS_SECTION,
     SOURCE_REPRESENTATION_SECTION,
     TABLE_RESULTS_SECTION,
+    TRACKING_RESULTS_SECTION,
     WRITER_STATUS_SECTION,
     InspectorSection,
     constrain_layout_minimum_height,
@@ -331,12 +332,19 @@ def test_table_profiles_present_results_without_image_actions():
         assert profile.output_action_kind in {"table", "multi_table"}
         assert not profile.supports_pin
 
-    measurement = _profile("measure_objects_intensity")
-    assert measurement.parameter_title == "Measurements"
-    assert measurement.primary_sections == (
-        PARAMETERS_SECTION,
-        TABLE_RESULTS_SECTION,
-    )
+    for operation_id in ("measure_objects", "measure_objects_intensity"):
+        measurement = _profile(operation_id)
+        assert measurement.parameter_title == "Measurements"
+        # The profile declares time-series review capability; the widget hides
+        # it unless the displayed output carries observation-series evidence.
+        assert measurement.primary_sections == (
+            PARAMETERS_SECTION,
+            TRACKING_RESULTS_SECTION,
+            TABLE_RESULTS_SECTION,
+        )
+        assert measurement.distribution_kind == "table"
+        assert measurement.output_action_kind == "table"
+        assert not measurement.supports_pin
 
     multi_table = _profile("skeleton_graph_tables")
     assert multi_table.primary_sections == (
@@ -348,6 +356,10 @@ def test_table_profiles_present_results_without_image_actions():
 
     table_transform = _profile("select_table_columns")
     assert table_transform.parameter_title == "Table settings"
+    assert table_transform.primary_sections == (
+        PARAMETERS_SECTION,
+        TABLE_RESULTS_SECTION,
+    )
 
 
 def test_every_effective_output_profile_has_only_valid_actions_and_pinning():

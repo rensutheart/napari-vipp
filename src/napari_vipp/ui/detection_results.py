@@ -175,6 +175,7 @@ class DetectionResultsDialog(QDialog):
     """Linked full table and original-source overlay, with no editable geometry."""
 
     refreshRequested = Signal()
+    canvas_class = DetectionCanvas
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -213,7 +214,7 @@ class DetectionResultsDialog(QDialog):
         plane_layout.addWidget(self.plane_spin)
         plane_layout.addStretch()
         image_layout.addWidget(self.plane_controls)
-        self.canvas = DetectionCanvas()
+        self.canvas = self.canvas_class()
         image_layout.addWidget(self.canvas, 1)
         self.plane_note = _label()
         image_layout.addWidget(self.plane_note)
@@ -231,6 +232,7 @@ class DetectionResultsDialog(QDialog):
             "of an object. This fit-to-window preview uses per-plane min–max contrast; "
             "selection, display contrast and plane changes do not alter detections."
         )
+        self.review_note = note
         layout.addWidget(note)
         buttons = QHBoxLayout()
         buttons.addStretch()

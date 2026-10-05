@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-28
+Last reviewed: 2026-09-30
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -13,6 +13,24 @@ early tester feedback from Tom Naber on
 [pull request 13](https://github.com/rensutheart/napari-vipp/pull/13).
 
 ## Product Direction
+
+Approved continuation, 2026-09-29: implement previous-frame registration,
+time-aware detection and basic one-to-one object/spot tracking with read-only
+trajectory review. Work is isolated on `feat/time-series-tracking`; local
+Windows qualification is recorded, but this is not a release. See
+[tracking implementation](tracking-implementation.md),
+[time-series detection](time-detection-implementation.md) and
+[issue 71](https://github.com/rensutheart/napari-vipp/issues/71).
+Masked registration remains conditional on a concrete dataset need. Deformable
+registration, lineage/division/fusion, editable points and GPU tracking remain
+outside this approved slice.
+
+Tracking scope decision, 2026-09-30: the current capability is sufficient for
+now; do not expand this release into a TrackMate-style tracking package.
+[Richer tracking and mitochondrial analysis](product-ideas.md#richer-tracking-and-mitochondrial-analysis)
+preserves the future interest in morphology- and motion-aware linking,
+trajectory/velocity analysis and organelle dynamics, without assigning a release
+or authorizing further implementation.
 
 Development update, 2026-09-28: registration, Apply Transform and Compare Images
 shipped in 0.16.0a2. The next approved slice, **Template Match → Find Peaks**, is
@@ -56,7 +74,7 @@ collection, editable plot pop-outs, and reproducible figure export. Statistics
 stops at descriptive summaries: inferential tests, p-values, ANOVA,
 significance labels and confidence intervals are outside 0.16 scope.
 Model-backed segmentation, stitching,
-tracking, AI-assisted graph authoring, and custom code remain possible future
+advanced lineage tracking, AI-assisted graph authoring, and custom code remain possible future
 directions. The [AI authoring plan](ai-assisted-authoring-plan.md) connects
 description-driven workflows, AI-assisted custom-node creation with VIPP-owned
 boilerplate, and eventual image-guided iterative tuning. It is future planning,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import runpy
 from collections import Counter
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
     WORKFLOW_VERSION,
     canonical_workflow_document,
+    serialize_workflow,
     workflow_document_from_snapshot,
     workflow_snapshot_from_document,
 )
@@ -54,6 +56,17 @@ def test_exhaustive_inspector_showcase_is_current_and_canonical():
     assert canonical_workflow_document(canonical) == canonical
 
 
+def test_showcase_generator_reproduces_the_complete_authored_document():
+    generator = runpy.run_path(
+        str(REPO_ROOT / "scripts" / "generate_exhaustive_inspector_workflow.py")
+    )
+    pipeline, positions, notes = generator["build_workflow"]()
+    document = _showcase_document()
+    assert serialize_workflow(
+        pipeline, positions=positions, notes=notes, metadata=document["metadata"]
+    ) == document
+
+
 def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
     snapshot = workflow_snapshot_from_document(_showcase_document())
     operation_counts = Counter(node.operation_id for node in snapshot.graph.nodes)
@@ -76,7 +89,8 @@ def test_exhaustive_showcase_covers_palette_with_required_2d_preparation():
         "cellprofiler_propagation": 2,
         "crop_stack": 2,
         "select_axis_slice": 2,
-        "extract_channel": 2,
+        "extract_channel": 3,
+        "select_table_columns": 2,
     }
 
 
@@ -242,7 +256,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         }
     )
     assert sum(tunnel_counts.values()) == 72
-    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 120
+    assert sum(not connection.tunnel_name for connection in pipeline.connections) == 124
 
     for connection in pipeline.connections:
         if not connection.tunnel_name:
@@ -368,6 +382,73 @@ def test_showcase_detection_lane_executes_known_centers():
     }
     assert branch.outputs["crop_stack_2"].shape == (13, 11)
     assert branch.node_outputs["template_match_1"][1].dtype == bool
+
+
+def test_showcase_tracking_lane_retains_time_and_executes_known_trajectories():
+    from napari_vipp._sample_data import make_tracking_sample_data
+
+    graph = workflow_snapshot_from_document(_showcase_document()).graph.to_pipeline()
+    node_ids = {
+        "input_13", "extract_channel_3", "detect_spots_per_frame_1", "build_tracks_1",
+        "select_table_columns_2",
+    }
+    branch = PrototypePipeline()
+    branch.restore_graph(
+        [node for node in graph.nodes.values() if node.id in node_ids],
+        [edge for edge in graph.connections
+         if edge.source_id in node_ids and edge.target_id in node_ids],
+    )
+    assert {
+        (edge.source_id, edge.source_port, edge.target_id, edge.target_port)
+        for edge in branch.connections
+    } == {
+        ("input_13", 0, "extract_channel_3", 0),
+        ("extract_channel_3", 0, "detect_spots_per_frame_1", 0),
+        ("detect_spots_per_frame_1", 0, "build_tracks_1", 0),
+        ("build_tracks_1", 1, "select_table_columns_2", 0),
+    }
+    assert branch.nodes["extract_channel_3"].params["channel"] == 1
+    image, kwargs, _kind = make_tracking_sample_data()[0]
+    assert branch.nodes["input_13"].params["sample_name"] == kwargs["name"]
+    before = image.copy()
+    image.setflags(write=False)
+    sources = {"input_13": SourcePayload(image, kwargs["metadata"], kwargs["name"])}
+    branch.preflight_axis_contract(sources)
+    branch.run(None, source_payloads=sources)
+    assert branch.output_states["extract_channel_3"].axis_order == "TYX"
+    assert branch.outputs["extract_channel_3"].shape == (7, 72, 96)
+    observations, summary = branch.node_outputs["build_tracks_1"]
+    records = observations.records()
+    truth = kwargs["metadata"]["tracking_ground_truth"]
+    observed = {
+        (row["t_index"], row["y_index"], row["x_index"]): row for row in records
+    }
+    expected = {(row["t_index"], *row["center"]): row
+                for row in truth["observations"]}
+    assert set(observed) == set(expected)
+    assert observations.row_count == 24 and summary.row_count == 4
+    assert [
+        item.retained_count
+        for item in observations.observation_metadata.frame_populations
+    ] == [4, 4, 4, 0, 4, 4, 4]
+    assert all(item.eligible_count == item.retained_count and not item.truncated
+               for item in observations.observation_metadata.frame_populations)
+    for key, row in expected.items():
+        if row["unambiguous_track_id"] is not None:
+            assert observed[key]["track_id"] == row["unambiguous_track_id"]
+            assert observed[key]["review_flag"] is False
+    assert sum(row["gap_frames"] == 1 for row in records) == 4
+    assert all(row["gap_frames"] == 1 for row in records if row["t_index"] == 4)
+    reviewed = [key for key, row in observed.items() if row["review_flag"]]
+    assert reviewed
+    assert all(expected[key]["construction_identity"] in
+               truth["review_construction_identities"] for key in reviewed)
+    assert all(row["observation_count"] == 6 for row in summary.records())
+    assert all(row["missing_frame_count"] == 1 for row in summary.records())
+    assert branch.outputs["select_table_columns_2"].records() == summary.records()
+    assert branch.outputs["select_table_columns_2"].column_units == summary.column_units
+    np.testing.assert_array_equal(image, before)
+    assert not image.flags.writeable
 
 
 def test_showcase_propagation_lane_executes_on_real_yx_inputs():

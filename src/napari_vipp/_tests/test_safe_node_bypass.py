@@ -108,6 +108,8 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "compare_images",
         "template_match",
         "find_peaks",
+        "detect_spots_per_frame",
+        "build_tracks",
     }
 
 

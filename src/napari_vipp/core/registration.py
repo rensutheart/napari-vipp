@@ -120,10 +120,6 @@ def _volume(array, state, channel, time=None):
         raise ValueError(
             "Registration needs at least four pixels/voxels along every spatial axis."
         )
-    if np.ptp(volume.astype(np.float64)) == 0:
-        raise ValueError(
-            "Registration cannot estimate alignment from a constant image."
-        )
     if volume.dtype.kind in "iu" and (
         int(volume.min()) < -(2**53) or int(volume.max()) > 2**53
     ):
@@ -131,6 +127,10 @@ def _volume(array, state, channel, time=None):
             "Registration cannot represent wide integer intensities exactly. "
             "Use a separate floating-point estimation image; "
             "Apply Transform preserves nearest-neighbour label IDs."
+        )
+    if np.ptp(volume.astype(np.float64)) == 0:
+        raise ValueError(
+            "Registration cannot estimate alignment from a constant image."
         )
     return volume
 
@@ -490,6 +490,84 @@ def _correlation(left, right):
     return float(np.dot(x, y) / denominator) if denominator else None
 
 
+def _time_strategy_contract(time_strategy, cumulative_quality_policy):
+    if time_strategy not in ("Fixed reference", "Previous frame"):
+        raise ValueError(
+            "Choose Fixed reference or Previous frame as the time strategy."
+        )
+    if cumulative_quality_policy not in ("Report only", "Require local limits"):
+        raise ValueError(
+            "Choose Report only or Require local limits for cumulative quality."
+        )
+
+
+def _alignment_diagnostics(
+    fixed,
+    volume,
+    matrix,
+    moving_grid,
+    reference_grid,
+    *,
+    max_shift,
+    minimum_overlap,
+    model,
+    metric,
+    context,
+    require_geometry=True,
+    require_correlation=True,
+):
+    """Exact whole-volume QC; optional cumulative gates never alter a matrix."""
+    moving_center = (
+        np.asarray(moving_grid.origin)
+        + (np.asarray(moving_grid.shape) - 1) * moving_grid.spacing / 2
+    )
+    reference_center = (
+        np.asarray(reference_grid.origin)
+        + (np.asarray(reference_grid.shape) - 1) * reference_grid.spacing / 2
+    )
+    displacement = matrix[:-1, :-1] @ moving_center + matrix[:-1, -1] - reference_center
+    fractions = np.abs(displacement) / (
+        np.asarray(reference_grid.shape) * reference_grid.spacing
+    )
+    if require_geometry and np.any(fractions > max_shift + 1e-10):
+        raise ValueError(
+            f"Estimated displacement exceeds the {max_shift:g} image-extent limit. "
+            "Review the images or explicitly increase Maximum displacement."
+        )
+    aligned, valid = _resample_volume(
+        volume,
+        matrix,
+        moving_grid,
+        reference_grid,
+        nearest=False,
+        outside=0.0,
+        context=context,
+    )
+    overlap = float(np.mean(valid))
+    enough_values = np.count_nonzero(valid) >= 4
+    if require_geometry and (overlap < minimum_overlap or not enough_values):
+        raise ValueError(
+            f"Estimated alignment has only {overlap:.1%} valid overlap; "
+            f"required {minimum_overlap:.1%}."
+        )
+    correlation = _correlation(fixed[valid], aligned[valid]) if enough_values else None
+    if require_correlation:
+        if correlation is None:
+            raise ValueError(
+                "Registration overlap has no intensity variation; "
+                "alignment cannot be checked."
+            )
+        if (model == "Translation" or metric == "Correlation") and abs(
+            correlation
+        ) < 0.1:
+            raise ValueError(
+                "Registration has weak shared structure "
+                "(absolute correlation below 0.1). Review the registration channel "
+                "and overlap; no transform was accepted."
+            )
+    return displacement, overlap, correlation
+
+
 def estimate_registration(
     moving,
     reference=None,
@@ -501,6 +579,8 @@ def estimate_registration(
     channel=0,
     reference_channel=0,
     reference_time=0,
+    time_strategy="Fixed reference",
+    cumulative_quality_policy="Report only",
     precision=10,
     max_shift=0.25,
     minimum_overlap=0.25,
@@ -508,12 +588,17 @@ def estimate_registration(
     metric="Correlation",
     progress_context=None,
 ):
-    """Estimate one spatial transform or one per T against a fixed T anchor.
+    """Estimate one spatial transform or one per T into a selected T anchor.
 
     max_shift limits displacement of the moving grid centre, measured as a
     fraction of reference spatial extents (relative to corresponding centres).
     It is not a pixel-wise rotation/affine displacement bound. The overlap gate
     is the fraction of reference voxels with valid linear interpolation support.
+    Previous frame estimates original adjacent volumes toward the anchor on both
+    sides and composes their physical matrices. Limits always gate local pairs;
+    cumulative geometry is report-only unless Require local limits is selected.
+    Cumulative correlation is diagnostic only, not a local-estimator acceptance
+    score. Adjacent estimation errors can accumulate with distance from the anchor.
     """
     if mode not in ("Two images", "Time series") or model not in (
         "Translation",
@@ -527,6 +612,7 @@ def estimate_registration(
         raise ValueError(
             "Choose Correlation or Mutual information as the registration metric."
         )
+    _time_strategy_contract(time_strategy, cumulative_quality_policy)
     channel = _integer(channel, "Channel", 0, 100000)
     reference_channel = _integer(reference_channel, "Reference channel", 0, 100000)
     reference_time = _integer(reference_time, "Reference time", 0, 1000000)
@@ -573,17 +659,39 @@ def estimate_registration(
             "Moving and reference images need the same spatial rank "
             "and compatible coordinate units."
         )
-    matrices, rows = [], []
-    for t in range(count):
+    previous_frame = bool(time_axis) and time_strategy == "Previous frame"
+    # Parents are always completed first. Below a nonzero anchor, the adjacent
+    # reference is t+1; above it, t-1. All estimators see original source views.
+    order = (
+        (
+            reference_time,
+            *range(reference_time - 1, -1, -1),
+            *range(reference_time + 1, count),
+        )
+        if previous_frame
+        else range(count)
+    )
+    matrices, rows = [None] * count, [None] * count
+    for completed, t in enumerate(order):
         _progress(
             progress_context,
-            t,
+            completed,
             count,
             f"Estimating {model.lower()} for time {t + 1}/{count}"
             if time_axis
             else "Estimating image registration",
         )
         volume = _volume(moving_array, moving_state, channel, t if time_axis else None)
+        pair_reference_time = (
+            t + (1 if t < reference_time else -1)
+            if previous_frame and t != reference_time
+            else reference_time
+        )
+        pair_fixed = (
+            _volume(moving_array, moving_state, channel, pair_reference_time)
+            if previous_frame
+            else fixed
+        )
         if time_axis and t == reference_time:
             matrix, score, stop = (
                 np.eye(fixed.ndim + 1),
@@ -592,7 +700,7 @@ def estimate_registration(
             )
         elif model == "Translation":
             matrix, score, stop = _translation(
-                fixed,
+                pair_fixed,
                 volume,
                 moving_grid,
                 reference_grid,
@@ -602,7 +710,7 @@ def estimate_registration(
             )
         else:
             matrix, score, stop = _sitk_estimate(
-                fixed,
+                pair_fixed,
                 volume,
                 moving_grid,
                 reference_grid,
@@ -615,63 +723,74 @@ def estimate_registration(
                 minimum_overlap=minimum_overlap,
             )
         _progress(
-            progress_context, t, count, "Checking estimated alignment and valid overlap"
+            progress_context,
+            completed,
+            count,
+            "Checking estimated alignment and valid overlap",
         )
-        moving_center = (
-            np.asarray(moving_grid.origin)
-            + (np.asarray(moving_grid.shape) - 1) * moving_grid.spacing / 2
-        )
-        reference_center = (
-            np.asarray(reference_grid.origin)
-            + (np.asarray(reference_grid.shape) - 1) * reference_grid.spacing / 2
-        )
-        displacement = (
-            matrix[:-1, :-1] @ moving_center + matrix[:-1, -1] - reference_center
-        )
-        fractions = np.abs(displacement) / (
-            np.asarray(reference_grid.shape) * reference_grid.spacing
-        )
-        if np.any(fractions > max_shift + 1e-10):
-            raise ValueError(
-                f"Estimated displacement exceeds the {max_shift:g} image-extent limit. "
-                "Review the images or explicitly increase Maximum displacement."
-            )
-        aligned, valid = _resample_volume(
+        displacement, overlap, correlation = _alignment_diagnostics(
+            pair_fixed,
             volume,
             matrix,
             moving_grid,
             reference_grid,
-            nearest=False,
-            outside=0.0,
+            max_shift=max_shift,
+            minimum_overlap=minimum_overlap,
+            model=model,
+            metric=metric,
             context=progress_context,
         )
-        overlap = float(np.mean(valid))
-        if overlap < minimum_overlap or np.count_nonzero(valid) < 4:
-            raise ValueError(
-                f"Estimated alignment has only {overlap:.1%} valid overlap; "
-                f"required {minimum_overlap:.1%}."
-            )
-        correlation = _correlation(fixed[valid], aligned[valid])
-        if correlation is None:
-            raise ValueError(
-                "Registration overlap has no intensity variation; "
-                "alignment cannot be checked."
-            )
-        if (model == "Translation" or metric == "Correlation") and abs(
-            correlation
-        ) < 0.1:
-            raise ValueError(
-                "Registration has weak shared structure "
-                "(absolute correlation below 0.1). Review the registration channel "
-                "and overlap; no transform was accepted."
-            )
         warning = (
             "Maximum iterations reached; inspect alignment"
             if "maximum" in stop.lower()
             else "Review alignment; scores do not establish biological correspondence"
         )
-        rows.append(
-            (
+        if previous_frame:
+            if t != reference_time:
+                # Column-vector convention: moving->neighbour, then neighbour->anchor.
+                matrix = np.asarray(matrices[pair_reference_time]) @ matrix
+            if not np.isfinite(matrix).all():
+                raise ValueError(
+                    "Previous-frame composition produced non-finite coordinates."
+                )
+            cumulative_displacement, cumulative_overlap, cumulative_correlation = (
+                _alignment_diagnostics(
+                    fixed,
+                    volume,
+                    matrix,
+                    moving_grid,
+                    reference_grid,
+                    max_shift=max_shift,
+                    minimum_overlap=minimum_overlap,
+                    model=model,
+                    metric=metric,
+                    context=progress_context,
+                    require_geometry=cumulative_quality_policy
+                    == "Require local limits",
+                    require_correlation=False,
+                )
+            )
+            warning += (
+                "; adjacent-pair errors accumulate with distance from the anchor; "
+                f"cumulative quality policy: {cumulative_quality_policy}"
+            )
+            rows[t] = (
+                t,
+                reference_time,
+                pair_reference_time,
+                model,
+                score,
+                correlation,
+                overlap,
+                *tuple(float(v) for v in displacement),
+                cumulative_correlation,
+                cumulative_overlap,
+                *tuple(float(v) for v in cumulative_displacement),
+                stop,
+                warning,
+            )
+        else:
+            rows[t] = (
                 t if time_axis else 0,
                 reference_time if time_axis else 0,
                 model,
@@ -682,8 +801,7 @@ def estimate_registration(
                 stop,
                 warning,
             )
-        )
-        matrices.append(matrix)
+        matrices[t] = matrix
     _progress(progress_context, count, count, "Registration complete")
     settings = tuple(
         dict(
@@ -708,6 +826,20 @@ def estimate_registration(
             ),
         ).items()
     )
+    if previous_frame:
+        settings += tuple(
+            dict(
+                time_strategy=time_strategy,
+                time_strategy_schema_version=1,
+                cumulative_quality_policy=cumulative_quality_policy,
+                local_quality_policy=(
+                    "require displacement, overlap and shared structure"
+                ),
+                composition=(
+                    "moving-to-neighbour then neighbour-to-anchor; original volumes"
+                ),
+            ).items()
+        )
     package = "scikit-image" if model == "Translation" else "SimpleITK"
     implementation = (
         f"{package} {importlib.metadata.version(package)}; VIPP registration v1"
@@ -720,8 +852,18 @@ def estimate_registration(
         moving_state.source_name,
         reference_state.source_name,
         (
-            f"{mode}: {model}; CPU; whole spatial volume; fixed reference",
+            f"{mode}: {model}; CPU; whole spatial volume; "
+            + (
+                "previous-frame composition to anchor"
+                if previous_frame
+                else "fixed reference"
+            ),
             implementation,
+        )
+        + (
+            ("Adjacent-pair errors accumulate with distance from the anchor",)
+            if previous_frame
+            else ()
         ),
     )
     transform = TransformData(
@@ -745,6 +887,22 @@ def estimate_registration(
         "stop_reason",
         "review_note",
     )
+    if previous_frame:
+        columns = (
+            "time_index",
+            "reference_time",
+            "pair_reference_time",
+            "model",
+            "pair_optimizer_score",
+            "pair_correlation",
+            "pair_valid_overlap_fraction",
+            *(f"pair_center_displacement_{axis}" for axis in moving_grid.axes),
+            "cumulative_correlation",
+            "cumulative_valid_overlap_fraction",
+            *(f"cumulative_center_displacement_{axis}" for axis in moving_grid.axes),
+            "stop_reason",
+            "review_note",
+        )
     table = TableData(
         columns,
         tuple(rows),
@@ -752,7 +910,8 @@ def estimate_registration(
         table_kind="registration diagnostics",
         source_name=moving_state.source_name,
         column_units=tuple(
-            (f"center_displacement_{axis}", moving_grid.unit)
+            (f"{prefix}center_displacement_{axis}", moving_grid.unit)
+            for prefix in (("pair_", "cumulative_") if previous_frame else ("",))
             for axis in moving_grid.axes
         ),
     )

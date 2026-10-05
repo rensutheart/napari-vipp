@@ -11,6 +11,10 @@ from typing import Any
 import numpy as np
 
 from napari_vipp.core.detection_metadata import DetectionMetadata
+from napari_vipp.core.tracking_metadata import (
+    ObservationSeriesMetadata,
+    TrackingMetadata,
+)
 
 
 @dataclass(frozen=True)
@@ -242,6 +246,8 @@ class TableData:
     column_units: tuple[tuple[str, str], ...] = ()
     histogram_metadata: HistogramResultMetadata | None = None
     detection_metadata: DetectionMetadata | None = None
+    observation_metadata: ObservationSeriesMetadata | None = None
+    tracking_metadata: TrackingMetadata | None = None
 
     @property
     def row_count(self) -> int:
@@ -286,6 +292,8 @@ class TableState:
     nonfinite_columns: tuple[str, ...] = ()
     histogram_metadata: HistogramResultMetadata | None = None
     detection_metadata: DetectionMetadata | None = None
+    observation_metadata: ObservationSeriesMetadata | None = None
+    tracking_metadata: TrackingMetadata | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = {
@@ -310,6 +318,10 @@ class TableState:
             data["histogram_metadata"] = self.histogram_metadata.to_dict()
         if self.detection_metadata is not None:
             data["detection_metadata"] = self.detection_metadata.to_dict()
+        if self.observation_metadata is not None:
+            data["observation_metadata"] = self.observation_metadata.to_dict()
+        if self.tracking_metadata is not None:
+            data["tracking_metadata"] = self.tracking_metadata.to_dict()
         return data
 
 
@@ -334,6 +346,8 @@ def table_from_columns(
     column_units: Mapping[str, str] | None = None,
     histogram_metadata: HistogramResultMetadata | None = None,
     detection_metadata: DetectionMetadata | None = None,
+    observation_metadata: ObservationSeriesMetadata | None = None,
+    tracking_metadata: TrackingMetadata | None = None,
 ) -> TableData:
     """Build a :class:`TableData` from equally sized column vectors."""
     names = tuple(str(name) for name in columns.keys())
@@ -363,6 +377,8 @@ def table_from_columns(
         column_units=units,
         histogram_metadata=histogram_metadata,
         detection_metadata=detection_metadata,
+        observation_metadata=observation_metadata,
+        tracking_metadata=tracking_metadata,
     )
 
 
@@ -392,6 +408,8 @@ def table_state_from_data(
         nonfinite_columns=quality.nonfinite_columns,
         histogram_metadata=table.histogram_metadata,
         detection_metadata=table.detection_metadata,
+        observation_metadata=table.observation_metadata,
+        tracking_metadata=table.tracking_metadata,
     )
 
 

@@ -113,6 +113,8 @@ def detection_node_specs():
                     1e12,
                     0.05,
                     6,
+                    slider_minimum=-1.0,
+                    slider_maximum=1.0,
                     tooltip=(
                         "Inclusive threshold. Template scores are signed resemblance, "
                         "not probability; a positive value excludes "
@@ -128,6 +130,8 @@ def detection_node_specs():
                     1e12,
                     1.0,
                     6,
+                    slider_minimum=0.0,
+                    slider_maximum=100.0,
                     tooltip=(
                         "Greedy Euclidean spacing: reject distance strictly below "
                         "this value. Local maxima use a full 3-by-3 (or 3-by-3-by-3) "
@@ -157,6 +161,8 @@ def detection_node_specs():
                     1,
                     1000000,
                     1,
+                    slider_minimum=1,
+                    slider_maximum=10000,
                     tooltip=(
                         "Apply the cap after all separation decisions. Exact "
                         "pre-cap count and truncation are retained, "
@@ -171,6 +177,8 @@ def detection_node_specs():
                     0,
                     1000000,
                     1,
+                    slider_minimum=0,
+                    slider_maximum=100,
                     tooltip=(
                         "Exclude this many samples at every score-image boundary. "
                         "Zero permits complete-template border placements; this "

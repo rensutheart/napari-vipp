@@ -236,6 +236,23 @@ class TransformData:
                 "Transform settings must be immutable scalar key/value pairs."
             )
         json.dumps(dict(settings), allow_nan=False)
+        strategy_settings = dict(settings)
+        if "time_strategy" in strategy_settings:
+            strategy = strategy_settings["time_strategy"]
+            if strategy not in ("Fixed reference", "Previous frame"):
+                raise ValueError("Unsupported transform time strategy.")
+            if strategy == "Previous frame" and (
+                self.time_axis is None
+                or type(strategy_settings.get("time_strategy_schema_version"))
+                is not int
+                or strategy_settings["time_strategy_schema_version"] != 1
+                or strategy_settings.get("cumulative_quality_policy")
+                not in ("Report only", "Require local limits")
+            ):
+                raise ValueError(
+                    "Previous-frame transforms require time calibration, strategy "
+                    "schema version 1 and an explicit cumulative quality policy."
+                )
         object.__setattr__(self, "settings", settings)
         object.__setattr__(
             self,
@@ -253,6 +270,11 @@ class TransformData:
     @property
     def is_time_series(self):
         return self.time_axis is not None
+
+    @property
+    def time_strategy(self):
+        """Legacy schema-1 documents without strategy retain fixed-reference meaning."""
+        return dict(self.settings).get("time_strategy", "Fixed reference")
 
     def to_dict(self):
         return dict(

@@ -20509,9 +20509,8 @@ def test_adding_unconnected_node_does_not_rerun_cached_pipeline(qtbot, monkeypat
 
 def test_connecting_new_branch_reuses_cached_upstream(qtbot, monkeypatch):
     viewer = _Viewer()
-    widget = VippWidget(viewer)
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
-    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     node = widget.add_node_from_palette("binary_threshold")
     calls = []
@@ -20533,9 +20532,8 @@ def test_connecting_new_branch_reuses_cached_upstream(qtbot, monkeypatch):
 
 def test_inserting_node_on_wire_reuses_cached_source_side(qtbot, monkeypatch):
     viewer = _Viewer()
-    widget = VippWidget(viewer)
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
-    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     calls = []
     original_run_node = widget.pipeline._run_node
@@ -21298,9 +21296,10 @@ def test_low_memory_dirty_run_reuses_retained_working_input(qtbot, monkeypatch):
 
 def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
     data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
-    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget = VippWidget(
+        _Viewer(data, metadata={"axes": "YX"}), initial_compute_mode=ComputeMode.CPU
+    )
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
-    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
 
     deconvolution = widget.add_node_from_palette("richardson_lucy_deconvolution")
@@ -21312,21 +21311,17 @@ def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
     widget._connect_nodes(deconvolution.id, combined.id, target_port=1)
     widget._connect_nodes(combined.id, composite.id)
 
-    # Seed the explicitly calculated/manual result so this regression exercises
-    # downstream invalidation and retention without running deconvolution in the
-    # test itself.
-    manual_output = np.asarray(data).copy()
-    manual_state = widget.pipeline.output_states["input"]
-    widget.pipeline.outputs[deconvolution.id] = manual_output
-    widget.pipeline.output_states[deconvolution.id] = manual_state
-    widget.pipeline.node_outputs[deconvolution.id] = [manual_output]
-    widget.pipeline.node_output_states[deconvolution.id] = [manual_state]
-    widget.pipeline.completed_node_ids.add(deconvolution.id)
-    widget.pipeline.node_execution_states[deconvolution.id] = EXECUTION_READY
-    widget.pipeline.node_execution_messages[deconvolution.id] = ""
-
-    widget._mark_pipeline_dirty(combined.id)
-    widget.run_pipeline(force_sync=True)
+    # Calculate a tiny one-iteration result through an explicitly authorized run.
+    # The normal runner must commit completion and exact cache provenance; bare
+    # READY flags/arrays are not valid cache evidence. The assertions below test
+    # retention, not deconvolution accuracy or convergence.
+    widget.pipeline.set_param(deconvolution.id, "iterations", 1)
+    widget._mark_pipeline_dirty(deconvolution.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={deconvolution.id})
+    assert deconvolution.id in widget.pipeline.node_compute_provenance
+    manual_output = widget.pipeline.outputs[deconvolution.id]
+    provenance = widget.pipeline.node_compute_provenance[deconvolution.id]
+    assert manual_output is not None
     widget.graph_view.select_node(composite.id)
     widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
 
@@ -21340,6 +21335,7 @@ def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
     assert widget.pipeline.outputs[deconvolution.id] is manual_output
     assert widget.pipeline.node_outputs[deconvolution.id][0] is manual_output
     assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
+    assert widget.pipeline.node_compute_provenance[deconvolution.id] == provenance
     assert widget.pipeline.outputs[composite.id] is not None
 
 

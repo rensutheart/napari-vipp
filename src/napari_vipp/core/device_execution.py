@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, fields, is_dataclass, replace
+from math import prod
 from types import MappingProxyType
 from typing import Protocol
 
@@ -54,6 +55,7 @@ from napari_vipp.core.host_finalization import (
     apply_host_finalizer,
     normalize_operation_outputs,
 )
+from napari_vipp.core.host_memory import capture_host_memory, preflight_host_allocation
 from napari_vipp.core.node_execution import (
     DEFAULT_CPU_NODE_EXECUTOR,
     PreparedNodeCall,
@@ -433,7 +435,26 @@ class NodeOutputsCallback(Protocol):
         outputs: tuple[object, ...],
         runtime_id: str,
         /,
-    ) -> None: ...
+    ) -> FinalizedHostOutputs | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedHostOutputs:
+    """Explicit host artifact replacements; ordinary observer returns stay ignored."""
+
+    outputs: tuple[object, ...]
+
+
+def _observe_host_outputs(callback, node_id, call, outputs, runtime_id):
+    if callback is None:
+        return outputs
+    result = callback(node_id, call, outputs, runtime_id)
+    if not isinstance(result, FinalizedHostOutputs):
+        return outputs
+    replacements = tuple(result.outputs)
+    if len(replacements) != call.output_port_count:
+        raise ValueError("Finalized host output count differs from its declared ports.")
+    return replacements
 
 
 class ResidentOutputCallback(Protocol):
@@ -1481,8 +1502,9 @@ def _execute_host_unit(
     raw = DEFAULT_CPU_NODE_EXECUTOR.execute(call)
     outputs = _normalized_outputs(raw, call.output_port_count)
     _check_cancelled(cancel_callback)
-    if node_outputs_callback is not None:
-        node_outputs_callback(node_id, call, outputs, CPU_RUNTIME_ID)
+    outputs = _observe_host_outputs(
+        node_outputs_callback, node_id, call, outputs, CPU_RUNTIME_ID
+    )
     provisional = {
         OutputPortKey(node_id, index): value for index, value in enumerate(outputs)
     }
@@ -1557,6 +1579,102 @@ def _execute_device_segment(
             telemetry,
             telemetry_device_id=lease_device_id,
         )
+
+
+def _capture_object_observation_revision(
+    call,
+    host_call,
+    port,
+    store,
+    runtime,
+    materialized_alias_roots,
+    request,
+    segment,
+    telemetry,
+    telemetry_device_id,
+    persistent,
+    cancel_callback,
+):
+    """Detach exact time-series label identity without retaining a device array.
+
+    Source entries already have a host representation. A resident-produced label
+    grid needs one temporary transfer for its exact byte revision; release that
+    host snapshot after hashing, and carry only the revision scalar past cleanup.
+    """
+    import numpy as np
+
+    from napari_vipp.core.observation_series import (
+        OBJECT_OBSERVATION_REVISION_KEY,
+        object_observation_revision,
+        object_observation_state,
+    )
+
+    state = call.input_states[0] if call.input_states else None
+    if not object_observation_state(state) or (
+        call.kwargs.get("resolved_spatial_ndim") != len(state.axes) - 1
+    ):
+        return host_call
+    _check_cancelled(cancel_callback)
+    alias_root = store.alias_root(port)
+    host_value = materialized_alias_roots.get(alias_root)
+    if host_value is None:
+        admission = preflight_host_allocation(
+            capture_host_memory(),
+            required_bytes=prod(state.shape) * np.dtype(state.dtype).itemsize,
+            purpose="Object observation source-revision transfer",
+        )
+        if not admission.allowed:
+            raise MemoryError(admission.reason)
+        _check_cancelled(cancel_callback)
+        started = None if telemetry is None else telemetry.start()
+        succeeded = False
+        synchronized = (
+            False if telemetry and telemetry.synchronize_device_phases else None
+        )
+        try:
+            host_value = runtime.to_host(store.value(port))
+            if telemetry is not None and telemetry.synchronize_device_phases:
+                _synchronize_runtime(
+                    runtime,
+                    request.device_id,
+                    telemetry=telemetry,
+                    telemetry_device_id=telemetry_device_id,
+                    segment_id=segment.segment_id,
+                    point=DeviceSynchronizationPoint.AFTER_DEVICE_TO_HOST,
+                    node_id=port.node_id,
+                    port=port,
+                )
+                synchronized = True
+            succeeded = True
+        finally:
+            if telemetry is not None:
+                telemetry.record(
+                    started,
+                    DeviceExecutionPhase.DEVICE_TO_HOST,
+                    runtime_id=segment.runtime_id,
+                    device_id=telemetry_device_id,
+                    segment_id=segment.segment_id,
+                    node_id=port.node_id,
+                    port=port,
+                    byte_count=None
+                    if host_value is None
+                    else _observed_host_nbytes(host_value),
+                    synchronized=synchronized,
+                    succeeded=succeeded,
+                )
+        if port in persistent:
+            # Reuse this required retained/exit value at final materialization.
+            # Internal-only inputs retain no full host snapshot after hashing.
+            materialized_alias_roots[alias_root] = host_value
+    _check_cancelled(cancel_callback)
+    revision = object_observation_revision(
+        host_value, state, progress_context=call.kwargs.get("progress")
+    )
+    _check_cancelled(cancel_callback)
+    return replace(
+        host_call,
+        kwargs={**host_call.kwargs, OBJECT_OBSERVATION_REVISION_KEY: revision},
+    )
 
 
 def _execute_device_segment_under_lease(
@@ -1838,6 +1956,25 @@ def _execute_device_segment_under_lease(
                         raise
                     host_finalizer_ref = _host_finalizer_ref(implementation)
                     if host_finalizer_ref:
+                        host_call = replace(call, inputs=(None,) * len(call.inputs))
+                        if call.operation_id in {
+                            "measure_objects",
+                            "measure_objects_intensity",
+                        }:
+                            host_call = _capture_object_observation_revision(
+                                call,
+                                host_call,
+                                input_ports[0],
+                                store,
+                                runtime,
+                                materialized_alias_roots,
+                                request,
+                                segment,
+                                telemetry,
+                                telemetry_device_id,
+                                persistent,
+                                cancel_callback,
+                            )
                         # The prepared call's inputs are opaque runtime values.
                         # Preserve only host metadata for the post-cleanup
                         # finalizer/callback phase.
@@ -1845,10 +1982,7 @@ def _execute_device_segment_under_lease(
                             _PendingHostFinalization(
                                 node_id,
                                 host_finalizer_ref,
-                                replace(
-                                    call,
-                                    inputs=(None,) * len(call.inputs),
-                                ),
+                                host_call,
                                 tuple(
                                     OutputPortKey(node_id, index)
                                     for index in range(len(outputs))
@@ -2041,12 +2175,16 @@ def _execute_device_segment_under_lease(
     if node_outputs_callback is not None:
         for pending, outputs in finalized_callbacks:
             _check_cancelled(cancel_callback)
-            node_outputs_callback(
+            outputs = _observe_host_outputs(
+                node_outputs_callback,
                 pending.node_id,
                 pending.call,
                 outputs,
                 segment.runtime_id,
             )
+            public_values = dict(zip(pending.output_ports, outputs, strict=True))
+            _ensure_host_only(public_values, (runtime,))
+            finalized_by_port.update(public_values)
     _check_cancelled(cancel_callback)
     provisional = {
         port: finalized_by_port.get(port, materialized[port])
@@ -2145,8 +2283,13 @@ def _execute_cpu_segment_fallback(
         for value in outputs:
             if runtime.is_device_value(value):
                 raise DevicePlanningError("CPU fallback returned a device-owned value.")
-        if node_outputs_callback is not None:
-            node_outputs_callback(node_id, call, outputs, CPU_RUNTIME_ID)
+        outputs = _observe_host_outputs(
+            node_outputs_callback, node_id, call, outputs, CPU_RUNTIME_ID
+        )
+        if any(runtime.is_device_value(value) for value in outputs):
+            raise DevicePlanningError(
+                "CPU fallback finalization returned a device value."
+            )
         for index, value in enumerate(outputs):
             local[OutputPortKey(node_id, index)] = value
     _check_cancelled(cancel_callback)

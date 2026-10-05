@@ -51,6 +51,12 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Tracking implementation](tracking-implementation.md): bounded one-to-one
+  linking, calibrated observation evidence, ambiguity/gap review and limits.
+- [Synthetic tracking evidence](tracking-synthetic-evidence.md): independent
+  spot/object motion, missing-frame/crossing cases and installed-package checks.
+- [Time-series detection](time-detection-implementation.md): per-frame scalar
+  detection and exact source/population metadata.
 - [Batch measurement collection](measurement-collection.md): unreleased
   collection/export contract, typed datasets, Table Source, and validation record.
 - [Measurement plots and statistics](measurement-plots-and-statistics-plan.md):
@@ -105,6 +111,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not
 override the current planning documents above.
+
+- [Workflow-tab preview isolation](workflow-tab-preview-isolation.md): runtime-only
+  camera/dimension restoration, owned Crop retirement and focused regression scope.
 
 - [Reproducibility-package export](reproducibility-package.md): portable recipes,
   archived run evidence, privacy review, readable reports and explicit limits.

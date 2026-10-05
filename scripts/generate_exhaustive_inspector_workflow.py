@@ -1399,6 +1399,11 @@ def build_workflow() -> tuple[
         model="Translation",
         precision=20,
     )
+    # Keep this historical Two images recipe byte-for-byte independent of
+    # later time-series defaults. Their absence retains Fixed reference/Report
+    # only behavior on load; neither parameter applies to this pairwise lane.
+    registration_estimate.params.pop("time_strategy", None)
+    registration_estimate.params.pop("cumulative_quality_policy", None)
     registration_apply = place(
         "apply_transform",
         840,
@@ -1491,6 +1496,39 @@ def build_workflow() -> tuple[
         tunnel_name=detection_valid_tunnel,
     )
 
+    # Lane 12 retains T and selects C explicitly for per-frame observations.
+    lane_note(
+        "lane_tracking",
+        "12. TIME-SERIES DETECTION AND TRACKING\n"
+        "Select Moving spots (C=1), keeping all seven timepoints. Detect Spots "
+        "per Frame returns 24 observations, including an exact empty-frame record "
+        "for T=3. Build Tracks permits one missing frame with an eight-pixel "
+        "per-frame gate: four tracks, six observations each. The lower crossing "
+        "pair has ambiguous identities: review flags are not confidence or "
+        "biological truth. Select Table Columns passes the second output's "
+        "track summary unchanged to a primary result.",
+        -440,
+        14300,
+    )
+    tracking_source = source("VIPP synthetic 2D spot tracking", 0, 14400)
+    tracking_channel = place("extract_channel", 340, 14400, channel=1)
+    tracking_detections = place(
+        "detect_spots_per_frame", 680, 14400,
+        mode="Local peaks", minimum_value=0.5, minimum_separation=3.0,
+        separation_units="Pixels", maximum_detections=100, border_exclusion=0,
+    )
+    tracking_links = place(
+        "build_tracks", 1120, 14400,
+        maximum_displacement=8.0, distance_units="Pixels", maximum_gap=1,
+    )
+    tracking_summary = place(
+        "select_table_columns", 1540, 14400, columns="auto",
+    )
+    wire(tracking_source, tracking_channel)
+    wire(tracking_channel, tracking_detections)
+    wire(tracking_detections, tracking_links)
+    wire(tracking_links, tracking_summary, source_port=1)
+
     operation_counts = Counter(node.operation_id for node in pipeline.nodes.values())
     expected = {
         spec.id for spec in PALETTE_NODE_LIBRARY
@@ -1515,7 +1553,8 @@ def build_workflow() -> tuple[
         "cellprofiler_propagation": 2,
         "crop_stack": 2,
         "select_axis_slice": 2,
-        "extract_channel": 2,
+        "extract_channel": 3,
+        "select_table_columns": 2,
     }:
         raise RuntimeError(f"Non-source operation duplicates: {duplicates}")
     if set(positions) != set(pipeline.nodes):

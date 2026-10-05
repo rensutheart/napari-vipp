@@ -16,11 +16,12 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Add only the independent detection lane. Removing it below pins the
-    # complete v0.16.0a2 showcase, including label-skeleton and registration;
-    # the earlier branch projections retain their historical goldens.
+    # Independent detection and tracking lanes extend this showcase. Exact
+    # branch projections below pin every preceding historical analysis.
+    # The unreleased tracking rename changes only operation/node identities;
+    # reversing those identities reproduces the preceding goldens exactly.
     "exhaustive-inspector-showcase.json": (
-        "f240afc98d039735deda606d7d9be963e5bb619561c56f7858c6cf9ab4a93f65"
+        "8d6ad9b4559389d64f154527482bfe35aef9d4c3643d4a112f8e6fc3c7ac25fb"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -117,6 +118,16 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-template-detection-3d.json": (
         "475db021f048ff4b604afbb4babbb19d4557e47fd6987d3f509bfd0342977fb1"
+    ),
+    # Independent time-series recipes: explicit channel/segmentation routes,
+    # calibrated one-to-one linking and a primary-result summary handoff.
+    # Existing focused examples retain their hashes. The exhaustive showcase
+    # adds an independent lane; its exact historical projection is pinned below.
+    "synthetic-tracking-labels-3d.json": (
+        "5b3bbf52da9e303bc917082267b6b5de16bd6288db148baa6d18ef98cdfd401a"
+    ),
+    "synthetic-tracking-spots-2d.json": (
+        "9891e375fd994fec3dcacbb483014bd9c368419e75ad247397c3bba6a603b8fe"
     ),
 }
 
@@ -381,8 +392,61 @@ def _without_showcase_registration_lane(document: dict[str, Any]) -> dict[str, A
     return document
 
 
-def _without_showcase_detection_lane(document: dict[str, Any]) -> dict[str, Any]:
+def _without_showcase_tracking_lane(document: dict[str, Any]) -> dict[str, Any]:
     document = deepcopy(document)
+    added_nodes = {
+        "input_13": "input",
+        "extract_channel_3": "extract_channel",
+        "detect_spots_per_frame_1": "detect_spots_per_frame",
+        "build_tracks_1": "build_tracks",
+        "select_table_columns_2": "select_table_columns",
+    }
+    assert {
+        node["id"]: node["operation_id"]
+        for node in document["nodes"] if node["id"] in added_nodes
+    } == added_nodes
+    added_edges = [
+        edge for edge in document["connections"]
+        if edge["source"] in added_nodes or edge["target"] in added_nodes
+    ]
+    assert added_edges == [
+        {"source": "input_13", "target": "extract_channel_3",
+         "target_port": 0, "source_port": 0},
+        {"source": "extract_channel_3", "target": "detect_spots_per_frame_1",
+         "target_port": 0, "source_port": 0},
+        {"source": "detect_spots_per_frame_1", "target": "build_tracks_1",
+         "target_port": 0, "source_port": 0},
+        {"source": "build_tracks_1", "target": "select_table_columns_2",
+         "target_port": 0, "source_port": 1},
+    ]
+    assert not any(tunnel["source"] in added_nodes for tunnel in document["tunnels"])
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_nodes
+    ]
+    document["connections"] = [
+        edge for edge in document["connections"] if edge not in added_edges
+    ]
+    for identifier in added_nodes:
+        document["positions"].pop(identifier)
+    document["notes"] = [
+        note for note in document["notes"] if note["id"] != "lane_tracking"
+    ]
+    return document
+
+
+def test_showcase_tracking_lane_preserves_complete_eleven_lane_analysis():
+    document = _without_showcase_tracking_lane(
+        _load_example("exhaustive-inspector-showcase.json")
+    )
+    historical_hash = "f240afc98d039735deda606d7d9be963e5bb619561c56f7858c6cf9ab4a93f65"
+    assert scientific_workflow_hash(document) == historical_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(document)) == historical_hash
+    )
+
+
+def _without_showcase_detection_lane(document: dict[str, Any]) -> dict[str, Any]:
+    document = _without_showcase_tracking_lane(document)
     added_nodes = {
         "input_12": "input",
         "select_axis_slice_2": "select_axis_slice",

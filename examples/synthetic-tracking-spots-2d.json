@@ -1,0 +1,191 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "tracks",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 2D spot tracking",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "channel",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 1
+      }
+    },
+    {
+      "id": "detections",
+      "operation_id": "detect_spots_per_frame",
+      "params": {
+        "mode": "Local peaks",
+        "minimum_value": 0.5,
+        "minimum_separation": 3,
+        "separation_units": "Pixels",
+        "maximum_detections": 100,
+        "border_exclusion": 0
+      }
+    },
+    {
+      "id": "tracks",
+      "operation_id": "build_tracks",
+      "params": {
+        "maximum_displacement": 8,
+        "distance_units": "Pixels",
+        "maximum_gap": 1
+      }
+    },
+    {
+      "id": "summary",
+      "operation_id": "select_table_columns",
+      "params": {
+        "columns": "auto"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "channel",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "channel",
+      "target": "detections",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "detections",
+      "target": "tracks",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "tracks",
+      "target": "summary",
+      "target_port": 0,
+      "source_port": 1
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      100
+    ],
+    "channel": [
+      620,
+      100
+    ],
+    "detections": [
+      1240,
+      100
+    ],
+    "tracks": [
+      1920,
+      100
+    ],
+    "summary": [
+      2580,
+      100
+    ]
+  },
+  "tunnels": [
+    {
+      "name": "Selected spot time series",
+      "source": "channel",
+      "source_port": 0
+    },
+    {
+      "name": "Frame-local detections",
+      "source": "detections",
+      "source_port": 0
+    },
+    {
+      "name": "Tracked spot observations",
+      "source": "tracks",
+      "source_port": 0
+    },
+    {
+      "name": "Spot track summary",
+      "source": "tracks",
+      "source_port": 1
+    }
+  ],
+  "notes": [
+    {
+      "id": "note_input",
+      "attached_node": "input",
+      "text": "1. SYNTHETIC TIME SERIES\nSeven timepoints and two channels. Extract Moving spots (C=1); C=0 is independent noise. T stays intact. Pixel centers, source origin and a 0.5-second time interval are known by construction, not estimated from microscopy.",
+      "position": [
+        0,
+        -250
+      ],
+      "width": 490
+    },
+    {
+      "id": "note_detection",
+      "attached_node": "detections",
+      "text": "2. EXACT FRAME INVENTORY\nFour local peaks in T=0,1,2,4,5,6 and zero in T=3: 24 observations. Detect Spots per Frame retains the empty frame and uses frame-local detection IDs. No score-response stack or segmentation boundary is produced.",
+      "position": [
+        1180,
+        -250
+      ],
+      "width": 520
+    },
+    {
+      "id": "note_gap",
+      "attached_node": "tracks",
+      "text": "3. GAP POLICY\nThe eight-pixel per-frame displacement gate permits one missing frame. The T=2 to T=4 link spans two intervals, has gap_frames=1 and inserts no artificial observation. Summary: four tracks, six observations per track. Set Maximum missing frames to zero to observe the deliberate track breaks.",
+      "position": [
+        1870,
+        -370
+      ],
+      "width": 540
+    },
+    {
+      "id": "note_review",
+      "attached_node": "tracks",
+      "text": "4. REVIEW THE CROSSING\nThe isolated upper trajectories have known associations. The lower pair crosses during the empty frame. Position-only linking can exchange their construction identities; competing feasible associations must be reviewed. A review flag is not a probability, biological truth, or a guarantee that all wrong links are identified. Inspect both tracked observations and the Track summary output.",
+      "position": [
+        1870,
+        520
+      ],
+      "width": 570
+    },
+    {
+      "id": "note_summary",
+      "attached_node": "summary",
+      "text": "UNCHANGED SUMMARY HANDOFF\nThis Select Table Columns node keeps every summary column (auto = all) without calculation or aggregation. It exposes the second Build Tracks output as its own primary node result for generated Python and downstream table/export workflows. The source Track summary port remains separately inspectable.",
+      "position": [
+        2560,
+        -280
+      ],
+      "width": 540
+    }
+  ],
+  "view": {
+    "zoom": 0.7,
+    "pan": [
+      0,
+      0
+    ]
+  }
+}

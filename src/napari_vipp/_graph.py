@@ -56,6 +56,7 @@ from napari_vipp._theme import (
     graph_theme,
 )
 from napari_vipp.core.pipeline import EXECUTION_BLOCKED, NODE_LIBRARY_BY_ID
+from napari_vipp.ui.inspector import node_card_result_action_label
 
 OPERATION_MIME = "application/x-napari-vipp-operation"
 PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels", "mesh"}
@@ -539,6 +540,8 @@ class NodeCard(QFrame):
     pin_requested = Signal(str)
     calculate_requested = Signal(str)
     plot_requested = Signal(str)
+    result_requested = Signal(str)
+    trajectory_review_requested = Signal(str)
 
     def __init__(
         self,
@@ -655,6 +658,24 @@ class NodeCard(QFrame):
         self.plot_button = QPushButton("Open plot…", self)
         self.plot_button.clicked.connect(lambda: self.plot_requested.emit(self.node_id))
         self.plot_button.hide()
+        self.result_button = QPushButton(self)
+        self.result_button.clicked.connect(
+            lambda: self.result_requested.emit(self.node_id)
+        )
+        self.result_button.setToolTip(
+            "Open this node's cached results in a separate window. "
+            "This does not calculate the node."
+        )
+        self.result_button.hide()
+        self.trajectory_review_button = QPushButton("Review trajectories…", self)
+        self.trajectory_review_button.clicked.connect(
+            lambda: self.trajectory_review_requested.emit(self.node_id)
+        )
+        self.trajectory_review_button.setToolTip(
+            "Review this node's current time-series observations on their source, "
+            "alongside the table. This does not calculate the node."
+        )
+        self.trajectory_review_button.hide()
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
@@ -672,6 +693,8 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.execution_label)
         self.card_layout.addWidget(self.calculate_button)
         self.card_layout.addWidget(self.plot_button)
+        self.card_layout.addWidget(self.result_button)
+        self.card_layout.addWidget(self.trajectory_review_button)
         self._bypass_overlay = BypassCardOverlay(self)
         self._bypass_overlay.setGeometry(self.rect())
         self._bypass_overlay.hide()
@@ -2674,6 +2697,8 @@ class PipelineGraphView(QGraphicsView):
     pin_requested = Signal(str)
     node_calculate_requested = Signal(str)
     node_plot_requested = Signal(str)
+    node_result_requested = Signal(str)
+    node_trajectory_review_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     node_append_requested = Signal(str, str, int, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
@@ -3496,6 +3521,15 @@ class PipelineGraphView(QGraphicsView):
         card.calculate_requested.connect(self.node_calculate_requested)
         card.plot_requested.connect(self.node_plot_requested)
         card.plot_button.setVisible(node.operation_id == "plot_results")
+        card.result_requested.connect(self.node_result_requested)
+        spec = _operation_spec_for_node(node)
+        result_label = node_card_result_action_label(spec) if spec is not None else ""
+        card.result_button.setText(result_label)
+        card.result_button.setVisible(bool(result_label))
+        card.trajectory_review_requested.connect(self.node_trajectory_review_requested)
+        card.trajectory_review_button.setVisible(
+            node.operation_id in {"detect_spots_per_frame", "build_tracks"}
+        )
         proxy = NodeProxy(
             node.id,
             node.operation_id,
@@ -3861,6 +3895,25 @@ class PipelineGraphView(QGraphicsView):
             proxy.update()
         if self.scene is not None:
             self.scene.update()
+
+    def set_node_trajectory_review_visible(self, node_id: str, visible: bool) -> None:
+        """Offer source review only for nodes with time-series observations."""
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        button = card.trajectory_review_button
+        if button.isHidden() == (not visible):
+            return
+        before = proxy.sceneBoundingRect()
+        button.setVisible(visible)
+        card.adjustSize()
+        proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+        proxy.update()
 
     def set_node_metadata(self, node_id: str, text: str) -> None:
         card = self._cards.get(node_id)

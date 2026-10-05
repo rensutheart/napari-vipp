@@ -2048,6 +2048,7 @@ def _execute_accelerated_pipeline(
             from napari_vipp.core.compute_registry import ComputeRegistry
             from napari_vipp.core.device_execution import (
                 CPU_RUNTIME_ID,
+                FinalizedHostOutputs,
                 execute_device_plan,
                 plan_device_execution,
             )
@@ -2407,7 +2408,7 @@ def _execute_accelerated_pipeline(
             call: PreparedNodeCall,
             outputs: tuple[object, ...],
             runtime_id: str,
-        ) -> None:
+        ) -> FinalizedHostOutputs | None:
             if pipeline.node_is_bypassed(node_id):
                 if len(outputs) != 1 or len(call.input_states) != 1:
                     raise RuntimeError(
@@ -2417,6 +2418,7 @@ def _execute_accelerated_pipeline(
                 state_by_port[OutputPortKey(node_id, 0)] = call.input_states[0]
                 return
             implementation = None
+            results = None
             if runtime_id != CPU_RUNTIME_ID:
                 decision = decisions_by_node.get(node_id)
                 if decision is None:
@@ -2450,6 +2452,15 @@ def _execute_accelerated_pipeline(
                 )
             for port_index, state in enumerate(states):
                 state_by_port[OutputPortKey(node_id, port_index)] = state
+            if results is not None and call.operation_id in {
+                "measure_objects",
+                "measure_objects_intensity",
+            }:
+                # These host-finalized tables gain immutable exact source/frame
+                # evidence. Propagate the finalized artifact, not only its state,
+                # before downstream host consumers such as Build Tracks execute.
+                return FinalizedHostOutputs(tuple(value for value, _state in results))
+            return None
 
         def observe_resident_output(
             port: OutputPortKey,
@@ -2595,6 +2606,15 @@ def _execute_accelerated_pipeline(
                             ),
                         ),
                     )
+                elif call.operation_id in {
+                    "measure_objects",
+                    "measure_objects_intensity",
+                }:
+                    # Observation evidence was attached while original inputs (or
+                    # their exact detached revisions) were available. The stored
+                    # call deliberately owns no label arrays after runtime cleanup.
+                    states = tuple(state_by_port[port] for port in ports)
+                    results = list(zip(outputs, states, strict=True))
                 elif call.operation_id == "template_match":
                     # Correlation's paired revision/grid evidence was finalized
                     # while the real host inputs were available in observe_outputs.
@@ -6413,6 +6433,100 @@ def _rebind_hydrated_bypass_cache_to_upstream(
     return True
 
 
+def execute_synchronous_cpu_pipeline(
+    pipeline: PrototypePipeline,
+    request: PipelineRunRequest,
+) -> ExecutionReport:
+    """Run the small interactive CPU path with shared scientific cache admission.
+
+    This deliberately retains the caller's pipeline and cached value objects,
+    instead of restoring a detached graph. Stable input ownership is still the
+    caller's responsibility. Exact source fingerprints, cache admission, and
+    publication are the same as the detached service: completion alone never
+    authorizes a cached scientific result for a later worker.
+    """
+
+    if request.compute_request.mode is not ComputeMode.CPU:
+        raise ValueError("The synchronous CPU path requires an explicit CPU policy.")
+    cancel_callback = (
+        request.cancel_event.is_set if request.cancel_event is not None else None
+    )
+    source_scope = (
+        None
+        if request.target_node_ids is None
+        else pipeline.ancestors_inclusive(
+            set(request.target_node_ids)
+            | set(request.retain_node_ids)
+            | {tunnel.source_id for tunnel in pipeline.output_tunnel_list()}
+        )
+    )
+    captured = _capture_source_scientific_contexts(
+        pipeline,
+        request,
+        source_node_ids=source_scope,
+        cancel_callback=cancel_callback,
+    )
+    source_contexts = {
+        node_id: context.scientific_context_fingerprint
+        for node_id, context in captured.items()
+    }
+    source_envelopes = {
+        node_id: context.source_reuse_envelope_fingerprint
+        for node_id, context in captured.items()
+    }
+    _hydrate_cached_pipeline_outputs(
+        pipeline,
+        request,
+        implementation_specs=(),
+        source_scientific_contexts=source_contexts,
+        source_reuse_envelope_fingerprints=source_envelopes,
+        cancel_callback=cancel_callback,
+    )
+    schedule = pipeline.plan_execution(
+        request.dirty_node_ids,
+        manual_mode=MANUAL_RUN_SKIP,
+        manual_node_ids=request.manual_node_ids,
+        target_node_ids=request.target_node_ids,
+    )
+
+    def publish_completed() -> tuple[NodeExecutionDecision, ...]:
+        return _publish_cpu_compute_provenance(
+            pipeline,
+            request,
+            frozenset(schedule.runnable_node_ids) & pipeline.completed_node_ids,
+            source_scientific_contexts=source_contexts,
+            source_reuse_envelope_fingerprints=source_envelopes,
+        )
+
+    try:
+        pipeline.run(
+            request.input_data,
+            input_metadata=request.input_metadata,
+            input_name=request.input_name,
+            source_payloads=request.source_payloads,
+            dirty_node_ids=request.dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=request.manual_node_ids,
+            target_node_ids=request.target_node_ids,
+            retain_node_ids=request.retain_node_ids,
+            prune_unretained=request.prune_unretained,
+            cancel_callback=cancel_callback,
+        )
+    except Exception:
+        # Preserve only the atomically completed prefix, without letting a
+        # diagnostic publication failure replace the scientific exception.
+        try:
+            publish_completed()
+        except Exception:
+            pass
+        raise
+    return ExecutionReport(
+        request=request.compute_request,
+        environment=ComputeEnvironment(),
+        actual_decisions=publish_completed(),
+    )
+
+
 def _publish_cpu_compute_provenance(
     pipeline: PrototypePipeline,
     request: PipelineRunRequest,
@@ -6627,4 +6741,5 @@ __all__ = [
     "ResidentThumbnailStatisticsObservation",
     "ResidentThumbnailStatisticsRequest",
     "execute_pipeline_request",
+    "execute_synchronous_cpu_pipeline",
 ]

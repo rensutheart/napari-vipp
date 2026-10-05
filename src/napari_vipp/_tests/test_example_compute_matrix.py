@@ -638,6 +638,8 @@ def test_compute_matrix_covers_every_bundled_example():
         "registration-time-series",
         "template-detection-2d",
         "template-detection-3d",
+        "tracking-spots-2d",
+        "tracking-labels-3d",
         "exhaustive-inspector",
         "graph-authoring",
         "responsive-crop",

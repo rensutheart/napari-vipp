@@ -295,7 +295,7 @@ def test_registration_controls_explain_scope_and_update_mode(registration_widget
     assert widget._parameter_widgets["operation_notice"].property(
         "vippTextTone"
     ) == "warning"
-    assert widget.parameter_group.summary_label.text() == "9 values"
+    assert widget.parameter_group.summary_label.text() == "10 values"
 
 
 def test_registration_name_summary_only_describes_active_mode(registration_widget):

@@ -32,6 +32,63 @@ class ExampleGuidance:
 
 EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
     {
+        "tracking-spots-2d": ExampleGuidance(
+            purpose=(
+                "Link detected spots while keeping missing frames and "
+                "uncertainty visible."
+            ),
+            data=(
+                "Seven timepoints, two channels and four constructed spot "
+                "trajectories; frame 3 is empty and the lower pair crosses there."
+            ),
+            explore=(
+                "Extract Moving spots (C=1) and keep the full time axis.",
+                "Check 24 detections and the explicit zero count for frame 3.",
+                "Compare frame-local detection IDs with the estimated track IDs.",
+                "Review the crossing flags and both tracked-table outputs.",
+            ),
+            results=("Frame-local detections", "Tracked observations", "Track summary"),
+            try_this=(
+                "Set Maximum missing frames to zero and recalculate: the "
+                "empty frame deliberately breaks all four tracks."
+            ),
+            caution=(
+                "Position-only linking can exchange the crossing pair's "
+                "construction identities. Review flags are neither probabilities "
+                "nor a guarantee that every wrong association is detected."
+            ),
+        ),
+        "tracking-labels-3d": ExampleGuidance(
+            purpose=(
+                "Link independent 3D object measurements with calibrated distances."
+            ),
+            data=(
+                "Six anisotropic volumes of separate cubes, one missing object "
+                "at frame 2 and a new object appearing at frame 3."
+            ),
+            explore=(
+                "Threshold > 0 and label each full 3D frame independently.",
+                "Inspect 14 measured centroids; local label IDs can change over time.",
+                "Link with two micrometres per frame and one allowed missing frame.",
+                "Check three tracks with 6, 5 and 3 observations and their speeds.",
+            ),
+            results=(
+                "Independent frame labels",
+                "Object measurements",
+                "Tracked observations",
+                "Track summary",
+            ),
+            try_this=(
+                "Compare the default physical-distance gate with Pixels using "
+                "an explicitly chosen value; anisotropic Z changes the geometry."
+            ),
+            caution=(
+                "The visible threshold and labeling steps replace the supplied "
+                "label numbers; they preserve the separate cubes' centroids. "
+                "This analytical example makes no biological accuracy, division "
+                "or fusion claim."
+            ),
+        ),
         "template-detection-2d": ExampleGuidance(
             purpose=(
                 "Locate repeated fixed-size, fixed-orientation structures "
@@ -764,12 +821,12 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "testing workflow."
             ),
             data=(
-                "Eleven synthetic samples spanning images, volumes, skeletons, "
-                "deconvolution, known-motion registration and template detection"
+                "Twelve synthetic samples spanning images, volumes, skeletons, "
+                "deconvolution, registration, template detection and spot tracking"
             ),
             explore=(
                 (
-                    "Browse the eleven labelled lanes to find different types of "
+                    "Browse the twelve labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",
@@ -783,10 +840,12 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "Meshes",
                 "Measurement tables",
                 "Reusable spatial transforms and alignment diagnostics",
+                "Tracked observations and unchanged track summaries",
             ),
             try_this=(
                 "Select an image node, a measurement node and a mesh node. Calculate "
-                "their results and compare the available inspector sections."
+                "their results and compare the available inspector sections. Review "
+                "time-series spot tracks, the missing frame and ambiguous crossing."
             ),
             caution=(
                 "This is an interface-testing collection, not one recommended "

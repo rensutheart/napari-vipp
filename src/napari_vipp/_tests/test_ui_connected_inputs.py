@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
+import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QFormLayout, QLabel, QWidget
@@ -100,11 +103,57 @@ def test_connected_inputs_card_is_theme_safe_and_describes_empty_ports(qtbot):
         assert colors.info.surface.name() in style
         assert colors.text.name() in style
         assert not row.icon_label.pixmap().isNull()
+        card.set_bindings([replace(row.binding)])
+        assert card.rows == [row]
+        assert card.styleSheet() == style
 
     card.set_bindings([])
     assert card.isHidden()
     assert card.form_layout.rowCount() == 0
     assert card.rows == []
+
+
+def test_unchanged_bindings_retain_rows_without_relayout_or_retheme(qtbot, monkeypatch):
+    card = ConnectedInputsCard()
+    qtbot.addWidget(card)
+    binding = ConnectedInputBinding(
+        "Time series", "image", "Channel", "out", "TYX: 7 × 72 × 96"
+    )
+    card.set_bindings([binding])
+    row = card.rows[0]
+    theme_updates = []
+    monkeypatch.setattr(card, "refresh_theme", lambda *args: theme_updates.append(args))
+    for _ in range(4):
+        card.set_bindings([replace(binding)])
+        assert card.rows == [row]
+        assert card.form_layout.itemAt(0, QFormLayout.SpanningRole).widget() is row
+    assert theme_updates == []
+    card.hide()
+    card.set_bindings([binding])
+    assert not card.isHidden()
+    assert card.rows == [row]
+
+
+@pytest.mark.parametrize("change", [
+    {"source_title": "Renamed source"},
+    {"source_port_label": "Ch 2"},
+    {"scientific_summary": "TYX: 8 × 72 × 96"},
+    {"port_label": "Reference series"},
+    {"input_type": "mask_or_labels"},
+])
+def test_changed_binding_context_is_not_suppressed(qtbot, change):
+    card = ConnectedInputsCard()
+    qtbot.addWidget(card)
+    binding = ConnectedInputBinding(
+        "Time series", "image", "Channel", "out", "TYX: 7 × 72 × 96"
+    )
+    card.set_bindings([binding])
+    updated = replace(binding, **change)
+    card.set_bindings([updated])
+    assert card.rows[0].binding == updated
+    assert card.rows[0].role_label.text() == updated.port_label
+    assert card.rows[0].source_label.text() == updated.source_summary
+    assert card.rows[0].scientific_label.text() == updated.scientific_summary
 
 
 def test_connected_input_text_and_tooltips_treat_metadata_as_plain_text(qtbot):

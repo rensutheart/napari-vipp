@@ -2,7 +2,16 @@
 
 Status: current node-family planning document
 
-Last reviewed: 2026-09-16
+Last reviewed: 2026-09-30
+
+Current development update: registration shipped in 0.16.0a2, and fixed-template
+detection is implemented and locally qualified after that release. The approved
+next slice adds previous-frame registration, Detect Spots per Frame and basic
+Build Tracks with read-only trajectory review. Local Windows qualification is
+recorded; see
+[the active roadmap](planning.md), [tracking contract](tracking-implementation.md)
+and [synthetic examples](tracking-synthetic-evidence.md). The older priorities
+below are context, not a claim that these developments are already released.
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -60,7 +69,7 @@ table-driven measurement plots and statistics form the other. Collection and
 initial Plot Results are implemented but unreleased after 0.15.0a5; Statistics
 extends existing summaries with versioned descriptive rules, not inferential
 tests. Their detailed contracts define release gates. Model-backed
-segmentation, stitching, object tracking, and specialist mitochondrial indices
+segmentation, stitching, advanced lineage tracking, and specialist mitochondrial indices
 remain later work unless a current validation or publication workflow needs them.
 
 ## Priority Definitions
@@ -318,6 +327,11 @@ than more metrics by default:
 These are plausible future families, but they should wait for stronger demand,
 better platform contracts, or optional dependency boundaries.
 
+The current basic tracking capability is sufficient for now (user decision,
+2026-09-30). [Richer tracking and mitochondrial analysis](product-ideas.md#richer-tracking-and-mitochondrial-analysis)
+records morphology- and motion-aware linking and richer trajectory analysis as
+future, unassigned candidates, not extensions required for the current release.
+
 - random walker segmentation;
 - active contours and morphological snakes;
 - graph-cut or graph-based segmentation;
@@ -325,7 +339,7 @@ better platform contracts, or optional dependency boundaries.
 - optical flow;
 - non-rigid registration;
 - stitching and mosaics;
-- object tracking across time;
+- advanced lineage/division/fusion tracking beyond the approved basic linker;
 - model-backed segmentation such as Cellpose, StarDist, or ilastik;
 - per-label mesh export, 3MF, oriented bounding boxes, mesh repair, or specialist
   mesh inertia metrics (basic mask surface/OBJ is implemented, unreleased);

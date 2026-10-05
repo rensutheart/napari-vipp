@@ -1,6 +1,105 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-09-23
+Last reviewed: 2026-10-05
+
+## 0.16.0a3 qualification declaration
+
+This iterative alpha covers the complete delta from published `v0.16.0a2`,
+including fixed-template detection, peak extraction, previous-frame registration,
+per-frame spot detection, bounded position linking, observation persistence and
+read-only review, plus inspector, node-card, cache-handoff and workflow-tab fixes.
+The user authorized full publication and relevant branch integration on
+2026-10-05 local time. This declaration records scope and evidence boundaries;
+it does not pre-claim successful final-main CI, native packaging or publication.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  cpu_scientific: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_execution: true
+  source_reader_packaging: true
+  windows_installer_runtime: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_gpu_kernels_and_admission_regions: v0.16.0a2
+  unchanged_vendor_reader_codecs: v0.16.0a2
+  unchanged_dependency_and_installer_lifecycle_inputs: v0.16.0a2
+```
+
+- [Detection qualification](detection-implementation.md) records a clean native
+  Windows run with **12,711 passed, 31 skipped and two expected failures**, private
+  wheel imports and independent 2D/3D planted-centre checks. Its development
+  artifacts identify as a2 but are not published a2 bytes and must never be
+  uploaded. Subsequent source changes and final a3 artifact facts require their
+  own verification; historical full-suite fingerprints are not relabelled.
+- [Tracking qualification](tracking-implementation.md) records a later clean
+  Windows run with **13,015 passed, 31 skipped and two expected failures**. Its
+  installed known-answer smoke retained 24 observations/four spot tracks,
+  14 observations/three object tracks, exact frame populations, calibrated
+  coordinates and unchanged sources. Analytical previous-frame translation
+  retained zero matrix error and maximum valid-alignment error
+  `1.164670302474663e-21` against tolerance `1e-12`. The two expected failures
+  describe existing integer Gaussian CuPy parity gaps, not detection/tracking.
+- Current follow-up checks remain separate from those full-run snapshots:
+  practical sliders, stable wrapped inspectors, direct result/review actions,
+  canonical `detect_spots_per_frame` / `build_tracks` operation identities and
+  authenticated initial synchronous-CPU cache handoff have focused evidence.
+  The final rename/cache selection contains **993 distinct passing cases**.
+  Counts from overlapping follow-ups must not be added as a new full-suite total.
+  Historical names in dated evidence retain their original measurement context;
+  the unreleased nodes have no legacy-operation alias contract.
+- [Workflow-tab isolation](workflow-tab-preview-isolation.md) passed **166
+  distinct focused cases**, including real napari ViewerModel/offscreen Qt
+  regressions, metadata-owned Crop retirement, stale-session callbacks and
+  per-tab camera/dims restoration without scientific mutation or recomputation.
+  The small-image/large-Crop framing defect was reproduced. The user's exact
+  intermittent outline leak was not independently reproduced; its synchronous
+  teardown ordering is covered by an explicit injected-event regression.
+- The shared measurement/finalization/cache/provenance boundary changed despite
+  unchanged GPU kernels. The bounded 2026-10-04 RTX 5090 canary passed **eight
+  real-CUDA cases** spanning TYX/TZYX, basic morphology/intensity and host/GPU
+  Connected Components labels. It retained exact CPU table/tracking parity,
+  source revisions and clean zero-live/reserved-memory finalization without
+  fallback. This is the affected small measurement-to-CPU-tracking handoff, not
+  GPU detection/tracking, full catalogue admission, timing or large-data proof.
+  Review its source boundary against the final candidate; source-only or
+  provider-free lifecycle tests do not replace real-device numerical evidence.
+- New image/table state schemas, calibrated template-centre and valid-score
+  pairing, observation populations, persisted table snapshots, generated Python
+  and batch provenance are changed-domain gates. TIFF/OME-TIFF/OME-Zarr carried
+  detection state changes require focused persistence checks. Existing vendor
+  codec behavior is unchanged and retains its applicable baseline; this is not
+  permission to treat detached arrays/CSV files as complete geometry evidence.
+- Runtime/build dependency pins, supported Python routes and installer engines
+  are unchanged. Clean wheel/source install jobs and both macOS installed-prefix
+  gates now execute installed detection/tracking known-answer smoke scripts.
+  Packaging changed through these gates and new bundled resources: require
+  exact-final-main CI, clean wheel/source installs, native changed-domain smoke
+  and independently matching wheel/canonical-source builds. Do not substitute
+  any earlier private development wheel for the exact release artifact.
+- Build Windows x86_64 and separate native macOS arm64/x86_64 unsigned installers
+  from the immutable tag and retained qualified wheel. Verify embedded wheel,
+  source/version/architecture, unsigned state and checksum inventories; carry
+  forward only unchanged lifecycle inputs. Native macOS scientific acceptance
+  must run on each architecture. A setup EXE is not an installed scientific
+  interpreter, and Windows payload checks are not a full frozen-GUI lifecycle.
+- Native Linux/macOS and minimum-dependency scientific evidence, large-volume
+  memory/performance and acquired-microscopy accuracy are not established by
+  local Windows runs. Hosted exact-source/package checks must be recorded as
+  they actually complete. Detection/tracking remain CPU-only; no appearance,
+  morphology/prediction model, identity editing, division/fusion lineage,
+  rotation/scale template bank, masked/deformable registration or GPU
+  detection/tracking is included. Registration remains global, and adjacent
+  errors may accumulate. Preserve scientific assertions and resource guards.
+- Publish the retained wheel/source bytes once to GitHub and PyPI, then deploy
+  and verify the numbered/default a3 manual. Record exact final SHAs, job IDs,
+  artifact sizes/hashes and public-byte/manual verification in external release
+  evidence. This declaration is not itself a publication receipt.
 
 ## 0.16.0a2 qualification declaration
 
