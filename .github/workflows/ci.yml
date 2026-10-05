@@ -349,6 +349,8 @@ jobs:
           src/napari_vipp/_tests/test_graph_clipboard_ui.py
           src/napari_vipp/_tests/test_batch_footer_layout.py
           src/napari_vipp/_tests/test_ui_toolbar_controls.py
+          src/napari_vipp/_tests/test_workflow_view.py
+          src/napari_vipp/_tests/test_workflow_tab_crop_preview.py
           src/napari_vipp/_tests/test_widget.py::test_hidden_source_preview_cannot_replace_active_viewer_axis_labels
           src/napari_vipp/_tests/test_widget.py::test_label_pipeline_inspects_and_pins_integer_labels
           src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis
