@@ -6489,11 +6489,16 @@ def execute_synchronous_cpu_pipeline(
         target_node_ids=request.target_node_ids,
     )
 
+    # Retention can release completed ancestors before this run returns.
+    # Their small provenance records must still authenticate a retained child;
+    # resident completion is not the same as actual execution completion.
+    finished_node_ids: set[str] = set()
+
     def publish_completed() -> tuple[NodeExecutionDecision, ...]:
         return _publish_cpu_compute_provenance(
             pipeline,
             request,
-            frozenset(schedule.runnable_node_ids) & pipeline.completed_node_ids,
+            frozenset(schedule.runnable_node_ids) & finished_node_ids,
             source_scientific_contexts=source_contexts,
             source_reuse_envelope_fingerprints=source_envelopes,
         )
@@ -6505,6 +6510,7 @@ def execute_synchronous_cpu_pipeline(
             input_name=request.input_name,
             source_payloads=request.source_payloads,
             dirty_node_ids=request.dirty_node_ids,
+            node_finished_callback=finished_node_ids.add,
             manual_mode=MANUAL_RUN_SKIP,
             manual_node_ids=request.manual_node_ids,
             target_node_ids=request.target_node_ids,

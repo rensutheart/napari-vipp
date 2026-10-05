@@ -94,11 +94,19 @@ def test_first_detached_downstream_run_reuses_authentic_sync_upstream(manual_ups
 @pytest.mark.parametrize(
     "change", ["source_bytes", "source_metadata", "params", "policy"]
 )
-def test_sync_handoff_rejects_changed_manual_upstream_context(change):
+@pytest.mark.parametrize("prune_source", [False, True])
+def test_sync_handoff_rejects_changed_manual_upstream_context(change, prune_source):
     pipeline, upstream, downstream, source = _generic_pipeline(manual_upstream=True)
     execute_synchronous_cpu_pipeline(
-        pipeline, _request(pipeline, source, manual=set(pipeline.nodes))
+        pipeline,
+        replace(
+            _request(pipeline, source, manual=set(pipeline.nodes)),
+            retain_node_ids=frozenset({upstream, downstream}),
+            prune_unretained=prune_source,
+        ),
     )
+    if prune_source:
+        assert pipeline.outputs["input"] is None
     cached = pipeline.outputs[upstream]
     policy = CPU
     if change == "source_bytes":
@@ -124,6 +132,43 @@ def test_sync_handoff_rejects_changed_manual_upstream_context(change):
     assert result.pipeline.node_execution_states[upstream] == EXECUTION_STALE
     assert result.pipeline.node_execution_states[downstream] == EXECUTION_BLOCKED
     assert result.pipeline.outputs[upstream] is cached
+
+
+def test_cpu_shortcut_replans_auto_cache_even_with_retained_working_input(monkeypatch):
+    pipeline, upstream, downstream, source = _generic_pipeline(manual_upstream=False)
+    initial = execute_pipeline_request(
+        replace(
+            _request(pipeline, source, policy=ComputeRequest(mode=ComputeMode.AUTO)),
+            retain_node_ids=frozenset({upstream, downstream}),
+            prune_unretained=True,
+        ),
+        raise_errors=True,
+    )
+    assert initial.pipeline is not None
+    pipeline = initial.pipeline
+    assert pipeline.outputs["input"] is None
+    assert pipeline.outputs[upstream] is not None
+    calls = []
+    original = pipeline._run_node
+
+    def count_run(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "_run_node", count_run)
+    execute_synchronous_cpu_pipeline(
+        pipeline,
+        replace(
+            _request(pipeline, source, dirty={downstream}),
+            retain_node_ids=frozenset({upstream, downstream}),
+            prune_unretained=True,
+        ),
+    )
+    assert calls == ["input", upstream, downstream]
+    assert pipeline.node_execution_states[upstream] == EXECUTION_READY
+    assert pipeline.node_execution_states[downstream] == EXECUTION_READY
+    np.testing.assert_array_equal(source.data, np.arange(80).reshape(8, 10))
+    assert not source.data.flags.writeable
 
 
 def _tracking_widget(qtbot, tmp_path):
@@ -231,6 +276,90 @@ def test_sync_failure_publishes_only_completed_prefix_for_next_manual_retry():
     assert result.pipeline.outputs[upstream] is cached
     assert result.pipeline.node_execution_states[upstream] == EXECUTION_READY
     assert result.pipeline.node_execution_states[downstream] == EXECUTION_READY
+
+
+def _pruned_manual_pipeline():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    upstream = pipeline.add_node("gaussian_blur")
+    manual = pipeline.add_node("intensity_histogram")
+    downstream = pipeline.add_node("select_table_columns")
+    assert pipeline.connect("input", upstream.id).success
+    assert pipeline.connect(upstream.id, manual.id).success
+    assert pipeline.connect(manual.id, downstream.id).success
+    data = np.arange(80, dtype=np.float32).reshape(8, 10)
+    data.setflags(write=False)
+    source = SourcePayload(data, {"axes": "YX"}, "Known input")
+    return pipeline, upstream.id, manual.id, downstream.id, source
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_sync_pruning_preserves_lineage_for_retained_manual_cache(
+    monkeypatch, detached
+):
+    pipeline, upstream, manual, downstream, source = _pruned_manual_pipeline()
+    retained = frozenset({manual, downstream})
+    execute_synchronous_cpu_pipeline(
+        pipeline,
+        replace(
+            _request(pipeline, source, manual=set(pipeline.nodes)),
+            retain_node_ids=retained,
+            prune_unretained=True,
+        ),
+    )
+    assert pipeline.outputs["input"] is None
+    assert pipeline.outputs[upstream] is None
+    assert set(pipeline.node_cache_lineage) == set(pipeline.nodes)
+    assert set(pipeline.node_compute_provenance) == retained
+    cached = pipeline.outputs[manual]
+    provenance = pipeline.node_compute_provenance[manual]
+    pipeline.set_param(downstream, "columns", "count")
+    calls = []
+    original = PrototypePipeline._run_node
+
+    def counted(self, node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original(self, node_id, *args, **kwargs)
+
+    monkeypatch.setattr(PrototypePipeline, "_run_node", counted)
+    request = replace(
+        _request(pipeline, source, dirty={downstream}),
+        retain_node_ids=retained,
+        prune_unretained=True,
+    )
+    if detached:
+        result = execute_pipeline_request(request, raise_errors=True)
+        pipeline = result.pipeline
+        assert pipeline is not None
+    else:
+        execute_synchronous_cpu_pipeline(pipeline, request)
+    assert calls == [downstream]
+    assert pipeline.outputs[manual] is cached
+    assert pipeline.node_compute_provenance[manual] == provenance
+    assert pipeline.node_execution_states[manual] == EXECUTION_READY
+    assert pipeline.node_execution_states[downstream] == EXECUTION_READY
+    np.testing.assert_array_equal(source.data, np.arange(80).reshape(8, 10))
+    assert not source.data.flags.writeable
+
+
+def test_sync_pruned_failure_records_only_actual_completed_lineage():
+    pipeline, upstream, manual, downstream, source = _pruned_manual_pipeline()
+    pipeline.set_param(downstream, "columns", "missing_column")
+    with pytest.raises(ValueError, match="missing_column"):
+        execute_synchronous_cpu_pipeline(
+            pipeline,
+            replace(
+                _request(pipeline, source, manual=set(pipeline.nodes)),
+                retain_node_ids=frozenset({manual, downstream}),
+                prune_unretained=True,
+            ),
+        )
+    assert pipeline.outputs["input"] is None
+    assert pipeline.outputs[upstream] is None
+    assert set(pipeline.node_cache_lineage) == {"input", upstream, manual}
+    assert set(pipeline.node_compute_provenance) == {manual}
+    assert downstream not in pipeline.completed_node_ids
+    assert downstream not in pipeline.node_cache_lineage
 
 
 @pytest.mark.parametrize("action", ["branch", "insert"])

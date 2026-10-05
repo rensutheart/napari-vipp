@@ -30,11 +30,15 @@ def test_example_cards_notes_and_tunnels_have_clear_layout(qtbot, qapp, example,
         "synthetic-colocalization-overlap.json",
         "synthetic-deconvolution-rl-tv.json",
         "synthetic-3d-deconvolution-rl-tv.json",
+        "synthetic-template-detection-2d.json",
+        "synthetic-template-detection-3d.json",
     ],
 )
 def test_example_layouts_allow_wider_linux_font(qtbot, qapp, filename, phase):
     # Ubuntu cannot use Segoe UI. Its wider DejaVu fallback previously let
     # RL-TV cards grow into notes and an ROI wire cross a channel tunnel.
+    # Wider native fonts also let the detection support tunnel overlap Match;
+    # keep the actual bundled diagrams clear, not just the Windows font layout.
     if QFontInfo(QFont("DejaVu Sans", 9)).family() != "DejaVu Sans":
         pytest.skip("DejaVu Sans is not installed on this platform")
     _assert_example_layout(qtbot, qapp, filename, phase, font_family="DejaVu Sans")

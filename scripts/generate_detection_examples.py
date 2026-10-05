@@ -60,8 +60,10 @@ def detection_example(dimensions):
         "channel": [1140, 100],
         "template": [1710, 100],
         "match": [2280, 100],
-        "peaks": [2850, 100],
-        "scores": [3570, 100],
+        # The input support tunnel extends left from Find Peaks. Reserve room
+        # for both it and the wider Template Match card under native fonts.
+        "peaks": [3150, 100],
+        "scores": [3870, 100],
     }
     truth = (
         "Four source-index ZYX centers: (5,14,15), (5,14,31), (12,40,24), "
@@ -103,7 +105,7 @@ def detection_example(dimensions):
             "4. KNOWN ANSWER\n" + truth + " Inspect the detection "
             "table and source-coordinate overlay. The clipped border copy and "
             "the deliberately missing site are not expected detections.",
-            [2880, -300],
+            [3180, -300],
             500,
         ),
         note(
@@ -112,7 +114,7 @@ def detection_example(dimensions):
             "The template's own location is included, so its near-one score is "
             "not an independent validation result. Correlation is not probability. "
             "Calculation writes no files and produces no segmentation labels.",
-            [3590, -260],
+            [3890, -260],
             470,
         ),
     ]

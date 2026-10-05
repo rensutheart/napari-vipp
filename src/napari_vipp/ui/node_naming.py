@@ -2,7 +2,7 @@
 
 from html import escape
 
-from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -18,10 +18,12 @@ from napari_vipp.ui.node_labels import NodePresentation
 
 
 class _SettingsSummary(QLabel):
-    """Wrap the complete live summary to the inspector's available width."""
+    """Wrap live settings without shrinking the same node's control positions."""
 
     def __init__(self):
         super().__init__()
+        self._height_envelope: dict[int, int] = {}
+        self._height_context = None
         self.setTextFormat(Qt.PlainText)
         self.setWordWrap(True)
         self.setMinimumWidth(0)
@@ -34,9 +36,64 @@ class _SettingsSummary(QLabel):
         self.setAccessibleDescription(text)
         self.setVisible(bool(text))
 
+    def reset_height_envelope(self):
+        """Release presentation-only space when its node or layout changes."""
+        self._height_envelope.clear()
+        self._height_context = None
+        self.updateGeometry()
+
+    def _sync_height_context(self):
+        margins = self.contentsMargins()
+        context = (
+            self.font().toString(),
+            self.fontMetrics().height(),
+            self.style().objectName(),
+            self.styleSheet(),
+            self.margin(),
+            self.indent(),
+            margins.left(),
+            margins.top(),
+            margins.right(),
+            margins.bottom(),
+        )
+        if context != self._height_context:
+            self._height_envelope.clear()
+            self._height_context = context
+
+    def heightForWidth(self, width):  # noqa: N802
+        self._sync_height_context()
+        required = int(super().heightForWidth(width))
+        if required < 0:
+            return required
+        # Changing 1000 to 1 can remove a wrapped line on some system fonts.
+        # Keep that readable space while tuning this node, but still let a
+        # genuinely longer summary grow. Widths are cached separately because
+        # Qt can measure several candidate widths during one layout pass.
+        reserved = max(required, self._height_envelope.get(int(width), 0))
+        self._height_envelope[int(width)] = reserved
+        return reserved
+
     def minimumSizeHint(self):  # noqa: N802
         hint = super().minimumSizeHint()
+        # QLabel's one-line minimum must stay independent of its current
+        # width. Promoting a narrow-width reservation into this global minimum
+        # can clamp an owner's next resize before it gets the wider geometry.
+        # The readable, width-specific reservation belongs in heightForWidth.
         return QSize(0, hint.height())
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.reset_height_envelope()
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if hasattr(self, "_height_envelope") and event.type() in {
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+        }:
+            self.reset_height_envelope()
 
 
 class NodeNameEditor(QWidget):
@@ -108,6 +165,8 @@ class NodeNameEditor(QWidget):
 
     def set_node(self, node_id: str, custom_name: str, presentation: NodePresentation):
         changed_node = self._node_id != node_id
+        if changed_node:
+            self.summary_label.reset_height_envelope()
         self._node_id = node_id
         # Background result refreshes must not erase a name being typed.
         if changed_node or not (
@@ -131,6 +190,7 @@ class NodeNameEditor(QWidget):
 
     def clear(self):
         self._node_id = self._editing_node_id = ""
+        self.summary_label.reset_height_envelope()
         self.name_edit.clear()
         self.name_edit.setModified(False)
         self.hide()

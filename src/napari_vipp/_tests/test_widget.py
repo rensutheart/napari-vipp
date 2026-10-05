@@ -21268,8 +21268,9 @@ def test_low_memory_cache_keeps_working_node_input_and_explicit_outputs(qtbot):
 
 def test_low_memory_dirty_run_reuses_retained_working_input(qtbot, monkeypatch):
     viewer = _Viewer()
-    widget = VippWidget(viewer)
-    widget._compute_mode = ComputeMode.CPU
+    # Keep one compute policy throughout: switching Auto to CPU intentionally
+    # requires replanning rather than authenticating the prior structural cache.
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
     qtbot.addWidget(widget)
 
     widget.graph_view.select_node("threshold")

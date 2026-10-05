@@ -170,11 +170,11 @@
       100
     ],
     "peaks": [
-      2850,
+      3150,
       100
     ],
     "scores": [
-      3570,
+      3870,
       100
     ]
   },
@@ -226,7 +226,7 @@
       "attached_node": "peaks",
       "text": "4. KNOWN ANSWER\nFive source-index YX centers: (20,20), (20,65), (47,34), (47,46), (72,80). The nearby pair is 12 pixels apart; amplitudes differ. Inspect the detection table and source-coordinate overlay. The clipped border copy and the deliberately missing site are not expected detections.",
       "position": [
-        2880,
+        3180,
         -300
       ],
       "width": 500
@@ -236,7 +236,7 @@
       "attached_node": "scores",
       "text": "5. SCORES, NOT CONFIDENCE\nOpen the score histogram. The template's own location is included, so its near-one score is not an independent validation result. Correlation is not probability. Calculation writes no files and produces no segmentation labels.",
       "position": [
-        3590,
+        3890,
         -260
       ],
       "width": 470
