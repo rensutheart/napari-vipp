@@ -55,13 +55,13 @@ previews and selected-node inspector visible together.*
 ## Install
 
 For this version, use the
-[`v0.16.0a2` release page](https://github.com/rensutheart/napari-vipp/releases/tag/v0.16.0a2).
+[`v0.16.0a3` release page](https://github.com/rensutheart/napari-vipp/releases/tag/v0.16.0a3).
 
 | Platform | Recommended route |
 | --- | --- |
-| Windows 64-bit | Download `VIPP-Setup-0.16.0a2-Windows-x86_64-UNSIGNED.exe` from the release page. The setup application creates and manages a dedicated VIPP environment. A supported 64-bit Python is a separate prerequisite. |
-| macOS Apple Silicon | Download `VIPP-0.16.0a2-macOS-arm64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
-| macOS Intel | Download `VIPP-0.16.0a2-macOS-x86_64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
+| Windows 64-bit | Download `VIPP-Setup-0.16.0a3-Windows-x86_64-UNSIGNED.exe` from the release page. The setup application creates and manages a dedicated VIPP environment. A supported 64-bit Python is a separate prerequisite. |
+| macOS Apple Silicon | Download `VIPP-0.16.0a3-macOS-arm64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
+| macOS Intel | Download `VIPP-0.16.0a3-macOS-x86_64-UNSIGNED.pkg`. The package is self-contained and CPU-only. |
 | Linux or an existing Python environment | Use the manual installation below. CPU execution is supported. |
 
 The desktop installers are unsigned alpha builds. Download them only from the
@@ -72,7 +72,7 @@ For a manual installation, use a dedicated CPython 3.12 or 3.13 environment.
 On Windows or Linux:
 
 ```bash
-python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.16.0a2"
+python -m pip install "napari[pyqt6]>=0.6" "napari-vipp==0.16.0a3"
 vipp
 ```
 
@@ -108,6 +108,8 @@ collection processing and reproducibility artifacts. See the
 | --- | --- |
 | Prepare images | Intensity transforms, background correction, filtering, denoising, channel handling, axis operations, masks and volume regions of interest. |
 | Segment structures | Global and local thresholds, edges, watershed, binary morphology, label cleanup and connected-component operations. |
+| Align images | Calibrated translation, rigid and affine registration, fixed-reference or previous-frame whole-volume time-series alignment, reusable transforms and valid-coverage comparison. |
+| Detect and follow observations | Fixed-size 2D/3D template matching, peak detection, per-frame spot detection, bounded position-based tracking and read-only trajectory review. |
 | Quantify results | Object and intensity measurements, calibrated 3D mesh morphology, skeleton and network analysis, colocalisation, object association and table composition. |
 | Restore images | Measured or generated point-spread functions, Richardson–Lucy and RL–TV deconvolution in 2D and 3D. |
 | Reuse analyses | Workflow JSON, generated Python, explicit batch outputs, collection manifests and execution provenance. |

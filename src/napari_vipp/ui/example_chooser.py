@@ -33,6 +33,7 @@ from napari_vipp.ui.toolbar_controls import toolbar_icon
 
 _CATEGORY_ORDER = (
     "Segmentation & Labels",
+    "Detection & Peaks",
     "Measurements & Tables",
     "Colocalization & Association",
     "Restoration & PSF",

@@ -11,6 +11,8 @@ on:
       - "scripts/smoke_centrosome_install.py"
       - "scripts/smoke_simpleitk_install.py"
       - "scripts/smoke_registration_install.py"
+      - "scripts/smoke_detection_install.py"
+      - "scripts/smoke_tracking_install.py"
       - "scripts/cache_native_reader_corpus.py"
       - "src/napari_vipp/_tests/test_macos_installer_packaging.py"
       - "src/napari_vipp/**"
@@ -115,6 +117,8 @@ jobs:
           "$prefix/bin/python" scripts/smoke_mesh_install.py --require-installed
           "$prefix/bin/python" scripts/smoke_simpleitk_install.py --require-installed
           "$prefix/bin/python" scripts/smoke_registration_install.py --require-installed
+          "$prefix/bin/python" scripts/smoke_detection_install.py --require-installed
+          "$prefix/bin/python" scripts/smoke_tracking_install.py --require-installed
           expected_version="$(python -c \
             'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           "$prefix/bin/python" -c \

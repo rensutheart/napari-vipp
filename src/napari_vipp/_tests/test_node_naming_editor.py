@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QTextDocument
+from qtpy.QtGui import QFont, QTextDocument
+from qtpy.QtWidgets import QFrame, QLabel, QScrollArea
 
 from napari_vipp.core.node_names import MAX_NODE_NAME_LENGTH, normalize_node_name
 from napari_vipp.ui.node_labels import NodePresentation
@@ -164,12 +165,31 @@ def test_markup_in_names_and_settings_remains_literal(editor):
     assert "&amp; intensity &gt; 2" in editor.summary_label.toolTip()
 
 
-def test_long_summary_is_shortened_visibly_but_retained_in_tooltip(editor):
+def test_long_summary_is_fully_visible_and_retained_in_tooltip(editor, qtbot):
+    # Exercise real overflow rather than relying on the platform's default
+    # font being large enough to exceed this viewport.
+    editor.setFont(QFont("Segoe UI", 14))
+    panel = QScrollArea()
+    qtbot.addWidget(panel)
+    panel.setWidgetResizable(True)
+    panel.setWidget(editor)
+    panel.resize(520, 180)
+    panel.show()
     summary = "Grouped measurements and exact settings " * 20
     editor.set_node("first", "", _presentation(summary=summary))
-    assert len(editor.summary_label.text()) < len(summary)
-    assert editor.summary_label.text().endswith("…")
+    qtbot.waitUntil(lambda: editor.summary_label.height() >= (
+        editor.summary_label.heightForWidth(editor.summary_label.width())
+    ))
+    assert editor.summary_label.text() == summary
+    assert (
+        editor.summary_label.height()
+        > 3 * editor.summary_label.fontMetrics().lineSpacing()
+    )
+    assert editor.rect().contains(editor.summary_label.geometry())
     assert summary in editor.summary_label.toolTip()
+    assert panel.widget().height() > panel.viewport().height()
+    qtbot.waitUntil(lambda: panel.verticalScrollBar().maximum() > 0)
+    assert panel.verticalScrollBar().maximum() > 0
 
 
 @pytest.mark.parametrize(
@@ -208,9 +228,22 @@ def test_narrow_inspector_gives_name_full_width_and_shows_its_beginning(
     assert tooltip.toPlainText().startswith(name + "\n\n")
 
 
-def test_narrow_inspector_summary_uses_three_lines_and_retains_full_context(
+def test_narrow_inspector_summary_wraps_all_context_and_reflows_on_resize(
     editor, qtbot
 ):
+    # Avoid testing identical surplus-space allocation in a large owner with
+    # a small system font; the narrow summary must genuinely force expansion.
+    editor.setFont(QFont("Segoe UI", 14))
+    panel = QScrollArea()
+    qtbot.addWidget(panel)
+    panel.setWidgetResizable(True)
+    # Test the real width-aware inspector hosting contract without adding
+    # frame/scrollbar chrome to the exact requested content widths.
+    panel.setFrameShape(QFrame.NoFrame)
+    panel.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    panel.setWidget(editor)
+    panel.resize(230, 180)
+    panel.show()
     summary = (
         "Mean, SD · Measurements: nuclear_intensity, cell_intensity, "
         "cytoplasmic_intensity · Grouped by Well · Sample averages · "
@@ -218,27 +251,32 @@ def test_narrow_inspector_summary_uses_three_lines_and_retains_full_context(
         "Within sample: Equal objects · Equal weight per sample"
     )
     editor.set_node("first", "", _presentation(summary=summary))
-    editor.resize(230, 180)
     qtbot.waitUntil(lambda: editor.summary_label.width() == 230)
 
     label = editor.summary_label
-    assert label.height() <= 3 * label.fontMetrics().lineSpacing()
-    assert label.text().endswith("…")
-    assert len(label.text()) < len(summary)
+    qtbot.waitUntil(lambda: label.height() >= label.heightForWidth(label.width()))
+    assert label.height() > 3 * label.fontMetrics().lineSpacing()
+    assert label.text() == summary
     assert editor.rect().contains(label.geometry())
     assert label.accessibleDescription() == summary
     tooltip = QTextDocument()
     tooltip.setHtml(label.toolTip())
     assert tooltip.toPlainText() == summary
-    narrow_text = label.text()
+    narrow_height = label.height()
+    assert label.heightForWidth(460) < label.heightForWidth(230)
+    assert editor.height() > 180
+    qtbot.waitUntil(lambda: panel.verticalScrollBar().maximum() > 0)
+    assert panel.verticalScrollBar().maximum() > 0
 
-    editor.resize(460, 180)
+    panel.resize(460, 180)
     qtbot.waitUntil(lambda: editor.summary_label.width() == 460)
-    assert len(label.text()) > len(narrow_text)
-    assert label.height() <= 3 * label.fontMetrics().lineSpacing()
-    editor.resize(230, 180)
+    qtbot.waitUntil(lambda: label.height() < narrow_height)
+    assert label.text() == summary
+    assert label.height() >= label.heightForWidth(label.width())
+    panel.resize(230, 180)
     qtbot.waitUntil(lambda: editor.summary_label.width() == 230)
-    assert label.text() == narrow_text
+    qtbot.waitUntil(lambda: label.height() == narrow_height)
+    assert label.text() == summary
     assert label.accessibleDescription() == summary
 
 
@@ -268,3 +306,119 @@ def test_owner_can_reject_invalid_text_and_restore_prior_name(editor):
     assert rejected == ["Node name must be a single line without control characters."]
     assert editor.name_edit.text() == "Previously saved"
     assert not editor.name_edit.isModified()
+
+
+def _natural_summary_height(label, text, width):
+    probe = QLabel(text)
+    probe.setTextFormat(Qt.PlainText)
+    probe.setWordWrap(True)
+    probe.setFont(label.font())
+    probe.setStyleSheet(label.styleSheet())
+    return probe.heightForWidth(width)
+
+
+def _summary_shrink_width(label):
+    """Choose a real wrap boundary instead of assuming platform font metrics."""
+    long = "Detection mode: Local peaks · Maximum detections per frame: 1000"
+    short = long.replace("1000", "1")
+    width = next(
+        width for width in range(200, 900)
+        if _natural_summary_height(label, long, width)
+        > _natural_summary_height(label, short, width)
+    )
+    return long, short, width
+
+
+def test_same_node_numeric_summary_keeps_readable_height_envelope(editor):
+    label = editor.summary_label
+    long, short, width = _summary_shrink_width(label)
+    editor.set_node("first", "", _presentation(summary=long))
+    baseline = label.heightForWidth(width)
+    assert baseline > _natural_summary_height(label, short, width)
+
+    editor.set_node("first", "", _presentation(summary=short))
+    assert label.heightForWidth(width) == baseline
+    assert label.text() == short
+    assert label.accessibleDescription() == short
+    assert short in label.toolTip()
+    # A genuinely longer summary must still grow rather than clip content.
+    extended = long * 8
+    editor.set_node("first", "", _presentation(summary=extended))
+    assert label.heightForWidth(width) >= _natural_summary_height(
+        label, extended, width
+    )
+
+
+@pytest.mark.parametrize("clear_first", (False, True))
+def test_summary_height_envelope_does_not_follow_another_node(editor, clear_first):
+    label = editor.summary_label
+    long, short, width = _summary_shrink_width(label)
+    editor.set_node("first", "", _presentation(summary=long))
+    baseline = label.heightForWidth(width)
+    if clear_first:
+        editor.clear()
+    editor.set_node(
+        "first" if clear_first else "second", "", _presentation(summary=short)
+    )
+    assert label.heightForWidth(width) == _natural_summary_height(
+        label, short, width
+    )
+    assert label.heightForWidth(width) < baseline
+
+
+def test_summary_height_envelope_reflows_after_font_change(editor):
+    label = editor.summary_label
+    long, short, width = _summary_shrink_width(label)
+    editor.set_node("first", "", _presentation(summary=long))
+    baseline = label.heightForWidth(width)
+    editor.set_node("first", "", _presentation(summary=short))
+    assert label.heightForWidth(width) == baseline
+
+    font = QFont(label.font())
+    font.setPointSize(8)
+    label.setFont(font)
+    assert label.heightForWidth(width) == _natural_summary_height(
+        label, short, width
+    )
+
+
+def test_summary_height_envelope_reflows_after_actual_width_change(editor, qtbot):
+    label = editor.summary_label
+    long, short, width = _summary_shrink_width(label)
+    editor.resize(width, 180)
+    qtbot.waitUntil(lambda: label.width() == width)
+    editor.set_node("first", "", _presentation(summary=long))
+    baseline = label.heightForWidth(width)
+    editor.set_node("first", "", _presentation(summary=short))
+    assert label.heightForWidth(width) == baseline
+    assert baseline > _natural_summary_height(label, short, width)
+
+    editor.resize(width + 80, 180)
+    qtbot.waitUntil(lambda: label.width() == width + 80)
+    assert label.heightForWidth(label.width()) == _natural_summary_height(
+        label, short, label.width()
+    )
+    editor.resize(width, 180)
+    qtbot.waitUntil(lambda: label.width() == width)
+    assert label.heightForWidth(width) == _natural_summary_height(
+        label, short, width
+    )
+    assert label.heightForWidth(width) < baseline
+    assert label.height() >= label.heightForWidth(width)
+    assert label.text() == short
+    assert editor.rect().contains(label.geometry())
+
+
+def test_summary_height_envelope_reflows_after_style_change(editor):
+    label = editor.summary_label
+    long, short, width = _summary_shrink_width(label)
+    editor.set_node("first", "", _presentation(summary=long))
+    baseline = label.heightForWidth(width)
+    editor.set_node("first", "", _presentation(summary=short))
+    assert label.heightForWidth(width) == baseline
+
+    label.setStyleSheet("font-size: 8pt; padding: 2px;")
+    label.ensurePolished()
+    assert label.heightForWidth(width) == _natural_summary_height(
+        label, short, width
+    )

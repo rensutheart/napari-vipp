@@ -16,11 +16,12 @@ from napari_vipp.core.workflow import (
 )
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
-    # Combine the independently reviewed label-skeleton and registration
-    # additions. Removing each branch below pins the other branch's golden;
-    # removing both preserves the prior nine-lane scientific contract.
+    # Independent detection and tracking lanes extend this showcase. Exact
+    # branch projections below pin every preceding historical analysis.
+    # The unreleased tracking rename changes only operation/node identities;
+    # reversing those identities reproduces the preceding goldens exactly.
     "exhaustive-inspector-showcase.json": (
-        "b77b9ec8e45f139b78f36e24e86e37289695730014f456b10c66bc3efe4415c4"
+        "8d6ad9b4559389d64f154527482bfe35aef9d4c3643d4a112f8e6fc3c7ac25fb"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -111,6 +112,22 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-separate-overlapping-objects.json": (
         "81f3a1064e759cb6b885be316df6f76668601c4b0a7a27215319dd7311e6c4ec"
+    ),
+    "synthetic-template-detection-2d.json": (
+        "ad51412527424118ac7ff57528c03bc7689dac7d88d113abb24312d7d87126fb"
+    ),
+    "synthetic-template-detection-3d.json": (
+        "475db021f048ff4b604afbb4babbb19d4557e47fd6987d3f509bfd0342977fb1"
+    ),
+    # Independent time-series recipes: explicit channel/segmentation routes,
+    # calibrated one-to-one linking and a primary-result summary handoff.
+    # Existing focused examples retain their hashes. The exhaustive showcase
+    # adds an independent lane; its exact historical projection is pinned below.
+    "synthetic-tracking-labels-3d.json": (
+        "5b3bbf52da9e303bc917082267b6b5de16bd6288db148baa6d18ef98cdfd401a"
+    ),
+    "synthetic-tracking-spots-2d.json": (
+        "9891e375fd994fec3dcacbb483014bd9c368419e75ad247397c3bba6a603b8fe"
     ),
 }
 
@@ -375,9 +392,178 @@ def _without_showcase_registration_lane(document: dict[str, Any]) -> dict[str, A
     return document
 
 
+def _without_showcase_tracking_lane(document: dict[str, Any]) -> dict[str, Any]:
+    document = deepcopy(document)
+    added_nodes = {
+        "input_13": "input",
+        "extract_channel_3": "extract_channel",
+        "detect_spots_per_frame_1": "detect_spots_per_frame",
+        "build_tracks_1": "build_tracks",
+        "select_table_columns_2": "select_table_columns",
+    }
+    assert {
+        node["id"]: node["operation_id"]
+        for node in document["nodes"] if node["id"] in added_nodes
+    } == added_nodes
+    added_edges = [
+        edge for edge in document["connections"]
+        if edge["source"] in added_nodes or edge["target"] in added_nodes
+    ]
+    assert added_edges == [
+        {"source": "input_13", "target": "extract_channel_3",
+         "target_port": 0, "source_port": 0},
+        {"source": "extract_channel_3", "target": "detect_spots_per_frame_1",
+         "target_port": 0, "source_port": 0},
+        {"source": "detect_spots_per_frame_1", "target": "build_tracks_1",
+         "target_port": 0, "source_port": 0},
+        {"source": "build_tracks_1", "target": "select_table_columns_2",
+         "target_port": 0, "source_port": 1},
+    ]
+    assert not any(tunnel["source"] in added_nodes for tunnel in document["tunnels"])
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_nodes
+    ]
+    document["connections"] = [
+        edge for edge in document["connections"] if edge not in added_edges
+    ]
+    for identifier in added_nodes:
+        document["positions"].pop(identifier)
+    document["notes"] = [
+        note for note in document["notes"] if note["id"] != "lane_tracking"
+    ]
+    return document
+
+
+def test_showcase_tracking_lane_preserves_complete_eleven_lane_analysis():
+    document = _without_showcase_tracking_lane(
+        _load_example("exhaustive-inspector-showcase.json")
+    )
+    historical_hash = "f240afc98d039735deda606d7d9be963e5bb619561c56f7858c6cf9ab4a93f65"
+    assert scientific_workflow_hash(document) == historical_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(document)) == historical_hash
+    )
+
+
+def _without_showcase_detection_lane(document: dict[str, Any]) -> dict[str, Any]:
+    document = _without_showcase_tracking_lane(document)
+    added_nodes = {
+        "input_12": "input",
+        "select_axis_slice_2": "select_axis_slice",
+        "extract_channel_2": "extract_channel",
+        "crop_stack_2": "crop_stack",
+        "template_match_1": "template_match",
+        "find_peaks_1": "find_peaks",
+    }
+    assert {
+        node["id"]: node["operation_id"]
+        for node in document["nodes"]
+        if node["id"] in added_nodes
+    } == added_nodes
+    added_edges = [
+        edge
+        for edge in document["connections"]
+        if edge["source"] in added_nodes or edge["target"] in added_nodes
+    ]
+    # Require these exact internal edges, not arbitrary edges touching the new
+    # nodes: an accidental dependency on a prior lane must fail preservation.
+    assert added_edges == [
+        {
+            "source": "input_12",
+            "target": "select_axis_slice_2",
+            "target_port": 0,
+            "source_port": 0,
+        },
+        {
+            "source": "select_axis_slice_2",
+            "target": "extract_channel_2",
+            "target_port": 0,
+            "source_port": 0,
+        },
+        {
+            "source": "extract_channel_2",
+            "target": "crop_stack_2",
+            "target_port": 0,
+            "source_port": 0,
+        },
+        {
+            "source": "extract_channel_2",
+            "target": "template_match_1",
+            "target_port": 0,
+            "source_port": 0,
+            "tunnel": "Detection selected image",
+        },
+        {
+            "source": "crop_stack_2",
+            "target": "template_match_1",
+            "target_port": 1,
+            "source_port": 0,
+        },
+        {
+            "source": "template_match_1",
+            "target": "find_peaks_1",
+            "target_port": 0,
+            "source_port": 0,
+        },
+        {
+            "source": "template_match_1",
+            "target": "find_peaks_1",
+            "target_port": 1,
+            "source_port": 1,
+            "tunnel": "Detection valid support",
+        },
+    ]
+    added_tunnels = [
+        tunnel for tunnel in document["tunnels"]
+        if tunnel["source"] in added_nodes
+    ]
+    assert added_tunnels == [
+        {
+            "name": "Detection selected image",
+            "source": "extract_channel_2",
+            "source_port": 0,
+        },
+        {
+            "name": "Detection valid support",
+            "source": "template_match_1",
+            "source_port": 1,
+        },
+    ]
+    document["nodes"] = [
+        node for node in document["nodes"] if node["id"] not in added_nodes
+    ]
+    document["connections"] = [
+        edge for edge in document["connections"] if edge not in added_edges
+    ]
+    document["tunnels"] = [
+        tunnel for tunnel in document["tunnels"] if tunnel not in added_tunnels
+    ]
+    for identifier in added_nodes:
+        document["positions"].pop(identifier)
+    document["notes"] = [
+        note for note in document["notes"] if note["id"] != "lane_detection"
+    ]
+    return document
+
+
+def test_showcase_detection_lane_preserves_complete_a2_analysis():
+    document = _without_showcase_detection_lane(
+        _load_example("exhaustive-inspector-showcase.json")
+    )
+    # Verified against both v0.16.0a2 and e66ea8b: all prior 152 node records,
+    # 185 connection records and 13 tunnel records are exactly unchanged.
+    historical_hash = "b77b9ec8e45f139b78f36e24e86e37289695730014f456b10c66bc3efe4415c4"
+    assert scientific_workflow_hash(document) == historical_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(document)) == historical_hash
+    )
+
+
 def test_showcase_label_skeleton_branch_preserves_registration_analysis():
     document = _without_label_skeleton_branch(
-        _load_example("exhaustive-inspector-showcase.json")
+        _without_showcase_detection_lane(
+            _load_example("exhaustive-inspector-showcase.json")
+        )
     )
     previous_hash = "32be7bd0081212c171f3dc1aa88f1901a3c50558cb4a66785bd2c26091d1e5ba"
     assert scientific_workflow_hash(document) == previous_hash
@@ -386,7 +572,9 @@ def test_showcase_label_skeleton_branch_preserves_registration_analysis():
 
 def test_showcase_registration_lane_preserves_label_skeleton_analysis():
     document = _without_showcase_registration_lane(
-        _load_example("exhaustive-inspector-showcase.json")
+        _without_showcase_detection_lane(
+            _load_example("exhaustive-inspector-showcase.json")
+        )
     )
     previous_hash = "c13d64f69bd1818a0ae92aacc4745989282f0302d1ddd8263a25e3c236b3405c"
     assert scientific_workflow_hash(document) == previous_hash
@@ -396,7 +584,9 @@ def test_showcase_registration_lane_preserves_label_skeleton_analysis():
 def _without_showcase_a2_additions() -> dict[str, Any]:
     return _without_label_skeleton_branch(
         _without_showcase_registration_lane(
-            _load_example("exhaustive-inspector-showcase.json")
+            _without_showcase_detection_lane(
+                _load_example("exhaustive-inspector-showcase.json")
+            )
         )
     )
 

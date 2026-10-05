@@ -32,6 +32,125 @@ class ExampleGuidance:
 
 EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
     {
+        "tracking-spots-2d": ExampleGuidance(
+            purpose=(
+                "Link detected spots while keeping missing frames and "
+                "uncertainty visible."
+            ),
+            data=(
+                "Seven timepoints, two channels and four constructed spot "
+                "trajectories; frame 3 is empty and the lower pair crosses there."
+            ),
+            explore=(
+                "Extract Moving spots (C=1) and keep the full time axis.",
+                "Check 24 detections and the explicit zero count for frame 3.",
+                "Compare frame-local detection IDs with the estimated track IDs.",
+                "Review the crossing flags and both tracked-table outputs.",
+            ),
+            results=("Frame-local detections", "Tracked observations", "Track summary"),
+            try_this=(
+                "Set Maximum missing frames to zero and recalculate: the "
+                "empty frame deliberately breaks all four tracks."
+            ),
+            caution=(
+                "Position-only linking can exchange the crossing pair's "
+                "construction identities. Review flags are neither probabilities "
+                "nor a guarantee that every wrong association is detected."
+            ),
+        ),
+        "tracking-labels-3d": ExampleGuidance(
+            purpose=(
+                "Link independent 3D object measurements with calibrated distances."
+            ),
+            data=(
+                "Six anisotropic volumes of separate cubes, one missing object "
+                "at frame 2 and a new object appearing at frame 3."
+            ),
+            explore=(
+                "Threshold > 0 and label each full 3D frame independently.",
+                "Inspect 14 measured centroids; local label IDs can change over time.",
+                "Link with two micrometres per frame and one allowed missing frame.",
+                "Check three tracks with 6, 5 and 3 observations and their speeds.",
+            ),
+            results=(
+                "Independent frame labels",
+                "Object measurements",
+                "Tracked observations",
+                "Track summary",
+            ),
+            try_this=(
+                "Compare the default physical-distance gate with Pixels using "
+                "an explicitly chosen value; anisotropic Z changes the geometry."
+            ),
+            caution=(
+                "The visible threshold and labeling steps replace the supplied "
+                "label numbers; they preserve the separate cubes' centroids. "
+                "This analytical example makes no biological accuracy, division "
+                "or fusion claim."
+            ),
+        ),
+        "template-detection-2d": ExampleGuidance(
+            purpose=(
+                "Locate repeated fixed-size, fixed-orientation structures "
+                "without segmenting them."
+            ),
+            data=(
+                "Two timepoints, two named channels; five noisy asymmetric 2D "
+                "copies, a clipped border copy and an absent site."
+            ),
+            explore=(
+                "Select T=1 and Repeated pattern; inspect the 13 × 11 template.",
+                "Compare the smaller correlation map with its valid-support mask.",
+                "Inspect five detection rows and their source-coordinate overlay.",
+                "Open the score histogram; correlation is not detection probability.",
+            ),
+            results=(
+                "Correlation scores",
+                "Valid-support mask",
+                "Detection table",
+                "Score histogram",
+            ),
+            try_this=(
+                "Increase minimum separation from 8 to 13 pixels: "
+                "the nearby pair becomes one retained detection."
+            ),
+            caution=(
+                "The border copy lacks a full template window; the absent site "
+                "is not a detection. No labels, scale search or rotation search "
+                "are created."
+            ),
+        ),
+        "template-detection-3d": ExampleGuidance(
+            purpose=(
+                "Locate volumetric patterns and separate detections using "
+                "calibrated physical distances."
+            ),
+            data=(
+                "Four noisy 3D patterns; spacing Z=1.5, Y=0.5, X=0.4 "
+                "micrometres and a nonzero physical origin."
+            ),
+            explore=(
+                "Select T=1 and Repeated pattern, preserving the explicit Z axis.",
+                "Inspect the 7 × 9 × 11 template as a volume, not a projection.",
+                "Read four centers in source indices and physical coordinates.",
+                "Compare nearby peaks, clipped borders and the missing pattern.",
+            ),
+            results=(
+                "Volumetric correlation scores",
+                "Valid-support mask",
+                "3D detection table",
+                "Score histogram",
+            ),
+            try_this=(
+                "Increase minimum separation from 5 to 7 micrometres to "
+                "suppress one of the nearby pair 6.4 micrometres apart."
+            ),
+            caution=(
+                "Voxel and physical distances differ in anisotropic data. "
+                "These synthetic checks do not establish performance on "
+                "biological images."
+            ),
+        ),
         "registration-translation": ExampleGuidance(
             purpose="Align two images without changing their object shapes.",
             data=(
@@ -702,12 +821,12 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "testing workflow."
             ),
             data=(
-                "Ten synthetic samples spanning images, volumes, skeletons, "
-                "deconvolution and a known-motion registration pair"
+                "Twelve synthetic samples spanning images, volumes, skeletons, "
+                "deconvolution, registration, template detection and spot tracking"
             ),
             explore=(
                 (
-                    "Browse the ten labelled lanes to find different types of "
+                    "Browse the twelve labelled lanes to find different types of "
                     "processing nodes."
                 ),
                 "Compare the inspector controls for images, masks, meshes and tables.",
@@ -721,10 +840,12 @@ EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
                 "Meshes",
                 "Measurement tables",
                 "Reusable spatial transforms and alignment diagnostics",
+                "Tracked observations and unchanged track summaries",
             ),
             try_this=(
                 "Select an image node, a measurement node and a mesh node. Calculate "
-                "their results and compare the available inspector sections."
+                "their results and compare the available inspector sections. Review "
+                "time-series spot tracks, the missing frame and ambiguous crossing."
             ),
             caution=(
                 "This is an interface-testing collection, not one recommended "

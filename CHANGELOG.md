@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+## 0.16.0a3 - 2026-10-05
+
+### Workspace and inspection
+
+- Keep each workflow tab's preview camera, display mode and slice position
+  separate. Fit a newly viewed tab to its selected image rather than unrelated
+  large layers, and retire Crop outlines before switching or closing tabs.
+  These view changes do not modify image data or recalculate results.
+
+- Use **Detect Spots per Frame** and **Build Tracks** as the names of the new
+  time-series nodes, with `detect_spots_per_frame` and `build_tracks` as their
+  operation IDs and function names.
+
+- Preserve authenticated upstream caches after an initial synchronous CPU
+  calculation, so the first selected-node recalculation does not leave Build
+  Tracks waiting on otherwise current detections. Source, parameter and compute
+  policy changes still invalidate incompatible results.
+
+- Show the full wrapped settings summary in the inspector, including narrow
+  views. Keep unchanged connected-input cards in place during live parameter
+  tuning so the inspector does not jump as detection sliders move.
+
+- Add **Open histogram…** directly to Histogram node cards and **Open
+  measurements…** to measurement, statistics, detection and tracking cards.
+  Open the node's cached results without calculating or changing selection;
+  multi-table nodes retain their chosen table output.
+
+- Add **Review trajectories…** beside the table shortcut on Detect Spots per
+  Frame and Build Tracks cards, and on object-measurement cards carrying
+  time-series observations. Open the same read-only source/table review for that node
+  without calculating or changing selection; current-source and stale-result
+  checks remain in force.
+
+- Give detection, tracking and registration sliders practical tuning ranges
+  while keeping wider valid values available through numeric entry. Preserve
+  entered values beyond the slider range when reopening the inspector.
+
+### Detection, time series and tracking
+
+- Add previous-frame time-series registration with cumulative transforms into
+  a chosen reference frame, separate local/cumulative quality diagnostics and
+  one final resampling of each original volume.
+- Add **Detect Spots per Frame** for scalar TYX/TZYX peak or fixed-template
+  detection, exact empty/capped frame accounting, and **Build Tracks** for one-to-one
+  position linking with explicit distance/gap limits and ambiguity flags.
+- Carry time/grid evidence from object measurements into tracking. Return
+  observation and summary tables with calibrated distance/time, and provide
+  read-only T/Z trajectory review linked to sortable tables. Preserve source
+  evidence through batch/generated export; no lineage or drift is inferred.
+- Add 2D spot and 3D object time-series examples with known motion, gaps and
+  competing links. These are synthetic checks, not microscopy validation.
+
+- Add **Template Match** for complete, fixed-size/orientation 2D/3D normalized
+  correlation, with a paired valid-score mask and calibrated template-centre
+  coordinates. Scores describe resemblance, not detection probability.
+- Add **Find Peaks** for scalar images or template scores, with explicit
+  thresholds, pixel/physical separation, deterministic plateau handling and
+  exact pre-limit counts. Detection tables retain source coordinates and
+  validity evidence through workflow, batch and generated-Python execution.
+- Add a one-click, undoable **Add Find Peaks** next step and read-only detection
+  inspection linking table rows to image markers, with explicit Z-plane review.
+- Add synthetic 2D/3D detection examples with independently recorded locations,
+  edge and crowded cases, and noise-only controls.
+
+### Alpha scope
+
+- Detection and tracking are CPU-only. Tracking links position observations
+  within explicit distance/gap limits; it does not infer biological identity at
+  crossings, predict motion, edit identities or establish lineage. Registration
+  remains global rather than deformable, and previous-frame errors can accumulate.
+  Synthetic known-answer checks are not acquired-microscopy accuracy validation.
+- Keep the runtime dependency pins and installer engines unchanged. Exact-main
+  CI and installed-package/native smoke checks qualify the release artifacts;
+  older private development wheels are not public release bytes.
+
 ## 0.16.0a2 - 2026-09-23
 
 - Accelerate qualified CPU **Median Filter** calls with SimpleITK 2.5.6,

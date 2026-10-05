@@ -12,6 +12,7 @@ from skimage import exposure, morphology
 
 import napari_vipp.core.operations as operations
 from napari_vipp._sample_data import make_sample_data
+from napari_vipp.core.detection_nodes import DETECTION_RUNTIME_KEYWORDS
 from napari_vipp.core.metadata import (
     AcquisitionMetadata,
     AxisMetadata,
@@ -149,6 +150,7 @@ from napari_vipp.core.pipeline import (
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.registration_nodes import REGISTRATION_RUNTIME_KEYWORDS
 from napari_vipp.core.tables import save_table_output, table_from_columns
+from napari_vipp.core.time_detection_nodes import TIME_DETECTION_RUNTIME_KEYWORDS
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -368,6 +370,8 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
     operation_ids = [spec.id for spec in NODE_LIBRARY]
     assert len(operation_ids) == len(set(operation_ids))
     assert REGISTRATION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
+    assert DETECTION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
+    assert TIME_DETECTION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
 
     for spec in NODE_LIBRARY:
         assert spec.execution_policy in EXECUTION_POLICIES, spec.id
@@ -379,7 +383,11 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
                 inspect.signature(spec.function).parameters.values()
             )
             declared = {param.name for param in spec.parameters}
-            injected = REGISTRATION_RUNTIME_KEYWORDS.get(spec.id, frozenset())
+            injected = REGISTRATION_RUNTIME_KEYWORDS.get(
+                spec.id, frozenset()
+            ) | DETECTION_RUNTIME_KEYWORDS.get(
+                spec.id, frozenset()
+            ) | TIME_DETECTION_RUNTIME_KEYWORDS.get(spec.id, frozenset())
             assert not declared & injected, spec.id
             required = {
                 param.name

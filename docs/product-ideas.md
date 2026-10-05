@@ -1,6 +1,6 @@
 # VIPP Product Ideas
 
-Last reviewed: 2026-09-10
+Last reviewed: 2026-09-30
 
 This page preserves promising product concepts that are not committed to an
 active release. An idea moves into the [active roadmap](planning.md) only after
@@ -131,6 +131,48 @@ access needs informed opt-in. Prefer existing nodes before inventing new ones.
 Saved accepted workflows must run without re-generating code or calling an AI
 model again. These capabilities remain outside the committed 0.16 scope.
 
+## Richer Tracking And Mitochondrial Analysis
+
+User direction recorded 2026-09-30: the current basic tracking capability is
+sufficient for now. Keep detection, one-to-one linking and read-only trajectory
+review focused; do not turn the current release into a reimplementation of
+TrackMate for Fiji or a comprehensive tracking package. This is a future,
+unassigned direction, not authorization to implement the candidates below.
+
+Longer term, the user would like richer, integrated tracking that can consider
+object morphology alongside motion and support mitochondrial analysis:
+
+- **Feature-assisted linking:** combine position with selected object
+  measurements such as size, shape, elongation and intensity. Reuse the generic
+  object, mesh and skeleton measurements rather than create a parallel
+  mitochondrial measurement system. Feature choice, scaling, weights and
+  rejection rules must be explicit and reproducible.
+- **Motion-aware linking:** consider trajectory continuity and previous
+  velocity, potentially with an optional prediction model, to improve difficult
+  crossings and gap reconnections. Do not equate frame-local detection/label
+  numbers with persistent identity or promise that prediction resolves every
+  ambiguous crossing.
+- **Richer trajectory analysis:** connect morphology changes over time with
+  calibrated velocity, direction and motion-persistence measures, and shared
+  table/plot review. The current linker already reports displacement, endpoint
+  speed, path length and net displacement; extend those capabilities rather
+  than duplicate them. Keep missing observations, units and the chosen
+  coordinate/reference frame explicit.
+- **Mitochondrial dynamics:** build organelle-focused workflows on those generic
+  capabilities. Split/merge, lineage and mitochondrial fission/fusion analysis
+  are possible later, separately designed extensions; a segmentation change or
+  disappearance alone must not be reported as a biological event.
+
+TrackMate and MitoMeter are user-mentioned reference tools for a future review,
+not verified feature comparisons or parity targets. Investigate their primary
+documentation, scientific methods, licensing and integration options before
+choosing an implementation or claiming equivalent capabilities. Prefer small,
+workflow-driven additions or suitable optional integrations over reproducing an
+entire specialist application. Any promotion needs a concrete user workflow,
+known-answer crossing/gap and morphology-change tests, and representative
+acquired-microscopy evidence, following the [promotion checklist](#promotion-checklist).
+No release version or delivery date is assigned.
+
 ## Longer-Horizon Product Concepts
 
 These remain worthwhile but are not all release commitments. Translation,
@@ -149,7 +191,9 @@ a stretch candidate; the broader concepts below are not core 0.16 gates.
   isolated optional dependencies and exact model provenance;
 - Apple acceleration after a time-boxed provider study, with CPU retained as
   the honest fallback until admission passes;
-- stitching, mosaics, tracking, and specialist mitochondrial event metrics;
+- stitching and mosaics;
+- [richer tracking and mitochondrial analysis](#richer-tracking-and-mitochondrial-analysis)
+  beyond the current basic tracking capability;
 - [AI-assisted custom nodes, workflow authoring, and bounded iterative analysis](ai-assisted-authoring-plan.md)
   through the staged plan above, with explicit trust, cloud privacy, review,
   versioned replay, and execution boundaries.

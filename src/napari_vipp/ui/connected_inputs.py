@@ -273,6 +273,12 @@ class ConnectedInputsCard(QFrame):
         self.refresh_theme()
 
     def set_bindings(self, bindings: list[ConnectedInputBinding]) -> None:
+        # Parameter edits often refresh presentation twice without changing
+        # any graph input. Removing/recreating these rows briefly collapses
+        # the card and moves the controls in a scrolled inspector.
+        if tuple(row.binding for row in self.rows) == tuple(bindings):
+            self.setVisible(bool(bindings))
+            return
         while self.form_layout.rowCount():
             self.form_layout.removeRow(0)
         self.rows.clear()

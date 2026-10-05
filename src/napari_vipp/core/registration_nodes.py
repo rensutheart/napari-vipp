@@ -165,6 +165,8 @@ def registration_node_specs():
                     1e12,
                     1.0,
                     12,
+                    slider_minimum=1.0,
+                    slider_maximum=65535.0,
                     tooltip=(
                         "Explicit expected intensity span: e.g. 1 for 0–1 data, "
                         "255 for 8-bit. This does not normalize either image. "
@@ -217,6 +219,30 @@ def registration_node_specs():
                     "volume in a time series to one reference time.",
                 ),
                 choice(
+                    "time_strategy",
+                    "Time-series strategy",
+                    "Fixed reference",
+                    ("Fixed reference", "Previous frame"),
+                    "Fixed reference estimates every volume directly to the anchor. "
+                    "Previous frame estimates original adjacent volumes toward the "
+                    "anchor on both sides, then composes transforms. Adjacent-pair "
+                    "errors can accumulate with distance from the anchor.",
+                    **visible("mode", "Time series"),
+                ),
+                choice(
+                    "cumulative_quality_policy",
+                    "Previous-frame cumulative quality",
+                    "Report only",
+                    ("Report only", "Require local limits"),
+                    "Local adjacent pairs always require the displacement and "
+                    "overlap limits below. Report only records cumulative geometry "
+                    "without rejecting it; Require local limits applies those same "
+                    "limits again after composition to the anchor. Cumulative "
+                    "correlation is diagnostic only. A failed local pair stops "
+                    "the entire series; no frame is skipped or replaced by identity.",
+                    **visible("time_strategy", "Previous frame"),
+                ),
+                choice(
                     "model",
                     "Motion model",
                     "Translation",
@@ -247,6 +273,8 @@ def registration_node_specs():
                     0,
                     9999,
                     1,
+                    slider_minimum=0,
+                    slider_maximum=15,
                     tooltip="Channel in the reference image used for estimation.",
                     **visible("mode", "Two images"),
                 ),
@@ -258,8 +286,11 @@ def registration_node_specs():
                     0,
                     1000000,
                     1,
+                    slider_minimum=0,
+                    slider_maximum=100,
                     tooltip=(
-                        "Align every time point directly to this time. One XYZ volume "
+                        "Anchor every time point to this time using the selected "
+                        "strategy. One XYZ volume "
                         "moves as a unit; Z slices are never registered separately."
                     ),
                     **visible("mode", "Time series"),
@@ -289,7 +320,8 @@ def registration_node_specs():
                     tooltip=(
                         "Reject estimated translation larger than this fraction of "
                         "the spatial image extent. "
-                        "A limit helps reject implausible matches."
+                        "Previous frame applies this to each adjacent pair; the "
+                        "cumulative quality policy controls composed transforms."
                     ),
                 ),
                 ParameterSpec(
@@ -303,7 +335,8 @@ def registration_node_specs():
                     2,
                     tooltip=(
                         "Reject results with less than this fraction of the reference "
-                        "covered by the moving image."
+                        "covered by the moving image. Previous frame always checks "
+                        "adjacent pairs; its cumulative policy controls anchor checks."
                     ),
                 ),
                 choice(
@@ -324,6 +357,8 @@ def registration_node_specs():
                     1,
                     5000,
                     10,
+                    slider_minimum=1,
+                    slider_maximum=1000,
                     tooltip=(
                         "Maximum iterations at each resolution level. "
                         "Inspect the diagnostics and overlay after registration."
@@ -374,6 +409,8 @@ def registration_node_specs():
                     1e12,
                     1.0,
                     3,
+                    slider_minimum=-255.0,
+                    slider_maximum=255.0,
                     tooltip=(
                         "Value where the moving image does not cover the reference "
                         "grid. Use the valid-coverage output to exclude these "

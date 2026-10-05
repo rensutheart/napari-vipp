@@ -8,7 +8,11 @@ import numpy as np
 from npe2 import PluginManifest
 from npe2.manifest.utils import import_python_name
 
-from napari_vipp._sample_data import make_registration_sample_data, make_sample_data
+from napari_vipp._sample_data import (
+    make_registration_sample_data,
+    make_sample_data,
+    make_tracking_sample_data,
+)
 from napari_vipp._startup_widget import VippStartupWidget
 
 MANIFEST_PATH = Path(__file__).resolve().parents[1] / "napari.yaml"
@@ -52,6 +56,7 @@ def test_manifest_resolves_sample_data_contribution():
     expected = {
         "napari-vipp.sample_data": make_sample_data,
         "napari-vipp.registration_sample_data": make_registration_sample_data,
+        "napari-vipp.tracking_sample_data": make_tracking_sample_data,
     }
     assert [sample.command for sample in sample_data] == list(expected)
     assert len({sample.key for sample in sample_data}) == len(expected)

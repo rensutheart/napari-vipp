@@ -43,7 +43,288 @@ def make_sample_data():
         _threshold_gallery_sample(),
         _measurement_plot_sample(),
         *make_registration_sample_data(),
+        *make_detection_sample_data(),
+        *make_tracking_sample_data(),
     ]
+
+
+def make_tracking_sample_data(*, seed=20260929):
+    """Return seeded spot and label series with independent construction truth.
+
+    Trajectories are authored here without invoking detection or linking. The
+    crossing pair deliberately does not claim recoverable biological identity.
+    Label IDs change every frame to demonstrate why they are not track IDs.
+    """
+    from dataclasses import replace
+
+    from .core.metadata import SourceMetadata, image_state_from_array
+
+    samples = []
+
+    def add(data, name, axes, scale, origin, truth, description, *, labels=False):
+        metadata = _ome_image_metadata(axes, data.shape)
+        metadata["ome"]["multiscales"][0]["datasets"][0][
+            "coordinateTransformations"
+        ] = [
+            {"type": "scale", "scale": list(scale)},
+            {"type": "translation", "translation": list(origin)},
+        ]
+        metadata.update(
+            napari_vipp_sample=True,
+            napari_vipp_preferred_input=False,
+            description=description,
+            tracking_ground_truth={"schema_version": 1, **truth},
+        )
+        if "C" in axes:
+            metadata["channel_names"] = ["Independent noise control", "Moving spots"]
+        carried = image_state_from_array(
+            data,
+            layer_metadata=metadata,
+            source_name=name,
+            defer_statistics=True,
+            source=SourceMetadata(
+                uri=f"vipp-synthetic:tracking-{'labels' if labels else 'spots'}-v1",
+                format="analytical phantom",
+                source_uuid=f"vipp-tracking-{'labels' if labels else 'spots'}-v1",
+            ),
+        )
+        if labels:
+            carried = replace(carried, kind="label image")
+        metadata["vipp_image_state"] = carried.to_dict()
+        samples.append(
+            (
+                data,
+                {"name": name, "visible": False, "metadata": metadata},
+                "labels" if labels else "image",
+            )
+        )
+
+    rng = np.random.default_rng(seed)
+    spots = rng.normal(0.02, 0.005, (7, 2, 72, 96))
+    y, x = np.indices(spots.shape[-2:], dtype=float)
+    spot_truth = []
+    for frame in range(7):
+        if frame == 3:
+            continue  # An entire missing frame, not four zero-valued observations.
+        for name, center, amplitude, track_id in (
+            ("isolated_a", (12, 12 + 3 * frame), 1.0, 1),
+            ("isolated_b", (28, 18 + 2 * frame), 0.85, 2),
+            ("crossing_c", (48, 30 + 6 * frame), 0.70, None),
+            ("crossing_d", (52, 66 - 6 * frame), 0.55, None),
+        ):
+            spots[frame, 1] += amplitude * np.exp(
+                -((y - center[0]) ** 2 + (x - center[1]) ** 2) / (2 * 0.75**2)
+            )
+            spot_truth.append(
+                {
+                    "construction_identity": name,
+                    "t_index": frame,
+                    "center": list(center),
+                    "unambiguous_track_id": track_id,
+                }
+            )
+    add(
+        spots.astype(np.float32),
+        "VIPP synthetic 2D spot tracking",
+        "TCYX",
+        (0.5, 1.0, 0.5, 0.4),
+        (2.0, 0.0, 4.0, 11.0),
+        {
+            "seed": seed,
+            "channel_index": 1,
+            "spatial_axis_order": "YX",
+            "frame_count": 7,
+            "frame_counts": [4, 4, 4, 0, 4, 4, 4],
+            "observations": spot_truth,
+            "expected_track_count": 4,
+            "review_construction_identities": ["crossing_c", "crossing_d"],
+            "spacing": [0.5, 0.4],
+            "origin": [4.0, 11.0],
+            "time_scale": 0.5,
+            "time_origin": 2.0,
+        },
+        "Seeded synthetic moving spots: select Moving spots (C=1). Four spots "
+        "are absent at T=3. Two isolated trajectories have known associations; "
+        "a crossing pair across the gap demonstrates position-only ambiguity. "
+        "Review flags are not probabilities or biological identity validation.",
+    )
+
+    labels = np.zeros((6, 16, 32, 40), dtype=np.uint16)
+    label_truth = []
+    for frame in range(6):
+        objects = [("moving_a", (3 + frame, 6, 7 + frame), 10 + frame, 1)]
+        if frame != 2:
+            objects.append(("moving_b", (10, 20, 28 - frame), 30 + frame, 2))
+        if frame >= 3:
+            objects.append(("new_c", (5, 24, 10), 50 + frame, 3))
+        for name, center, label, track_id in objects:
+            labels[(frame, *(slice(value - 1, value + 2) for value in center))] = label
+            label_truth.append(
+                {
+                    "construction_identity": name,
+                    "t_index": frame,
+                    "center": list(center),
+                    "source_label_id": label,
+                    # Independent connected components are enumerated in voxel
+                    # order: after C appears, its smaller Z puts it before A/B.
+                    "label_id": (1 if name == "new_c" else track_id + (frame >= 3)),
+                    "unambiguous_track_id": track_id,
+                }
+            )
+    add(
+        labels,
+        "VIPP synthetic 3D label tracking",
+        "TZYX",
+        (2.5, 1.5, 0.5, 0.4),
+        (11.0, -2.0, 4.0, 8.0),
+        {
+            "spatial_axis_order": "ZYX",
+            "frame_count": 6,
+            "frame_counts": [2, 2, 1, 3, 3, 3],
+            "observations": label_truth,
+            "expected_track_count": 3,
+            "spacing": [1.5, 0.5, 0.4],
+            "origin": [-2.0, 4.0, 8.0],
+            "time_scale": 2.5,
+            "time_origin": 11.0,
+        },
+        "Analytical anisotropic 3D label trajectories. Label IDs change every "
+        "frame; object B is absent at T=2 and object C first appears at T=3. "
+        "The example explicitly thresholds nonzero voxels and labels connected "
+        "components separately per frame before measuring cube centroids. "
+        "Source label numbers are not preserved by this explicit segmentation. "
+        "Synthetic evidence only: no division, fusion or biological inference.",
+        labels=True,
+    )
+    return samples
+
+
+def make_detection_sample_data(*, seed=20260928):
+    """Plant fixed asymmetric patterns; record construction truth before matching.
+
+    T=1/C=1 is the authored example input. T=0 and the independent control
+    channel are intentional decoys that require explicit axis/channel selection.
+    Patterns, noise, clipped border copies and absent sites are constructed
+    directly, without calling Template Match or Find Peaks.
+    """
+    samples = []
+    for (
+        dimensions,
+        shape,
+        template_shape,
+        centers,
+        border,
+        missing,
+        spacing,
+        origin,
+    ) in (
+        (
+            2,
+            (88, 112),
+            (13, 11),
+            ((20, 20), (20, 65), (47, 34), (47, 46), (72, 80)),
+            (1, 99),
+            (70, 18),
+            (0.5, 0.4),
+            (4.0, 11.0),
+        ),
+        (
+            3,
+            (23, 64, 80),
+            (7, 9, 11),
+            ((5, 14, 15), (5, 14, 31), (12, 40, 24), (16, 44, 61)),
+            (0, 30, 60),
+            (14, 15, 59),
+            (1.5, 0.5, 0.4),
+            (-3.0, 4.0, 11.0),
+        ),
+    ):
+        rng = np.random.default_rng(seed + dimensions)
+        coordinates = np.indices(template_shape, dtype=np.float64)
+        center = (np.asarray(template_shape) - 1) / 2
+        widths = (1.0, 1.35, 1.5)[-dimensions:]
+        main = sum(
+            ((axis - mid) / width) ** 2
+            for axis, mid, width in zip(coordinates, center, widths, strict=True)
+        )
+        offset = (-1, 2, -2)[-dimensions:]
+        lobe = sum(
+            ((axis - mid - shift) / (width * 0.65)) ** 2
+            for axis, mid, shift, width in zip(
+                coordinates, center, offset, widths, strict=True
+            )
+        )
+        pattern = np.exp(-main / 2) + 0.65 * np.exp(-lobe / 2)
+        signal = np.zeros(shape, dtype=np.float64)
+
+        def plant(location, amplitude, *, signal=signal, pattern=pattern):
+            shape, template_shape = signal.shape, pattern.shape
+            starts = np.asarray(location) - np.asarray(template_shape) // 2
+            stops = starts + template_shape
+            target = tuple(
+                slice(max(0, a), min(n, b))
+                for a, b, n in zip(starts, stops, shape, strict=True)
+            )
+            source = tuple(
+                slice(max(0, -a), min(k, n - a))
+                for a, k, n in zip(starts, template_shape, shape, strict=True)
+            )
+            signal[target] += amplitude * pattern[source]
+
+        for index, location in enumerate(centers):
+            plant(location, 1.0 - index * 0.09)
+        plant(border, 0.95)
+        # The missing location is deliberately not planted.
+        data = rng.normal(0.08, 0.015, (2, 2, *shape))
+        data[1, 1] += signal
+        # A different timepoint cannot accidentally reproduce the answer.
+        data[0, 1] += np.flip(signal, axis=-1) * 0.8
+        data = data.astype(np.float32)
+        axes = "TC" + "ZYX"[-dimensions:]
+        metadata = _ome_image_metadata(axes, data.shape)
+        metadata["ome"]["multiscales"][0]["datasets"][0][
+            "coordinateTransformations"
+        ] = [
+            {"type": "scale", "scale": [2.0, 1.0, *spacing]},
+            {"type": "translation", "translation": [0.0, 0.0, *origin]},
+        ]
+        metadata.update(
+            napari_vipp_sample=True,
+            napari_vipp_preferred_input=False,
+            channel_names=["Independent noise control", "Repeated pattern"],
+            description=(
+                "Seeded asymmetric fixed-orientation patterns, a nearby pair, "
+                "a clipped border copy, an absent site and independent noise. "
+                "Select T=1 and Repeated pattern (C=1); synthetic, not biological data."
+            ),
+            detection_ground_truth={
+                "schema_version": 1,
+                "seed": seed + dimensions,
+                "time_index": 1,
+                "channel_index": 1,
+                "spatial_axis_order": "ZYX"[-dimensions:],
+                "centers": [list(location) for location in centers],
+                "border_center": list(border),
+                "missing_center": list(missing),
+                "template_shape": list(template_shape),
+                "template_center": list(centers[0]),
+                "spacing": list(spacing),
+                "origin": list(origin),
+                "unit": "micrometer",
+            },
+        )
+        samples.append(
+            (
+                data,
+                {
+                    "name": f"VIPP synthetic {dimensions}D template detection",
+                    "visible": False,
+                    "metadata": metadata,
+                },
+                "image",
+            )
+        )
+    return samples
 
 
 def make_registration_sample_data():

@@ -22,12 +22,17 @@ from types import MappingProxyType
 
 from napari_vipp.core.atomic_io import atomic_replace
 from napari_vipp.core.batch_resume import document_digest, seal_document
+from napari_vipp.core.detection_metadata import DetectionMetadata
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     SourceChangedError,
     capture_local_source_identity,
 )
 from napari_vipp.core.tables import TableData
+from napari_vipp.core.tracking_metadata import (
+    ObservationSeriesMetadata,
+    TrackingMetadata,
+)
 
 _SCHEMA = "napari-vipp-measurement-collection"
 _SUFFIX = ".vipp-results.json"
@@ -89,12 +94,49 @@ class CollectionItem:
     effective_workflow_sha256: str = ""
     execution_provenance_sha256: str = ""
     resumed_from_run_id: str = ""
+    detection_metadata: Mapping[str, object] | None = None
+    observation_metadata: Mapping[str, object] | None = None
+    tracking_metadata: Mapping[str, object] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "sources", _freeze(self.sources))
         object.__setattr__(
             self, "parameter_overrides", _freeze(self.parameter_overrides)
         )
+        if self.detection_metadata is not None:
+            try:
+                evidence = DetectionMetadata.from_dict(_thaw(self.detection_metadata))
+                if evidence.returned_count != self.row_count:
+                    raise ValueError("Detection counts differ from the item row count.")
+            except (TypeError, ValueError, KeyError) as exc:
+                raise MeasurementCollectionError(
+                    f"Invalid per-item detection evidence: {exc}"
+                ) from exc
+            object.__setattr__(self, "detection_metadata", _freeze(evidence.to_dict()))
+        for name, schema in (
+            ("observation_metadata", ObservationSeriesMetadata),
+            ("tracking_metadata", TrackingMetadata),
+        ):
+            raw = getattr(self, name)
+            if raw is not None:
+                try:
+                    evidence = schema.from_dict(_thaw(raw))
+                    if name == "observation_metadata" and sum(
+                        frame.retained_count for frame in evidence.frame_populations
+                    ) != self.row_count:
+                        raise ValueError("Frame counts differ from the item row count.")
+                except (TypeError, ValueError, KeyError) as exc:
+                    raise MeasurementCollectionError(
+                        f"Invalid per-item {name}: {exc}"
+                    ) from exc
+                object.__setattr__(self, name, _freeze(evidence.to_dict()))
+        if self.observation_metadata is not None and self.tracking_metadata is not None:
+            if _thaw(self.tracking_metadata)["source_observations"] != _thaw(
+                self.observation_metadata
+            ):
+                raise MeasurementCollectionError(
+                    "Per-item tracking and observation evidence differ."
+                )
 
 
 @dataclass(frozen=True)
@@ -501,6 +543,16 @@ def table_measurement_metadata(table: TableData, *, cancellation=None) -> dict:
             "cell_types": runs,
             "name": table.name,
             "table_kind": table.table_kind,
+            **(
+                {"detection_metadata": table.detection_metadata.to_dict()}
+                if table.detection_metadata is not None
+                else {}
+            ),
+            **{
+                name: getattr(table, name).to_dict()
+                for name in ("observation_metadata", "tracking_metadata")
+                if getattr(table, name) is not None
+            },
         }
     except (MeasurementCollectionError, TypeError) as exc:
         return {"version": 1, "available": False, "reason": str(exc)}
@@ -630,13 +682,74 @@ def _read_table(data, metadata, format, limits, cancellation):
         raise MeasurementCollectionError(
             f"Cannot decode the exact saved table: {exc}"
         ) from exc
-    return TableData(
+    try:
+        detection = (
+            DetectionMetadata.from_dict(metadata["detection_metadata"])
+            if metadata.get("detection_metadata") is not None
+            else None
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise MeasurementCollectionError(f"Invalid detection evidence: {exc}") from exc
+    if detection is not None:
+        required = {
+            "detection_id", detection.score_column, *detection.coordinate_columns
+        }
+        if detection.template_shape is not None:
+            required.update(
+                f"template_{axis}_{side}"
+                for axis in detection.axes
+                for side in ("start", "stop")
+            )
+        if detection.returned_count != count or not required <= set(columns):
+            raise MeasurementCollectionError(
+                "Detection evidence differs from the table."
+            )
+    try:
+        observations = (
+            ObservationSeriesMetadata.from_dict(metadata["observation_metadata"])
+            if metadata.get("observation_metadata") is not None else None
+        )
+        tracking = (
+            TrackingMetadata.from_dict(metadata["tracking_metadata"])
+            if metadata.get("tracking_metadata") is not None else None
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise MeasurementCollectionError(
+            f"Invalid time-series evidence: {exc}"
+        ) from exc
+    table = TableData(
         columns,
         tuple(rows),
         name=str(metadata.get("name", "")),
         table_kind=str(metadata.get("table_kind", "table")),
         column_units=units,
+        detection_metadata=detection,
+        observation_metadata=observations,
+        tracking_metadata=tracking,
     )
+    if observations is not None:
+        from napari_vipp.core.tracking import validate_observation_table
+
+        try:
+            validate_observation_table(table, for_linking=False)
+        except (ValueError, TypeError) as exc:
+            raise MeasurementCollectionError(
+                f"Invalid observation table: {exc}"
+            ) from exc
+    if tracking is not None and observations is not None and (
+        tracking.source_observations != observations
+    ):
+        raise MeasurementCollectionError(
+            "Tracking and source observation evidence differ."
+        )
+    if tracking is not None:
+        from napari_vipp.core.tracking import validate_tracking_table
+
+        try:
+            validate_tracking_table(table)
+        except (ValueError, TypeError) as exc:
+            raise MeasurementCollectionError(f"Invalid tracking table: {exc}") from exc
+    return table
 
 
 def inspect_collection(
@@ -829,6 +942,19 @@ def inspect_collection(
                 status="ready" if table.row_count else "empty",
                 row_count=table.row_count,
                 table=table,
+                detection_metadata=(
+                    table.detection_metadata.to_dict()
+                    if table.detection_metadata is not None
+                    else None
+                ),
+                observation_metadata=(
+                    table.observation_metadata.to_dict()
+                    if table.observation_metadata is not None else None
+                ),
+                tracking_metadata=(
+                    table.tracking_metadata.to_dict()
+                    if table.tracking_metadata is not None else None
+                ),
             )
         except FileNotFoundError:
             item = replace(
@@ -1043,6 +1169,10 @@ def _snapshot_document(collection, cancellation=None):
                     name: _thaw(value)
                     for name, value in vars(item).items()
                     if name != "table"
+                    and not (name in {
+                        "detection_metadata", "observation_metadata",
+                        "tracking_metadata",
+                    } and value is None)
                 }
                 for item in collection.items
             ],
@@ -1206,9 +1336,15 @@ def _load_snapshot(document, limits, cancellation=None):
         raise MeasurementCollectionError("Invalid snapshot item inventory.")
     inventory = []
     for item in items:
-        if not isinstance(item, dict) or set(item) != set(
-            CollectionItem.__dataclass_fields__
-        ) - {"table"}:
+        required_item_fields = set(CollectionItem.__dataclass_fields__) - {
+            "table", "detection_metadata", "observation_metadata", "tracking_metadata"
+        }
+        if not isinstance(item, dict) or not (
+            required_item_fields <= set(item)
+            <= required_item_fields | {
+                "detection_metadata", "observation_metadata", "tracking_metadata"
+            }
+        ):
             raise MeasurementCollectionError("Invalid snapshot inventory record.")
         for name in (
             "key",
@@ -1304,6 +1440,17 @@ def _load_snapshot(document, limits, cancellation=None):
             _text(text, "annotation", empty=True, limit=limits.max_text_chars)
     offset = len(measurement_columns)
     observed = {item.key: 0 for item in inventory}
+    # The combined table deliberately has no single source grid. Recover only
+    # the included per-item measurement cells for semantic evidence checks;
+    # annotation/identity columns must never masquerade as scientific fields.
+    series_rows = {
+        item.key: []
+        for item in inventory
+        if item.included
+        and (
+            item.observation_metadata is not None or item.tracking_metadata is not None
+        )
+    }
     for row in decoded:
         _check(cancellation)
         run_id, key, batch_id, row_index = row[offset : offset + 4]
@@ -1320,6 +1467,8 @@ def _load_snapshot(document, limits, cancellation=None):
                 "Snapshot row identity is duplicated or inconsistent."
             )
         observed[key] += 1
+        if key in series_rows:
+            series_rows[key].append(row[:offset])
         if row[offset + 4 :] != tuple(
             annotations.get(key, {}).get(name, "") for name in annotation_columns
         ):
@@ -1340,6 +1489,60 @@ def _load_snapshot(document, limits, cancellation=None):
         raise MeasurementCollectionError(
             "Snapshot exclusions were not explicitly reviewed."
         )
+    if series_rows:
+        from napari_vipp.core.progress import ProgressContext
+        from napari_vipp.core.tracking import (
+            validate_observation_table,
+            validate_tracking_table,
+        )
+
+        validation_context = ProgressContext(
+            cancelled=(
+                cancellation
+                if callable(cancellation)
+                else cancellation.is_set
+                if cancellation is not None
+                else None
+            )
+        )
+        measurement_units = tuple(
+            pair for pair in units if pair[0] in measurement_columns
+        )
+        for key, item_rows in series_rows.items():
+            _check(cancellation)
+            item = by_key[key]
+            try:
+                observation_evidence = (
+                    ObservationSeriesMetadata.from_dict(_thaw(item.observation_metadata))
+                    if item.observation_metadata is not None
+                    else None
+                )
+                tracking_evidence = (
+                    TrackingMetadata.from_dict(_thaw(item.tracking_metadata))
+                    if item.tracking_metadata is not None
+                    else None
+                )
+                item_table = TableData(
+                    measurement_columns,
+                    tuple(item_rows),
+                    column_units=measurement_units,
+                    observation_metadata=observation_evidence,
+                    tracking_metadata=tracking_evidence,
+                )
+                if tracking_evidence is not None:
+                    validate_tracking_table(
+                        item_table, progress_context=validation_context
+                    )
+                elif observation_evidence is not None:
+                    validate_observation_table(
+                        item_table,
+                        for_linking=False,
+                        progress_context=validation_context,
+                    )
+            except (ValueError, TypeError, KeyError) as exc:
+                raise MeasurementCollectionError(
+                    f"Invalid time-series snapshot cells for item {key!r}: {exc}"
+                ) from exc
     table = TableData(
         columns,
         tuple(decoded),

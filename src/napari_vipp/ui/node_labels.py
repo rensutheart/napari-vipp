@@ -266,6 +266,8 @@ def build_node_presentations(
                 f"{params.get('model', 'Translation')} · {mode} · "
                 f"Channel {params.get('channel', 0)} → {target}"
             )
+            if mode == "Time series":
+                summary += f" · {params.get('time_strategy', 'Fixed reference')}"
         else:
             automatic = node.title or spec.title
             summary = " · ".join(

@@ -26,6 +26,42 @@ class ExampleWorkflowSpec:
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
     ExampleWorkflowSpec(
+        "tracking-spots-2d",
+        "Tracking",
+        "2D Spots, Missing Frame and Crossing Review",
+        "synthetic-tracking-spots-2d.json",
+        ("VIPP synthetic 2D spot tracking",),
+        "Detect four moving spots across seven frames, retain an empty frame, "
+        "and review a crossing where position alone cannot establish identity.",
+    ),
+    ExampleWorkflowSpec(
+        "tracking-labels-3d",
+        "Tracking",
+        "Anisotropic 3D Object Trajectories",
+        "synthetic-tracking-labels-3d.json",
+        ("VIPP synthetic 3D label tracking",),
+        "Segment each synthetic frame, measure frame-local label IDs and link "
+        "three known centroids with a gap, a new appearance and physical units.",
+    ),
+    ExampleWorkflowSpec(
+        "template-detection-2d",
+        "Detection & Peaks",
+        "Repeated 2D Pattern Detection",
+        "synthetic-template-detection-2d.json",
+        ("VIPP synthetic 2D template detection",),
+        "Crop one asymmetric pattern, match its fixed size and orientation, "
+        "then inspect five known detection centers and their correlation scores.",
+    ),
+    ExampleWorkflowSpec(
+        "template-detection-3d",
+        "Detection & Peaks",
+        "Anisotropic 3D Pattern Detection",
+        "synthetic-template-detection-3d.json",
+        ("VIPP synthetic 3D template detection",),
+        "Find four known volumetric patterns with unequal Z/Y/X spacing; "
+        "compare physical separation, clipped borders and an absent site.",
+    ),
+    ExampleWorkflowSpec(
         "registration-translation",
         "Registration & Alignment",
         "Subpixel 2D Registration",
@@ -77,8 +113,10 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
             "VIPP synthetic deconvolution image",
             "VIPP registration 2D translation moving",
             "VIPP registration 2D translation reference",
+            "VIPP synthetic 2D template detection",
+            "VIPP synthetic 2D spot tracking",
         ),
-        "Inspect image and measurement tools in one ten-lane workflow with "
+        "Inspect image and measurement tools in one twelve-lane workflow with "
         "representative synthetic inputs, curated tunnels, canvas notes, "
         "and saved inspector display settings. Table Source is reviewed "
         "separately using collected batch measurements.",

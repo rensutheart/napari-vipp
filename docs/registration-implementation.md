@@ -10,7 +10,7 @@ registration how-to/reference, not this engineering record.
 - `core/transforms.py`: immutable `RegistrationGrid`, `TransformData`,
   `TransformState`; strict version-1 JSON import/export and output-state propagation.
 - `core/registration.py`: CPU translation (scikit-image), rigid and affine
-  (SimpleITK 2.5.6), selected-channel estimation, fixed-reference time series,
+  (SimpleITK 2.5.6), selected-channel estimation, fixed-reference and previous-frame time series,
   exact-label or floating-point resampling, interpolation-valid coverage.
 - `core/registration_nodes.py`: small operation declarations, execution adapters
   and revision-bound identities for anonymous graph sources.
@@ -57,6 +57,68 @@ order. T and C never enter a spatial optimizer. Time-series mode estimates one
 transform for each whole volume against a chosen fixed reference time (default 0),
 using one selected channel; application reuses it over compatible channels.
 Pair mode requires an explicit time selection upstream if the input contains T.
+
+### Unreleased previous-frame strategy (issue 71)
+
+`time_strategy="Fixed reference"` remains the default and retains the existing
+estimator, diagnostics, transform JSON and omitted-default workflow meaning.
+`Previous frame` estimates **original** adjacent volumes toward the selected
+anchor on both sides: frame `t` uses `t-1` above the anchor and `t+1` below it.
+The anchor's identity is defined, not a failed-estimation fallback. With column
+vectors, `F(t→anchor) = F(neighbour→anchor) @ F(t→neighbour)`. These are physical
+YX/ZYX matrices, including nonzero origins and anisotropic sampling, not pixel
+offsets to add. No aligned pixels enter a later estimation. Apply Transform is
+unchanged and resamples every original complete spatial volume once, sharing the
+matrix across channels. This adds no new motion model or per-Z-slice drift path.
+
+Existing maximum displacement, minimum valid overlap and shared-structure checks
+always gate each local pair. A failed pair aborts the entire result; there is no
+skip, identity replacement, alternate anchor or fixed-reference retry. The
+authored `cumulative_quality_policy` is `Report only` (default) or
+`Require local limits`. Report only measures composed displacement, coverage and
+correlation against the anchor without accepting/rejecting on those values;
+Require local limits additionally applies the same authored displacement and
+overlap limits to composed geometry. Cumulative correlation is diagnostic only
+under both policies; absent support/variation is missing, not an invented score.
+Report only may legitimately produce zero cumulative coverage. Consumers must
+inspect the Apply Transform coverage output before measuring those regions.
+
+Previous-frame diagnostics distinguish `pair_reference_time`, `pair_*` local
+optimizer/correlation/coverage/displacement fields and `cumulative_*` anchor
+correlation/coverage/displacement fields. Both displacement families carry the
+physical coordinate unit. Rows and matrices are returned in ascending time order
+even though computation proceeds outward from the anchor. Every row and carried
+history warns that adjacent estimation errors can accumulate with anchor distance.
+This method can help adjacent images share more structure, but is not a guarantee
+of global accuracy or biological correspondence.
+
+The unchanged transform JSON schema 1 already permits scalar settings. Only
+previous-frame results add `time_strategy`, `time_strategy_schema_version=1`,
+`cumulative_quality_policy`, local quality policy and composition description.
+Import validates previous-frame strategy metadata; legacy transforms with no
+strategy metadata retain fixed-reference interpretation without migration.
+Metadata-only planning validates the new choices but never reads pixels or
+invents matrices. Memory retains one source series plus small per-time matrices
+and rows; diagnostic image/coverage temporaries are released after each check,
+not retained for the chain. Cancellation uses the existing cooperative boundaries;
+no partial transform series is returned or published.
+
+Focused tests in `test_registration_previous_frame.py` cover exact translated
+2D/3D phantoms with arbitrary anchors, noncommuting rigid composition on both
+sides using an exact pair oracle, independently sampled continuous 2D/3D rigid
+phantoms with SimpleITK (physical landmark error below 0.25 micrometres for those
+fixtures), read-only original inputs, noncanonical multichannel whole-volume
+application, local/cumulative displacement and overlap policy, zero cumulative
+coverage, local failures, cancellation, bounded temporary lifetime, legacy JSON,
+workflow/generated-Python replay and metadata-only planning. These fixtures do
+not qualify acquired microscopy, long-series accumulated error, or native
+Linux/macOS execution.
+
+On 2026-09-29, the focused registration/transform/planning/integration run passed
+111 tests and the previous-frame plus existing registration UI run passed 54.
+The five dedicated UI cases passed again after the final wording adjustment;
+narrow dark/light captures were inspected for wrapping and overlap. These are
+scoped checks, not a new full-suite or packaged-install qualification.
 
 Matrices map moving physical coordinates to reference physical coordinates in
 canonical NumPy YX/ZYX order. Compatible length units become micrometres; unknown

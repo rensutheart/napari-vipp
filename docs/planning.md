@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-17
+Last reviewed: 2026-09-30
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -14,14 +14,38 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
-Development update, 2026-09-22: registration is now implemented after 0.16.0a1
-and integrated for the next alpha. Final local Windows qualification passed; native
-Linux/macOS and release qualification remain pending. The approved scope
-is Estimate Registration (translation/rigid/affine; pairs or whole-volume time
-series), Apply Transform and Compare Images, with analytical examples.
-See [current contracts](registration-implementation.md) and
-[synthetic evidence](registration-synthetic-qualification.md). Template matching
-and peak detection are deferred; earlier scope wording below is superseded.
+Approved continuation, 2026-09-29: implement previous-frame registration,
+time-aware detection and basic one-to-one object/spot tracking with read-only
+trajectory review. Work is isolated on `feat/time-series-tracking`; local
+Windows qualification is recorded, but this is not a release. See
+[tracking implementation](tracking-implementation.md),
+[time-series detection](time-detection-implementation.md) and
+[issue 71](https://github.com/rensutheart/napari-vipp/issues/71).
+Masked registration remains conditional on a concrete dataset need. Deformable
+registration, lineage/division/fusion, editable points and GPU tracking remain
+outside this approved slice.
+
+Tracking scope decision, 2026-09-30: the current capability is sufficient for
+now; do not expand this release into a TrackMate-style tracking package.
+[Richer tracking and mitochondrial analysis](product-ideas.md#richer-tracking-and-mitochondrial-analysis)
+preserves the future interest in morphology- and motion-aware linking,
+trajectory/velocity analysis and organelle dynamics, without assigning a release
+or authorizing further implementation.
+
+Development update, 2026-09-28: registration, Apply Transform and Compare Images
+shipped in 0.16.0a2. The next approved slice, **Template Match → Find Peaks**, is
+implemented with a clean local Windows full-suite pass,
+with fixed supplied template size/orientation, scalar YX/ZYX inputs, calibrated
+source-centre coordinates, valid-score masks and read-only image/table inspection.
+Find Peaks also accepts ordinary scalar intensity images. Native Linux/macOS,
+minimum dependencies, large-volume memory/performance and acquired microscopy
+accuracy remain unqualified; this is not a published release. See the
+[detection contract](detection-implementation.md) and
+[tracking issue](https://github.com/rensutheart/napari-vipp/issues/70).
+Rotation/scale template banks, editable point workflows, new registration models
+and inferential statistics are not part of this slice. Registration contracts and
+analytical evidence remain in [implementation](registration-implementation.md)
+and [qualification](registration-synthetic-qualification.md).
 
 VIPP is a napari-native visual workflow builder for reproducible bioimage
 analysis. The graph is the primary work surface: a user should be able to build,
@@ -50,7 +74,7 @@ collection, editable plot pop-outs, and reproducible figure export. Statistics
 stops at descriptive summaries: inferential tests, p-values, ANOVA,
 significance labels and confidence intervals are outside 0.16 scope.
 Model-backed segmentation, stitching,
-tracking, AI-assisted graph authoring, and custom code remain possible future
+advanced lineage tracking, AI-assisted graph authoring, and custom code remain possible future
 directions. The [AI authoring plan](ai-assisted-authoring-plan.md) connects
 description-driven workflows, AI-assisted custom-node creation with VIPP-owned
 boilerplate, and eventual image-guided iterative tuning. It is future planning,

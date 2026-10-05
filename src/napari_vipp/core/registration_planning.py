@@ -13,7 +13,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from napari_vipp.core.metadata import AxisMetadata, ImageState
-from napari_vipp.core.registration import _fraction, _integer, _same_sampling
+from napari_vipp.core.registration import (
+    _fraction,
+    _integer,
+    _same_sampling,
+    _time_strategy_contract,
+)
 from napari_vipp.core.transforms import (
     RegistrationGrid,
     TransformData,
@@ -75,6 +80,10 @@ def _channel_contract(state, channel):
 
 def _estimate_plan(call):
     params = call.kwargs
+    _time_strategy_contract(
+        params.get("time_strategy", "Fixed reference"),
+        params.get("cumulative_quality_policy", "Report only"),
+    )
     mode = params.get("mode", "Two images")
     model = params.get("model", "Translation")
     if mode not in ("Two images", "Time series") or model not in (

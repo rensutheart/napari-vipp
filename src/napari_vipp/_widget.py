@@ -213,7 +213,10 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import (
     ResidentThumbnailStatisticsRequest as ResidentThumbnailStatisticsRequest,
 )
-from napari_vipp.core.execution import _processing_scientific_context_fingerprint
+from napari_vipp.core.execution import (
+    _processing_scientific_context_fingerprint,
+    execute_synchronous_cpu_pipeline,
+)
 from napari_vipp.core.execution_telemetry import DeviceExecutionTelemetryConfig
 from napari_vipp.core.export import (
     export_pipeline_to_python,
@@ -539,6 +542,8 @@ from napari_vipp.ui.controls import (
 from napari_vipp.ui.controls import (
     _configure_numeric_spin_box as _configure_numeric_spin_box,
 )
+from napari_vipp.ui.detection_next_step import DetectionNextStepController
+from napari_vipp.ui.detection_results import DetectionResultsController
 from napari_vipp.ui.diagnostic_workers import (
     AutoContrastRequest as AutoContrastRequest,
 )
@@ -640,6 +645,8 @@ from napari_vipp.ui.inspector import (
     BEHAVIOR_SECTION,
     COLOCALIZATION_SECTION,
     COMPUTE_SECTION,
+    DETECTION_NEXT_STEP_SECTION,
+    DETECTION_RESULTS_SECTION,
     FILTER_RESULT_SECTION,
     HISTOGRAMS_SECTION,
     HISTORY_SECTION,
@@ -654,6 +661,7 @@ from napari_vipp.ui.inspector import (
     REGISTRATION_RESULTS_SECTION,
     SOURCE_REPRESENTATION_SECTION,
     TABLE_RESULTS_SECTION,
+    TRACKING_RESULTS_SECTION,
     WRITER_STATUS_SECTION,
     InspectorSection,
     constrain_layout_minimum_height,
@@ -769,6 +777,7 @@ from napari_vipp.ui.toolbar_controls import (
     ToolbarCommandButton as _ToolbarCommandButton,
 )
 from napari_vipp.ui.toolbar_controls import toolbar_icon as _toolbar_icon
+from napari_vipp.ui.tracking_results import TrackingResultsController
 from napari_vipp.ui.updates import VersionBadge
 from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
@@ -785,6 +794,11 @@ from napari_vipp.ui.workflow_tabs import (
     WorkflowTabBar,
     WorkflowTabModel,
     WorkflowTabSession,
+)
+from napari_vipp.ui.workflow_view import (
+    capture_viewer_state,
+    fit_layer_view,
+    restore_viewer_state,
 )
 
 _provisional_generated_layer_contrast_limits = (
@@ -3566,6 +3580,9 @@ class VippWidget(QWidget):
         self._selected_viewer_refresh_generation = 0
         self._selected_viewer_refresh_in_progress = False
         self._selected_viewer_dims_refresh_pending = False
+        self._crop_presentation_suspension = 0
+        self._workflow_tab_view_generation = 0
+        self._pending_workflow_tab_view_restore = None
         # A graph click must return to Qt before secondary inspector work can
         # block a paint.  Keep a separate generation so rapid node switches
         # cannot publish metadata or plots for an earlier selection.
@@ -3889,6 +3906,10 @@ class VippWidget(QWidget):
         self._results_workspace.close()
         self._result_plots.close()
         self._statistics.close()
+        if hasattr(self, "_detection_results"):
+            self._detection_results.close()
+        if hasattr(self, "_tracking_results"):
+            self._tracking_results.close()
         self._mesh_measurement_diagnostics.close()
         self.object_filter_feedback.diagnostics.close()
         self.version_label.shutdown()
@@ -4049,6 +4070,10 @@ class VippWidget(QWidget):
             self.connected_inputs_panel.refresh_theme(palette)
             if self._result_table_dialog is not None:
                 self._result_table_dialog.refresh_theme(palette)
+            if hasattr(self, "_detection_results"):
+                self._detection_results.refresh_theme(palette)
+            if hasattr(self, "_tracking_results"):
+                self._tracking_results.refresh_theme(palette)
             interaction_hint_style = (
                 f"color: {color(colors.info.foreground)};"
                 " font-size: 10px; padding: 2px 3px;"
@@ -6700,10 +6725,16 @@ class VippWidget(QWidget):
 
         self._registration_next_step = RegistrationNextStepController(self)
         self._registration_results = RegistrationResultsController(self)
+        self._detection_next_step = DetectionNextStepController(self)
+        self._detection_results = DetectionResultsController(self)
+        self._tracking_results = TrackingResultsController(self)
         self._inspector_sections = {
             PARAMETERS_SECTION: self.parameter_group,
             NEXT_STEP_SECTION: self._registration_next_step.section,
             REGISTRATION_RESULTS_SECTION: self._registration_results.section,
+            DETECTION_NEXT_STEP_SECTION: self._detection_next_step.section,
+            DETECTION_RESULTS_SECTION: self._detection_results.section,
+            TRACKING_RESULTS_SECTION: self._tracking_results.section,
             SOURCE_REPRESENTATION_SECTION: self.source_representation_section,
             OUTPUT_SELECTOR_SECTION: self.output_selector_section,
             COLOCALIZATION_SECTION: self.colocalization_scatter_group,
@@ -6982,6 +7013,10 @@ class VippWidget(QWidget):
         self.graph_view.pin_requested.connect(self.pin_node)
         self.graph_view.node_calculate_requested.connect(self._calculate_node)
         self.graph_view.node_plot_requested.connect(self._result_plots.open_plot)
+        self.graph_view.node_result_requested.connect(self._open_node_result_window)
+        self.graph_view.node_trajectory_review_requested.connect(
+            self._tracking_results.open_node
+        )
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.port_context_requested.connect(self._show_port_context_menu)
@@ -10268,6 +10303,14 @@ class VippWidget(QWidget):
 
     def _store_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
         """Move no state: retain references to this tab's live runtime objects."""
+        if (
+            session is self._workflow_tabs.current
+            and self._pending_workflow_tab_view_restore is None
+            and self._workflow_tab_view_target() is not None
+        ):
+            # Camera/slice state is presentation-only, not workflow history or
+            # saved scientific parameters. Capture before retiring its layers.
+            session.runtime_cache["_viewer_state"] = capture_viewer_state(self.viewer)
         for name in self.WORKFLOW_TAB_RUNTIME_FIELDS:
             session.runtime_cache[name] = getattr(self, name)
         session.runtime_cache["_live_source_adapter"] = self._live_source_adapter
@@ -10277,6 +10320,74 @@ class VippWidget(QWidget):
         session.runtime_cache["_right_panel_visible"] = not (
             self.inspector_panel.isHidden()
         )
+
+    def _current_workflow_session_id(self) -> str:
+        session = self._workflow_tabs.current
+        return "" if session is None else str(session.session_id)
+
+    def _workflow_tab_view_target(self):
+        """Find only the active workflow's selected presentation surface."""
+        selected = self.pipeline.nodes.get(self._selected_node_id)
+        if selected is None:
+            return None
+        if selected.operation_id == "crop_stack" and not self.pipeline.node_is_bypassed(
+            selected.id
+        ):
+            candidates = self._owned_crop_presentation_layers(
+                "crop_source", current_session_only=True
+            )
+        elif selected.operation_id == "input" and self._source_view_choice_is_preview(
+            self._source_view_modes.get(selected.id, "analysis")
+        ):
+            return self._source_preview_layer(selected.id)
+        else:
+            candidates = self._generated_layers_for_name(self._inspect_layer_name)
+        for layer in reversed(candidates):
+            metadata = getattr(layer, "metadata", {})
+            if isinstance(metadata, Mapping) and metadata.get("node_id") == selected.id:
+                return layer
+        return None
+
+    def _queue_workflow_tab_view_restore(self) -> None:
+        pending = self._pending_workflow_tab_view_restore
+        if pending is None or pending[0] != self._current_workflow_session_id():
+            return
+        target = self._workflow_tab_view_target()
+        if target is None:
+            # A file/source preview can arrive later. Do not fit a foreign
+            # native input or an unrelated pin while this tab is still empty.
+            return
+        generation = self._selected_viewer_refresh_generation
+        node_id = self._selected_node_id
+        QTimer.singleShot(
+            0,
+            lambda: self._finish_workflow_tab_view_restore(
+                pending, generation, node_id, target
+            ),
+        )
+
+    def _finish_workflow_tab_view_restore(
+        self, pending, generation: int, node_id: str, target
+    ) -> None:
+        if (
+            self._closing
+            or self._pending_workflow_tab_view_restore is not pending
+            or pending[0] != self._current_workflow_session_id()
+            or generation != self._selected_viewer_refresh_generation
+            or node_id != self._selected_node_id
+            or target is not self._workflow_tab_view_target()
+            or not self._layer_is_present(target)
+        ):
+            return
+        # Consume before emitting dims events; those events may synchronously
+        # publish a Crop ROI or queue another presentation callback.
+        self._pending_workflow_tab_view_restore = None
+        with self._suspend_crop_presentation():
+            if pending[2] is None:
+                fit_layer_view(self.viewer, target)
+            else:
+                restore_viewer_state(self.viewer, pending[2], layer=target)
+        self._on_dims_changed()
 
     def _fresh_workflow_tab_runtime(
         self,
@@ -10657,14 +10768,6 @@ class VippWidget(QWidget):
             )
             return False
 
-        # Preview workers and layers are presentation-only globals. Cancel and
-        # remove them at the central activation seam so direct/internal tab
-        # switches cannot mistake another tab's common input id for their own.
-        self._cancel_selected_inspector_refresh()
-        self._cancel_selected_viewer_refresh()
-        self._invalidate_source_preview(remove_layer=True)
-        self._discard_crop_draft(remove_layers=True)
-
         current = self._workflow_tabs.current
         if current is not None:
             self._finish_parameter_history_group()
@@ -10683,11 +10786,18 @@ class VippWidget(QWidget):
                 dialog = getattr(self, name, None)
                 if dialog is not None:
                     dialog.hide()
-        self._discard_inspect_layers()
-        pinned_layer = self._active_pinned_layer()
-        if pinned_layer is not None:
-            self._remove_layer(pinned_layer)
-        self._restore_hidden_input_layers()
+        # Retiring layers emits synchronous napari dims events. Keep outgoing
+        # Crop selection from recreating its box while the tab is being retired.
+        with self._suspend_crop_presentation():
+            self._cancel_selected_inspector_refresh()
+            self._cancel_selected_viewer_refresh()
+            self._invalidate_source_preview(remove_layer=True)
+            self._discard_crop_draft(remove_layers=True)
+            self._discard_inspect_layers()
+            pinned_layer = self._active_pinned_layer()
+            if pinned_layer is not None:
+                self._remove_layer(pinned_layer)
+            self._restore_hidden_input_layers()
 
         session = self._workflow_tabs.activate(target_index)
         batch_outcome_presented = self._install_workflow_tab_session(session)
@@ -10714,6 +10824,12 @@ class VippWidget(QWidget):
         self._undo_stack = self._history.undo_stack
         self._redo_stack = self._history.redo_stack
         self._restore_workflow_tab_runtime(session)
+        self._workflow_tab_view_generation += 1
+        self._pending_workflow_tab_view_restore = (
+            session.session_id,
+            self._workflow_tab_view_generation,
+            session.runtime_cache.get("_viewer_state"),
+        )
         self._present_workflow_tab_editor(session.editor_snapshot)
         restored_workspace_presented = (
             self._consume_workflow_tab_batch_workspace_preview(session)
@@ -11606,6 +11722,7 @@ class VippWidget(QWidget):
         *,
         current_snapshot: WorkflowHistorySnapshot | None = None,
         prefer_parameter_restore: bool = False,
+        schedule_run: bool = True,
     ) -> None:
         if (
             prefer_parameter_restore
@@ -11711,7 +11828,8 @@ class VippWidget(QWidget):
             self._refresh_graph_search_matches(reset_index=True)
             self._sync_pin_ui()
             self._invalidate_pipeline_cache()
-            self.run_pipeline()
+            if schedule_run:
+                self.run_pipeline()
             # A small Auto run enters a nested Qt event loop while its detached
             # worker completes.  That loop may settle parent layouts and resize
             # the viewport after build_graph restored its center.  Reapply the
@@ -14344,11 +14462,16 @@ class VippWidget(QWidget):
         replacement: WorkflowTabSession | None = None
         if closing_current:
             self._remember_current_inspect_display_profiles()
-            self._discard_inspect_layers()
-            pinned_layer = self._active_pinned_layer()
-            if pinned_layer is not None:
-                self._remove_layer(pinned_layer)
-            self._restore_hidden_input_layers()
+            with self._suspend_crop_presentation():
+                self._cancel_selected_inspector_refresh()
+                self._cancel_selected_viewer_refresh()
+                self._invalidate_source_preview(remove_layer=True)
+                self._discard_crop_draft(remove_layers=True)
+                self._discard_inspect_layers()
+                pinned_layer = self._active_pinned_layer()
+                if pinned_layer is not None:
+                    self._remove_layer(pinned_layer)
+                self._restore_hidden_input_layers()
             if len(self._workflow_tabs) == 1:
                 replacement = self._workflow_tabs.create_blank(make_current=False)
                 replacement.pipeline.outputs["input"] = None
@@ -18919,6 +19042,12 @@ class VippWidget(QWidget):
         return True
 
     def _sync_isolated_tuning_ui(self) -> None:
+        previous_layout = (
+            self.isolated_tuning_checkbox.isHidden(),
+            self.isolated_tuning_panel.isHidden(),
+            self.isolated_tuning_status.text(),
+            self.node_bypass_checkbox.isHidden(),
+        )
         active_node_id = self._isolated_tuning_node_id
         if active_node_id not in self.pipeline.nodes:
             active_node_id = None
@@ -18956,7 +19085,18 @@ class VippWidget(QWidget):
             self.isolated_tuning_status.setText(status_messages[status_index])
         self.graph_view.set_isolated_tuning_node(active_node_id)
         self._sync_node_execution_mode_ui()
-        self._sync_inspector_responsive_layout()
+        current_layout = (
+            self.isolated_tuning_checkbox.isHidden(),
+            self.isolated_tuning_panel.isHidden(),
+            self.isolated_tuning_status.text(),
+            self.node_bypass_checkbox.isHidden(),
+        )
+        # Execution-state refreshes happen for every slider value. When the
+        # isolation presentation is unchanged, remeasuring/activating all
+        # inspector layouts can briefly move the control being dragged.
+        # Width and node changes retain their separate responsive refreshes.
+        if current_layout != previous_layout:
+            self._sync_inspector_responsive_layout()
 
     def _invalidate_pipeline_cache(self) -> None:
         if self._isolated_tuning_node_id is not None:
@@ -19569,6 +19709,15 @@ class VippWidget(QWidget):
             yield
         finally:
             self._viewer_layer_change_suspension -= 1
+
+    @contextmanager
+    def _suspend_crop_presentation(self):
+        """Do not recreate a Crop surface from synchronous teardown events."""
+        self._crop_presentation_suspension += 1
+        try:
+            yield
+        finally:
+            self._crop_presentation_suspension -= 1
 
     def _on_viewer_layers_changed(self, _event=None) -> None:
         if self._closing or self._viewer_layer_change_suspension:
@@ -21604,12 +21753,14 @@ class VippWidget(QWidget):
 
         self._selected_inspector_refresh_generation += 1
         generation = self._selected_inspector_refresh_generation
+        session_id = self._current_workflow_session_id()
         QTimer.singleShot(
             SELECTION_INSPECTOR_REFRESH_DELAY_MS,
             lambda: self._finish_selected_inspector_refresh(
                 generation,
                 node_id,
                 select_layer=select_layer,
+                session_id=session_id,
             ),
         )
 
@@ -21619,6 +21770,7 @@ class VippWidget(QWidget):
         node_id: str,
         *,
         select_layer: bool,
+        session_id: str | None = None,
     ) -> None:
         """Populate secondary inspector surfaces for only the latest selection."""
 
@@ -21626,6 +21778,10 @@ class VippWidget(QWidget):
             self._closing
             or generation != self._selected_inspector_refresh_generation
             or node_id != self._selected_node_id
+            or (
+                session_id is not None
+                and session_id != self._current_workflow_session_id()
+            )
         ):
             return
         if (
@@ -21642,6 +21798,7 @@ class VippWidget(QWidget):
                     generation,
                     node_id,
                     select_layer=select_layer,
+                    session_id=session_id,
                 ),
             )
             return
@@ -21671,12 +21828,14 @@ class VippWidget(QWidget):
 
         self._selected_viewer_refresh_generation += 1
         generation = self._selected_viewer_refresh_generation
+        session_id = self._current_workflow_session_id()
         QTimer.singleShot(
             0,
             lambda: self._finish_selected_viewer_refresh(
                 generation,
                 node_id,
                 select_layer=select_layer,
+                session_id=session_id,
             ),
         )
 
@@ -21686,6 +21845,7 @@ class VippWidget(QWidget):
         node_id: str,
         *,
         select_layer: bool,
+        session_id: str | None = None,
     ) -> None:
         """Apply the newest queued selection presentation, ignoring stale work."""
 
@@ -21693,6 +21853,10 @@ class VippWidget(QWidget):
             self._closing
             or generation != self._selected_viewer_refresh_generation
             or node_id != self._selected_node_id
+            or (
+                session_id is not None
+                and session_id != self._current_workflow_session_id()
+            )
         ):
             return
         if (
@@ -21705,6 +21869,7 @@ class VippWidget(QWidget):
                     generation,
                     node_id,
                     select_layer=select_layer,
+                    session_id=session_id,
                 ),
             )
             return
@@ -22125,6 +22290,9 @@ class VippWidget(QWidget):
         self._sync_output_selector_ui(profile)
         self._registration_next_step.refresh()
         self._registration_results.refresh()
+        self._detection_next_step.refresh()
+        self._detection_results.refresh()
+        self._tracking_results.refresh()
         self._sync_writer_status_ui(profile)
         self._update_object_filter_feedback()
         self._sync_histogram_interaction_hint()
@@ -22237,6 +22405,18 @@ class VippWidget(QWidget):
         primary_visibility = {
             NEXT_STEP_SECTION: node.operation_id == "estimate_registration",
             REGISTRATION_RESULTS_SECTION: node.operation_id == "estimate_registration",
+            DETECTION_NEXT_STEP_SECTION: node.operation_id == "template_match",
+            DETECTION_RESULTS_SECTION: node.operation_id == "find_peaks",
+            TRACKING_RESULTS_SECTION: (
+                node.operation_id in {"detect_spots_per_frame", "build_tracks"}
+                or (
+                    node.operation_id in {
+                        "measure_objects", "measure_objects_intensity"
+                    }
+                    and getattr(_metadata_data, "observation_metadata", None)
+                    is not None
+                )
+            ),
             PARAMETERS_SECTION: (
                 not self.parameter_group.isHidden()
                 or not self.connected_inputs_panel.isHidden()
@@ -23254,6 +23434,9 @@ class VippWidget(QWidget):
         if hasattr(self, "_registration_next_step"):
             self._registration_next_step.refresh()
             self._registration_results.refresh()
+            self._detection_next_step.refresh()
+            self._detection_results.refresh()
+            self._tracking_results.refresh()
         self._sync_node_names()
         for node_id in self.pipeline.nodes:
             self.graph_view.set_node_bypassed(
@@ -24946,7 +25129,48 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id == "detect_spots_per_frame":
+            return (
+                "Detects candidates independently in each whole XY image or "
+                "XYZ volume. "
+                "Select one channel upstream. IDs are local to each frame; connect "
+                "Build Tracks for persistent identities. Empty frames and count limits "
+                "are reported. Template mode uses one fixed size and orientation."
+            )
+        if node.operation_id == "build_tracks":
+            return (
+                "Builds tracks from Detect Spots per Frame or time-series "
+                "Measure Objects. Adjacent frames have priority over gap "
+                "reconnections. Maximum displacement is per elapsed frame, "
+                "with no motion prediction. "
+                "Review flags mark competing feasible links, not confidence. No "
+                "divisions, fusions, interpolated observations or automatic "
+                "drift correction."
+            )
+        if node.operation_id == "template_match":
+            return (
+                "Matches a fixed template without rotation or scale search. "
+                "A normalized correlation score is not a probability or proof of an "
+                "object. Use a representative, non-constant template at the same "
+                "sampling as the search image. Only complete, valid windows receive "
+                "scores. Connect both Scores and Valid scores to Find Peaks. "
+                "Even-sized templates have half-pixel/voxel centers."
+            )
+        if node.operation_id == "find_peaks":
+            return (
+                "Finds local-maximum candidates, not segmented objects. Set the "
+                "minimum value in the input's units (correlation scores are not "
+                "probabilities) and choose minimum separation for the expected "
+                "object spacing. Review candidates on the original source image. "
+                "Use the valid-scores mask with Template Match. Change parameters, "
+                "then calculate explicitly; review any reported detection limit."
+            )
         if node.operation_id == "estimate_registration":
+            previous_frame = (
+                node.params.get("mode", "Two images") == "Time series"
+                and node.params.get("time_strategy", "Fixed reference")
+                == "Previous frame"
+            )
             scope = (
                 "Each time point is registered as one complete XY image or XYZ "
                 "volume against the selected reference time. Z slices are never "
@@ -24954,6 +25178,22 @@ class VippWidget(QWidget):
                 if node.params.get("mode", "Two images") == "Time series"
                 else "The moving image is registered to the reference image. "
             )
+            strategy_note = ""
+            if previous_frame:
+                strategy_note = (
+                    "Previous frame matches original adjacent volumes toward the "
+                    "anchor on both sides. Errors can accumulate. Local pairs "
+                    "always require the authored limits; one failed pair stops the "
+                    "series. "
+                    + (
+                        "The same displacement/overlap limits also gate the "
+                        "composed anchor alignment. "
+                        if node.params.get("cumulative_quality_policy", "Report only")
+                        == "Require local limits"
+                        else "Cumulative anchor quality is reported only; inspect "
+                        "coverage before measuring. "
+                    )
+                )
             model_note = (
                 "Affine registration changes scale and shear as well as position. "
                 "It can alter object shape and size; prefer Translation or Rigid "
@@ -24962,7 +25202,7 @@ class VippWidget(QWidget):
                 else ""
             )
             return (
-                scope + model_note
+                scope + strategy_note + model_note
                 + "Review the diagnostics and the aligned image; a matching "
                 "score is not proof of correct alignment."
             )
@@ -25065,12 +25305,23 @@ class VippWidget(QWidget):
     def _operation_help_note_status(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
         if node is not None and node.operation_id in {
+            "template_match", "find_peaks", "detect_spots_per_frame", "build_tracks",
+        }:
+            return "Info"
+        if node is not None and node.operation_id in {
             "estimate_registration", "apply_transform", "compare_images"
         }:
             return (
                 "Warning"
                 if node.operation_id == "estimate_registration"
-                and node.params.get("model", "Translation") == "Affine"
+                and (
+                    node.params.get("model", "Translation") == "Affine"
+                    or (
+                        node.params.get("mode", "Two images") == "Time series"
+                        and node.params.get("time_strategy", "Fixed reference")
+                        == "Previous frame"
+                    )
+                )
                 else "Info"
             )
         if node is not None and node.operation_id in {
@@ -27257,6 +27508,7 @@ class VippWidget(QWidget):
         if select_layer and target is not None:
             self._select_only_viewer_layer(target)
             _sync_viewer_axis_labels_from_layer(self.viewer, target)
+        self._queue_workflow_tab_view_restore()
 
     def _source_resolution_presentation(
         self,
@@ -28664,6 +28916,16 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return False
+        if (
+            node.operation_id == "estimate_registration"
+            and spec.name == "cumulative_quality_policy"
+            and (
+                node.params.get("mode", "Two images") != "Time series"
+                or node.params.get("time_strategy", "Fixed reference")
+                != "Previous frame"
+            )
+        ):
+            return True
         if (
             node.operation_id == "measure_3d_mesh_morphology"
             and spec.name in {"spatial_mode", "minimum_voxel_count"}
@@ -32698,8 +32960,7 @@ class VippWidget(QWidget):
         return candidate_axes[-1]
 
     def _crop_current_session_id(self) -> str:
-        session = self._workflow_tabs.current
-        return "" if session is None else str(session.session_id)
+        return self._current_workflow_session_id()
 
     def _begin_crop_slider_scrub(
         self,
@@ -33082,7 +33343,9 @@ class VippWidget(QWidget):
             f"positions are retained."
         )
 
-    def _owned_crop_presentation_layers(self, kind: str | None = None) -> list:
+    def _owned_crop_presentation_layers(
+        self, kind: str | None = None, *, current_session_only: bool = False
+    ) -> list:
         layers = []
         for layer in list(self.viewer.layers):
             metadata = getattr(layer, "metadata", None)
@@ -33090,6 +33353,11 @@ class VippWidget(QWidget):
                 continue
             layer_kind = str(metadata.get("napari_vipp_kind", ""))
             if layer_kind not in {"crop_roi", "crop_source"}:
+                continue
+            if (
+                current_session_only
+                and metadata.get("session_id") != self._current_workflow_session_id()
+            ):
                 continue
             if kind is None or layer_kind == kind:
                 layers.append(layer)
@@ -33099,7 +33367,10 @@ class VippWidget(QWidget):
         # Treat the source image and ROI as one transient presentation.  Layer
         # removal emits napari events synchronously; suppress VIPP's ordinary
         # live-source reaction until the complete owned group has gone.
-        with self._suspend_viewer_layer_change_handling():
+        with (
+            self._suspend_crop_presentation(),
+            self._suspend_viewer_layer_change_handling(),
+        ):
             for layer in self._owned_crop_presentation_layers():
                 self._remove_layer(layer)
 
@@ -33128,6 +33399,8 @@ class VippWidget(QWidget):
         }
 
     def _ensure_crop_source_layer(self, node_id: str):
+        if self._crop_presentation_suspension:
+            return None
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
             self._set_crop_presentation_layers_visible(False, kind="crop_source")
@@ -33160,7 +33433,9 @@ class VippWidget(QWidget):
         )
         scale = _layer_scale_from_metadata(metadata)
         translate = _layer_translate_from_metadata(metadata)
-        owned = self._owned_crop_presentation_layers("crop_source")
+        owned = self._owned_crop_presentation_layers(
+            "crop_source", current_session_only=True
+        )
         layer = owned[0] if owned else None
         for extra in owned[1:]:
             self._remove_layer(extra)
@@ -33504,6 +33779,8 @@ class VippWidget(QWidget):
         )
 
     def _update_crop_roi_presentation(self, node_id: str) -> None:
+        if self._crop_presentation_suspension:
+            return
         node = self.pipeline.nodes.get(node_id)
         if (
             node is None
@@ -33557,7 +33834,9 @@ class VippWidget(QWidget):
             if len(axes) == rank
             else (0.0,) * rank
         )
-        owned = self._owned_crop_presentation_layers("crop_roi")
+        owned = self._owned_crop_presentation_layers(
+            "crop_roi", current_session_only=True
+        )
         layer = owned[0] if owned else None
         for extra in owned[1:]:
             self._remove_layer(extra)
@@ -34239,9 +34518,10 @@ class VippWidget(QWidget):
             }:
                 self._refresh_selected_parameter_controls()
         if name == "input_count" or (
-            node.operation_id == "estimate_registration" and name == "mode"
+            node.operation_id in {"estimate_registration", "detect_spots_per_frame"}
+            and name == "mode"
         ) or (
-            node.operation_id == "compare_images" and name == "use_mask"
+            node.operation_id in {"compare_images", "find_peaks"} and name == "use_mask"
         ):
             for connection in self.pipeline.trim_invalid_connections(
                 self._selected_node_id
@@ -34253,7 +34533,9 @@ class VippWidget(QWidget):
                     notify=False,
                 )
             self._sync_node_input_ports(self._selected_node_id)
-        if node.operation_id == "estimate_registration" and name in {"mode", "model"}:
+        if node.operation_id == "estimate_registration" and name in {
+            "mode", "model", "time_strategy", "cumulative_quality_policy"
+        }:
             self._render_parameters(self._selected_node_id)
             self._sync_inspector_presentation()
         if name in {"axis", "boundary_mode", "channel_axis", "spatial_mode"}:
@@ -35128,19 +35410,15 @@ class VippWidget(QWidget):
                 self._measure_synchronous_pipeline_processing(),
                 self._preserve_interactive_collection_workflow_params(),
             ):
-                self.pipeline.run(
+                report = self._execute_synchronous_cpu_pipeline(
                     input_data,
                     input_metadata=input_metadata,
                     input_name=input_name,
                     source_payloads=source_payloads,
                     dirty_node_ids=dirty_node_ids,
-                    manual_mode=MANUAL_RUN_SKIP,
                     manual_node_ids=manual_node_ids,
                     target_node_ids=target_node_ids,
-                    retain_node_ids=self._cache_retention_node_ids(),
-                    prune_unretained=(
-                        self._cache_pruning_enabled() and target_node_ids is None
-                    ),
+                    compute_request=compute_request,
                 )
         except Exception as exc:
             self._record_interaction_phase(
@@ -35227,23 +35505,31 @@ class VippWidget(QWidget):
                     self._measure_synchronous_pipeline_processing(),
                     self._preserve_interactive_collection_workflow_params(),
                 ):
-                    self.pipeline.run(
+                    rerun_report = self._execute_synchronous_cpu_pipeline(
                         input_data,
                         input_metadata=input_metadata,
                         input_name=input_name,
                         source_payloads=source_payloads,
                         dirty_node_ids=rerun_dirty,
-                        manual_mode=MANUAL_RUN_SKIP,
                         target_node_ids=target_node_ids,
-                        retain_node_ids=self._cache_retention_node_ids(),
-                        prune_unretained=(
-                            self._cache_pruning_enabled() and target_node_ids is None
-                        ),
+                        compute_request=compute_request,
                     )
-        self._record_synchronous_cpu_decisions(
-            synchronous_node_ids,
-            compute_request,
-        )
+                report = replace(
+                    rerun_report,
+                    actual_decisions=tuple(
+                        {
+                            decision.node_id: decision
+                            for decision in (
+                                *report.actual_decisions,
+                                *rerun_report.actual_decisions,
+                            )
+                            if decision.node_id in self.pipeline.completed_node_ids
+                        }.values()
+                    ),
+                )
+        for decision in report.actual_decisions:
+            self._compute_repair_suggestions.pop(decision.node_id, None)
+        self._accept_execution_report(report)
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._record_interaction_phase(
             interaction_generation,
@@ -35257,6 +35543,59 @@ class VippWidget(QWidget):
         )
         self._finish_pipeline_update(primary_layer, source_label)
         self._finish_interaction_without_preview_if_needed()
+
+    def _execute_synchronous_cpu_pipeline(
+        self,
+        input_data,
+        *,
+        input_metadata,
+        input_name: str,
+        source_payloads: dict[str, SourcePayload],
+        dirty_node_ids: set[str] | None,
+        compute_request: ComputeRequest,
+        manual_node_ids: set[str] | None = None,
+        target_node_ids: set[str] | None = None,
+    ) -> ExecutionReport:
+        """Keep the in-place CPU shortcut inside shared cache provenance rules."""
+
+        request = PipelineRunRequest(
+            run_id=0,
+            workflow=serialize_workflow(self.pipeline, compute_request=compute_request),
+            input_data=input_data,
+            input_metadata=input_metadata,
+            input_name=input_name,
+            source_payloads=dict(source_payloads),
+            compute_request=compute_request,
+            dirty_node_ids=(
+                None if dirty_node_ids is None else frozenset(dirty_node_ids)
+            ),
+            cached_outputs=dict(self.pipeline.outputs),
+            cached_output_states=dict(self.pipeline.output_states),
+            cached_node_outputs={
+                node_id: list(outputs)
+                for node_id, outputs in self.pipeline.node_outputs.items()
+            },
+            cached_node_output_states={
+                node_id: list(states)
+                for node_id, states in self.pipeline.node_output_states.items()
+            },
+            cached_execution_states=dict(self.pipeline.node_execution_states),
+            cached_execution_messages=dict(self.pipeline.node_execution_messages),
+            cached_compute_provenance={
+                **self.pipeline.node_cache_lineage,
+                **self.pipeline.node_compute_provenance,
+            },
+            completed_node_ids=frozenset(self.pipeline.completed_node_ids),
+            manual_node_ids=frozenset(manual_node_ids or ()),
+            target_node_ids=(
+                None if target_node_ids is None else frozenset(target_node_ids)
+            ),
+            retain_node_ids=frozenset(self._cache_retention_node_ids()),
+            prune_unretained=(
+                self._cache_pruning_enabled() and target_node_ids is None
+            ),
+        )
+        return execute_synchronous_cpu_pipeline(self.pipeline, request)
 
     def _show_workflow_ready_status(
         self,
@@ -37710,7 +38049,7 @@ class VippWidget(QWidget):
         return None
 
     def _on_dims_changed(self, _event=None) -> None:
-        if self._closing:
+        if self._closing or self._crop_presentation_suspension:
             return
         if getattr(_event, "type", None) == "ndisplay":
             _sync_viewer_spatial_order_from_layer(
@@ -42020,8 +42359,13 @@ class VippWidget(QWidget):
     def _open_histogram_dialog(self) -> None:
         """Open the selected cached histogram in a reusable detailed window."""
 
-        node = self.pipeline.nodes.get(self._selected_node_id)
-        data, _state, _output_port = self._node_display_payload(self._selected_node_id)
+        self._open_histogram_dialog_for_node(self._selected_node_id)
+
+    def _open_histogram_dialog_for_node(self, node_id: str) -> None:
+        """Open one owner's cached histogram without selecting or calculating it."""
+
+        node = self.pipeline.nodes.get(node_id)
+        data, _state, _output_port = self._node_display_payload(node_id)
         metadata = getattr(data, "histogram_metadata", None)
         if (
             node is None
@@ -42258,12 +42602,46 @@ class VippWidget(QWidget):
     def _open_results_workspace(self) -> None:
         self._results_workspace.open_node(self._selected_node_id)
 
+    def _open_node_result_window(self, node_id: str) -> None:
+        """Handle graph shortcuts without committing edits in another inspector."""
+
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return
+        if node.operation_id == "intensity_histogram":
+            self._open_histogram_dialog_for_node(node_id)
+            return
+        table_ports = [
+            index
+            for index, port in enumerate(self.pipeline.output_ports(node_id))
+            if port.output_type == "table"
+        ]
+        if not table_ports:
+            return
+        _data, _state, output_port = self._inspector_table_payload(node_id)
+        if output_port not in table_ports:
+            output_port = table_ports[0]
+        self._open_result_table_dialog_for_node(node_id, output_port=output_port)
+
     def _open_result_table_dialog(self) -> None:
         """Open the selected complete table in a reusable nonmodal window."""
 
-        data, _state, output_port = self._inspector_table_payload(
-            self._selected_node_id,
-        )
+        self._open_result_table_dialog_for_node(self._selected_node_id)
+
+    def _open_result_table_dialog_for_node(
+        self,
+        node_id: str,
+        *,
+        output_port: int | None = None,
+    ) -> None:
+        """Open an exact cached table without changing selection or executing."""
+
+        if node_id not in self.pipeline.nodes:
+            return
+        if output_port is None:
+            data, _state, output_port = self._inspector_table_payload(node_id)
+        else:
+            data, _state = self._node_output_payload_for_port(node_id, output_port)
         if not is_table_data(data):
             self._set_status(
                 "Calculate or select a table output before opening it.",
@@ -42282,7 +42660,7 @@ class VippWidget(QWidget):
                 self._calculate_result_table_dialog_node
             )
             self._result_table_dialog = dialog
-        self._sync_result_table_dialog(data, output_port)
+        self._sync_result_table_dialog(data, output_port, node_id=node_id)
         self._result_table_dialog.refresh_theme(QWidget.palette(self))
         self._result_table_dialog.show()
         self._result_table_dialog.raise_()

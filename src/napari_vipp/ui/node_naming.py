@@ -2,7 +2,7 @@
 
 from html import escape
 
-from qtpy.QtCore import QRect, QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -18,48 +18,82 @@ from napari_vipp.ui.node_labels import NodePresentation
 
 
 class _SettingsSummary(QLabel):
-    """Keep the live summary compact, with its complete text available on hover."""
+    """Wrap live settings without shrinking the same node's control positions."""
 
     def __init__(self):
         super().__init__()
-        self._full_text = ""
+        self._height_envelope: dict[int, int] = {}
+        self._height_context = None
         self.setTextFormat(Qt.PlainText)
         self.setWordWrap(True)
+        self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
     def set_summary(self, text: str):
-        self._full_text = text
+        if self.text() != text:
+            self.setText(text)
         self.setToolTip(f"<qt>{escape(text)}</qt>" if text else "")
         self.setAccessibleDescription(text)
-        self._fit_text()
         self.setVisible(bool(text))
 
-    def resizeEvent(self, event):
+    def reset_height_envelope(self):
+        """Release presentation-only space when its node or layout changes."""
+        self._height_envelope.clear()
+        self._height_context = None
+        self.updateGeometry()
+
+    def _sync_height_context(self):
+        margins = self.contentsMargins()
+        context = (
+            self.font().toString(),
+            self.fontMetrics().height(),
+            self.style().objectName(),
+            self.styleSheet(),
+            self.margin(),
+            self.indent(),
+            margins.left(),
+            margins.top(),
+            margins.right(),
+            margins.bottom(),
+        )
+        if context != self._height_context:
+            self._height_envelope.clear()
+            self._height_context = context
+
+    def heightForWidth(self, width):  # noqa: N802
+        self._sync_height_context()
+        required = int(super().heightForWidth(width))
+        if required < 0:
+            return required
+        # Changing 1000 to 1 can remove a wrapped line on some system fonts.
+        # Keep that readable space while tuning this node, but still let a
+        # genuinely longer summary grow. Widths are cached separately because
+        # Qt can measure several candidate widths during one layout pass.
+        reserved = max(required, self._height_envelope.get(int(width), 0))
+        self._height_envelope[int(width)] = reserved
+        return reserved
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        # QLabel's one-line minimum must stay independent of its current
+        # width. Promoting a narrow-width reservation into this global minimum
+        # can clamp an owner's next resize before it gets the wider geometry.
+        # The readable, width-specific reservation belongs in heightForWidth.
+        return QSize(0, hint.height())
+
+    def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
-        self._fit_text()
+        if event.size().width() != event.oldSize().width():
+            self.reset_height_envelope()
 
-    def _fit_text(self):
-        metrics = self.fontMetrics()
-        height = metrics.lineSpacing() * 3
-        self.setMaximumHeight(height)
-        bounds = QRect(0, 0, max(self.width(), 20), 100000)
-
-        def fits(value):
-            return (
-                metrics.boundingRect(bounds, Qt.TextWordWrap, value).height() <= height
-            )
-
-        text = self._full_text
-        if not fits(text):
-            low, high = 0, len(text)
-            while low < high:
-                middle = (low + high + 1) // 2
-                if fits(text[:middle].rstrip() + "…"):
-                    low = middle
-                else:
-                    high = middle - 1
-            text = text[:low].rstrip() + "…"
-        self.setText(text)
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if hasattr(self, "_height_envelope") and event.type() in {
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+        }:
+            self.reset_height_envelope()
 
 
 class NodeNameEditor(QWidget):
@@ -131,6 +165,8 @@ class NodeNameEditor(QWidget):
 
     def set_node(self, node_id: str, custom_name: str, presentation: NodePresentation):
         changed_node = self._node_id != node_id
+        if changed_node:
+            self.summary_label.reset_height_envelope()
         self._node_id = node_id
         # Background result refreshes must not erase a name being typed.
         if changed_node or not (
@@ -154,6 +190,7 @@ class NodeNameEditor(QWidget):
 
     def clear(self):
         self._node_id = self._editing_node_id = ""
+        self.summary_label.reset_height_envelope()
         self.name_edit.clear()
         self.name_edit.setModified(False)
         self.hide()

@@ -1,0 +1,252 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 3,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "peaks",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D template detection",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "time",
+      "operation_id": "select_axis_slice",
+      "params": {
+        "axis": 0,
+        "index": 1,
+        "range_mode": true,
+        "remove_axes": "0",
+        "remove_indices": "1"
+      }
+    },
+    {
+      "id": "channel",
+      "operation_id": "extract_channel",
+      "params": {
+        "channel": 1
+      }
+    },
+    {
+      "id": "template",
+      "operation_id": "crop_stack",
+      "params": {
+        "z_start": 2,
+        "z_end": 14,
+        "top": 10,
+        "bottom": 45,
+        "left": 10,
+        "right": 59,
+        "channel_axis": -1
+      }
+    },
+    {
+      "id": "match",
+      "operation_id": "template_match",
+      "params": {}
+    },
+    {
+      "id": "peaks",
+      "operation_id": "find_peaks",
+      "params": {
+        "use_mask": true,
+        "minimum_value": 0.8,
+        "minimum_separation": 5.0,
+        "separation_units": "Physical (micrometers)",
+        "maximum_detections": 100,
+        "border_exclusion": 0
+      }
+    },
+    {
+      "id": "scores",
+      "operation_id": "plot_results",
+      "params": {
+        "recipe_version": 1,
+        "plot_type": "Distribution",
+        "y_column": "score",
+        "x_column": "auto",
+        "group_column": "",
+        "point_unit": "Objects",
+        "image_column": "",
+        "summary": "Mean",
+        "distribution": "Histogram",
+        "bins": 10,
+        "normalization": "Count",
+        "log_x": false,
+        "log_y": false,
+        "title": "Template correlation at retained detections",
+        "point_size": 5.0,
+        "show_grid": true,
+        "x_tick_interval": "Auto",
+        "y_tick_interval": "Auto"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "time",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "time",
+      "target": "channel",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "channel",
+      "target": "template",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "channel",
+      "target": "match",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Selected source image"
+    },
+    {
+      "source": "template",
+      "target": "match",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "match",
+      "target": "peaks",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "match",
+      "target": "peaks",
+      "target_port": 1,
+      "source_port": 1,
+      "tunnel": "Valid template support"
+    },
+    {
+      "source": "peaks",
+      "target": "scores",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      100
+    ],
+    "time": [
+      570,
+      100
+    ],
+    "channel": [
+      1140,
+      100
+    ],
+    "template": [
+      1710,
+      100
+    ],
+    "match": [
+      2280,
+      100
+    ],
+    "peaks": [
+      3150,
+      100
+    ],
+    "scores": [
+      3870,
+      100
+    ]
+  },
+  "tunnels": [
+    {
+      "name": "Selected source image",
+      "source": "channel",
+      "source_port": 0
+    },
+    {
+      "name": "Valid template support",
+      "source": "match",
+      "source_port": 1
+    }
+  ],
+  "notes": [
+    {
+      "id": "note_input",
+      "attached_node": "input",
+      "text": "1. EXPLICIT INPUT\nSelect T=1, then Repeated pattern (channel 1). Channel 0 is independent noise; T=0 is a different arrangement. These are seeded synthetic images, not biological data.",
+      "position": [
+        0,
+        -260
+      ],
+      "width": 460
+    },
+    {
+      "id": "note_template",
+      "attached_node": "template",
+      "text": "2. EXISTING CROP STACK\nCrop the first complete pattern to 7 x 9 x 11 samples. No resizing, rotating, segmentation or template library is used. Template origin is independent; its pixel/voxel sampling must match.",
+      "position": [
+        1630,
+        -260
+      ],
+      "width": 460
+    },
+    {
+      "id": "note_match",
+      "attached_node": "match",
+      "text": "3. SCORE SUPPORT\nThe smaller score map contains only full-template placements. Its origin is offset to template centers. Keep the Boolean valid-support output connected to Find Peaks: undefined correlations are not measured zeros.",
+      "position": [
+        2260,
+        -260
+      ],
+      "width": 460
+    },
+    {
+      "id": "note_peaks",
+      "attached_node": "peaks",
+      "text": "4. KNOWN ANSWER\nFour source-index ZYX centers: (5,14,15), (5,14,31), (12,40,24), (16,44,61). Spacing is (1.5,0.5,0.4) micrometres, origin (-3,4,11). The first pair is 6.4 micrometres apart. Inspect the detection table and source-coordinate overlay. The clipped border copy and the deliberately missing site are not expected detections.",
+      "position": [
+        3180,
+        -300
+      ],
+      "width": 500
+    },
+    {
+      "id": "note_scores",
+      "attached_node": "scores",
+      "text": "5. SCORES, NOT CONFIDENCE\nOpen the score histogram. The template's own location is included, so its near-one score is not an independent validation result. Correlation is not probability. Calculation writes no files and produces no segmentation labels.",
+      "position": [
+        3890,
+        -260
+      ],
+      "width": 470
+    }
+  ],
+  "view": {
+    "zoom": 0.55,
+    "pan": [
+      0.0,
+      0.0
+    ]
+  }
+}

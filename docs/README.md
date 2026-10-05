@@ -51,6 +51,12 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Tracking implementation](tracking-implementation.md): bounded one-to-one
+  linking, calibrated observation evidence, ambiguity/gap review and limits.
+- [Synthetic tracking evidence](tracking-synthetic-evidence.md): independent
+  spot/object motion, missing-frame/crossing cases and installed-package checks.
+- [Time-series detection](time-detection-implementation.md): per-frame scalar
+  detection and exact source/population metadata.
 - [Batch measurement collection](measurement-collection.md): unreleased
   collection/export contract, typed datasets, Table Source, and validation record.
 - [Measurement plots and statistics](measurement-plots-and-statistics-plan.md):
@@ -59,8 +65,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Statistics contract](statistics.md): descriptive methods, weighting,
   exclusions, output counts/units, and explicit legacy-recipe migration.
 - [Registration, image comparison, and template matching](registration-and-template-matching-plan.md):
-  earlier design rationale and revised delivery scope; template detection is deferred.
-- [Registration implementation](registration-implementation.md): unreleased reusable
+  earlier design rationale and staged delivery scope.
+- [Detection implementation](detection-implementation.md): unreleased fixed-template
+  correlation and peak detection, coordinate/validity contracts and qualification.
+- [Registration implementation](registration-implementation.md): reusable
   transforms, pairwise and whole-volume time-series alignment, label-safe application
   and comparison contracts. [Synthetic qualification](registration-synthetic-qualification.md)
   records independently known motion and measured landmark error.
@@ -103,6 +111,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not
 override the current planning documents above.
+
+- [Workflow-tab preview isolation](workflow-tab-preview-isolation.md): runtime-only
+  camera/dimension restoration, owned Crop retirement and focused regression scope.
 
 - [Reproducibility-package export](reproducibility-package.md): portable recipes,
   archived run evidence, privacy review, readable reports and explicit limits.
