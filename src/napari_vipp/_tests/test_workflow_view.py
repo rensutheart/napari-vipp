@@ -202,11 +202,60 @@ def test_fit_accounts_for_scene_unit_conversion():
         scale=(2000, 3000, 4000),
         translate=(10000, 20000, 30000),
     )
-    factor = (1 * target.units[0]).to(viewer.layers.units[0]).magnitude
+    # Layer units predate shared scene units in supported napari. Older viewers
+    # render these world coordinates directly rather than converting them.
+    scene_units = getattr(viewer.layers, "units", None)
+    if not hasattr(viewer.layers, "units"):
+        scene_units = getattr(viewer.dims, "units", None)
+    factor = (
+        1.0
+        if scene_units is None
+        else (1 * target.units[0]).to(scene_units[0]).magnitude
+    )
     assert fit_layer_view(viewer, target)
     camera = viewer_camera(viewer)
     assert camera.center == pytest.approx(np.array((13000, 27500, 44000)) * factor)
     assert camera.zoom == pytest.approx(0.95 * min(800 / 18000, 600 / 32000) / factor)
+
+
+@pytest.mark.parametrize("unit_owner", ["layers", "dims", "absent"])
+def test_fit_feature_detects_shared_scene_units_without_changing_layer(unit_owner):
+    from napari.layers import Image
+
+    reference = Image(np.zeros((4, 6, 8)), rgb=False, units="micrometer")
+    data = np.zeros((4, 6, 8))
+    data.setflags(write=False)
+    target = Image(
+        data,
+        rgb=False,
+        units="nanometer",
+        scale=(2000, 3000, 4000),
+        translate=(10000, 20000, 30000),
+    )
+    viewer = _fake_viewer()
+    viewer.camera.angles = (0, 0, 0)
+    viewer.layers = SimpleNamespace()
+    if unit_owner == "layers":
+        viewer.layers.units = reference.units
+    elif unit_owner == "dims":
+        viewer.dims.units = reference.units
+    factor = 1.0 if unit_owner == "absent" else 1e-3
+    before_data = target.data
+    before_units = target.units
+    before_extent = np.array(target.extent.world, copy=True)
+
+    assert fit_layer_view(viewer, target)
+
+    assert viewer.camera.center == pytest.approx(
+        np.array((13000, 27500, 44000)) * factor
+    )
+    assert viewer.camera.zoom == pytest.approx(
+        0.95 * min(800 / 18000, 600 / 32000) / factor
+    )
+    assert target.data is before_data
+    assert not target.data.flags.writeable
+    assert target.units == before_units
+    np.testing.assert_array_equal(target.extent.world, before_extent)
 
 
 def test_fit_adapts_2d_target_without_leaking_an_unrelated_leading_axis():
