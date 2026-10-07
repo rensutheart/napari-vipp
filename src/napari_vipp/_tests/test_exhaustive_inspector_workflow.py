@@ -222,6 +222,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         "Born-Wolf PSF": ("born_wolf_psf_1", 0, 1),
         "Expanded labels": ("expand_labels_1", 0, 1),
         "Green channel": ("split_channels_1", 1, 15),
+        "Nuclear uint16": ("split_axis_1", 0, 1),
         "Object labels": ("relabel_sequential_1", 0, 6),
         "ROI mask": ("binary_threshold_1", 0, 12),
         "Raw volume": ("input_2", 0, 4),
@@ -255,7 +256,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 72
+    assert sum(tunnel_counts.values()) == 73
     assert sum(not connection.tunnel_name for connection in pipeline.connections) == 124
 
     for connection in pipeline.connections:
@@ -296,6 +297,52 @@ def test_exhaustive_inspector_showcase_cannot_auto_save_to_disk():
     assert len(save_nodes) == 1
     assert save_nodes[0].params["enabled"] == "off"
     assert save_nodes[0].params["path"] == ""
+
+
+def test_showcase_imagej_gaussian_uses_calibrated_uint16_nuclear_planes():
+    from napari_vipp._sample_data import make_sample_data
+    from napari_vipp.core.imagej_gaussian import imagej_gaussian_blur
+
+    graph = workflow_snapshot_from_document(_showcase_document()).graph.to_pipeline()
+    node_ids = {
+        "input", "crop_stack_1", "select_axis_slice_1", "split_axis_1",
+        "imagej_gaussian_blur_1",
+    }
+    branch = PrototypePipeline()
+    branch.restore_graph(
+        [node for node in graph.nodes.values() if node.id in node_ids],
+        [
+            edge for edge in graph.connections
+            if edge.source_id in node_ids and edge.target_id in node_ids
+        ],
+        [
+            tunnel for tunnel in graph.output_tunnel_list()
+            if tunnel.name == "Nuclear uint16"
+        ],
+    )
+    image, kwargs, _kind = next(
+        sample for sample in make_sample_data()
+        if sample[1]["name"] == branch.nodes["input"].params["sample_name"]
+    )
+    before = image.copy()
+    image.setflags(write=False)
+    sources = {"input": SourcePayload(image, kwargs["metadata"], kwargs["name"])}
+    branch.preflight_axis_contract(sources)
+    outputs = branch.run(None, source_payloads=sources)
+    nuclear_input = branch.node_outputs["split_axis_1"][0]
+    blurred = outputs["imagej_gaussian_blur_1"]
+    assert nuclear_input.ndim == 3 and nuclear_input.dtype == np.uint16
+    assert blurred.shape == nuclear_input.shape and blurred.dtype == np.uint16
+    assert branch.nodes["imagej_gaussian_blur_1"].params == {"sigma": 1.5}
+    np.testing.assert_array_equal(
+        blurred, imagej_gaussian_blur(nuclear_input, sigma=1.5)
+    )
+    assert not np.shares_memory(blurred, nuclear_input)
+    assert branch.output_states["imagej_gaussian_blur_1"].axis_order == "ZYX"
+    assert branch.output_states["imagej_gaussian_blur_1"].axes == (
+        branch.output_states["split_axis_1"].axes
+    )
+    np.testing.assert_array_equal(image, before)
 
 
 def test_showcase_registration_lane_executes_known_motion_and_coverage():

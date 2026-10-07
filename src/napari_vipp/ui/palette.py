@@ -44,6 +44,7 @@ from napari_vipp.ui.iconography import (
     palette_branch_color,
     palette_category_colors,
 )
+from napari_vipp.ui.operation_help import IMAGEJ_COMPATIBILITY_TOOLTIPS
 from napari_vipp.ui.panel_toggle import SidePanelToggleButton
 from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text
 from napari_vipp.ui.search_fields import SearchLineEdit
@@ -70,6 +71,8 @@ def _operation_description(spec: OperationSpec) -> str:
 
     if spec.id == "input":
         return "Load an image, image collection, or supported microscopy dataset."
+    if spec.id in IMAGEJ_COMPATIBILITY_TOOLTIPS:
+        return IMAGEJ_COMPATIBILITY_TOOLTIPS[spec.id]
     documentation = inspect.getdoc(spec.function) if spec.function else ""
     summary = documentation.splitlines()[0].strip() if documentation else ""
     if summary:

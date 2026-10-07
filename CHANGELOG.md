@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
+  finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
+  references cover the direct convolution and rounding behavior. Existing
+  Gaussian Blur operations retain their behavior; larger sigma and ImageJ's
+  downsampling branch are explicitly unsupported. Node-library and inspector
+  tooltips explain when to use it and why the same sigma can differ from
+  ordinary Gaussian Blur.
+
 ## 0.16.0a3 - 2026-10-05
 
 ### Workspace and inspection

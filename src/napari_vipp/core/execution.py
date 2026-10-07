@@ -171,6 +171,7 @@ _EXACT_HOST_SHAPE_DTYPE_POLICIES = MappingProxyType(
         "expand_labels": "same",
         "filter_labels_by_volume": "same",
         "gamma_correction": "same",
+        "imagej_gaussian_blur": "same",
         "linear_scale_offset": "same",
         "non_local_means_filter": "same",
         "relabel_sequential": "same",

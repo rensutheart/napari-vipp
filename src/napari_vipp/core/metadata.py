@@ -3048,6 +3048,13 @@ def _operation_history(
         else:
             polarity = ""
         return f"{operation_title}: radius {radius} px{polarity}, {spatial_mode}"
+    if operation_id == "imagej_gaussian_blur":
+        sigma = _format_number(params.get("sigma", 1.5))
+        return (
+            f"{operation_title}: sigma {sigma} px, ImageJ 1.54p direct convolution, "
+            "slice-wise YX, X then Y float32, nearest edges, dtype-specific "
+            "kernel accuracy and final integer rounding"
+        )
     if operation_id == "sigma_filter":
         radius = _format_number(params.get("radius", 2.0))
         sigma_width = _format_number(params.get("sigma_width", 2.0))

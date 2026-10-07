@@ -34,6 +34,7 @@ from napari_vipp.core.grid import (
     validate_mask_broadcast_image_states,
     validate_psf_image_states,
 )
+from napari_vipp.core.imagej_gaussian import imagej_gaussian_blur
 from napari_vipp.core.label_skeleton import (
     analyze_skeleton_per_label,
     skeletonize_labels,
@@ -1693,6 +1694,7 @@ _POSITIONAL_YX_OPERATIONS = frozenset(
     {
         "average_blur",
         "gaussian_blur",
+        "imagej_gaussian_blur",
         "median_filter",
         "sigma_filter",
         "difference_of_gaussians",
@@ -2108,6 +2110,26 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         gaussian_blur,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "imagej_gaussian_blur",
+        "ImageJ Gaussian Blur",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "sigma", "Sigma (pixels)", "float", 1.5, 0.0, 8.5, 0.1, 2,
+                tooltip=(
+                    "Gaussian standard deviation in pixels, applied separately "
+                    "to each XY slice. The supported ImageJ direct-filter "
+                    "range is 0–8.5 pixels."
+                ),
+            ),
+        ),
+        imagej_gaussian_blur,
         subcategory=SMOOTHING_DENOISING_GROUP,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),

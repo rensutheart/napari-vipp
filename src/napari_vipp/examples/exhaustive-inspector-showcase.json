@@ -275,6 +275,13 @@
       }
     },
     {
+      "id": "imagej_gaussian_blur_1",
+      "operation_id": "imagej_gaussian_blur",
+      "params": {
+        "sigma": 1.5
+      }
+    },
+    {
       "id": "gaussian_blur_3d_1",
       "operation_id": "gaussian_blur_3d",
       "params": {
@@ -1712,6 +1719,13 @@
       "source_port": 0
     },
     {
+      "source": "split_axis_1",
+      "target": "imagej_gaussian_blur_1",
+      "target_port": 0,
+      "source_port": 0,
+      "tunnel": "Nuclear uint16"
+    },
+    {
       "source": "input_2",
       "target": "gaussian_blur_3d_1",
       "target_port": 0,
@@ -2837,6 +2851,11 @@
       "source_port": 1
     },
     {
+      "name": "Nuclear uint16",
+      "source": "split_axis_1",
+      "source_port": 0
+    },
+    {
       "name": "Object labels",
       "source": "relabel_sequential_1",
       "source_port": 0
@@ -2994,6 +3013,10 @@
     ],
     "laplace_filter_1": [
       2584.0,
+      1620.0
+    ],
+    "imagej_gaussian_blur_1": [
+      3230.0,
       1620.0
     ],
     "gaussian_blur_3d_1": [
@@ -3553,7 +3576,7 @@
     },
     {
       "id": "lane_filtering",
-      "text": "2. INTENSITY AND FILTERING\nA small ZYX fluorescence volume drives an intensity-adjustment chain plus parallel smoothing, background, edge, and detail branches.",
+      "text": "2. INTENSITY AND FILTERING\nA small ZYX fluorescence volume drives an intensity-adjustment chain plus parallel smoothing, background, edge, and detail branches. The first lane's uint16 nuclear channel demonstrates ImageJ Gaussian Blur.",
       "position": [
         -440.0,
         980.0

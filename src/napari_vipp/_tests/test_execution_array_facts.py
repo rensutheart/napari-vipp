@@ -51,6 +51,8 @@ from napari_vipp.core.execution import (
     execute_pipeline_request,
 )
 from napari_vipp.core.metadata import (
+    DEFERRED_VALUE_RANGE,
+    AcquisitionMetadata,
     AxisMetadata,
     ChannelMetadata,
     image_state_from_array,
@@ -1638,6 +1640,31 @@ def test_integer_rescale_projects_only_its_dtype_proven_facts():
     assert float_output is None
 
 
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+@pytest.mark.parametrize("sigma", [0.0, 1.5])
+def test_imagej_gaussian_does_not_inherit_unqualified_value_facts(dtype, sigma):
+    source = execution_module._complete_array_facts(
+        np.arange(12, dtype=dtype).reshape(3, 4),
+        revision_fingerprint="imagej-gaussian-source",
+    )
+    assert source.all_finite is True
+    assert source.minimum == 0 and source.maximum == 11
+    assert {"nonnegative", "no-negative-zero"} <= set(source.guarantees)
+
+    propagated = execution_module._propagate_shape_preserving_facts(
+        "imagej_gaussian_blur",
+        source,
+        {"sigma": sigma},
+        output_port=OutputPortKey("imagej-gaussian", 0),
+        output_shape=source.shape,
+        output_dtype=source.dtype,
+    )
+
+    # Shape/dtype projection is qualified independently of value facts. Even
+    # the zero-sigma copy remains outside the reviewed fact-lineage registry.
+    assert propagated is None
+
+
 def test_integer_rescale_axes_projects_facts_across_shape_change():
     integer_source = execution_module._complete_array_facts(
         np.arange(12, dtype=np.uint16).reshape(3, 4),
@@ -2841,6 +2868,72 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
     )
 
     assert cpu_only - handled == set()
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])
+def test_imagej_gaussian_projects_calibrated_planes_without_reading_pixels(dtype):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Planning must not read pixels or run ImageJ Gaussian.")
+
+    class UnreadableImage:
+        def __init__(self, shape, array_dtype):
+            self.shape, self.dtype = shape, np.dtype(array_dtype)
+
+        def __array__(self, *_args, **_kwargs):
+            forbidden()
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node("imagej_gaussian_blur")
+    pipeline.set_param(node.id, "sigma", 1.5)
+    assert pipeline.connect("input", node.id).success
+    data = np.zeros((2, 3, 5, 7), dtype=dtype)
+    axes = (
+        AxisMetadata("c", "channel", source_axis=0),
+        AxisMetadata("z", "space", "micrometer", 5.22, 5085.56, source_axis=1),
+        AxisMetadata("y", "space", "micrometer", 0.2, -3.0, source_axis=2),
+        AxisMetadata("x", "space", "micrometer", 0.3, 4.0, source_axis=3),
+    )
+    input_state = image_state_from_array(
+        data,
+        axes=axes,
+        source_name="calibrated planning source",
+        channels=(ChannelMetadata(name="Nuclei"), ChannelMetadata(name="Control")),
+        acquisition=AcquisitionMetadata(objective="60x", objective_na=1.4),
+        history=("Acquisition calibrated before planning",),
+    )
+    assert input_state is not None
+    call = pipeline.prepare_node_call(node.id, (data,), (input_state,))
+    assert call is not None
+
+    projected = execution_module._project_host_planning_outputs(
+        pipeline,
+        "imagej_gaussian_blur",
+        replace(
+            call,
+            cpu_function=forbidden,
+            inputs=(UnreadableImage(data.shape, data.dtype),),
+        ),
+        (data.shape,),
+        (data.dtype.name,),
+    )
+
+    assert projected is not None and len(projected) == 1
+    ((description, output_state),) = projected
+    assert description.shape == data.shape and description.dtype == data.dtype
+    assert output_state is not None
+    assert output_state.shape == data.shape and output_state.dtype == data.dtype.name
+    assert output_state.axes == input_state.axes
+    assert output_state.axis_confidence == input_state.axis_confidence
+    assert output_state.channels == input_state.channels
+    assert output_state.acquisition == input_state.acquisition
+    assert output_state.source == input_state.source
+    assert output_state.source_name == input_state.source_name
+    assert output_state.history[:-1] == input_state.history
+    assert "ImageJ 1.54p" in output_state.history[-1]
+    assert "sigma 1.5" in output_state.history[-1]
+    assert output_state.value_range == DEFERRED_VALUE_RANGE
+    assert output_state.value_pattern == ""
 
 
 @pytest.mark.parametrize("rank", [2, 3])

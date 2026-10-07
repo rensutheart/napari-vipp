@@ -679,6 +679,7 @@ from napari_vipp.ui.mesh_histogram import (
 from napari_vipp.ui.node_labels import NodePresentation, build_node_presentations
 from napari_vipp.ui.node_naming import NodeNameEditor
 from napari_vipp.ui.object_filter_feedback import ObjectFilterFeedbackSection
+from napari_vipp.ui.operation_help import IMAGEJ_COMPATIBILITY_TOOLTIPS
 from napari_vipp.ui.palette import NodeLibraryPanel
 from napari_vipp.ui.palette_roles import blend_colors, palette_is_dark, theme_colors
 from napari_vipp.ui.panel_toggle import SidePanelToggleButton
@@ -1026,6 +1027,7 @@ CLAMP_INTENSITY_DESCRIPTION_TOOLTIP = (
     "unchanged. This is not a background-removal threshold."
 )
 INSPECTOR_TITLE_TOOLTIPS = {
+    **IMAGEJ_COMPATIBILITY_TOOLTIPS,
     "convex_hull": (
         "Fills one convex hull around all foreground in a Boolean mask. "
         "Choose independent 2D YX slices or 3D ZYX volumes. Separate objects "
@@ -1033,12 +1035,6 @@ INSPECTOR_TITLE_TOOLTIPS = {
     ),
     "sigma_filter": SIGMA_FILTER_DESCRIPTION_TOOLTIP,
     "clip_intensity": CLAMP_INTENSITY_DESCRIPTION_TOOLTIP,
-    "imagej_auto_threshold": (
-        "Converts each YX plane independently to 8-bit, then applies ImageJ "
-        "Default (modified IsoData) to its 256-bin histogram. This differs "
-        "from VIPP's Triangle Threshold, which works in the native intensity "
-        "domain and can use a shared stack histogram."
-    ),
     "minimum_threshold": (
         "Minimum refers to the lowest valley between two peaks in the "
         "intensity histogram, not the minimum pixel value. Values above that "

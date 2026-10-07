@@ -18,6 +18,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Validation and release
 
+- [ImageJ Gaussian compatibility](validation/imagej-gaussian-compatibility.md):
+  bounded independent bytecode references and tissue mask reproduction evidence.
+
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
 - [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)

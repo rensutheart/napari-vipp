@@ -242,7 +242,8 @@ def build_workflow() -> tuple[
         "lane_filtering",
         "2. INTENSITY AND FILTERING\n"
         "A small ZYX fluorescence volume drives an intensity-adjustment chain "
-        "plus parallel smoothing, background, edge, and detail branches.",
+        "plus parallel smoothing, background, edge, and detail branches. "
+        "The first lane's uint16 nuclear channel demonstrates ImageJ Gaussian Blur.",
         -440,
         980,
     )
@@ -329,6 +330,14 @@ def build_workflow() -> tuple[
     wire(gaussian, unsharp)
     wire(unsharp, sobel)
     wire(sobel, laplace)
+    imagej_gaussian = place("imagej_gaussian_blur", 1700, 1620, sigma=1.5)
+    nuclear_uint16_tunnel = add_tunnel("Nuclear uint16", split_axis, 0)
+    wire(
+        split_axis,
+        imagej_gaussian,
+        source_port=0,
+        tunnel_name=nuclear_uint16_tunnel,
+    )
 
     gaussian_3d = place(
         "gaussian_blur_3d",

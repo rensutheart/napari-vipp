@@ -20,8 +20,10 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     # branch projections below pin every preceding historical analysis.
     # The unreleased tracking rename changes only operation/node identities;
     # reversing those identities reproduces the preceding goldens exactly.
+    # The independent ImageJ Gaussian branch is stripped and pinned below;
+    # every earlier scientific node, parameter and edge remains unchanged.
     "exhaustive-inspector-showcase.json": (
-        "8d6ad9b4559389d64f154527482bfe35aef9d4c3643d4a112f8e6fc3c7ac25fb"
+        "ac43f4fd8333102af760d20a8056237e20413a5ce589ac22bdae2224d613bc42"
     ),
     # This regenerated a2 example omits no-op threshold/rescale defaults, as
     # pre-a2 documents already did; authored values are unchanged.
@@ -392,8 +394,64 @@ def _without_showcase_registration_lane(document: dict[str, Any]) -> dict[str, A
     return document
 
 
-def _without_showcase_tracking_lane(document: dict[str, Any]) -> dict[str, Any]:
+def _without_showcase_imagej_gaussian_branch(
+    document: dict[str, Any],
+) -> dict[str, Any]:
     document = deepcopy(document)
+    identifier = "imagej_gaussian_blur_1"
+    (added_node,) = [node for node in document["nodes"] if node["id"] == identifier]
+    assert added_node == {
+        "id": identifier,
+        "operation_id": "imagej_gaussian_blur",
+        "params": {"sigma": 1.5},
+    }
+    added_edges = [
+        edge for edge in document["connections"]
+        if identifier in (edge["source"], edge["target"])
+    ]
+    assert added_edges == [
+        {
+            "source": "split_axis_1",
+            "target": identifier,
+            "target_port": 0,
+            "source_port": 0,
+            "tunnel": "Nuclear uint16",
+        }
+    ]
+    added_tunnels = [
+        tunnel for tunnel in document["tunnels"]
+        if tunnel["name"] == "Nuclear uint16" or tunnel["source"] == identifier
+    ]
+    assert added_tunnels == [
+        {"name": "Nuclear uint16", "source": "split_axis_1", "source_port": 0}
+    ]
+    # Only this new branch may subscribe to the new uint16 source tunnel.
+    assert [
+        edge for edge in document["connections"]
+        if edge.get("tunnel") == "Nuclear uint16"
+    ] == added_edges
+    document["nodes"].remove(added_node)
+    document["connections"].remove(added_edges[0])
+    document["tunnels"].remove(added_tunnels[0])
+    document["positions"].pop(identifier)
+    return document
+
+
+def test_showcase_imagej_gaussian_preserves_complete_prior_analysis():
+    document = _without_showcase_imagej_gaussian_branch(
+        _load_example("exhaustive-inspector-showcase.json")
+    )
+    # Independently compared with HEAD: every prior node/edge/parameter/tunnel
+    # record is unchanged. This digest remains the previous current golden.
+    historical_hash = "8d6ad9b4559389d64f154527482bfe35aef9d4c3643d4a112f8e6fc3c7ac25fb"
+    assert scientific_workflow_hash(document) == historical_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(document)) == historical_hash
+    )
+
+
+def _without_showcase_tracking_lane(document: dict[str, Any]) -> dict[str, Any]:
+    document = _without_showcase_imagej_gaussian_branch(document)
     added_nodes = {
         "input_13": "input",
         "extract_channel_3": "extract_channel",
