@@ -16900,7 +16900,64 @@ class VippWidget(QWidget):
             workflow_summary=lambda: self._collection_batch_workflow_summary(
                 origin_session_id
             ),
+            focus_problem_node=lambda node_id: (
+                self._focus_collection_batch_problem_node(node_id, origin_session_id)
+            ),
         )
+
+    def _focus_collection_batch_problem_node(
+        self,
+        node_id: str,
+        origin_session_id: str,
+    ) -> bool:
+        """Reveal one blocked output in its inspector without calculating it."""
+        from napari_vipp.ui.batch_output_policy import output_action
+
+        dialog = self._active_collection_batch_dialog
+        if (
+            dialog is None
+            or not self._workflow_tab_is_active(origin_session_id)
+            or self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+            or dialog._run_in_progress
+            or dialog._checking_plan
+            or dialog._representative_pending
+            or getattr(dialog, "_run_preparing", False)
+        ):
+            return False
+        plan = dialog._preview_result
+        if (
+            plan is None
+            or node_id not in self.pipeline.nodes
+            or not any(
+                output.node_id == node_id
+                and output_action(output, plan.config) == "blocked"
+                for item in plan.items
+                for output in item.outputs
+            )
+        ):
+            return False
+
+        self._engage_collection_batch_workspace(dialog)
+        # A deliberate navigation action must not launch smart-cache restore
+        # or queue calculation when committing a pending Crop ROI draft.
+        self._commit_crop_draft(schedule_run=False)
+        previous_selection_guard = self._workflow_load_selection_in_progress
+        self._workflow_load_selection_in_progress = True
+        try:
+            self.graph_view.focus_node(node_id)
+        finally:
+            self._workflow_load_selection_in_progress = previous_selection_guard
+        window = self.window()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        self._set_status(
+            f"Focused '{self._node_title(node_id)}'. Edit its output settings, "
+            "then reopen Batch and Recheck all.",
+            severity=MessageSeverity.INFO,
+        )
+        return True
 
     def _check_collection_batch(
         self,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Explain the specific reasons for blocked batch outputs, including duplicate
+  filenames, input-file overlaps and output-node overwrite protection. Add
+  **Find problem** to open an affected Batch Output node without calculating or
+  saving, and **Select all** / **Deselect all** for matching items across pages.
+  Batch settings and filtered-out selections are retained.
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
   references cover the direct convolution and rounding behavior. Existing

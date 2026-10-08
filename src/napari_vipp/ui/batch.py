@@ -156,6 +156,7 @@ class CollectionBatchActions:
     check_items: Callable[[tuple[int, ...]], bool] | None = None
     compute_summary: Callable[[], tuple[str, str]] | None = None
     workflow_summary: Callable[[], tuple[str, str]] | None = None
+    focus_problem_node: Callable[[str], bool | None] | None = None
 
 
 class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
@@ -1896,8 +1897,9 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
                 )
             else:
                 self.graph_preview_status.setText(
-                    "Checks passed. No image was calculated. Use Preview selected "
-                    "to inspect an item in the main workflow graph."
+                    "Batch checks finished. No image was calculated. "
+                    "Use Preview selected to inspect an item in the main "
+                    "workflow graph."
                 )
         else:
             self.graph_preview_status.setText(
@@ -2310,6 +2312,9 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
             self.footer_overrides_button,
             self.load_overrides_button,
             self.recheck_item_button,
+            self.find_problem_button,
+            self.select_all_items_button,
+            self.deselect_all_items_button,
             self.more_button,
             self.results_panel.resume_button,
         ]

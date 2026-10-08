@@ -59,6 +59,7 @@ from napari_vipp.ui.batch_output_policy import (
     item_file_choice_label,
     output_action,
     output_counts_text,
+    output_problem,
     planned_item_status,
     with_existing_file_policy,
     with_item_file_policy,
@@ -222,6 +223,14 @@ class BatchWorkflowWorkspace(
         review_banner_layout.setContentsMargins(12, 8, 10, 8)
         review_banner_layout.setSpacing(12)
         review_banner_layout.addWidget(self.preview_status, 1)
+        self.find_problem_button = ToolbarCommandButton("Find problem")
+        self.find_problem_button.setToolTip(
+            "Open an affected Batch Output node in the graph and inspector. "
+            "Your batch settings are kept. Nothing is calculated or saved."
+        )
+        self.find_problem_button.clicked.connect(self._find_output_problem)
+        self.find_problem_button.hide()
+        review_banner_layout.addWidget(self.find_problem_button, 0, Qt.AlignVCenter)
         self.review_check_button = ToolbarCommandButton("Check batch again")
         self.review_check_button.setObjectName("BatchPrimaryAction")
         self.review_check_button.clicked.connect(self._check_batch)
@@ -310,6 +319,33 @@ class BatchWorkflowWorkspace(
         self.items_commands.addWidget(self.item_selection_commands, 0, 0)
         self.items_commands.addWidget(self.item_collection_commands, 0, 2)
         items.addWidget(self.items_command_row)
+        selection_row = QHBoxLayout()
+        selection_row.setSpacing(6)
+        self.select_all_items_button = ToolbarCommandButton("Select all")
+        self.deselect_all_items_button = ToolbarCommandButton("Deselect all")
+        for button, checked in (
+            (self.select_all_items_button, True),
+            (self.deselect_all_items_button, False),
+        ):
+            button.setToolTip(
+                "Change checkboxes for all items matching the current filter and "
+                "search, across all pages. Hidden selections are unchanged. "
+                "Checkboxes apply to selected-item actions; Run uses the full batch."
+            )
+            button.clicked.connect(
+                lambda _clicked=False, selected=checked: (
+                    self._set_matching_items_checked(selected)
+                )
+            )
+            selection_row.addWidget(button)
+        self.item_selection_scope = QLabel("All items")
+        self.item_selection_scope.setMinimumWidth(0)
+        self.item_selection_scope.setWordWrap(True)
+        self.item_selection_scope.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred
+        )
+        selection_row.addWidget(self.item_selection_scope, 1)
+        items.addLayout(selection_row)
         self.preview_table.setMaximumHeight(16777215)
         self.preview_table.setMinimumHeight(160)
         self.preview_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -446,6 +482,9 @@ class BatchWorkflowWorkspace(
             (self.load_overrides_button, "batch"),
             (self.preview_button, "recheck_all"),
             (self.review_check_button, "checklist"),
+            (self.find_problem_button, "focus"),
+            (self.select_all_items_button, "select_all"),
+            (self.deselect_all_items_button, "deselect"),
             (self.footer_overrides_button, "batch"),
             (self.run_button, "calculate"),
             (self.cancel_run_button, "stop"),
@@ -831,6 +870,10 @@ class BatchWorkflowWorkspace(
         self.review_check_button.setEnabled(results_check.isEnabled())
         self.review_check_button.setText(results_check.text())
         self.review_check_button.setToolTip(results_check.toolTip())
+        has_problem = bool(self._first_output_problem())
+        self.find_problem_button.setVisible(has_problem)
+        self.find_problem_button.setEnabled(self._can_focus_output_problem())
+        self._sync_item_selection_controls()
         self.run_button.setVisible(section == 3 and valid and not busy)
         work, kept = batch_work_counts(plan) if valid else (0, 0)
         self.run_button.setText(
@@ -1286,6 +1329,10 @@ class BatchWorkflowWorkspace(
             )
             issues = (
                 any(
+                    output_action(output, plan.config) == "blocked"
+                    for output in item.outputs
+                )
+                or any(
                     any(
                         word in str(status).lower()
                         for word in ("collision", "overlaps", "duplicate", "error")
@@ -1473,6 +1520,103 @@ class BatchWorkflowWorkspace(
         self._render_items()
         self._sync_workspace()
 
+    def _sync_item_selection_controls(self) -> None:
+        positions = set(self._matching_item_positions())
+        enabled = (
+            self._display_plan is not None
+            and self._check_rows is None
+            and not self._reproduction_table_active
+            and not self._checking_plan
+            and not self._run_in_progress
+            and not getattr(self, "_run_preparing", False)
+            and not self._representative_pending
+        )
+        self.select_all_items_button.setEnabled(
+            enabled and bool(positions.difference(self._checked_items))
+        )
+        self.deselect_all_items_button.setEnabled(
+            enabled and bool(positions.intersection(self._checked_items))
+        )
+        self.item_selection_scope.setText(
+            "All matching items · across all pages"
+            if self.item_filter.currentIndex() or self.item_search.text().strip()
+            else "All items · across all pages"
+        )
+
+    def _set_matching_items_checked(self, checked: bool) -> None:
+        self._sync_item_selection_controls()
+        button = (
+            self.select_all_items_button if checked else self.deselect_all_items_button
+        )
+        if not button.isEnabled():
+            return
+        positions = self._matching_item_positions()
+        if checked:
+            self._checked_items.update(positions)
+        else:
+            self._checked_items.difference_update(positions)
+        self._sync_override_checked_items()
+        self._render_items()
+        self._sync_workspace()
+
+    def _first_output_problem(self):
+        plan = self._preview_result
+        if plan is None:
+            return None
+        return next(
+            (
+                output
+                for item in plan.items
+                for output in item.outputs
+                if output_action(output, plan.config) == "blocked"
+            ),
+            None,
+        )
+
+    def _can_focus_output_problem(self) -> bool:
+        return bool(
+            self._first_output_problem()
+            and self._actions is not None
+            and self._actions.focus_problem_node is not None
+            and not self._checking_plan
+            and not self._run_in_progress
+            and not getattr(self, "_run_preparing", False)
+            and not self._representative_pending
+            and self._resume_source_path is None
+        )
+
+    def _find_output_problem(self) -> None:
+        output = self._first_output_problem()
+        if output is not None:
+            self._focus_output_problem(output.node_id)
+
+    def _focus_output_problem(self, node_id: str) -> None:
+        if not self._can_focus_output_problem():
+            return
+        plan = self._preview_result
+        if not any(
+            output.node_id == node_id
+            and output_action(output, plan.config) == "blocked"
+            for item in plan.items
+            for output in item.outputs
+        ):
+            return
+        try:
+            accepted = self._actions.focus_problem_node(node_id)
+        except Exception as exc:
+            self.show_workspace_activity(
+                f"Could not find the output node: {exc}", state="warning"
+            )
+            return
+        if accepted is False:
+            self.show_workspace_activity(
+                "The output node is no longer available in this workflow. "
+                "Check batch again.", state="warning"
+            )
+            return
+        # Hide the retained workspace; rejecting it discards its unsaved settings.
+        self.hide()
+
     def _page_items(self, step: int) -> None:
         self._item_page = max(self._item_page + step, 0)
         self._render_items()
@@ -1491,6 +1635,7 @@ class BatchWorkflowWorkspace(
             self._checked_items.discard(position)
         self._sync_override_checked_items()
         self._render_items()
+        self._sync_workspace()
 
     def _show_item_details(self) -> None:
         if self._show_reproduction_item_details():
@@ -1593,7 +1738,7 @@ class BatchWorkflowWorkspace(
             )
         show_filenames = getattr(self, "_show_output_filenames", False)
         titles = [output.node_title for output in item.outputs]
-        for output in item.outputs:
+        for output_index, output in enumerate(item.outputs):
             title = output.node_title or output.node_id
             if titles.count(output.node_title) > 1:
                 title += f" ({output.node_id})"
@@ -1617,7 +1762,14 @@ class BatchWorkflowWorkspace(
                 f"<b>{escape(title)}</b><br>"
                 f'<span style="color: {muted};">{escape(detail)}</span>'
             )
-            if show_filenames:
+            problem = output_problem(output, self._display_plan.config)
+            if problem:
+                parts.append(f"<br>{escape(problem)}")
+                if self._can_focus_output_problem():
+                    parts.append(
+                        f'<br><a href="output-node:{output_index}">Find problem</a>'
+                    )
+            if show_filenames or problem:
                 parts.append(f"<br>{escape(str(output.path))}")
             parts.append("</li>")
         parts.append("</ul>")
@@ -1663,6 +1815,20 @@ class BatchWorkflowWorkspace(
                 self._reveal_source(int(url.path()))
             except ValueError:
                 return
+        elif url.scheme() == "output-node":
+            plan = self._preview_result
+            if plan is None or not 0 <= self._current_item < len(plan.items):
+                return
+            try:
+                index = int(url.path())
+            except ValueError:
+                return
+            outputs = plan.items[self._current_item].outputs
+            if (
+                0 <= index < len(outputs)
+                and output_action(outputs[index], plan.config) == "blocked"
+            ):
+                self._focus_output_problem(outputs[index].node_id)
 
     def _item_context_menu(self, point) -> None:
         if self._check_rows is not None or self._reproduction_table_active:
