@@ -70,6 +70,7 @@ from napari_vipp.ui.batch_reproduction import BatchReproductionPresentation
 from napari_vipp.ui.batch_resume import BatchResumeActions
 from napari_vipp.ui.batch_setup import BatchSetupPresentation
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
+from napari_vipp.ui.bulk_selection import BulkSelectionControls
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
@@ -319,33 +320,31 @@ class BatchWorkflowWorkspace(
         self.items_commands.addWidget(self.item_selection_commands, 0, 0)
         self.items_commands.addWidget(self.item_collection_commands, 0, 2)
         items.addWidget(self.items_command_row)
-        selection_row = QHBoxLayout()
-        selection_row.setSpacing(6)
-        self.select_all_items_button = ToolbarCommandButton("Select all")
-        self.deselect_all_items_button = ToolbarCommandButton("Deselect all")
+        selection_tooltip = (
+            "Change checkboxes for all items matching the current filter and "
+            "search, across all pages. Hidden selections are unchanged. "
+            "Checkboxes apply to selected-item actions; Run uses the full batch."
+        )
+        self.item_selection_controls = BulkSelectionControls(
+            scope="All items · across all pages",
+            select_tooltip=selection_tooltip,
+            deselect_tooltip=selection_tooltip,
+        )
+        self.select_all_items_button = self.item_selection_controls.select_all_button
+        self.deselect_all_items_button = (
+            self.item_selection_controls.deselect_all_button
+        )
         for button, checked in (
             (self.select_all_items_button, True),
             (self.deselect_all_items_button, False),
         ):
-            button.setToolTip(
-                "Change checkboxes for all items matching the current filter and "
-                "search, across all pages. Hidden selections are unchanged. "
-                "Checkboxes apply to selected-item actions; Run uses the full batch."
-            )
             button.clicked.connect(
                 lambda _clicked=False, selected=checked: (
                     self._set_matching_items_checked(selected)
                 )
             )
-            selection_row.addWidget(button)
-        self.item_selection_scope = QLabel("All items")
-        self.item_selection_scope.setMinimumWidth(0)
-        self.item_selection_scope.setWordWrap(True)
-        self.item_selection_scope.setSizePolicy(
-            QSizePolicy.Ignored, QSizePolicy.Preferred
-        )
-        selection_row.addWidget(self.item_selection_scope, 1)
-        items.addLayout(selection_row)
+        self.item_selection_scope = self.item_selection_controls.scope_label
+        items.addWidget(self.item_selection_controls)
         self.preview_table.setMaximumHeight(16777215)
         self.preview_table.setMinimumHeight(160)
         self.preview_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -483,8 +482,6 @@ class BatchWorkflowWorkspace(
             (self.preview_button, "recheck_all"),
             (self.review_check_button, "checklist"),
             (self.find_problem_button, "focus"),
-            (self.select_all_items_button, "select_all"),
-            (self.deselect_all_items_button, "deselect"),
             (self.footer_overrides_button, "batch"),
             (self.run_button, "calculate"),
             (self.cancel_run_button, "stop"),
@@ -1539,7 +1536,7 @@ class BatchWorkflowWorkspace(
         self.deselect_all_items_button.setEnabled(
             enabled and bool(positions.intersection(self._checked_items))
         )
-        self.item_selection_scope.setText(
+        self.item_selection_controls.set_scope(
             "All matching items · across all pages"
             if self.item_filter.currentIndex() or self.item_search.text().strip()
             else "All items · across all pages"

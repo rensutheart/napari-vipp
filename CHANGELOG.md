@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Use the same paired **Select all** / **Deselect all** buttons across Batch
+  items and Overrides, the parameter-column chooser, Results visible columns,
+  Statistics measurements and Select Table Columns. Keep the same outline
+  icons, spacing and above-list placement, with readable scope text and wrapping
+  in narrow panels. Existing filtering, visibility and measurement rules remain.
 - Give the Batch workflow and Results Workspace native minimize/maximize
   controls and maximize/restore on title-bar or unused-toolbar double-click.
   On Windows, keep each workspace visible when napari or detached VIPP is
