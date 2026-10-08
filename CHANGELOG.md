@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Use the displayed input histogram to tune threshold slider ranges for large
+  float images whose intensities are outside 0–1. Preserve saved cutoffs and
+  synchronize histogram guide edits with numeric values, including constrained
+  or rounded edits that leave the cutoff unchanged.
+
 - Keep the Compute GPU-conversion advisory fully visible as the inspector is
   resized, with its action button below the wrapped text.
 

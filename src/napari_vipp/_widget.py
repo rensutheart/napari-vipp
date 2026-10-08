@@ -32852,7 +32852,7 @@ class VippWidget(QWidget):
     def _threshold_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
-            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+            return self._float_threshold_bounds(node_id, spec)
         arr = np.asarray(data)
         node = self.pipeline.nodes.get(node_id)
         channel_axis = _threshold_marker_channel_axis(
@@ -32871,12 +32871,8 @@ class VippWidget(QWidget):
                     0,
                     expandable=True,
                 )
-            return ParameterBounds(
-                spec.minimum,
-                spec.maximum,
-                spec.step,
-                spec.decimals,
-                expandable=True,
+            return self._float_threshold_bounds(
+                node_id, spec, self._threshold_histogram_range(node_id, data)
             )
         if np.issubdtype(arr.dtype, np.integer):
             if arr.dtype == np.uint8:
@@ -32893,15 +32889,85 @@ class VippWidget(QWidget):
 
         finite = _finite_values(arr, channel_axis=channel_axis)
         if finite.size == 0:
-            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
-        minimum = float(finite.min())
-        maximum = float(finite.max())
+            return self._float_threshold_bounds(node_id, spec)
+        return self._float_threshold_bounds(
+            node_id, spec, (float(finite.min()), float(finite.max())),
+            complete_range=True,
+        )
+
+    def _threshold_histogram_range(self, node_id: str, data):
+        """Use an identity-checked histogram as a slider hint, without scanning."""
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return None
+        state = self.pipeline.input_state_for_node(node_id)
+        current_step = self._current_step()
+        scope = (
+            self.histogram_scope_combo.currentText()
+            if _histogram_has_stack_scope(data, state)
+            else "Slice histogram"
+        )
+        distribution_key, _key = self._input_histogram_keys(
+            node_id, node.operation_id, data, state, scope, current_step,
+            self._current_step_nsteps() if current_step is not None else None,
+            node.params,
+        )
+        distribution = self._cached_input_histogram_distribution(distribution_key, data)
+        if distribution is None or not distribution.finite_values:
+            return None
+        limits = distribution.x_range
+        if limits is None or not all(np.isfinite(value) for value in limits):
+            return None
+        return limits if limits[0] <= limits[1] else None
+
+    def _float_threshold_bounds(
+        self, node_id: str, spec, limits=None, *, complete_range=False,
+    ) -> ParameterBounds:
+        node = self.pipeline.nodes.get(node_id)
+        current = _safe_float(
+            (
+                node.params.get(spec.name, spec.default)
+                if node is not None else spec.default
+            ),
+            spec.default,
+        )
+        if not np.isfinite(current):
+            current = 0.0
+        authored = [current]
+        if (
+            node is not None
+            and node.operation_id in {"binary_threshold", "hysteresis_threshold"}
+            and spec.name in {"low_threshold", "high_threshold"}
+        ):
+            peer_name = (
+                "high_threshold" if spec.name == "low_threshold" else "low_threshold"
+            )
+            peer = _safe_float(node.params.get(peer_name), np.nan)
+            if np.isfinite(peer):
+                authored.append(peer)
+        if limits is None:
+            extent = max(abs(current), 1.0)
+            minimum, maximum = -extent, extent
+        else:
+            minimum, maximum = map(float, limits)
         if 0.0 <= minimum and maximum <= 1.0:
-            return ParameterBounds(0.0, 1.0, 0.01, 3)
+            minimum, maximum = 0.0, 1.0
+            if complete_range and all(0.0 <= value <= 1.0 for value in authored):
+                return ParameterBounds(0.0, 1.0, 0.01, 3)
+        # A slice histogram is only an ergonomic slider window. It must not
+        # clamp a saved cutoff, or constrain a cutoff for the rest of the stack.
+        minimum, maximum = min(minimum, *authored), max(maximum, *authored)
         if minimum == maximum:
             minimum, maximum = _expanded_bounds(minimum)
-        step = max((maximum - minimum) / 200.0, 1e-6)
-        return ParameterBounds(minimum, maximum, step, 3)
+        step = (
+            0.01 if 0.0 <= minimum and maximum <= 1.0
+            else max((maximum - minimum) / 200.0, 1e-6)
+        )
+        return _slider_safe_bounds(
+            minimum, maximum, step, 3, expandable=True,
+            entry_minimum=min(minimum, -1_000_000.0),
+            entry_maximum=max(maximum, 1_000_000.0),
+        )
 
     def _axis_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
@@ -41564,6 +41630,9 @@ class VippWidget(QWidget):
             value,
         )
         if not switched_rescale_mode and not parameter_changed:
+            # The plot has already moved its guide to the raw drag coordinate.
+            # Put it back if rounding or a linked bound leaves the cutoff unchanged.
+            self._update_rescale_input_histogram(node_id, self._current_step())
             return
         if switched_rescale_mode:
             self._render_parameters(node_id)
@@ -41666,10 +41735,18 @@ class VippWidget(QWidget):
         maximum = (
             bounds.maximum if bounds.entry_maximum is None else bounds.entry_maximum
         )
+        control = self._parameter_widgets.get(name)
+        if self._selected_node_id == node_id and isinstance(control, ParameterControl):
+            # Expandable sliders have a wider numeric entry domain. Histogram
+            # edits obey that same domain, rather than the slider's display window.
+            minimum = control.value_box.minimum()
+            maximum = control.value_box.maximum()
         numeric = float(np.clip(float(value), float(minimum), float(maximum)))
         if spec.kind == "int":
             return int(round(numeric))
-        decimals = max(int(getattr(spec, "decimals", 2) or 0), 0)
+        decimals = max(int(bounds.decimals), 0)
+        if self._selected_node_id == node_id and isinstance(control, ParameterControl):
+            decimals = int(control.value_box.decimals()) if spec.kind == "float" else 0
         return float(round(numeric, decimals))
 
     def _paired_histogram_marker_value(
@@ -42224,6 +42301,19 @@ class VippWidget(QWidget):
         if result.error:
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             return
+        if node.id == self._selected_node_id:
+            for spec in self.pipeline.node_parameter_specs(node.id):
+                control = self._parameter_widgets.get(spec.name)
+                if (
+                    spec.name in {"threshold", "low_threshold", "high_threshold"}
+                    and isinstance(control, ParameterControl)
+                ):
+                    spec = self._effective_parameter_spec(node.id, spec)
+                    control.set_bounds(
+                        self._parameter_bounds_for(node.id, spec),
+                        node.params.get(spec.name),
+                        emit=False,
+                    )
         self.rescale_input_histogram_plot.set_histogram(
             result.counts,
             log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
