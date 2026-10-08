@@ -275,6 +275,7 @@ def _focus_host(dialog):
 
     host.graph_view = SimpleNamespace(focus_node=focus)
     window = SimpleNamespace(
+        windowState=lambda: Qt.WindowNoState,
         show=lambda: calls.append(("window", "show")),
         raise_=lambda: calls.append(("window", "raise")),
         activateWindow=lambda: calls.append(("window", "activate")),
@@ -373,12 +374,14 @@ def test_real_host_opens_output_inspector_without_running_and_retains_workspace(
     before = dialog.values()
     assert widget.pipeline.outputs.get(output.id) is None
 
+    widget.showMinimized()
     dialog.find_problem_button.click()
     qtbot.wait(20)
     assert widget._selected_node_id == output.id
     assert "tag" in widget._parameter_widgets
     assert widget.selected_title.text() == widget._node_title(output.id)
     assert runs == []
+    assert not widget.isMinimized()
     assert not widget._workflow_load_selection_in_progress
     assert widget._active_collection_batch_dialog is dialog
     assert dialog.isHidden()

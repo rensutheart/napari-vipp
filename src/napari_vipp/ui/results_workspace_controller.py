@@ -15,6 +15,7 @@ from qtpy.QtCore import QObject, QPointF, Qt
 from napari_vipp.core.pipeline import EXECUTION_ERROR, EXECUTION_READY
 from napari_vipp.core.result_plots import is_summary_table
 from napari_vipp.core.tables import is_table_data
+from napari_vipp.ui.workspace_window import show_workspace_window
 
 
 @dataclass
@@ -184,9 +185,7 @@ class ResultsWorkspaceController(QObject):
             entry.plot_id = plot_id
         self.refresh()
         entry.dialog.show_tab(tab)
-        entry.dialog.show()
-        entry.dialog.raise_()
-        entry.dialog.activateWindow()
+        show_workspace_window(entry.dialog)
         return entry.dialog
 
     def _forget(self, key, owner):

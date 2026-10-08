@@ -499,6 +499,8 @@ class BatchWorkflowWorkspace(
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
         layout.addWidget(self.config_row)
+        self._window_controls.add_toolbar_surface(self.config_row)
+        self._window_controls.add_toolbar_surface(self.config_name_label)
         self._build_reproduction_banner()
         layout.addWidget(self.reproduction_banner)
         layout.addWidget(self.tabs, 1)

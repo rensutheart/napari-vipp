@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Give the Batch workflow and Results Workspace native minimize/maximize
+  controls and maximize/restore on title-bar or unused-toolbar double-click.
+  On Windows, keep each workspace visible when napari or detached VIPP is
+  minimized, with independent taskbar controls and retained session ownership.
+  Reopening a minimized workspace restores its previous window state.
 - Explain the specific reasons for blocked batch outputs, including duplicate
   filenames, input-file overlaps and output-node overwrite protection. Add
   **Find problem** to open an affected Batch Output node without calculating or

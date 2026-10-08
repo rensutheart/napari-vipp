@@ -804,6 +804,7 @@ from napari_vipp.ui.workflow_view import (
     fit_layer_view,
     restore_viewer_state,
 )
+from napari_vipp.ui.workspace_window import show_workspace_window
 
 _provisional_generated_layer_contrast_limits = (
     provisional_generated_layer_contrast_limits
@@ -15648,9 +15649,7 @@ class VippWidget(QWidget):
                 "opening another batch workspace.",
                 severity=MessageSeverity.INFO,
             )
-            pending_dialog.show()
-            pending_dialog.raise_()
-            pending_dialog.activateWindow()
+            show_workspace_window(pending_dialog)
             return pending_dialog
         if self._collection_batch_running:
             batch_job = self._active_collection_batch_job
@@ -15677,15 +15676,11 @@ class VippWidget(QWidget):
                 else self._active_collection_batch_dialog
             )
             if active_dialog is not None:
-                active_dialog.show()
-                active_dialog.raise_()
-                active_dialog.activateWindow()
+                show_workspace_window(active_dialog)
             return active_dialog
         active_dialog = self._active_collection_batch_dialog
         if active_dialog is not None and config_path is None and config is None:
-            active_dialog.show()
-            active_dialog.raise_()
-            active_dialog.activateWindow()
+            show_workspace_window(active_dialog)
             return active_dialog
         if active_dialog is not None:
             self._discard_collection_batch_dialog(active_dialog)
@@ -15779,9 +15774,7 @@ class VippWidget(QWidget):
                 return None
         if config_path is not None or config is not None:
             self._engage_collection_batch_workspace(dialog)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_workspace_window(dialog)
         self._sync_current_workflow_tab_state()
         return dialog
 
@@ -16949,9 +16942,7 @@ class VippWidget(QWidget):
         finally:
             self._workflow_load_selection_in_progress = previous_selection_guard
         window = self.window()
-        window.show()
-        window.raise_()
-        window.activateWindow()
+        show_workspace_window(window)
         self._set_status(
             f"Focused '{self._node_title(node_id)}'. Edit its output settings, "
             "then reopen Batch and Recheck all.",

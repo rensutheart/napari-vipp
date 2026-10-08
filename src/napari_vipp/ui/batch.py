@@ -69,6 +69,7 @@ from napari_vipp.ui.palette_roles import (
     palette_is_dark,
 )
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
+from napari_vipp.ui.workspace_window import WorkspaceWindowController
 
 
 def _batch_state_text_color(palette, state: str) -> str:
@@ -178,6 +179,7 @@ class CollectionBatchDialog(BatchWorkflowWorkspace, QDialog):
         execution_nodes: tuple[BatchNodeExecutionSpec, ...] = (),
     ):
         super().__init__(parent)
+        self._window_controls = WorkspaceWindowController(self)
         self.setWindowTitle("Batch workflow")
         self.setMinimumSize(520, 360)
         self._actions = actions
