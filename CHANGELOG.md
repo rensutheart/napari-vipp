@@ -9,6 +9,14 @@
   downsampling branch are explicitly unsupported. Node-library and inspector
   tooltips explain when to use it and why the same sigma can differ from
   ordinary Gaussian Blur.
+- Fix the detached VIPP window's Windows title-bar double-click so it maximizes
+  or restores once, without immediately reversing the action or unexpectedly
+  redocking. Handle plain Qt title-bar notifications without assuming mouse
+  event attributes exist.
+- Allow detached VIPP and napari to minimize and restore independently on
+  Windows, with separate taskbar windows. Keep the same workflow session and
+  napari viewer; redocking and napari's ownership of the plugin lifetime remain
+  intact. Native Linux/macOS window-manager behaviour is not yet qualified.
 
 ## 0.16.0a3 - 2026-10-05
 

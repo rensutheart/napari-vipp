@@ -13483,7 +13483,7 @@ def test_redocking_restores_the_host_dock_minimum(qtbot):
     assert dock.maximumHeight() > dock.minimumHeight()
 
 
-def test_floating_dock_title_double_click_toggles_maximized(qtbot):
+def test_floating_dock_title_double_click_toggles_maximized(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     window = QMainWindow()
@@ -13495,6 +13495,9 @@ def test_floating_dock_title_double_click_toggles_maximized(qtbot):
     widget._ensure_dock_widget_chrome()
     dock.setFloating(True)
     widget._configure_floating_dock_window()
+    # A synthetic Qt event never reaches Windows' native title-bar handling.
+    # Exercise the fallback explicitly, regardless of the host platform.
+    monkeypatch.setattr(widget, "_native_title_bar_handles_maximize", lambda: False)
 
     def double_click_title_bar():
         event = QMouseEvent(
@@ -13517,6 +13520,388 @@ def test_floating_dock_title_double_click_toggles_maximized(qtbot):
 
     assert dock.isFloating()
     assert not dock.isMaximized()
+
+
+@pytest.mark.parametrize("already_maximized", [False, True])
+def test_native_floating_dock_title_double_click_does_not_toggle_twice(
+    qtbot,
+    monkeypatch,
+    already_maximized,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+    if already_maximized:
+        # Windows has already performed its one native maximize action before
+        # Qt delivers the non-client event to this filter.
+        dock.showMaximized()
+    state_before = dock.windowState()
+    toggles: list[str] = []
+    monkeypatch.setattr(widget, "_native_title_bar_handles_maximize", lambda: True)
+    monkeypatch.setattr(dock, "showMaximized", lambda: toggles.append("maximize"))
+    monkeypatch.setattr(dock, "showNormal", lambda: toggles.append("restore"))
+    event = QMouseEvent(
+        QEvent.NonClientAreaMouseButtonDblClick,
+        QPointF(4, 4),
+        QPointF(4, 4),
+        QPointF(4, 4),
+        Qt.LeftButton,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    event.ignore()
+
+    assert widget.eventFilter(dock, event)
+
+    assert event.isAccepted()
+    assert toggles == []
+    assert dock.windowState() == state_before
+    assert dock.isFloating()
+
+
+@pytest.mark.parametrize("native_title_bar", [False, True])
+@pytest.mark.parametrize("already_maximized", [False, True])
+def test_plain_floating_napari_dock_title_double_click_preserves_state(
+    qtbot,
+    monkeypatch,
+    native_title_bar,
+    already_maximized,
+):
+    from napari._qt.widgets.qt_viewer_dock_widget import QtViewerDockWidget
+
+    # Keep napari's real dock/chrome callbacks, without a Viewer or OpenGL
+    # canvas. Dock-location persistence is unrelated and must not write the
+    # developer's napari settings.
+    monkeypatch.setattr(
+        QtViewerDockWidget,
+        "_update_default_dock_area",
+        lambda self, value: None,
+    )
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    qt_viewer = QWidget(window)
+    dock = QtViewerDockWidget(qt_viewer, widget, name="VIPP Workflow", area="bottom")
+    qtbot.addWidget(window)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    QApplication.processEvents()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    QApplication.processEvents()
+    widget._configure_floating_dock_window()
+    if already_maximized:
+        # Model the native Windows maximize action before Qt's queued event.
+        dock.showMaximized()
+    QApplication.processEvents()
+    state_before = dock.windowState()
+    toggles: list[str] = []
+    floating_changes: list[bool] = []
+    dock.topLevelChanged.connect(floating_changes.append)
+    monkeypatch.setattr(
+        widget,
+        "_native_title_bar_handles_maximize",
+        lambda: native_title_bar,
+    )
+    monkeypatch.setattr(dock, "showMaximized", lambda: toggles.append("maximize"))
+    monkeypatch.setattr(dock, "showNormal", lambda: toggles.append("restore"))
+    # Windows/PyQt can expose this native notification as a bare QEvent.
+    # The non-native fallback must not guess a mouse button from it either.
+    event = QEvent(QEvent.NonClientAreaMouseButtonDblClick)
+    assert not hasattr(event, "button")
+    event.ignore()
+
+    with qtbot.captureExceptions() as exceptions:
+        QApplication.sendEvent(dock, event)
+
+    assert exceptions == []
+    assert event.isAccepted()
+    assert toggles == []
+    assert floating_changes == []
+    assert dock.windowState() == state_before
+    assert dock.isFloating()
+
+
+@pytest.mark.parametrize("native_title_bar", [False, True])
+def test_floating_dock_title_right_double_click_is_not_a_maximize_action(
+    qtbot,
+    monkeypatch,
+    native_title_bar,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+    toggles: list[str] = []
+    monkeypatch.setattr(
+        widget,
+        "_native_title_bar_handles_maximize",
+        lambda: native_title_bar,
+    )
+    monkeypatch.setattr(dock, "showMaximized", lambda: toggles.append("maximize"))
+    monkeypatch.setattr(dock, "showNormal", lambda: toggles.append("restore"))
+    event = QMouseEvent(
+        QEvent.NonClientAreaMouseButtonDblClick,
+        QPointF(4, 4),
+        QPointF(4, 4),
+        QPointF(4, 4),
+        Qt.RightButton,
+        Qt.RightButton,
+        Qt.NoModifier,
+    )
+    event.ignore()
+
+    # Qt's default non-client handler would redock even for this button.
+    # Consume that handler without treating the gesture as maximize/restore.
+    assert widget.eventFilter(dock, event)
+
+    assert event.isAccepted()
+    assert toggles == []
+    assert dock.isFloating()
+
+
+@pytest.mark.parametrize(
+    "window_state",
+    [
+        Qt.WindowNoState,
+        Qt.WindowMinimized,
+        Qt.WindowMaximized,
+        Qt.WindowMinimized | Qt.WindowMaximized,
+    ],
+)
+@pytest.mark.parametrize("visible", [False, True])
+def test_floating_dock_configuration_preserves_window_state_and_visibility(
+    qtbot,
+    window_state,
+    visible,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+    # Force native-window recreation, as napari visibility/chrome callbacks
+    # can do after detaching. Minimized-from-maximized is a combined state.
+    dock.setWindowFlag(Qt.WindowMinimizeButtonHint, False)
+    dock.setWindowState(window_state)
+    if visible:
+        dock.show()
+    state_before = dock.windowState()
+    visibility_before = dock.isVisible()
+
+    widget._configure_floating_dock_window()
+
+    assert dock.windowFlags() & Qt.WindowMinimizeButtonHint
+    assert dock.windowState() == state_before
+    assert dock.isVisible() == visibility_before
+    assert dock.isFloating()
+    assert dock.parentWidget() is window
+
+
+def test_floating_dock_owner_is_repaired_even_when_flags_are_already_correct(
+    qtbot,
+    monkeypatch,
+):
+    import napari_vipp._widget as widget_module
+
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+    flags_before = dock.windowFlags()
+    independent_calls: list[QDockWidget] = []
+    monkeypatch.setattr(
+        widget_module,
+        "make_floating_dock_independent",
+        lambda current_dock: independent_calls.append(current_dock) or True,
+    )
+
+    widget._configure_floating_dock_window()
+    widget._configure_floating_dock_window()
+
+    assert independent_calls == [dock, dock]
+    assert dock.windowFlags() == flags_before
+    assert dock.parentWidget() is window
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [QEvent.Show, QEvent.WinIdChange, QEvent.WindowStateChange],
+)
+@pytest.mark.parametrize("floating", [False, True])
+@pytest.mark.parametrize("watch_dock", [False, True])
+def test_floating_dock_native_frame_events_schedule_repair_only_for_floating_dock(
+    qtbot,
+    monkeypatch,
+    event_type,
+    floating,
+    watch_dock,
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(floating)
+    QApplication.processEvents()
+    repair_delays: list[int] = []
+    monkeypatch.setattr(
+        widget,
+        "_schedule_floating_dock_configuration",
+        lambda delay_ms=0: repair_delays.append(delay_ms),
+    )
+
+    widget.eventFilter(dock if watch_dock else window, QEvent(event_type))
+
+    assert repair_delays == ([0] if floating and watch_dock else [])
+
+
+def test_floating_dock_native_frame_event_repairs_coalesce_and_become_idle(
+    qtbot,
+    monkeypatch,
+):
+    import napari_vipp._widget as widget_module
+
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+    QApplication.processEvents()
+    widget._floating_dock_configure_timer.stop()
+    repaired_docks: list[QDockWidget] = []
+    monkeypatch.setattr(
+        widget_module,
+        "make_floating_dock_independent",
+        lambda current_dock: repaired_docks.append(current_dock) or True,
+    )
+    for event_type in (QEvent.Show, QEvent.WinIdChange, QEvent.WindowStateChange):
+        widget.eventFilter(dock, QEvent(event_type))
+
+    qtbot.waitUntil(lambda: bool(repaired_docks))
+    qtbot.wait(80)
+
+    assert repaired_docks == [dock]
+    assert not widget._floating_dock_configure_timer.isActive()
+
+
+def test_floating_dock_configuration_failure_warns_once_then_recovers(
+    qtbot,
+    monkeypatch,
+    caplog,
+):
+    import napari_vipp._widget as widget_module
+
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+
+    def fail_native_owner_repair(_dock):
+        raise OSError("native ownership repair failed")
+
+    monkeypatch.setattr(
+        widget_module,
+        "make_floating_dock_independent",
+        fail_native_owner_repair,
+    )
+    with caplog.at_level("WARNING", logger="napari_vipp._widget"):
+        widget._configure_floating_dock_window()
+        widget._configure_floating_dock_window()
+    failures = [
+        record.message
+        for record in caplog.records
+        if "native ownership repair failed" in record.message
+    ]
+    assert len(failures) == 1
+    assert (
+        "native ownership repair failed" in widget._floating_dock_configuration_warning
+    )
+
+    monkeypatch.setattr(
+        widget_module,
+        "make_floating_dock_independent",
+        lambda _dock: True,
+    )
+    widget._configure_floating_dock_window()
+
+    assert widget._floating_dock_configuration_warning == ""
+    assert dock.isFloating()
+    assert not widget._closing
+
+
+def test_floating_dock_minimize_restore_and_redock_keep_the_same_session(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer, defer_initial_run=True)
+    window = QMainWindow()
+    dock = QDockWidget("VIPP Workflow", window)
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    pipeline_before = widget.pipeline
+
+    for _ in range(3):
+        dock.setFloating(True)
+        widget._configure_floating_dock_window()
+        dock.showMinimized()
+        widget._configure_floating_dock_window()
+
+        assert dock.isMinimized()
+        assert not window.isMinimized()
+        assert dock.widget() is widget
+        assert widget.pipeline is pipeline_before
+        assert dock.parentWidget() is window
+
+        dock.showNormal()
+        assert not dock.isMinimized()
+        dock.setFloating(False)
+        QApplication.processEvents()
+        widget._restore_docked_title_bar()
+
+        assert not dock.isFloating()
+        assert window.dockWidgetArea(dock) == Qt.BottomDockWidgetArea
+        assert dock.widget() is widget
+        assert widget.pipeline is pipeline_before
+        assert not widget._closing
 
 
 def test_dock_widget_chrome_is_not_rewritten_after_configured(qtbot):

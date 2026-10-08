@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import html
 import inspect as py_inspect
+import logging
 import math
 import os
 import re
@@ -45,6 +46,7 @@ from qtpy.QtGui import (
     QFont,
     QImage,
     QKeySequence,
+    QMouseEvent,
     QPainter,
     QPalette,
     QPen,
@@ -629,6 +631,7 @@ from napari_vipp.ui.file_sources import SourceLoadProgress as SourceLoadProgress
 from napari_vipp.ui.file_sources import (
     SourceLoadProgressUnit as SourceLoadProgressUnit,
 )
+from napari_vipp.ui.floating_dock import make_floating_dock_independent
 from napari_vipp.ui.graph_display_settings import (
     GRAPH_DISPLAY_NOTE,
     GRAPH_DISPLAY_TITLE,
@@ -2200,6 +2203,7 @@ class VippWidget(QWidget):
         )
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
+        self._floating_dock_configuration_warning = ""
         self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
         self._last_docked_area: object | None = None
         self._floating_dock_configure_timer = QTimer(self)
@@ -4696,6 +4700,16 @@ class VippWidget(QWidget):
                     self.graph_search_edit.selectAll()
                 return True
         dock = self._dock_widget()
+        if (
+            watched is dock
+            and event.type()
+            in {QEvent.Show, QEvent.WinIdChange, QEvent.WindowStateChange}
+            and dock.isFloating()
+        ):
+            # Qt can restore native ownership while showing/restoring a dock
+            # even when its window flags do not change. Repair after Qt has
+            # finished this event, without forcing a new visible window state.
+            self._schedule_floating_dock_configuration()
         palette_panel = getattr(self, "palette_panel", None)
         if (
             palette_panel is not None
@@ -4715,13 +4729,28 @@ class VippWidget(QWidget):
             and event.type() == QEvent.NonClientAreaMouseButtonDblClick
             and dock.isFloating()
         ):
-            if dock.isMaximized():
-                dock.showNormal()
-            else:
-                dock.showMaximized()
+            # On Windows, Qt queues this event and also lets DefWindowProc
+            # maximize/restore the native frame. A second toggle here undoes
+            # that action. Consume Qt's dock/redock action, not the native one.
+            # Native delivery may expose only QEvent, without mouse accessors.
+            # The portable fallback must not guess a button for such an event;
+            # it still needs to be consumed to prevent Qt from redocking.
+            if (
+                not self._native_title_bar_handles_maximize()
+                and isinstance(event, QMouseEvent)
+                and event.button() == Qt.LeftButton
+            ):
+                if dock.isMaximized():
+                    dock.showNormal()
+                else:
+                    dock.showMaximized()
             event.accept()
             return True
         return super().eventFilter(watched, event)
+
+    def _native_title_bar_handles_maximize(self) -> bool:
+        """Return whether the native frame already handles the double-click."""
+        return sys.platform == "win32" and QApplication.platformName() == "windows"
 
     def showEvent(self, event):  # noqa: N802
         self._was_ever_visible = True
@@ -4935,25 +4964,39 @@ class VippWidget(QWidget):
                 | Qt.WindowMaximizeButtonHint
                 | Qt.WindowCloseButtonHint
             )
-            if desired_flags == flags:
-                return
-
-            geometry = dock.geometry()
-            was_visible = dock.isVisible()
-            was_maximized = dock.isMaximized()
-            with QSignalBlocker(dock):
-                dock.setWindowFlags(desired_flags)
-                dock.setGeometry(geometry)
-                if was_visible:
-                    if was_maximized:
-                        dock.showMaximized()
-                    else:
+            if desired_flags != flags:
+                window_state = dock.windowState()
+                geometry = (
+                    dock.normalGeometry()
+                    if window_state & (Qt.WindowMinimized | Qt.WindowMaximized)
+                    else dock.geometry()
+                )
+                if not geometry.isValid():
+                    geometry = dock.geometry()
+                was_visible = dock.isVisible()
+                with QSignalBlocker(dock):
+                    dock.setWindowFlags(desired_flags)
+                    dock.setGeometry(geometry)
+                    # Retain minimized as well as maximized state. Showing a
+                    # rebuilt frame must not restore a deliberately minimized
+                    # editor, or lose its normal restore geometry.
+                    dock.setWindowState(window_state)
+                    if was_visible:
                         dock.show()
-            # Replacing the native window can make QDockWidget propagate its
-            # content constraints again, so normalize once more afterward.
-            self._release_floating_size_constraints(dock)
-        except Exception:
-            pass
+                # Replacing the native window can make QDockWidget propagate
+                # its content constraints again, so normalize once afterward.
+                self._release_floating_size_constraints(dock)
+            # QWidget ownership keeps docking and shutdown safe, but native
+            # Windows ownership hides VIPP with napari and combines taskbar
+            # controls. Reapply after any frame recreation, including a show
+            # with otherwise unchanged flags; never reparent the Qt dock.
+            make_floating_dock_independent(dock)
+            self._floating_dock_configuration_warning = ""
+        except Exception as exc:
+            warning = f"Could not configure the detached VIPP window: {exc}"
+            if warning != self._floating_dock_configuration_warning:
+                logging.getLogger(__name__).warning(warning)
+                self._floating_dock_configuration_warning = warning
 
     def _restore_docked_title_bar(self) -> None:
         if self._closing or not isalive(self):

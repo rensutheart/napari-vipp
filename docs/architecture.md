@@ -1622,8 +1622,24 @@ maximize controls, and handles a native title-bar double-click by re-docking the
 widget. `VippWidget` installs an event filter on its containing dock and listens
 to `topLevelChanged` so a detached VIPP panel is promoted to a standard
 `Qt.Window` with minimize/maximize/close controls. A floating title-bar
-double-click is intercepted to toggle maximized/normal state while keeping the
-panel detached. Keep this behavior plugin-local; do not patch napari internals.
+double-click stays within the detached window rather than re-docking it.
+
+Unreleased Windows handling consumes Qt's duplicate non-client double-click
+without manually toggling state: the native window procedure handles maximize
+or restore once. The filter accepts a plain `QEvent` as well as a `QMouseEvent`
+and always consumes the floating non-client double-click; only a verified
+left-button `QMouseEvent` can trigger the non-native fallback. Never assume
+mouse accessors exist based on the event type alone: an exception here lets
+Qt's default redocking action run. Native Linux/macOS behaviour remains
+unqualified.
+Window-state flags survive a floating-window flag rebuild.
+
+`ui/floating_dock.py:make_floating_dock_independent()` clears and verifies the
+Windows native owner of the floating dock so VIPP and napari have independent
+minimize/restore and taskbar behaviour. It does not remove the dock's Qt object
+parent, replace the viewer, or start another process. Redocking restores normal
+dock ownership and sizing; closing napari still owns plugin teardown. Keep this
+behaviour plugin-local; do not patch napari internals.
 
 ## Input, Output, Persistence, And Export
 
