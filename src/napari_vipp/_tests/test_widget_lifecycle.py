@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 import numpy as np
+import pytest
 from qtpy.compat import isalive
 from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtWidgets import QApplication, QDockWidget, QMainWindow
@@ -115,13 +116,21 @@ def _make_widget(qtbot) -> tuple[VippWidget, _Viewer]:
     return widget, viewer
 
 
-def test_queued_callbacks_ignore_widget_destroyed_by_dock_parent(qtbot):
+@pytest.mark.parametrize("floating", [False, True])
+def test_queued_callbacks_ignore_widget_destroyed_by_dock_parent(qtbot, floating):
     widget = VippWidget(_Viewer(), defer_initial_run=True)
     window = QMainWindow()
     dock = QDockWidget()
     qtbot.addWidget(window)
     dock.setWidget(widget)
     window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    if floating:
+        window.show()
+        widget._ensure_dock_widget_chrome()
+        dock.setFloating(True)
+        widget._configure_floating_dock_window()
+        assert dock.parentWidget() is window
+        assert dock.isFloating()
 
     QTimer.singleShot(0, widget._start_thumbnail_contrast_limit_run)
     QTimer.singleShot(0, widget._ensure_dock_widget_chrome)
@@ -129,6 +138,7 @@ def test_queued_callbacks_ignore_widget_destroyed_by_dock_parent(qtbot):
     window.deleteLater()
     QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
+    assert not isalive(dock)
     assert not isalive(widget)
     QApplication.processEvents()
 
