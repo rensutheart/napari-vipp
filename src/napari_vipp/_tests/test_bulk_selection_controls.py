@@ -213,16 +213,23 @@ def test_wrapped_pair_keeps_complete_scope_clear_of_buttons_and_choices(qtbot):
     owner = SelectTableColumnsControl(["label_id", "area", "intensity"])
     qtbot.addWidget(owner)
     owner.setStyleSheet("QWidget { font-size: 20px; } QPushButton { padding: 5px; }")
+    owner.resize(owner.sizeHint().width() * 2, 780)
     owner.show()
+    qtbot.wait(20)
     controls = owner.column_selection_controls
+    outer_width = owner.width() - controls.button_row.width()
+    pair_width = controls.button_layout.sizeHint().width()
+    narrow = pair_width - 1 + outer_width
+    wide = pair_width * 2 + outer_width
+    assert narrow >= owner.minimumSizeHint().width()
     heights = []
-    for width in (220, 420, 220):
+    for width in (narrow, wide, narrow):
         owner.resize(width, 780)
         qtbot.wait(20)
         first = _rectangle(controls.select_all_button, controls)
         second = _rectangle(controls.deselect_all_button, controls)
         label = controls.scope_label
-        if width == 220:
+        if width == narrow:
             assert second.top() > first.bottom()
         else:
             assert first.top() == second.top()
@@ -263,9 +270,32 @@ def test_measurement_scope_reflows_and_shrinks_after_inspector_width_changes(qtb
 
     panel = _statistics(qtbot, value_columns="area", group_by="condition")
     panel.setStyleSheet(get_stylesheet("dark") + "\nQWidget { font-size: 14pt; }")
-    heights = []
     controls = panel.measurement_selection_controls
-    for width in (420, 260, 420):
+    qtbot.wait(20)
+    label = controls.scope_label
+    outer_width = panel.width() - label.width()
+    text_width = label.fontMetrics().horizontalAdvance(label.text())
+    narrow_label_width = max(
+        controls.button_layout.minimumSize().width(),
+        panel.minimumSizeHint().width() - outer_width,
+        panel.minimumWidth() - outer_width,
+        text_width // 2,
+        1,
+    )
+    wide_label_width = max(text_width, narrow_label_width + 1)
+    for _attempt in range(10):
+        if label.heightForWidth(wide_label_width) < label.heightForWidth(
+            narrow_label_width
+        ):
+            break
+        wide_label_width *= 2
+    assert label.heightForWidth(wide_label_width) < label.heightForWidth(
+        narrow_label_width
+    )
+    narrow = narrow_label_width + outer_width
+    wide = wide_label_width + outer_width
+    heights = []
+    for width in (wide, narrow, wide):
         panel.resize(width, 1600)
         qtbot.wait(20)
         _assert_compact_measurement_scope(panel)
