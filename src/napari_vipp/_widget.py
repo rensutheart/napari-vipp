@@ -679,6 +679,7 @@ from napari_vipp.ui.mesh_histogram import (
     mesh_filter_decimals,
     mesh_filter_histogram,
 )
+from napari_vipp.ui.napari_compat import install_layer_delegate_safety
 from napari_vipp.ui.node_labels import NodePresentation, build_node_presentations
 from napari_vipp.ui.node_naming import NodeNameEditor
 from napari_vipp.ui.object_filter_feedback import ObjectFilterFeedbackSection
@@ -2093,6 +2094,7 @@ class VippWidget(QWidget):
         self._theme_refresh_pending = False
         self._theme_refresh_in_progress = False
         self.viewer = viewer
+        install_layer_delegate_safety(viewer)
         self._closing = False
         self._viewer_layer_change_suspension = 0
         if interaction_latency_telemetry is not None and not isinstance(

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Guard napari layer-list painting while a row is being replaced or loaded, so
+  a temporarily missing size hint does not cause repeated loading-indicator
+  errors. The fix only affects display; workflow parameters and results stay
+  unchanged.
+
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
   references cover the direct convolution and rounding behavior. Existing
