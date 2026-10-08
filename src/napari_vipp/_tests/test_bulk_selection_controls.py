@@ -147,7 +147,20 @@ def test_shared_selector_icons_follow_palette_changes_without_selection_edits(
         palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#87909c"))
         owner.setPalette(palette)
         owner.setStyleSheet(get_stylesheet("dark" if dark else "light"))
-        qtbot.wait(10)
+        # Results applies descendant styles in a queued theme refresh; icons
+        # then follow those palettes through their own coalesced refresh.
+        qtbot.waitUntil(
+            lambda: all(
+                button.icon().pixmap(18, 18, mode).toImage()
+                == toolbar_icon(kind, button.palette()).pixmap(18, 18, mode).toImage()
+                for button, kind in (
+                    (controls.select_all_button, "select_all"),
+                    (controls.deselect_all_button, "deselect"),
+                )
+                for mode in (QIcon.Normal, QIcon.Disabled)
+            ),
+            timeout=3000,
+        )
         pair = []
         for button, kind in (
             (controls.select_all_button, "select_all"),
