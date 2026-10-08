@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep the Compute GPU-conversion advisory fully visible as the inspector is
+  resized, with its action button below the wrapped text.
+
 - Guard napari layer-list painting while a row is being replaced or loaded, so
   a temporarily missing size hint does not cause repeated loading-indicator
   errors. The fix only affects display; workflow parameters and results stay

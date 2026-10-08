@@ -3081,8 +3081,10 @@ class VippWidget(QWidget):
         self.compute_repair_panel = QFrame()
         self.compute_repair_panel.setObjectName("ComputeRepairPanel")
         self.compute_repair_panel.setStyleSheet("")
-        self.compute_repair_label = QLabel("")
-        self.compute_repair_label.setWordWrap(True)
+        # Nested inspector layouts can compress a plain wrapped QLabel to its
+        # single-line minimum. Reserve the actual wrapped height so the action
+        # stays below the complete advisory when the inspector is narrowed.
+        self.compute_repair_label = _InspectorNoteLabel("")
         self.compute_repair_label.setStyleSheet("border: none; padding: 1px;")
         self.compute_repair_label.setAccessibleName(
             "Suggested GPU eligibility improvement"
