@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import replace
+from string import Formatter
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -50,10 +51,25 @@ def output_problem(output, config=None) -> str:
     if kind == "duplicate":
         message = (
             "Duplicate output path: more than one planned output would save to "
-            f"{output.path.name}. Give Batch Output nodes different Tag or Subfolder "
-            "values, or use {batch_id}__{node_id} in Filename template. "
-            "Overwrite cannot resolve a shared destination."
+            f"{output.path.name}. Use {{batch_id}}__{{node_id}} in Filename template "
+            "so each batch item and output node has its own file."
         )
+        if config is not None and len(config.outputs) > 1:
+            spec = next(
+                (entry for entry in config.outputs if entry.node_id == output.node_id),
+                None,
+            )
+            if _template_uses_tag(spec):
+                message += (
+                    " If this path is shared with another output node, changing "
+                    "this node's Tag or Subfolder can separate those nodes."
+                )
+            else:
+                message += (
+                    " If different output nodes share this path, give them "
+                    "different Subfolder values."
+                )
+        message += " Overwrite cannot resolve a shared destination."
         if output.input_collision:
             message += (
                 " This path also overlaps an input; choose a destination outside "
@@ -75,6 +91,38 @@ def output_problem(output, config=None) -> str:
             "choosing an existing-file policy."
         )
     return ""
+
+
+def _template_uses_tag(spec) -> bool:
+    if spec is None:
+        return False
+    try:
+        return any(
+            field == "tag" for _text, field, _format, _conversion
+            in Formatter().parse(spec.filename_template)
+        )
+    except ValueError:
+        return False
+
+
+def _duplicate_remedy(outputs, config) -> str:
+    names = _problem_node_names(outputs)
+    node_ids = {output.node_id for output in outputs}
+    repeated = Counter((output.node_id, output.path) for output in outputs)
+    if len(node_ids) == 1 or any(count > 1 for count in repeated.values()):
+        return (
+            f"Use {{batch_id}} in Filename template on {names} to separate batch "
+            "items; {batch_id}__{node_id} also separates output nodes."
+        )
+    specs = {spec.node_id: spec for spec in config.outputs}
+    fields = (
+        "Tag or Subfolder" if all(_template_uses_tag(specs.get(node_id))
+        for node_id in node_ids) else "Subfolder"
+    )
+    return (
+        f"Give {names} different {fields} values, or use "
+        "{batch_id}__{node_id} in Filename template."
+    )
 
 
 def _problem_node_names(outputs) -> str:
@@ -166,9 +214,8 @@ def checked_output_message(preview) -> str:
                 else "outputs share planned file paths"
             )
             messages.append(
-                f"{len(duplicates):,} {shared_text}. Give "
-                f"{_problem_node_names(duplicates)} different Tag or Subfolder "
-                "values, or use {batch_id}__{node_id} in Filename template."
+                f"{len(duplicates):,} {shared_text}. "
+                + _duplicate_remedy(duplicates, preview.config)
             )
         if overlaps := problems["input_overlap"]:
             overlap_text = (

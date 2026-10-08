@@ -93,6 +93,54 @@ def test_two_default_output_nodes_explain_all_twelve_duplicate_destinations(case
     assert not values["output_dir"].exists()
 
 
+def test_single_output_with_fixed_filename_needs_unique_batch_item_template(case):
+    pipeline, controller, values = case
+    node = _add_output(pipeline, filename_template="result")
+    preview = controller.preview(**values)
+
+    message = checked_output_message(preview)
+
+    assert "6 outputs share planned file paths" in message
+    assert "Use {batch_id} in Filename template" in message and node.id in message
+    assert "to separate batch items" in message
+    assert "Tag" not in message and "Subfolder" not in message
+    assert len({item.outputs[0].path for item in preview.items}) == 1
+    reason = output_problem(preview.items[0].outputs[0], preview.config)
+    assert "{batch_id}__{node_id}" in reason
+    assert "Tag" not in reason and "Subfolder" not in reason
+
+    node.params["filename_template"] = "{batch_id}__{node_id}"
+    corrected = controller.preview(**values)
+    assert corrected.collision_count == 0
+    assert len({item.outputs[0].path for item in corrected.items}) == 6
+    assert not values["output_dir"].exists()
+
+
+def test_conflicting_templates_without_tag_offer_subfolder_or_template_fix(case):
+    pipeline, controller, values = case
+    first = _add_output(pipeline, filename_template="{source_stem}", tag="processed")
+    second = _add_output(pipeline, filename_template="{source_stem}", tag="segmented")
+    preview = controller.preview(**values)
+
+    message = checked_output_message(preview)
+
+    assert "12 outputs share planned file paths" in message
+    assert first.id in message and second.id in message
+    assert "different Subfolder values" in message and "Tag" not in message
+    for item in preview.items:
+        for output in item.outputs:
+            reason = output_problem(output, preview.config)
+            assert "{batch_id}__{node_id}" in reason
+            assert "different Subfolder values" in reason and "Tag" not in reason
+
+    first.params["subfolder"] = "processed"
+    second.params["subfolder"] = "segmentation"
+    corrected = controller.preview(**values)
+    assert corrected.collision_count == 0
+    assert "12 to create" in checked_output_message(corrected)
+    assert not values["output_dir"].exists()
+
+
 @pytest.mark.parametrize("policy", ["error", "skip", "overwrite"])
 def test_input_overlap_explains_preservation_without_offering_overwrite(case, policy):
     pipeline, controller, values = case
