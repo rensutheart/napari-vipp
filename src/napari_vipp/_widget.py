@@ -17977,6 +17977,14 @@ class VippWidget(QWidget):
             or not self._interactive_collection_batch_items
             or self._interactive_collection_batch_workflow_stale
         ):
+            # Metadata-only checking can retain a plan before a representative
+            # sample is opened. Its destinations still depend on the workflow.
+            dialog = self._active_collection_batch_dialog
+            preview = getattr(dialog, "_preview_result", None)
+            if preview is not None and scientific_workflow_hash(
+                self._batch_workflow_document()
+            ) != preview.config.workflow_sha256:
+                dialog.invalidate_for_workflow_change()
             return
         if scientific_workflow_hash(self._batch_workflow_document()) == (
             config.workflow_sha256

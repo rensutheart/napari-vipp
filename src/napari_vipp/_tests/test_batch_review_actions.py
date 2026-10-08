@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from types import MethodType, SimpleNamespace
 
+import numpy as np
 import pytest
 from qtpy.QtCore import QSignalBlocker, Qt, QUrl
 
@@ -386,3 +387,63 @@ def test_real_host_opens_output_inspector_without_running_and_retains_workspace(
     assert not plan.config.output_dir.exists()
     assert widget._batch_collection_dialog(preview_config=False) is dialog
     assert dialog.isVisible()
+
+
+def test_output_tag_edit_retains_checked_batch_settings_and_requires_recheck(
+    qtbot, tmp_path, monkeypatch
+):
+    from napari_vipp._tests.test_widget import _Viewer
+
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    qtbot.addWidget(
+        widget,
+        before_close_func=lambda closing: setattr(
+            closing, "_discard_incomplete_startup_on_close", True
+        ),
+    )
+    runs = []
+    monkeypatch.setattr(
+        widget, "run_pipeline", lambda *args, **kwargs: runs.append((args, kwargs))
+    )
+    widget.pipeline.nodes["input"].params["binding_mode"] = "collection"
+    outputs = [widget.pipeline.add_node("batch_output") for _ in range(2)]
+    for output in outputs:
+        output.params["format"] = "npy"
+        assert widget.pipeline.connect("input", output.id).success
+    widget._build_graph_from_pipeline()
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    for index in range(2):
+        np.save(inputs / f"field-{index}.npy", np.full((4, 5), index, np.uint8))
+    destination = tmp_path / "outputs"
+    dialog = widget._batch_collection_dialog(preview_config=False)
+    dialog.input_edit.setText(str(inputs))
+    dialog.output_edit.setText(str(destination))
+    dialog.pattern_edit.setText("*.npy")
+    dialog.format_combo.setCurrentText("npy")
+
+    dialog.next_button.click()
+    qtbot.waitUntil(lambda: not dialog._checking_plan, timeout=10000)
+    assert "4 outputs share planned file paths" in dialog.preview_status.text()
+    before = dialog.values()
+    dialog.find_problem_button.click()
+    qtbot.wait(20)
+    assert dialog.isHidden() and runs == []
+
+    tag_edit = widget._parameter_widgets["tag"].edit
+    tag_edit.selectAll()
+    qtbot.keyClicks(tag_edit, "processed")
+    assert tag_edit.text() == "processed"
+    assert widget._batch_collection_dialog(preview_config=False) is dialog
+    assert dialog.isVisible()
+    assert dialog.values() == before
+    assert "Needs recheck" == dialog.preview_table.item(0, 4).text()
+    assert dialog.find_problem_button.isHidden()
+    assert not destination.exists()
+
+    dialog.preview_button.click()
+    qtbot.waitUntil(lambda: not dialog._checking_plan, timeout=10000)
+    assert "4 to create" in dialog.preview_status.text()
+    assert "Ready" == dialog.preview_table.item(0, 4).text()
+    assert dialog.values() == before
+    assert not destination.exists()
