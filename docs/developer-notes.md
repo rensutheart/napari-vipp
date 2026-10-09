@@ -68,8 +68,17 @@ napari / npe2
 node obstacles. Endpoint geometry is part of the route cache key and remains
 protected during the cheap pointer-tracking route; graph-wide obstacle routing
 runs on release. Rounded routes are collision-tested as drawn, including cards
-outside the original port corridor. A capped rectilinear search is used only
-when the ordinary candidates are blocked. Overlapping cards can make a clear
+outside the original port corridor. Peer candidates are ordered by length and
+bend cost before collision checks. Duplicate control polygons are skipped.
+An excessive clear peer detour adding more than 160 pixels to its card-only
+route compares at most four further departure/arrival offsets, with eight
+candidates per offset, before keeping the best clear score;
+nearby candidates still return immediately. A capped rectilinear search is used when
+ordinary candidates are blocked; forward wires with a clear route more than
+80 pixels beyond the endpoint cards' vertical envelope also try a smaller
+1,024-visit search, accepting only a lower length-plus-bend score. Short clear
+routes and backward candidate loops retain their cheap routing policy.
+Overlapping cards can make a clear
 route impossible; endpoint protection takes priority over other intersections.
 All of this is presentation-only: routing does not change topology or execution.
 The interactive widget enables `set_background_wire_routing(True)`: a short timer

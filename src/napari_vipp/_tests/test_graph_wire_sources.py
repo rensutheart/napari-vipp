@@ -66,6 +66,9 @@ def _assert_all_cards_clear(view):
 
 def test_different_source_nodes_keep_their_obstacle_detours_separate(qtbot):
     view, source, other_source, targets = _detour_view(qtbot)
+    # Align independent output ports while keeping their cards separate. Both
+    # ordinary routes then use the same near upper gap around the tall blocker.
+    view.apply_node_positions({other_source.id: QPointF(-300, 0)})
     view.add_connection(source.id, targets[0].id)
     view.add_connection(other_source.id, targets[1].id)
     first, second = view._connections

@@ -31,7 +31,26 @@ vectorized clipping avoids repeatedly constructing bounds for each segment/card
 pair. Small or invalid geometry retains the scalar implementation as a fallback
 and independent clipping oracle.
 
+The compact-route follow-up orders existing peer lane control polygons by
+Manhattan length plus 42 pixels per turn before rendering and checking them.
+This avoids accepting a distant perimeter merely because it was generated
+before nearby gaps. Duplicate cleaned polygons are skipped. An excessive clear
+peer detour adding more than 160 pixels beyond its card-only route compares at
+most four further departure/arrival offsets with eight candidates each and
+retains its lowest clear length-plus-bend score;
+short clear candidates still return immediately. A clear forward route more than
+80 pixels beyond its own
+endpoint cards' vertical envelope can try a local 1,024-visit visibility search.
+The candidate is retained unless that search finds a clear route with a lower
+length-plus-bend score. Blocked routes keep the existing 12,000-visit fallback;
+direct curves, short detours and backward loops avoid the extra improvement
+search. Routes remain deterministic heuristics, not global shortest-path claims.
+
 ## Recorded performance
+
+The timings and full-suite qualification below cover the earlier responsiveness
+implementation. The compact-route follow-up is recorded separately at the end
+of this document so its measurements are not attributed to that earlier source.
 
 The [machine-readable summary](benchmarks/wire-routing-2026-10-09.json) retains
 timing samples, input/source hashes and the measurement boundary. Source-imported
@@ -91,3 +110,44 @@ manual update is commit `d15bfb76ab407c694d807478a0cd3f98f62843c9` in vipp-mkdoc
 its content checks and strict build passed. The live development workflow was
 opened with the user's saved positions and tunnel, both tunnel menu actions were
 checked and undone, and calculated previews were left ready for testing.
+
+## Compact-route follow-up
+
+The staggered-card regression has an available clear cheap perimeter route, so
+the previous collision-only fallback skipped a shorter local zigzag. With the
+same endpoint/card geometry, the route now measures 1,119.41 pixels instead of
+2,260.94 pixels and stays between Y=-40 and Y=40 instead of climbing to Y=-644.
+Mirrored tests check both directions. Independent-output cases also verify that
+an existing nearby lane is considered before a distant row's perimeter and that
+a small departure shift can reach a local gap. Every replacement is checked for
+endpoint direction, rendered card clearance and independent-source separation.
+
+The additional peer refinement performs at most 32 candidate clearance checks.
+Tests require short candidates and genuinely card-required perimeter routes to
+avoid further offsets; exhausted improvement budgets retain the clear incumbent.
+The visibility score limit includes bends, and cancellation remains active.
+
+The [follow-up timing record](benchmarks/wire-routing-compactness-2026-10-09.json)
+identifies the final graph source hash, input hashes and baseline `b27e012`.
+Baseline and final modules were measured sequentially in the same source-imported
+Windows/offscreen environment, with three ready-state repetitions per workflow.
+
+| Ready workflow | Nodes / visible wires | Baseline full-pass median | Follow-up full-pass median | Follow-up background request | Follow-up completion | Maximum 10 ms timer gap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Local saved test workflow | 27 / 28 | 64.31 ms | 52.93 ms | 0.25 ms | 68.03–68.95 ms | 24.40 ms |
+| Bundled exhaustive inspector | 164 / 124 | 417.65 ms | 471.98 ms | 1.06–1.12 ms | 412.01–499.78 ms | 84.39 ms |
+
+The larger graph's full-pass median increased about 13% in this small sample;
+the editor still requests work quickly and computes the final route in its
+worker. Background and synchronous paths matched exactly. These measurements
+show the bounded quality/CPU tradeoff, not a speedup or a worst-case UI latency
+guarantee. The earlier full-suite result above predates this follow-up. Its
+affected-domain checks cover graph routing/editing, background lifecycle,
+tunnel conversion, history, example layouts and documentation: 442 passed with
+no failures. Ruff, manifest validation and wheel/sdist builds passed. Twenty-four
+presentation frames have no sampled settled card intersections; two during-drag
+intersections occur in the existing endpoint-only transient preview mode.
+
+The companion manual change is commit `13c0000f0f1239158efb96ae577718356dacc333`;
+its content checks and strict build passed. No live user workflow was changed
+to reproduce the compact-route regressions.

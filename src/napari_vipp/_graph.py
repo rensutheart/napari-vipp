@@ -6127,10 +6127,12 @@ def _wire_path(
         start, end, obstacles=obstacles, endpoint_rects=endpoint_rects,
         cancel_callback=cancel_callback,
     )
+    ordinary_points = _flatten_wire_path(ordinary)
     if not start_lane and not end_lane and not _wire_lane_conflict(
-        _flatten_wire_path(ordinary), peer_paths
+        ordinary_points, peer_paths
     ):
         return ordinary
+    ordinary_length = _polyline_length(ordinary_points)
     protected = tuple(
         rect.adjusted(0.5, 0.5, -0.5, -0.5) for rect in endpoint_rects
         if rect.isValid() and rect.width() > 1 and rect.height() > 1
@@ -6151,8 +6153,10 @@ def _wire_path(
         offsets.extend((index * 12.0, -index * 12.0))
     fallback = []
     search_anchors = []
+    best_clear = None
+    clear_offset_limit = None
     column_shift = 12.0 * nearby_peers
-    for offset in offsets:
+    for offset_index, offset in enumerate(offsets):
         _check_wire_routing_cancelled(cancel_callback)
         # Shift both axes: occupied vertical departures need another x lane,
         # just as horizontal runs need another y lane.
@@ -6160,20 +6164,42 @@ def _wire_path(
                     first.y() + start_lane + offset)
         b = QPointF(last.x() - column_shift - abs(offset),
                     last.y() + end_lane + offset)
-        for middle in _wire_middle_candidates(a, b, blockers):
+        for candidate_index, (middle, bends) in enumerate(
+            _wire_middle_candidates(a, b, blockers)
+        ):
             _check_wire_routing_cancelled(cancel_callback)
+            if best_clear is not None and candidate_index >= 8:
+                break
             path = _join_wire_ports(start, end, a, b, middle)
             points = _flatten_wire_path(path)
             collision = _route_collision_penalty(points, blockers)
             if not _wire_lane_conflict(points, peer_paths):
                 if not collision:
-                    return path
+                    if best_clear is None:
+                        if not _wire_route_has_excessive_excursion(
+                            path, start, end, protected
+                        ) or _polyline_length(points) <= ordinary_length + 160.0:
+                            return path
+                        # A nearby departure shift may reveal a short gap that
+                        # this offset cannot reach. Require substantial extra
+                        # travel beyond the card-only route, then compare four
+                        # offsets with eight candidates each. Keep this optional
+                        # refinement independent of the full fan-out space.
+                        clear_offset_limit = offset_index + 4
+                    score = _polyline_length(points) + bends * 42.0
+                    if best_clear is None or score < best_clear[0]:
+                        best_clear = (score, path)
+                    break
                 fallback.append((_route_score(points, blockers, bends=0,
                                               protected=protected), path))
+        if best_clear is not None and offset_index >= clear_offset_limit:
+            return best_clear[1]
         if not _route_collision_penalty((start, a), blockers) and not (
             _route_collision_penalty((b, end), blockers)
         ):
             search_anchors.append((a, b))
+    if best_clear is not None:
+        return best_clear[1]
     # Most crowded fan-outs use a cheap shifted candidate above. Only layouts
     # needing multiple obstacle detours pay for the bounded visibility search.
     for a, b in search_anchors:
@@ -6216,14 +6242,47 @@ def _wire_path(
 
 def _wire_middle_candidates(
     first: QPointF, last: QPointF, blockers: tuple[QRectF, ...]
-) -> Iterator[QPainterPath]:
-    yield _bezier_wire_path(first, last)
+) -> Iterator[tuple[QPainterPath, int]]:
+    yield _bezier_wire_path(first, last), 0
     # Check peer occupancy while selecting a card-clear route, rather than
     # repeatedly choosing the same shortest occupied gap and invoking A*.
-    for points in _orthogonal_route_candidates(first, last, blockers):
+    # Perimeter lanes are generated before nearby gaps. Try shorter routes
+    # first so an early clear outer lane cannot hide a better local candidate.
+    # Rank the small control polygons before creating/flattening Qt paths.
+    candidates = _orthogonal_route_candidates(first, last, blockers)
+    seen = set()
+    for points in sorted(candidates, key=_orthogonal_route_cost):
         clean = _clean_route_points(points)
         if len(clean) >= 2 and not _route_doubles_back(clean):
-            yield _rounded_polyline_path(clean)
+            key = tuple((point.x(), point.y()) for point in clean)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield _rounded_polyline_path(clean), max(len(clean) - 2, 0)
+
+
+def _orthogonal_route_cost(points: list[QPointF]) -> float:
+    length = 0.0
+    bends = 0
+    previous_direction = None
+    for first, last in zip(points, points[1:], strict=False):
+        dx, dy = last.x() - first.x(), last.y() - first.y()
+        if not dx and not dy:
+            continue
+        direction = bool(dy)
+        bends += previous_direction is not None and direction != previous_direction
+        length += abs(dx) + abs(dy)
+        previous_direction = direction
+    return length + bends * 42.0
+
+
+def _wire_route_has_excessive_excursion(
+    path: QPainterPath, start: QPointF, end: QPointF, protected: tuple[QRectF, ...]
+) -> bool:
+    bounds = path.boundingRect()
+    top = min(start.y(), end.y(), *(rect.top() for rect in protected))
+    bottom = max(start.y(), end.y(), *(rect.bottom() for rect in protected))
+    return max(top - bounds.top(), bounds.bottom() - bottom) > 80.0
 
 
 def _join_wire_ports(
@@ -6337,15 +6396,26 @@ def _card_avoiding_wire_path(
     candidates = _wire_route_candidates(
         start, end, all_obstacles, protected=protected, cancel_callback=cancel_callback
     )
-    best_path, points, _score = min(
+    best_path, points, score = min(
         candidates,
         key=lambda candidate: candidate[2],
     )
-    if _route_collision_penalty(points, all_obstacles):
+    blocked = bool(_route_collision_penalty(points, all_obstacles))
+    # A clear perimeter route can still be a large avoidable up/down detour.
+    # Forward wires have a useful monotone port corridor: search its local gaps
+    # only when the candidate leaves even the connected cards' vertical span.
+    # Backward loops retain their cheap candidate policy and required card exits.
+    excessive = end.x() > start.x() and _wire_route_has_excessive_excursion(
+        best_path, start, end, protected
+    )
+    if blocked or excessive:
         # A few pleasant routes cover ordinary layouts. Only a blocked layout
-        # pays for a bounded rectilinear search between obstacle-side lanes.
+        # or a large outer detour pays for a bounded obstacle-side search.
         detour = _wire_visibility_detour(
-            start, end, all_obstacles, protected, cancel_callback=cancel_callback
+            start, end, all_obstacles, protected,
+            max_visits=12000 if blocked else 1024,
+            score_limit=float("inf") if blocked else score[1],
+            cancel_callback=cancel_callback,
         )
         if detour is not None:
             return detour
@@ -6556,6 +6626,8 @@ def _wire_visibility_detour(
     peer_paths: tuple[tuple[QPointF, ...], ...] = (),
     *,
     port_stubs: bool = True,
+    max_visits: int = 12000,
+    score_limit: float = float("inf"),
     cancel_callback: Callable[[], bool] | None = None,
 ) -> QPainterPath | None:
     """Bounded A* fallback for staggered cards that need more than one detour.
@@ -6614,7 +6686,7 @@ def _wire_visibility_detour(
     pending = [(0.0, 0.0, origin)]
     segment_clear = {}
     visits = 0
-    while pending and visits < 12000:
+    while pending and visits < max_visits:
         _check_wire_routing_cancelled(cancel_callback)
         _estimate, cost, state = heappop(pending)
         if cost != costs[state]:
@@ -6634,7 +6706,9 @@ def _wire_visibility_detour(
             if not _route_collision_penalty(drawn, obstacles) and not (
                 _wire_lane_conflict(drawn, peer_paths)
             ):
-                return path
+                return path if _polyline_length(drawn) + max(
+                    len(points) - 2, 0
+                ) * 42.0 < score_limit else None
             # A lane squeezed against another card may leave no rounding room.
             # A square bend is preferable to cutting through that card.
             path = _rounded_polyline_path(points, radius=0)
@@ -6642,7 +6716,9 @@ def _wire_visibility_detour(
             if not _route_collision_penalty(drawn, obstacles) and not (
                 _wire_lane_conflict(drawn, peer_paths)
             ):
-                return path
+                return path if _polyline_length(drawn) + max(
+                    len(points) - 2, 0
+                ) * 42.0 < score_limit else None
             return None
         for nx, ny, next_direction in (
             (ix - 1, iy, 0),

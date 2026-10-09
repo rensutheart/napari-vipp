@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Prefer nearby clear wire lanes before distant perimeter routes. Forward
+  connections with excessive vertical detours can use a bounded local search
+  for a shorter route through gaps, while retaining card clearance and distinct
+  output lanes.
+
 - Calculate graph wire layouts in cancellable background work, with quick
   temporary routes and combined updates so complex connections do not freeze
   editing. Restore a single input tunnel with **Replace with wire**, or all

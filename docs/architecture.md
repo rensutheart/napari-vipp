@@ -64,6 +64,16 @@ ports in stable connection order. Positive-length collinear runs from different
 outputs are rejected; branches of the same output retain natural routes and may
 share a trunk. Isolated crossings remain permitted. Visible
 tunnel labels also reserve clearance, and label changes invalidate their routes.
+Peer lane candidates prefer shorter control polygons with fewer turns before
+checking clearance, skipping duplicate control polygons. An excessive clear peer
+detour adding more than 160 pixels beyond its card-only route compares at most
+four further nearby offsets with eight candidates each before retaining its
+best clear score. Clear forward routes
+extending more than 80 pixels beyond
+the endpoint cards' vertical envelope can try a 1,024-visit local visibility
+improvement; only a lower length-plus-bend score replaces the candidate. Blocked
+routes keep their existing 12,000-visit fallback. This bounded heuristic does not
+promise a globally shortest route.
 The workflow editor coalesces routing requests and computes complete paths on
 owned numerical geometry snapshots in a background worker. No worker accesses
 scene items, cards, or the pipeline. One running job and one replacement request
