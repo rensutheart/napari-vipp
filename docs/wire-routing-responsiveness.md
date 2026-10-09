@@ -79,5 +79,15 @@ trunks, card/badge clearance, stable synchronous/background geometry, immediate
 drag endpoints, stale result rejection, coalescing, cancellation and destruction.
 Twelve collision tests verify thin rectangles, edge/corner tangency, irregular
 routes against scalar clipping, owned bounds and invalid geometry fallback.
-Fifteen background-routing cases passed independently. These records do not
-claim completion of the full repository suite.
+Fifteen background-routing cases passed independently. The final full repository
+suite completed in one source-imported, offscreen Windows process: 13,459 passed,
+31 skipped, and two expected failures for the existing CuPy integer Gaussian
+parity gaps. There were no unexpected failures. Parallel attempts exhausted this
+machine's system commit limit and were interrupted; only the completed
+single-process run is counted here.
+
+Ruff, plugin-manifest validation, and wheel/sdist builds passed. The companion
+manual update is commit `d15bfb76ab407c694d807478a0cd3f98f62843c9` in vipp-mkdocs;
+its content checks and strict build passed. The live development workflow was
+opened with the user's saved positions and tunnel, both tunnel menu actions were
+checked and undone, and calculated previews were left ready for testing.
