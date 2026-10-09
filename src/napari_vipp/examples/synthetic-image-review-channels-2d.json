@@ -1,0 +1,151 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "execution": {
+    "compute": {
+      "mode": "cpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "node_names": {
+        "input": "Red channel",
+        "image_b": "Green channel",
+        "review": "Review Images"
+      },
+      "inspector": {
+        "selected_node_id": "review",
+        "right_panel_visible": true,
+        "image_reviews": {
+          "review": {
+            "version": 1,
+            "mode": "side-by-side",
+            "left": "a",
+            "right": "b",
+            "ndisplay": 2,
+            "link_navigation": true,
+            "link_contrast": false,
+            "a": {
+              "contrast_limits": [
+                0,
+                1
+              ],
+              "colormap": "red",
+              "lock_contrast": false,
+              "opacity": 1,
+              "visible": true,
+              "mask_color": "#00FF66",
+              "threshold": null
+            },
+            "b": {
+              "contrast_limits": [
+                0,
+                1
+              ],
+              "colormap": "green",
+              "lock_contrast": false,
+              "opacity": 1,
+              "visible": true,
+              "mask_color": "#00FF66",
+              "threshold": null
+            }
+          }
+        }
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP review 2D red intensity",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "image_b",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP review 2D green intensity",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "review",
+      "operation_id": "review_images",
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "review",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "image_b",
+      "target": "review",
+      "source_port": 0,
+      "target_port": 1
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      60
+    ],
+    "image_b": [
+      0,
+      650
+    ],
+    "review": [
+      800,
+      340
+    ]
+  },
+  "notes": [
+    {
+      "id": "review_step1",
+      "attached_node": "input",
+      "text": "1. OPEN THE LINKED REVIEW\nCalculate all once to make both source revisions available, then click Open Review on the Review Images node. Compare the red and green scalar channels with linked zoom/pan. Their independent contrast settings change display only.",
+      "position": [
+        0,
+        -230
+      ],
+      "width": 500
+    },
+    {
+      "id": "review_step2",
+      "attached_node": "review",
+      "text": "2. OVERLAY DOES NOT MEASURE COLOCALIZATION\nSwitch to Overlay or choose Image A + Image B in a pane. Change each input's black/white level and opacity; raw values and scientific caches remain unchanged. Yellow overlap is a visual cue, not a colocalization result.",
+      "position": [
+        1390,
+        270
+      ],
+      "width": 490
+    }
+  ],
+  "view": {
+    "zoom": 0.8,
+    "pan": [
+      0,
+      0
+    ]
+  }
+}

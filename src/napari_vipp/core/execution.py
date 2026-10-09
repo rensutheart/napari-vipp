@@ -3469,7 +3469,10 @@ def _assemble_workloads(
     facts_by_port: dict[OutputPortKey, ArrayFacts] = dict(seed_facts_by_port)
     facts_by_node: dict[str, tuple[ArrayFacts, ...]] = {}
     fact_lineage: dict[OutputPortKey, OutputPortKey] = {}
-    runnable = set(runnable_node_ids)
+    # Diagnostic callers may supply every graph node, not just an execution
+    # plan's candidates. Display-only sinks must not become workloads or alter
+    # scientific resident successors and required host boundaries.
+    runnable = set(runnable_node_ids) & pipeline.scientific_node_ids()
     workloads: list[WorkloadDescriptor] = []
     for node_id in pipeline.topological_order():
         if node_id not in runnable:

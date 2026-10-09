@@ -24,6 +24,10 @@ python scripts/launch_vipp_intensity_workflow.py <name>
 Current launcher IDs (run the launcher with `--list` for the authoritative
 registry):
 
+- `review-channels-2d`
+- `review-mask-3d`
+- `review-labels-time-series`
+- `review-rgb-index-3d`
 - `registration-translation`
 - `registration-rigid-3d`
 - `registration-time-series`
@@ -70,6 +74,10 @@ example...**. Its actively maintained source also remains under
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
+| `synthetic-image-review-channels-2d.json` | `VIPP review 2D red intensity` and `green intensity` | Unreleased: independent scalar contrast, selectable pane composition and additive overlay without quantitative colocalization inference. Open as `review-channels-2d`. |
+| `synthetic-image-review-mask-3d.json` | `VIPP review 3D intensity` and `mask` | Unreleased: read-only physical-sphere intensity/mask review on an anisotropic grid with shared slices, optional linked viewpoints and transparent mask background. Open as `review-mask-3d`. |
+| `synthetic-image-review-labels-time-series.json` | `VIPP review time-series intensity` and `labels` | Unreleased: four timepoints, constructed IDs 7/42, linked time/slice/camera navigation and categorical display. This is not tracking validation. Open as `review-labels-time-series`. |
+| `synthetic-image-review-rgb-index-3d.json` | `VIPP review 3D RGB composite` and `synthetic index` | Unreleased: explicit RGB metadata paired with a constructed numeric 0–1 index, fixed colour scale and independent hide-below setting. Starts in 2D; 3D RGB is a labelled display MIP adapter. The index is not RACC. Open as `review-rgb-index-3d`. |
 | `synthetic-tracking-spots-2d.json` | `VIPP synthetic 2D spot tracking` | Unreleased after 0.16.0a2: explicitly select C=1 while retaining all seven T frames, detect 24 spots and link four tracks. Includes an empty frame, known speeds and an ambiguous crossing requiring review. Original observations and a separate summary branch remain available. Open as `tracking-spots-2d`. |
 | `synthetic-tracking-labels-3d.json` | `VIPP synthetic 3D label tracking` | Unreleased after 0.16.0a2: threshold and label complete anisotropic 3D volumes independently at each T, measure centroids and link 14 observations into three tracks using calibrated distance/time. Includes a missed observation, an appearing object and changing local label IDs. The visible relabeling step preserves geometry, not supplied label numbers. Open as `tracking-labels-3d`. |
 | `synthetic-template-detection-2d.json` | `VIPP synthetic 2D template detection` | Unreleased after 0.16.0a2: select T=1/C=1, crop a 13×11 asymmetric pattern, match it and find five known source-index centers. Includes variable amplitudes, noise, a nearby pair, a clipped border copy and an absent site. Table-first result and descriptive score histogram; no labels or automatic files. Open as `template-detection-2d`. |

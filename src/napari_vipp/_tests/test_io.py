@@ -6,7 +6,7 @@ from types import MappingProxyType, SimpleNamespace
 import imageio.v3 as iio
 import numpy as np
 import pytest
-from tifffile import TiffFile, TiffWriter, imwrite
+from tifffile import TiffFile, TiffWriter, imwrite, tiffcomment
 
 import napari_vipp.core.io.microscope as microscope_io
 from napari_vipp.core.io import (
@@ -18,6 +18,7 @@ from napari_vipp.core.io import (
     write_image,
     write_ome_zarr_analysis_dataset,
 )
+from napari_vipp.core.io.tiff import _parse_ome
 from napari_vipp.core.metadata import (
     AxisMetadata,
     ChannelMetadata,
@@ -80,6 +81,101 @@ def test_ome_tiff_round_trip_preserves_axes_scale_and_channels(tmp_path):
     with TiffFile(path) as tif:
         assert "napari-vipp" in tif.ome_metadata
         assert "Gaussian Blur" in tif.ome_metadata
+
+
+@pytest.mark.parametrize(
+    "legacy_unit", ["micrometer", "micrometre", "micrometers", "micrometres"]
+)
+def test_ome_tiff_reads_legacy_spatial_unit_alias_without_rewriting_file(
+    tmp_path, legacy_unit
+):
+    data = np.arange(4 * 7 * 9, dtype=np.uint16).reshape(4, 7, 9)
+    path = tmp_path / "legacy-unit.ome.tif"
+    imwrite(
+        path,
+        data,
+        ome=True,
+        photometric="minisblack",
+        metadata={
+            "axes": "ZYX",
+            "PhysicalSizeZ": 0.13,
+            "PhysicalSizeY": 0.035,
+            "PhysicalSizeX": 0.037,
+            "PhysicalSizeZUnit": "\u00b5m",
+            "PhysicalSizeYUnit": "\u00b5m",
+            "PhysicalSizeXUnit": "\u00b5m",
+            "Plane": {
+                "PositionZ": [1.2, 1.33, 1.46, 1.59],
+                "PositionY": [-0.7] * 4,
+                "PositionX": [2.1] * 4,
+                "PositionZUnit": ["\u00b5m"] * 4,
+                "PositionYUnit": ["\u00b5m"] * 4,
+                "PositionXUnit": ["\u00b5m"] * 4,
+            },
+            "MapAnnotation": {
+                "Value": {"literal": 'PhysicalSizeXUnit="micrometer"'}
+            },
+        },
+    )
+    canonical = read_image(path).image_state
+    with TiffFile(path) as tif:
+        original_xml = tif.ome_metadata
+    legacy_xml = original_xml.replace('Unit="\u00b5m"', f'Unit="{legacy_unit}"')
+    assert legacy_xml != original_xml
+    tiffcomment(path, legacy_xml)
+    source_bytes = path.read_bytes()
+
+    inspection = inspect_image_source(path)
+    inspected_state = inspect_image_state(path, inspection=inspection)
+    loaded = read_image(path)
+    parsed = _parse_ome(legacy_xml)
+
+    assert path.read_bytes() == source_bytes
+    assert inspection.original_metadata == legacy_xml
+    assert loaded.original_metadata == legacy_xml
+    assert loaded.image_state.axis_order == "ZYX"
+    assert loaded.image_state.axes == canonical.axes
+    assert inspected_state.axes == canonical.axes
+    assert [axis.scale for axis in loaded.image_state.axes] == [0.13, 0.035, 0.037]
+    assert [axis.unit for axis in loaded.image_state.axes] == ["\u00b5m"] * 3
+    assert [p.position_z for p in parsed.images[0].pixels.planes] == [
+        1.2, 1.33, 1.46, 1.59
+    ]
+    assert [p.position_y for p in parsed.images[0].pixels.planes] == [-0.7] * 4
+    assert [p.position_x for p in parsed.images[0].pixels.planes] == [2.1] * 4
+    assert all(
+        p.position_z_unit.value == "\u00b5m"
+        and p.position_y_unit.value == "\u00b5m"
+        and p.position_x_unit.value == "\u00b5m"
+        for p in parsed.images[0].pixels.planes
+    )
+    assert parsed.structured_annotations.map_annotations[0].value.model_dump() == {
+        "literal": 'PhysicalSizeXUnit="micrometer"'
+    }
+    np.testing.assert_array_equal(loaded.data, data)
+
+
+def test_ome_tiff_does_not_substitute_unknown_spatial_units(tmp_path):
+    path = tmp_path / "unknown-unit.ome.tif"
+    imwrite(
+        path,
+        np.zeros((4, 7, 9), dtype=np.uint16),
+        ome=True,
+        photometric="minisblack",
+        metadata={
+            "axes": "ZYX", "PhysicalSizeX": 0.037, "PhysicalSizeXUnit": "\u00b5m"
+        },
+    )
+    with TiffFile(path) as tif:
+        xml = tif.ome_metadata
+    tiffcomment(
+        path,
+        xml.replace('PhysicalSizeXUnit="\u00b5m"', 'PhysicalSizeXUnit="furlong"'),
+    )
+    source_bytes = path.read_bytes()
+    with pytest.raises(ValueError, match="physical_size_x_unit"):
+        read_image(path)
+    assert path.read_bytes() == source_bytes
 
 
 def test_imagej_tiff_round_trip_writes_hyperstack_calibration(tmp_path):
@@ -368,7 +464,8 @@ def test_ome_zarr_metadata_only_state_preserves_multi_letter_axis_names(tmp_path
     assert inspected_state.value_range == "not computed (lazy)"
 
 
-def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path):
+@pytest.mark.parametrize("version", ["0.4", "0.5"])
+def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path, version):
     image = np.zeros((2, 4, 8, 9), dtype=np.uint16)
     image_state = image_state_from_array(
         image,
@@ -394,6 +491,7 @@ def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path):
         path,
         labels=(AnalysisLabel("Nuclei Labels", labels, label_state, "labels"),),
         image_state=image_state,
+        version=version,
     )
     inspection = inspect_image_source(path)
 

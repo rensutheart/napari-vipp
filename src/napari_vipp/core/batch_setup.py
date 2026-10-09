@@ -239,10 +239,7 @@ def _collection_source_node_ids(pipeline: PrototypePipeline) -> tuple[str, ...]:
 
 
 def _terminal_node_ids(pipeline: PrototypePipeline) -> list[str]:
-    order = pipeline.topological_order()
-    consumed = {connection.source_id for connection in pipeline.connections}
-    terminals = [node_id for node_id in order if node_id not in consumed]
-    return terminals or list(order)
+    return pipeline.scientific_terminal_node_ids()
 
 
 def _batch_output_config(

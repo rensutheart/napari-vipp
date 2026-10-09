@@ -79,6 +79,7 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "input",
         "table_source",
         "plot_results",
+        "review_images",
         "mask_to_3d_mesh",
         "labels_to_3d_mesh",
         "analyze_skeleton",
@@ -111,6 +112,33 @@ def test_schema_bypass_excludes_true_and_table_materialization_boundaries() -> N
         "detect_spots_per_frame",
         "build_tracks",
     }
+
+
+def test_outputless_review_sink_rejects_live_and_persisted_bypass() -> None:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    review = pipeline.add_node("review_images")
+    assert pipeline.connect("input", review.id).success
+    connections = tuple(pipeline.connections)
+    spec = NODE_LIBRARY_BY_ID["review_images"]
+
+    assert spec.presentation_only
+    assert spec.function is None
+    assert spec.output_ports == ()
+    assert pipeline.output_ports(review.id) == ()
+    assert not spec.supports_bypass
+    assert not pipeline.node_supports_bypass(review.id)
+    with pytest.raises(ValueError, match="cannot be bypassed"):
+        pipeline.set_node_execution_mode(review.id, "bypass")
+    assert not pipeline.node_is_bypassed(review.id)
+    assert tuple(pipeline.connections) == connections
+
+    document = serialize_workflow(pipeline)
+    for node in document["nodes"]:
+        if node["id"] == review.id:
+            node["execution_mode"] = "bypass"
+    with pytest.raises(ValueError, match="cannot be bypassed"):
+        deserialize_workflow(document)
 
 
 @pytest.mark.parametrize(

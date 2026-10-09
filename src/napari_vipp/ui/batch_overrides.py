@@ -43,6 +43,7 @@ from napari_vipp.ui.batch_override_widgets import (
     BatchOverrideTable,
 )
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
+from napari_vipp.ui.bulk_selection import BulkSelectionControls
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
@@ -245,15 +246,25 @@ class BatchParameterOverrideEditor(QWidget):
             "Check or uncheck samples on this page only. "
             "Selections on other pages stay unchanged."
         )
-        self.select_matching_button = ToolbarCommandButton("Select all matching")
-        self.select_matching_button.setToolTip(
-            "Select every sample matching the current filters, across all pages."
+        self.sample_selection_controls = BulkSelectionControls(
+            scope=(
+                "Select: matching samples across all pages. "
+                "Deselect: all samples, including hidden."
+            ),
+            select_tooltip=(
+                "Select every sample matching the current filters, across all pages."
+            ),
+            deselect_tooltip=(
+                "Uncheck all selected samples across all pages, "
+                "including filtered-out samples. "
+                "Parameter overrides stay unchanged."
+            ),
         )
-        self.clear_selection_button = ToolbarCommandButton("Deselect all")
-        self.clear_selection_button.setToolTip(
-            "Uncheck all selected samples across all pages, "
-            "including filtered-out samples. "
-            "Parameter overrides stay unchanged."
+        self.select_matching_button = (
+            self.sample_selection_controls.select_all_button
+        )
+        self.clear_selection_button = (
+            self.sample_selection_controls.deselect_all_button
         )
         self.reset_selected_button = ToolbarCommandButton("Reset selected…")
         self.reset_selected_button.setToolTip(
@@ -268,8 +279,6 @@ class BatchParameterOverrideEditor(QWidget):
         self._selection_layout_mode = ""
         self._override_command_icons = (
             (self.columns_button, "columns"),
-            (self.select_matching_button, "select_all"),
-            (self.clear_selection_button, "deselect"),
             (self.reset_selected_button, "reset"),
             (self.edit_selected_button, "edit"),
         )
@@ -310,6 +319,7 @@ class BatchParameterOverrideEditor(QWidget):
         layout.addLayout(filters)
         layout.addLayout(columns)
         layout.addLayout(self.selection_layout)
+        layout.addWidget(self.sample_selection_controls)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.empty_label)
         layout.addLayout(pagination)
@@ -366,8 +376,6 @@ class BatchParameterOverrideEditor(QWidget):
         widgets = (
             self.select_page_checkbox,
             self.selection_label,
-            self.select_matching_button,
-            self.clear_selection_button,
             self.reset_selected_button,
             self.edit_selected_button,
         )
@@ -1209,23 +1217,25 @@ class BatchParameterOverrideEditor(QWidget):
         )
         dialog.parameter_tree = tree
         dialog.parameter_items = leaves
-        layout.addWidget(tree, 1)
-        controls = QHBoxLayout()
-        for title, state, kind in (
-            ("Show all", Qt.Checked, "select_all"),
-            ("Hide all", Qt.Unchecked, "deselect"),
+        dialog.selection_controls = BulkSelectionControls(
+            dialog,
+            scope="All parameter columns, including those hidden by search",
+            select_tooltip="Select all parameter columns. Apply with OK.",
+            deselect_tooltip="Deselect all parameter columns. Apply with OK.",
+        )
+        dialog.select_all_button = dialog.selection_controls.select_all_button
+        dialog.deselect_all_button = dialog.selection_controls.deselect_all_button
+        for button, state in (
+            (dialog.select_all_button, Qt.Checked),
+            (dialog.deselect_all_button, Qt.Unchecked),
         ):
-            button = ToolbarCommandButton(title)
-            button.setIcon(toolbar_icon(kind, self.palette()))
-            button.setIconSize(QSize(18, 18))
             button.clicked.connect(
                 lambda _checked=False, state=state: [
                     item.setCheckState(0, state) for item in leaves.values()
                 ]
             )
-            controls.addWidget(button)
-        controls.addStretch()
-        layout.addLayout(controls)
+        layout.addWidget(dialog.selection_controls)
+        layout.addWidget(tree, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)

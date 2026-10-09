@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -7,7 +8,10 @@ from typing import Any
 
 import pytest
 
-from napari_vipp.core.batch import scientific_workflow_hash
+from napari_vipp.core.batch import (
+    scientific_workflow_document,
+    scientific_workflow_hash,
+)
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import (
     WORKFLOW_VERSION,
@@ -76,6 +80,21 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
     "synthetic-gpu-segmentation-bridge.json": (
         "599f8346ce68cc92233fbd7ec3136e9d720a9c126ef17642d3c649acca29aa46"
+    ),
+    # Display-only Review recipes have precisely two authored sample sources.
+    # The independent source-only documents below pin their scientific identity;
+    # neither the Review sink/connections nor its style recipe enter the digest.
+    "synthetic-image-review-channels-2d.json": (
+        "6e49c72018fed4554ae2676898d0a2cf728d49738724e0901d83cd09dc45dd0b"
+    ),
+    "synthetic-image-review-labels-time-series.json": (
+        "2b2db21c8595bf55347d32937658be1c877794dede2530e169ec13a27eb0bb3e"
+    ),
+    "synthetic-image-review-mask-3d.json": (
+        "3e42598dff94505ed3ba84f46b2c5792ff3f5455b2d121a9882dd18855b77956"
+    ),
+    "synthetic-image-review-rgb-index-3d.json": (
+        "095b24df04f902e44f4005000c82c8d00003e2754c2e86451a235a650e43a297"
     ),
     # Pin the already bundled four-view morphology/intensity plot example.
     # Automatic tick defaults restore explicitly without changing this hash.
@@ -176,6 +195,22 @@ def _canonical_schema_v6_document(document: dict[str, Any]) -> dict[str, Any]:
         key=lambda item: item["name"],
     )
     canonical["version"] = WORKFLOW_VERSION
+    # Schema-1 display recipes acquired these explicit presentation defaults.
+    # Assert the exact migration independently of the recipe validator.
+    reviews = (
+        canonical.get("metadata", {})
+        .get("vipp", {})
+        .get("inspector", {})
+        .get("image_reviews", {})
+    )
+    for recipe in reviews.values():
+        recipe.setdefault("orientation", "oblique")
+        recipe.setdefault("show_axes", True)
+        recipe.setdefault("show_scale_bar", True)
+        for key in ("a", "b"):
+            recipe[key].setdefault("rendering", "mip")
+            recipe[key].setdefault("attenuation", 0.05)
+            recipe[key].setdefault("iso_threshold", None)
     # These are the explicit compatibility defaults supplied by the persisted
     # node loader. Keep the old example fixtures intact and assert the exact
     # expected migration, rather than comparing the loader with itself.
@@ -259,6 +294,90 @@ def test_bundled_example_scientific_hashes_are_golden(filename, expected_hash):
 
     assert scientific_workflow_hash(document) == expected_hash
     assert scientific_workflow_hash(reserialized) == expected_hash
+
+
+@pytest.mark.parametrize(
+    ("suffix", "sample_a", "sample_b"),
+    (
+        (
+            "channels-2d",
+            "VIPP review 2D red intensity",
+            "VIPP review 2D green intensity",
+        ),
+        (
+            "labels-time-series",
+            "VIPP review time-series intensity",
+            "VIPP review time-series labels",
+        ),
+        ("mask-3d", "VIPP review 3D intensity", "VIPP review 3D mask"),
+        (
+            "rgb-index-3d",
+            "VIPP review 3D RGB composite",
+            "VIPP review 3D synthetic index",
+        ),
+    ),
+)
+def test_review_examples_pin_only_the_two_authored_scientific_sources(
+    suffix, sample_a, sample_b,
+):
+    filename = f"synthetic-image-review-{suffix}.json"
+    document = _load_example(filename)
+    # Construct the complete expected scientific document directly. Do not
+    # derive expected source identities or its digest from the fixture/loader.
+    expected_nodes = [
+        {
+            "id": identifier,
+            "operation_id": "input",
+            "params": {
+                "source_mode": "sample",
+                "layer_name": "",
+                "file_path": "",
+                "sample_name": sample,
+                "series_index": 0,
+                "channel_colors": "",
+                "binding_mode": "single item",
+            },
+        }
+        for identifier, sample in (("image_b", sample_b), ("input", sample_a))
+    ]
+    expected = {
+        "type": "napari-vipp-workflow",
+        "version": 3,
+        "nodes": expected_nodes,
+        "connections": [],
+        "tunnels": [],
+    }
+    encoded = json.dumps(
+        expected, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    expected_hash = EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES[filename]
+    assert hashlib.sha256(encoded).hexdigest() == expected_hash
+    assert sorted(document["nodes"], key=lambda node: node["id"]) == [
+        *expected_nodes,
+        {"id": "review", "operation_id": "review_images", "params": {}},
+    ]
+    assert document["connections"] == [
+        {"source": "input", "target": "review", "source_port": 0, "target_port": 0},
+        {"source": "image_b", "target": "review", "source_port": 0, "target_port": 1},
+    ]
+    assert document.get("tunnels", []) == []
+    assert scientific_workflow_document(document) == expected
+
+    styled = deepcopy(document)
+    recipe = styled["metadata"]["vipp"]["inspector"]["image_reviews"]["review"]
+    recipe["show_axes"] = False
+    recipe["show_scale_bar"] = False
+    recipe["a"]["opacity"] = 0.23
+    recipe["b"]["colormap"] = "magma"
+    assert scientific_workflow_hash(styled) == expected_hash
+    source_only = {
+        **expected, "positions": {}, "notes": [], "metadata": {},
+    }
+    assert scientific_workflow_hash(source_only) == expected_hash
+    changed_source = deepcopy(document)
+    changed_source["nodes"][0]["params"]["sample_name"] = sample_b
+    assert scientific_workflow_hash(changed_source) != expected_hash
 
 
 def test_workspace_example_preserves_the_original_measurement_analysis():
@@ -355,8 +474,57 @@ def _without_label_skeleton_branch(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-def _without_showcase_registration_lane(document: dict[str, Any]) -> dict[str, Any]:
+def _without_showcase_review_sink(document: dict[str, Any]) -> dict[str, Any]:
     document = deepcopy(document)
+    identifier = "review_images_1"
+    (added_node,) = [node for node in document["nodes"] if node["id"] == identifier]
+    assert added_node == {
+        "id": identifier, "operation_id": "review_images", "params": {},
+    }
+    added_edges = [
+        edge for edge in document["connections"]
+        if identifier in (edge["source"], edge["target"])
+    ]
+    assert added_edges == [
+        {
+            "source": "input_11", "target": identifier,
+            "target_port": 0, "source_port": 0,
+            "tunnel": "Registration reference image",
+        },
+        {
+            "source": "apply_transform_1", "target": identifier,
+            "target_port": 1, "source_port": 0,
+            "tunnel": "Registration aligned image",
+        },
+    ]
+    assert not any(tunnel["source"] == identifier for tunnel in document["tunnels"])
+    scientific_before = scientific_workflow_document(document)
+    document["nodes"].remove(added_node)
+    document["connections"] = [
+        edge for edge in document["connections"] if edge not in added_edges
+    ]
+    document["positions"].pop(identifier)
+    assert scientific_workflow_document(document) == scientific_before
+    return document
+
+
+def test_showcase_review_sink_preserves_the_complete_scientific_document():
+    original = _load_example("exhaustive-inspector-showcase.json")
+    projected = _without_showcase_review_sink(original)
+    expected_hash = EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES[
+        "exhaustive-inspector-showcase.json"
+    ]
+    assert scientific_workflow_hash(original) == expected_hash
+    assert scientific_workflow_hash(projected) == expected_hash
+    assert (
+        scientific_workflow_hash(_restore_and_reserialize(projected)) == expected_hash
+    )
+
+
+def _without_showcase_registration_lane(document: dict[str, Any]) -> dict[str, Any]:
+    # Only the exact validated presentation sink may be removed before the
+    # historical scientific-lane projection. Its seven-edge contract is intact.
+    document = _without_showcase_review_sink(document)
     added_ids = {
         "input_10",
         "input_11",

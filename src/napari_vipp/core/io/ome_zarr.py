@@ -472,7 +472,6 @@ def write_ome_zarr(
         scale=scale,
         scale_factors=(),
         name=state.source_name if state and state.source_name else path.stem,
-        omero=omero_metadata,
     )
     metadata = {"vipp": _vipp_metadata(state)}
     if detection is not None:
@@ -494,6 +493,8 @@ def write_ome_zarr(
         ] + [{"type": "translation", "translation": [a.translation for a in axes]}]
         metadata["multiscales"] = multiscales
     if omero_metadata.get("channels"):
+        # Keep channel metadata on the JSON metadata path. ome-zarr >=0.20's
+        # legacy write_image forwards an omero dict to a typed-only setter.
         metadata["omero"] = omero_metadata
     _with_zarr_metadata_retries(add_metadata, str(path), metadata, fmt=fmt)
     return path

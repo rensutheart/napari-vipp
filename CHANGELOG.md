@@ -2,8 +2,81 @@
 
 ## Unreleased
 
+## 0.16.0a4 - 2026-10-09
+
+- Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr
+  0.20 and newer, retaining channel display metadata, calibration and provenance.
 - Acknowledge NRF Thuthuka Post PhD Track support (Grant No. TTK240321210363)
   in the repository README.
+- Use the same paired **Select all** / **Deselect all** buttons across Batch
+  items and Overrides, the parameter-column chooser, Results visible columns,
+  Statistics measurements and Select Table Columns. Keep the same outline
+  icons, spacing and above-list placement, with readable scope text and wrapping
+  in narrow panels. Existing filtering, visibility and measurement rules remain.
+- Keep wrapped measurement-selection controls and registration inspector
+  sections from overlapping following rows after live font or width changes.
+- Give the Batch workflow and Results Workspace native minimize/maximize
+  controls and maximize/restore on title-bar or unused-toolbar double-click.
+  On Windows, keep each workspace visible when napari or detached VIPP is
+  minimized, with independent taskbar controls and retained session ownership.
+  Reopening a minimized workspace restores its previous window state.
+- Explain the specific reasons for blocked batch outputs, including duplicate
+  filenames, input-file overlaps and output-node overwrite protection. Add
+  **Find problem** to open an affected Batch Output node without calculating or
+  saving, and **Select all** / **Deselect all** for matching items across pages.
+  Batch settings and filtered-out selections are retained. Editing an output
+  node marks its checked destinations as needing recheck.
+- Add **Review Images**, a presentation-only two-input node with an **Open
+  Review** shortcut and a compact graph card without an empty image preview or
+  output placeholder, a global toolbar, per-pane content selectors, shared time/
+  slice controls and an inspector sidebar. Link viewpoints independently of
+  the shared time/slices, with Oblique/XY/XZ/YZ camera presets and Fit views
+  together in the bottom bar beside the read-only/native-resolution status,
+  without a separate permanent status row. Framed pane cards join each content selector,
+  image and caption in light and dark themes. A global Scale bar switch hides
+  or shows calibrated bars in both panes, independently of Axes. These display
+  choices are saved with the review recipe. A global Axes switch controls both 3D panes, with
+  orientation arrows and labels on a transparent background instead of an
+  opaque box. Switching a volume to 2D starts in XY with Z navigation;
+  show the total slice/timepoint count outside the editable position box.
+  Palette-aware toolbar icons retain text labels. Scalar 3D review offers
+  maximum intensity, depth-weighted intensity and a display-only isosurface,
+  with adjustable depth weight or surface level. Shaded views are not
+  quantitative intensity/colour-scale review or physical inter-layer occlusion.
+  Side-by-side and
+  overlay views support independent scalar contrast and colour, masks, labels and
+  explicit RGB/RGBA presentation. Save display recipes with the workflow without
+  changing scientific cache keys or image values; reject misaligned physical/time
+  grids rather than silently resampling. Four new synthetic review workflows
+  cover 2D channels, anisotropic masks, labelled time series and RGB plus a
+  constructed scalar index. Show binary masks as shaded 3D surfaces rather
+  than flat maximum-intensity silhouettes; display interpolation does not
+  smooth scientific masks. RGB 3D uses an explicitly labelled per-component
+  display MIP adapter; RGBA 3D and RACC custom-shader parity are unsupported.
+
+- Keep open **Review Images** windows stable during upstream recalculation.
+  Show clearly marked previous results while waiting, then update the complete
+  accepted same-grid image pair together, preserving viewpoints, time/slice
+  positions and display settings. Compact routine status messages avoid pane
+  resizing during edits. Changed input types, grids or input presence require
+  reopening the review; scientific values and resource guards remain unchanged.
+- Read older OME-TIFF spatial calibration written with `micrometer` or
+  `micrometre` unit aliases. Normalize equivalent unit names in the parser
+  copy while preserving numeric calibration, pixels and original file bytes.
+
+- Use the displayed input histogram to tune threshold slider ranges for large
+  float images whose intensities are outside 0–1. Preserve saved cutoffs and
+  synchronize histogram guide edits with numeric values, including constrained
+  or rounded edits that leave the cutoff unchanged.
+
+- Keep the Compute GPU-conversion advisory fully visible as the inspector is
+  resized, with its action button below the wrapped text.
+
+- Guard napari layer-list painting while a row is being replaced or loaded, so
+  a temporarily missing size hint does not cause repeated loading-indicator
+  errors. The fix only affects display; workflow parameters and results stay
+  unchanged.
+
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
   references cover the direct convolution and rounding behavior. Existing

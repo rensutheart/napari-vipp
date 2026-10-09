@@ -26,6 +26,8 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)
 - [Release qualification baseline](release-qualification-baseline.md)
 - [Windows installer field acceptance](windows-installer-field-acceptance.md)
+- [Workspace window qualification](workspace-window-qualification.md): native
+  controls, independent Windows ownership, retained state and session lifetime.
 - [Windows setup packaging](../packaging/windows/README.md)
 - [macOS PKG packaging](../packaging/macos/README.md)
 - [Full-batch cancellation verification](full-batch-cancellation-verification.md)
@@ -110,6 +112,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
   below remain implementation evidence rather than installation instructions.
 
 ## Implementation Records
+
+- [Image review implementation](image-review-implementation.md): presentation-only
+  sink, explicit input/grid contracts, saved review recipes, synthetic examples
+  and display qualification boundaries.
 
 These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not

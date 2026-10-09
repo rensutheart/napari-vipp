@@ -45,7 +45,191 @@ def make_sample_data():
         *make_registration_sample_data(),
         *make_detection_sample_data(),
         *make_tracking_sample_data(),
+        *make_image_review_sample_data(),
     ]
+
+
+def make_image_review_sample_data():
+    """Return aligned, deterministic inputs for presentation-only review.
+
+    The index phantom is constructed directly, not computed by RACC or any
+    colocalization method. RGB is explicitly declared, never inferred from a
+    dimension of length three. Label IDs and all physical grids are authored.
+    """
+    from dataclasses import replace
+
+    from .core.metadata import AxisMetadata, SourceMetadata, image_state_from_array
+
+    samples = []
+
+    def add(
+        data,
+        name,
+        axis_order,
+        scale,
+        origin,
+        description,
+        *,
+        kind=None,
+        rgb=False,
+        geometry=None,
+    ):
+        metadata = _ome_image_metadata(axis_order, data.shape)
+        axes = tuple(
+            AxisMetadata(
+                name="rgb" if rgb and index == len(axis_order) - 1 else char.lower(),
+                type="channel" if char == "C" else "time" if char == "T" else "space",
+                unit=None if char == "C" else "second" if char == "T" else "micrometer",
+                scale=scale[index],
+                translation=origin[index],
+                source_axis=index,
+            )
+            for index, char in enumerate(axis_order)
+        )
+        multiscale = metadata["ome"]["multiscales"][0]
+        multiscale["axes"] = [axis.to_dict() for axis in axes]
+        multiscale["datasets"][0]["coordinateTransformations"] = [
+            {"type": "scale", "scale": list(scale)},
+            {"type": "translation", "translation": list(origin)},
+        ]
+        metadata.update(
+            napari_vipp_sample=True,
+            napari_vipp_preferred_input=False,
+            description=description,
+            image_review_ground_truth={
+                "schema_version": 1,
+                "synthetic": True,
+                "racc_computed": False,
+                "axis_order": axis_order,
+                "spacing": list(scale),
+                "origin": list(origin),
+                **(geometry or {}),
+            },
+        )
+        state = image_state_from_array(
+            data,
+            axes=axes,
+            source_name=name,
+            metadata_source="explicit synthetic image-review fixture",
+            source=SourceMetadata(
+                uri=f"vipp-synthetic:{name}", format="analytical phantom"
+            ),
+            defer_statistics=True,
+        )
+        if kind:
+            state = replace(state, kind=kind)
+        metadata["vipp_image_state"] = state.to_dict()
+        kwargs = {
+            "name": name,
+            "visible": False,
+            "metadata": metadata,
+            "scale": tuple(scale[:-1] if rgb else scale),
+            "translate": tuple(origin[:-1] if rgb else origin),
+        }
+        if rgb:
+            kwargs["rgb"] = True
+        if kind == "label image":
+            layer_type = "labels"
+        else:
+            layer_type = "image"
+            if not rgb:
+                kwargs["rgb"] = False
+        samples.append((data, kwargs, layer_type))
+
+    y, x = np.indices((80, 104), dtype=np.float32)
+    red = np.exp(-((y - 29) ** 2 / 110 + (x - 35) ** 2 / 180))
+    green = np.exp(-((y - 34) ** 2 / 110 + (x - 45) ** 2 / 180))
+    red = (red + 0.4 * np.exp(-((y - 57) ** 2 + (x - 76) ** 2) / 38)).astype(np.float32)
+    green = (green + 0.6 * np.exp(-((y - 59) ** 2 + (x - 70) ** 2) / 38)).astype(
+        np.float32
+    )
+    for data, color in ((red, "red"), (green, "green")):
+        add(
+            data,
+            f"VIPP review 2D {color} intensity",
+            "YX",
+            (0.5, 0.4),
+            (4.0, -3.0),
+            "Aligned synthetic scalar channel with partially overlapping structures; "
+            "display colour does not imply quantitative colocalization.",
+        )
+
+    # Integer 0.1-micrometre ticks make the authored sphere boundary exact.
+    # This is a better-sampled demonstration, not smoothing a segmentation.
+    z, y, x = np.indices((48, 64, 80), dtype=np.int32)
+    distance_a = (6 * (z - 15)) ** 2 + (5 * (y - 21)) ** 2 + (4 * (x - 23)) ** 2
+    distance_b = (6 * (z - 32)) ** 2 + (5 * (y - 44)) ** 2 + (4 * (x - 57)) ** 2
+    sphere_a = distance_a / 54**2
+    sphere_b = distance_b / 50**2
+    volume = (np.exp(-sphere_a) + 0.75 * np.exp(-sphere_b)).astype(np.float32)
+    mask = (distance_a <= 54**2) | (distance_b <= 50**2)
+    sphere_geometry = {
+        "construction_geometry": "analytical physical spheres",
+        "coordinate_tick_um": 0.1,
+        "centres_zyx_um": [[7.0, 14.5, 17.2], [17.2, 26.0, 30.8]],
+        "radii_um": [5.4, 5.0],
+        "intensity_definition": "exp(-(distance/radius)^2), amplitudes 1 and 0.75",
+        "mask_definition": "distance <= radius; exact integer coordinate ticks",
+    }
+    for data, suffix in ((volume, "intensity"), (mask, "mask")):
+        add(
+            data,
+            f"VIPP review 3D {suffix}",
+            "ZYX",
+            (0.6, 0.5, 0.4),
+            (-2.0, 4.0, 8.0),
+            "Two analytical physical spheres, radii 5.4 and 5.0 micrometres, "
+            "on one aligned anisotropic physical grid. "
+            "The Boolean mask is construction geometry, not inferred segmentation.",
+            geometry=sphere_geometry,
+        )
+
+    labels = np.zeros((4, 12, 40, 48), dtype=np.uint16)
+    intensities = np.zeros(labels.shape, dtype=np.float32)
+    z, y, x = np.indices(labels.shape[1:], dtype=np.float32)
+    for frame in range(4):
+        first = (z - 4) ** 2 / 4 + (y - 12) ** 2 / 18 + (x - 10 - 3 * frame) ** 2 / 22
+        second = (z - 8) ** 2 / 3 + (y - 28) ** 2 / 14 + (x - 35 + 2 * frame) ** 2 / 18
+        labels[frame][first <= 1] = 7
+        labels[frame][second <= 1] = 42
+        intensities[frame] = np.exp(-first) + 0.65 * np.exp(-second)
+    for data, suffix in ((intensities, "intensity"), (labels, "labels")):
+        add(
+            data,
+            f"VIPP review time-series {suffix}",
+            "TZYX",
+            (2.0, 1.2, 0.5, 0.4),
+            (6.0, -1.0, 2.0, 5.0),
+            "Four aligned timepoints with constructed IDs 7 and 42. This is a "
+            "display fixture, not detection, tracking or identity validation.",
+            kind="label image" if suffix == "labels" else None,
+        )
+
+    rgb = np.stack((volume, 0.75 * np.roll(volume, 3, axis=2), 0.15 * volume), axis=-1)
+    rgb = np.rint(np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+    index_x = np.indices(volume.shape, dtype=np.float32)[2]
+    index = np.where(mask, index_x / (volume.shape[-1] - 1), 0).astype(np.float32)
+    add(
+        rgb,
+        "VIPP review 3D RGB composite",
+        "ZYXC",
+        (0.6, 0.5, 0.4, 1.0),
+        (-2.0, 4.0, 8.0, 0.0),
+        "Explicit 8-bit RGB volume: original colours are retained for review.",
+        rgb=True,
+        geometry=sphere_geometry,
+    )
+    add(
+        index,
+        "VIPP review 3D synthetic index",
+        "ZYX",
+        (0.6, 0.5, 0.4),
+        (-2.0, 4.0, 8.0),
+        "Constructed 0–1 spatial colour-scale test, NOT a computed RACC index "
+        "or colocalization result. Background is exactly zero.",
+        geometry=sphere_geometry,
+    )
+    return samples
 
 
 def make_tracking_sample_data(*, seed=20260929):

@@ -54,6 +54,7 @@ from napari_vipp.core.result_plots import (
 )
 from napari_vipp.core.statistics import StatisticsRecipe
 from napari_vipp.core.tables import TableData
+from napari_vipp.ui.bulk_selection import BulkSelectionControls
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.iconography import interface_icon, palette_branch_color
 from napari_vipp.ui.palette_roles import theme_colors
@@ -76,6 +77,7 @@ from napari_vipp.ui.statistics import (
     statistics_preview_header,
 )
 from napari_vipp.ui.toolbar_controls import toolbar_icon
+from napari_vipp.ui.workspace_window import WorkspaceWindowController
 
 
 def _plain_tooltip(text: str) -> str:
@@ -276,11 +278,9 @@ class ResultsWorkspaceDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._window_controls = WorkspaceWindowController(self)
         self.setObjectName("VippResultsWorkspace")
         self.setWindowTitle("Results Workspace — VIPP")
-        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
-        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
-        self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setSizeGripEnabled(True)
         self.setMinimumSize(760, 520)
@@ -336,6 +336,7 @@ class ResultsWorkspaceDialog(QDialog):
         heading_row.addWidget(self.source_label, 1)
         layout.addLayout(heading_row)
         self._build_connection_bar(layout)
+        self._window_controls.add_toolbar_surface(self.connection_bar)
         # The selectors already show the selected path. Retain its full text for
         # assistive technology and tooltips, without a second visible breadcrumb.
         self.connection_label = _label()
@@ -614,10 +615,24 @@ class ResultsWorkspaceDialog(QDialog):
         )
         left.addWidget(self.search)
         left.addWidget(_label("Visible columns"))
-        column_actions = QHBoxLayout()
-        column_actions.setSpacing(6)
-        self.select_all_columns_button = QPushButton("Select all")
-        self.select_no_columns_button = QPushButton("Select none")
+        self.column_selection_controls = BulkSelectionControls(
+            self,
+            scope="All columns in this view",
+            select_tooltip=(
+                "Select all columns to show in this view. "
+                "Calculations and exports are unchanged."
+            ),
+            deselect_tooltip=(
+                "Deselect all columns to hide them in this view. "
+                "Calculations and exports are unchanged."
+            ),
+        )
+        self.select_all_columns_button = (
+            self.column_selection_controls.select_all_button
+        )
+        self.select_no_columns_button = (
+            self.column_selection_controls.deselect_all_button
+        )
         for button, visible in (
             (self.select_all_columns_button, True),
             (self.select_no_columns_button, False),
@@ -625,16 +640,10 @@ class ResultsWorkspaceDialog(QDialog):
             button.setAccessibleName(
                 "Select all columns" if visible else "Deselect all columns"
             )
-            button.setToolTip(
-                ("Show" if visible else "Hide")
-                + " every column in this view. Calculations and exports are unchanged."
-            )
             button.clicked.connect(
                 lambda _checked=False, show=visible: self._set_all_columns_visible(show)
             )
-            column_actions.addWidget(button)
-        column_actions.addStretch(1)
-        left.addLayout(column_actions)
+        left.addWidget(self.column_selection_controls)
         self.column_list = QListWidget()
         self.column_list.setAccessibleName("Columns visible in the data view")
         left.addWidget(self.column_list, 1)

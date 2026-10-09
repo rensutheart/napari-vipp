@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from qtpy.QtCore import QPoint, Qt
+from qtpy.QtCore import QPoint, QRect, Qt
 from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
@@ -134,14 +134,17 @@ def test_table_column_actions_wrap_without_clipping(qtbot, width, font_pixels):
         control.move_down_button,
         control.reset_button,
     )
+    rectangles = []
     for button in buttons:
         assert button.width() >= button.minimumSizeHint().width()
-        assert control.rect().contains(button.geometry())
-    for index, button in enumerate(buttons):
-        for other in buttons[index + 1:]:
-            assert not button.geometry().intersects(other.geometry())
+        rectangle = QRect(button.mapTo(control, QPoint()), button.size())
+        assert control.rect().contains(rectangle)
+        rectangles.append(rectangle)
+    for index, rectangle in enumerate(rectangles):
+        for other in rectangles[index + 1:]:
+            assert not rectangle.intersects(other)
     if width == 260:
-        assert buttons[-1].y() > buttons[0].y()
+        assert rectangles[-1].y() > rectangles[0].y()
 
 
 def test_image_source_choosers_share_recent_input_directory(

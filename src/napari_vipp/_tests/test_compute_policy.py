@@ -43,8 +43,12 @@ def test_synthesized_cpu_spec_uses_registered_policies():
 
     # CPU declarations are synthesized and are not covered by the static GPU
     # catalog check below. Include the median dispatcher's versioned policy.
-    for operation_id in NODE_LIBRARY_BY_ID:
-        validate_spec_policy_references(compute_specs_for(operation_id)[0])
+    for operation_id, operation in NODE_LIBRARY_BY_ID.items():
+        declarations = compute_specs_for(operation_id)
+        if operation.presentation_only:
+            assert declarations == ()
+        else:
+            validate_spec_policy_references(declarations[0])
 
 
 def test_all_builtin_accelerator_specs_use_versioned_registered_policies():

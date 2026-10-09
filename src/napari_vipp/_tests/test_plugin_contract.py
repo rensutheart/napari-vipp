@@ -9,6 +9,7 @@ from npe2 import PluginManifest
 from npe2.manifest.utils import import_python_name
 
 from napari_vipp._sample_data import (
+    make_image_review_sample_data,
     make_registration_sample_data,
     make_sample_data,
     make_tracking_sample_data,
@@ -57,6 +58,7 @@ def test_manifest_resolves_sample_data_contribution():
         "napari-vipp.sample_data": make_sample_data,
         "napari-vipp.registration_sample_data": make_registration_sample_data,
         "napari-vipp.tracking_sample_data": make_tracking_sample_data,
+        "napari-vipp.image_review_sample_data": make_image_review_sample_data,
     }
     assert [sample.command for sample in sample_data] == list(expected)
     assert len({sample.key for sample in sample_data}) == len(expected)

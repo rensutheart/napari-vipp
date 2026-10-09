@@ -208,6 +208,12 @@ def _execution_reachable_node_ids(
     for node_id in pipeline.topological_order():
         node = pipeline.nodes[node_id]
         spec = pipeline.operation_spec(node.operation_id)
+        if spec.presentation_only:
+            # Review sinks do not calculate a scientific output or enter CPU /
+            # GPU execution. Their actual upstream images remain covered below.
+            assert not pipeline.output_ports(node_id)
+            assert spec.function is None
+            continue
         if not spec.has_input:
             reachable.add(node_id)
             continue
@@ -216,14 +222,10 @@ def _execution_reachable_node_ids(
             continue
         if pipeline._node_accepts_multiple_inputs(node):
             required = pipeline._required_inputs_for(node)
-            by_port = {
-                connection.target_port: connection for connection in connections
-            }
+            by_port = {connection.target_port: connection for connection in connections}
             if any(port not in by_port for port in range(required)):
                 continue
-            dependencies = tuple(
-                by_port[port].source_id for port in range(required)
-            )
+            dependencies = tuple(by_port[port].source_id for port in range(required))
         else:
             dependencies = (connections[0].source_id,)
         if all(source_id in reachable for source_id in dependencies):
@@ -282,12 +284,16 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
         assert completed.node_execution_states[node_id] == EXECUTION_NOT_CALCULATED
         assert completed.node_outputs[node_id] == []
         assert completed.node_output_states[node_id] == []
+        if completed.operation_spec(
+            completed.nodes[node_id].operation_id
+        ).presentation_only:
+            assert node_id not in completed.node_compute_provenance
+            assert completed.outputs[node_id] is None
 
     assert result.execution_report is not None
     assert result.execution_report.request.mode is mode
     assert result.execution_report.cleanup_succeeded is True
     assert result.execution_report.fallback_records == ()
-    assert result.execution_report.actual_decisions
     decision_node_ids = {
         decision.node_id for decision in result.execution_report.actual_decisions
     }
@@ -304,6 +310,12 @@ def _execute_example(spec, sample_catalog, mode: ComputeMode):
     expected_decision_node_ids = planned_node_ids - source_node_ids
     if mode is not ComputeMode.CPU:
         expected_decision_node_ids |= source_node_ids & planned_node_ids
+    if expected_decision_node_ids:
+        assert result.execution_report.actual_decisions
+    else:
+        # A source-and-presentation-only workflow has no executable kernels in
+        # CPU mode; display sinks must not manufacture compute decisions.
+        assert result.execution_report.actual_decisions == ()
     assert expected_decision_node_ids == decision_node_ids
     assert len(decision_node_ids) == len(result.execution_report.actual_decisions)
     safe_prefer_gpu_reasons = {
@@ -440,8 +452,7 @@ def _execute_real_cuda_example(spec, sample_catalog, mode: ComputeMode):
         for node_id in expected_completed
     )
     assert all(
-        result.pipeline.node_execution_states[node_id]
-        == EXECUTION_NOT_CALCULATED
+        result.pipeline.node_execution_states[node_id] == EXECUTION_NOT_CALCULATED
         for node_id in set(result.pipeline.nodes) - expected_completed
     )
     assert all(
@@ -636,6 +647,10 @@ def test_compute_matrix_covers_every_bundled_example():
         "registration-translation",
         "registration-rigid-3d",
         "registration-time-series",
+        "review-channels-2d",
+        "review-mask-3d",
+        "review-labels-time-series",
+        "review-rgb-index-3d",
         "template-detection-2d",
         "template-detection-3d",
         "tracking-spots-2d",
@@ -666,9 +681,7 @@ def test_compute_matrix_covers_every_bundled_example():
         "deconvolution-3d",
     }
     example_directory = _example_workflow_path(EXAMPLE_WORKFLOWS[0]).parent
-    assert set(filenames) == {
-        path.name for path in example_directory.glob("*.json")
-    }
+    assert set(filenames) == {path.name for path in example_directory.glob("*.json")}
 
 
 @pytest.mark.real_cuda
@@ -814,9 +827,7 @@ def test_full_synthetic_batch_demo_completes_in_each_compute_mode(tmp_path, mode
             "batch_output_2": DecisionReason.NO_VALIDATED_IMPLEMENTATION,
             "batch_output_3": DecisionReason.WORKLOAD_UNSUPPORTED,
         }
-        assert {
-            node_id: node["reason"] for node_id, node in nodes.items()
-        } == {
+        assert {node_id: node["reason"] for node_id, node in nodes.items()} == {
             node_id: reason.value
             for node_id, reason in expected_prefer_gpu_reasons.items()
         }

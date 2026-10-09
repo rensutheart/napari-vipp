@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from napari_vipp.core.batch import scientific_workflow_hash
 from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import (
     GraphConnection,
@@ -52,6 +54,50 @@ def _established_document_round_trip(document: dict[str, Any]) -> dict[str, Any]
         metadata=restored["metadata"],
         compute_request=restored["compute_request"],
     )
+
+
+def _expected_saved_metadata(document: dict[str, Any]) -> dict[str, Any] | None:
+    """Explicit schema-1 display defaults, independent of production loading."""
+    metadata = deepcopy(document.get("metadata"))
+    if metadata is None:
+        return None
+    reviews = (
+        metadata.get("vipp", {}).get("inspector", {}).get("image_reviews", {})
+    )
+    for identifier, raw in reviews.items():
+        recipe = {
+            "version": 1,
+            "mode": "side-by-side",
+            "left": "a",
+            "right": "overlay",
+            "ndisplay": 2,
+            "orientation": "oblique",
+            "show_axes": True,
+            "show_scale_bar": True,
+            "link_navigation": True,
+            "link_contrast": False,
+        }
+        for key, colormap, opacity in (("a", "gray", 1.0), ("b", "green", 0.5)):
+            style = {
+                "contrast_limits": None,
+                "colormap": colormap,
+                "opacity": opacity,
+                "visible": True,
+                "mask_color": "#00FF00",
+                "threshold": None,
+                "lock_contrast": False,
+                "rendering": "mip",
+                "attenuation": 0.05,
+                "iso_threshold": None,
+            }
+            style.update(raw.get(key, {}))
+            style["mask_color"] = style["mask_color"].upper()
+            recipe[key] = style
+        recipe.update(
+            {key: value for key, value in raw.items() if key not in ("a", "b")}
+        )
+        reviews[identifier] = recipe
+    return metadata
 
 
 def test_graph_snapshot_deeply_isolates_nested_params_in_both_directions():
@@ -383,6 +429,7 @@ def test_graph_snapshot_rejects_duplicate_nodes_and_boolean_ports():
 @pytest.mark.parametrize("filename", _EXAMPLE_FILENAMES)
 def test_example_snapshot_adapters_match_existing_boundary(filename):
     document = json.loads((_EXAMPLE_DIR / filename).read_text(encoding="utf-8"))
+    original = deepcopy(document)
     expected = _established_document_round_trip(document)
 
     snapshot = workflow_snapshot_from_document(document)
@@ -390,4 +437,47 @@ def test_example_snapshot_adapters_match_existing_boundary(filename):
 
     assert actual == expected
     assert ("metadata" in actual) is ("metadata" in expected)
-    assert actual.get("metadata") == document.get("metadata")
+    assert actual.get("metadata") == _expected_saved_metadata(document)
+    assert scientific_workflow_hash(actual) == scientific_workflow_hash(document)
+    assert document == original
+
+
+def test_review_snapshot_fills_display_defaults_without_mutating_raw_recipe():
+    path = _EXAMPLE_DIR / "synthetic-image-review-mask-3d.json"
+    document = json.loads(
+        path.read_text(encoding="utf-8")
+    )
+    document["metadata"]["vipp"]["inspector"]["image_reviews"]["review"] = {
+        "version": 1,
+        "show_axes": False,
+        "b": {"opacity": 0.4, "mask_color": "#00ff66"},
+    }
+    original = deepcopy(document)
+    snapshot = workflow_snapshot_from_document(document)
+    expected_metadata = _expected_saved_metadata(document)
+
+    assert snapshot.metadata == expected_metadata
+    exposed = snapshot.metadata
+    exposed["vipp"]["inspector"]["image_reviews"]["review"]["b"]["opacity"] = 0.9
+    actual = workflow_document_from_snapshot(snapshot)
+    assert snapshot.metadata == expected_metadata
+    assert actual["metadata"] == expected_metadata
+    assert scientific_workflow_hash(actual) == scientific_workflow_hash(document)
+    assert document == original
+
+
+@pytest.mark.parametrize(
+    "recipe",
+    ({"version": 1, "show_axes": "false"}, {"version": 1, "b": {"silent_cast": True}}),
+)
+def test_review_snapshot_rejects_malformed_recipe_without_mutating_document(recipe):
+    path = _EXAMPLE_DIR / "synthetic-image-review-mask-3d.json"
+    document = json.loads(
+        path.read_text(encoding="utf-8")
+    )
+    document["metadata"]["vipp"]["inspector"]["image_reviews"]["review"] = recipe
+    original = deepcopy(document)
+
+    with pytest.raises(ValueError):
+        workflow_snapshot_from_document(document)
+    assert document == original

@@ -9,8 +9,9 @@ access in the app.
 
 Choose **Open example... → Exhaustive Inspector Showcase**, or open
 `exhaustive-inspector-showcase.json` here with **Load workflow...**. The graph
-contains every processing operation currently exposed in the node palette:
-141 distinct operations across 163 nodes, with thirteen source nodes bound to twelve
+contains every operation currently exposed in the node palette, apart from
+the separately qualified Table Source: 143 distinct operations across 165 nodes,
+with thirteen source nodes bound to twelve
 distinct bundled samples. **Table Source** needs a saved batch collection and
 has separate save/reopen coverage. Processing operations appear once except
 the explicit preparation and propagation stages needed by the two native-2D
@@ -32,13 +33,14 @@ The graph is arranged as twelve labelled horizontal lanes:
 7. PSF preparation and deconvolution;
 8. native-2D seeded CellProfiler Propagation;
 9. explicit CellProfiler compartment-profile stages;
-10. known-motion registration, resampling, valid coverage and image comparison;
+10. known-motion registration, resampling, valid coverage, quantitative comparison
+    and a presentation-only Review Images sink;
 11. fixed-template matching, valid scores and table-first peak detection; and
 12. time-series spot detection, gap-aware linking and track-summary handoff.
 
 The lanes are independent where combining them would be scientifically
 artificial. Fan-outs indicate alternative analyses of the same data rather than
-an intended sequence. Fifteen named tunnels carry the longest reused inputs across
+an intended sequence. Sixteen named tunnels carry the longest reused inputs across
 lanes; 124 nearby connections remain as ordinary wires so each lane's main path
 is still visible.
 

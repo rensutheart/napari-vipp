@@ -122,6 +122,8 @@ _THRESHOLD_DIAGNOSTIC_OPERATION_IDS = frozenset(
 
 def node_card_result_action_label(spec: OperationSpec) -> str:
     """Name a direct histogram/measurement window action, when appropriate."""
+    if spec.presentation_only:
+        return "Open review…"
     if not any(port.output_type == "table" for port in spec.output_ports):
         return ""
     if spec.id == "intensity_histogram":
@@ -139,6 +141,34 @@ def node_card_result_action_label(spec: OperationSpec) -> str:
 
 def _independent_layout_constraints_available(layout: QLayout) -> bool:
     return callable(getattr(layout, "setSizeConstraints", None))
+
+
+def sync_layout_ancestor_geometry(widget: QWidget) -> None:
+    """Commit a height change and its enclosing rows without an event-loop turn.
+
+    Fixed/minimum heights resize a child immediately, but its parent's queued
+    LayoutRequest can retain the old sibling positions. Recompute bottom-up so
+    the resized child cannot overlap the following row while that request is
+    pending. This neither processes arbitrary events nor changes width policy.
+    """
+    if getattr(widget, "_vipp_syncing_ancestor_geometry", False):
+        return
+    widget._vipp_syncing_ancestor_geometry = True
+    try:
+        current = widget
+        while current is not None:
+            layout = current.layout()
+            if layout is not None:
+                layout.invalidate()
+                guard = getattr(current, "_vipp_minimum_height_constraint", None)
+                if guard is not None:
+                    guard._sync_height()
+                else:
+                    layout.activate()
+            current.updateGeometry()
+            current = current.parentWidget()
+    finally:
+        widget._vipp_syncing_ancestor_geometry = False
 
 
 class _MinimumHeightConstraint(QObject):
@@ -213,14 +243,7 @@ def sync_reserved_layout_height(layout: QLayout) -> None:
     """Propagate an active height reservation in the current layout turn."""
     if not hasattr(layout, "_vipp_minimum_height_state"):
         return
-    parent = layout.parentWidget()
-    guard = getattr(parent, "_vipp_minimum_height_constraint", None)
-    if guard is not None:
-        # A descendant can change its fixed height after the parent's queued
-        # LayoutRequest was handled. Commit that newer minimum bottom-up rather
-        # than depending on another event that Qt may coalesce away.
-        guard._sync_height()
-    parent.updateGeometry()
+    sync_layout_ancestor_geometry(layout.parentWidget())
 
 
 class _InspectorBusySpinner(QWidget):
@@ -318,6 +341,16 @@ def inspector_profile(
     """
 
     operation_id = str(spec.id)
+    if spec.presentation_only:
+        return InspectorProfile(
+            operation_id=operation_id,
+            parameter_title="Image review",
+            primary_sections=(PARAMETERS_SECTION,),
+            show_connected_inputs=True,
+            output_action_kind="none",
+            supports_pin=False,
+            execution_is_manual=False,
+        )
     is_source = operation_id == "input"
     is_writer = operation_id in _WRITER_OPERATION_IDS
     is_multi_output = bool(spec.is_multi_output)
