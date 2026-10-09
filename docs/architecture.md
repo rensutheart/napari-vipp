@@ -68,6 +68,12 @@ The cheap orthogonal catalogue includes both departure-side and arrival-side
 vertical turns. A clear late turn can replace an equal-Manhattan-length
 staircase without increasing search budgets; the existing turn cost keeps
 extra rounded corners from winning solely by cutting corner distance.
+After selecting a clear shifted route, at most one straight port approach is
+checked per end. A shifted cubic and its next turn can join directly onto the
+same vertical segment if the whole replacement remains card- and peer-clear and
+improves the length-plus-turn preference. The opposite end and middle detour
+remain identical unless their own independent check succeeds. This does not
+generate another route catalogue or expand visibility-search budgets.
 Peer lane candidates prefer shorter control polygons with fewer turns before
 checking clearance, skipping duplicate control polygons. An excessive clear peer
 detour adding more than 160 pixels beyond its card-only route compares at most

@@ -6179,7 +6179,9 @@ def _wire_path(
                         if not _wire_route_has_excessive_excursion(
                             path, start, end, protected
                         ) or _polyline_length(points) <= ordinary_length + 160.0:
-                            return path
+                            return _straighten_wire_port_approaches(
+                                path, blockers, peer_paths, cancel_callback
+                            )
                         # A nearby departure shift may reveal a short gap that
                         # this offset cannot reach. Require substantial extra
                         # travel beyond the card-only route, then compare four
@@ -6193,13 +6195,17 @@ def _wire_path(
                 fallback.append((_route_score(points, blockers, bends=0,
                                               protected=protected), path))
         if best_clear is not None and offset_index >= clear_offset_limit:
-            return best_clear[1]
+            return _straighten_wire_port_approaches(
+                best_clear[1], blockers, peer_paths, cancel_callback
+            )
         if not _route_collision_penalty((start, a), blockers) and not (
             _route_collision_penalty((b, end), blockers)
         ):
             search_anchors.append((a, b))
     if best_clear is not None:
-        return best_clear[1]
+        return _straighten_wire_port_approaches(
+            best_clear[1], blockers, peer_paths, cancel_callback
+        )
     # Most crowded fan-outs use a cheap shifted candidate above. Only layouts
     # needing multiple obstacle detours pay for the bounded visibility search.
     for a, b in search_anchors:
@@ -6214,7 +6220,9 @@ def _wire_path(
         if not _route_collision_penalty(points, blockers) and not (
             _wire_lane_conflict(points, peer_paths)
         ):
-            return path
+            return _straighten_wire_port_approaches(
+                path, blockers, peer_paths, cancel_callback
+            )
     # If cards overlap, a completely clear route may not exist. Keep the
     # original endpoint-first obstruction policy, still rejecting shared runs.
     # Outer lanes vary on every axis so even this fallback separates peers.
@@ -6301,6 +6309,92 @@ def _join_wire_ports(
         QPointF(end.x() - arrival, end.y()), end,
     )
     return path
+
+
+def _straighten_wire_port_approaches(
+    path: QPainterPath,
+    blockers: tuple[QRectF, ...],
+    peer_paths: _WireReservations,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> QPainterPath:
+    """Try one straight approach per end of an already clear shifted route."""
+    for reverse in (False, True):
+        _check_wire_routing_cancelled(cancel_callback)
+        oriented = path.toReversed() if reverse else path
+        candidate = _straightened_wire_port_prefix(oriented, -1 if reverse else 1)
+        if candidate is None:
+            continue
+        points = _flatten_wire_path(candidate)
+        # The S connector's two direction changes and following corner become
+        # one corner. Keep the existing cost for the two removed turns, including
+        # the distance the original curves save by cutting their corners.
+        if _polyline_length(points) >= (
+            _polyline_length(_flatten_wire_path(oriented)) + 2 * 42.0
+        ):
+            continue
+        if not _route_collision_penalty(points, blockers) and not (
+            _wire_lane_conflict(points, peer_paths)
+        ):
+            path = candidate.toReversed() if reverse else candidate
+    return path
+
+
+def _straightened_wire_port_prefix(
+    path: QPainterPath, direction: int,
+) -> QPainterPath | None:
+    # Only replace a shifted port cubic, short horizontal middle stub, rounded
+    # turn and vertical segment. The rest of the chosen detour stays identical.
+    if path.elementCount() < 9:
+        return None
+    elements = [path.elementAt(index) for index in range(9)]
+    if [element.type for element in elements] != [
+        QPainterPath.MoveToElement,
+        QPainterPath.CurveToElement,
+        QPainterPath.CurveToDataElement,
+        QPainterPath.CurveToDataElement,
+        QPainterPath.LineToElement,
+        QPainterPath.CurveToElement,
+        QPainterPath.CurveToDataElement,
+        QPainterPath.CurveToDataElement,
+        QPainterPath.LineToElement,
+    ]:
+        return None
+    port, anchor, stub, vertical_start, vertical_end = (
+        elements[index] for index in (0, 3, 4, 7, 8)
+    )
+    column = vertical_end.x
+    if (
+        anchor.y == port.y
+        or elements[1].y != port.y
+        or elements[2].y != anchor.y
+        or elements[1].x != elements[2].x
+        or stub.y != anchor.y
+        or column != vertical_start.x
+        or direction * (column - port.x) <= 0
+        or direction * (stub.x - anchor.x) <= 0
+        or (vertical_end.y - port.y) * (vertical_end.y - vertical_start.y) <= 0
+    ):
+        return None
+    candidate = _rounded_polyline_path([
+        QPointF(port.x, port.y), QPointF(column, port.y),
+        QPointF(column, vertical_end.y),
+    ])
+    index = 9
+    while index < path.elementCount():
+        element = path.elementAt(index)
+        if element.type == QPainterPath.LineToElement:
+            candidate.lineTo(element.x, element.y)
+            index += 1
+        elif element.type == QPainterPath.CurveToElement:
+            control, end = path.elementAt(index + 1), path.elementAt(index + 2)
+            candidate.cubicTo(
+                QPointF(element.x, element.y), QPointF(control.x, control.y),
+                QPointF(end.x, end.y),
+            )
+            index += 3
+        else:
+            return None
+    return candidate
 
 
 class _WireReservations:

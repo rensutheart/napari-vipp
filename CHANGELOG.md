@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Straighten clear wire approaches independently at each end. Keep a necessary
+  detour around a card at one end without adding the same wiggle at the other;
+  validate the simpler approach against cards and distinct output lanes.
+
 - Avoid unnecessary wire staircases when a clear straight departure and a turn
   near the destination have the same travel distance. Keep card clearance and
   separate lanes for different outputs when selecting the simpler route.

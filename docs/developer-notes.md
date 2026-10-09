@@ -70,6 +70,12 @@ protected during the cheap pointer-tracking route; graph-wide obstacle routing
 runs on release. Rounded routes are collision-tested as drawn, including cards
 outside the original port corridor. Peer candidates are ordered by length and
 bend cost before collision checks. Duplicate control polygons are skipped.
+Once a shifted peer route is clear, `_straighten_wire_port_approaches` tries
+one port-aligned prefix per end. It replaces only the shifted S connector,
+short horizontal stub and next corner, preserving the rest of the chosen path.
+The whole candidate must remain card- and peer-clear and improve the existing
+42-pixel-per-turn preference. A blocked end retains its original connector.
+This refinement does not generate another catalogue or start visibility search.
 An excessive clear peer detour adding more than 160 pixels to its card-only
 route compares at most four further departure/arrival offsets, with eight
 candidates per offset, before keeping the best clear score;

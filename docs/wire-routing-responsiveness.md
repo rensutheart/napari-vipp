@@ -201,3 +201,66 @@ distinct, the 29 computational connections remain present and routing is
 settled. The reported wire has two rounded corners and a 660-pixel initial
 horizontal segment. One widget is registered in this maximized floating tester.
 The original acquired-data recovery session was left untouched.
+
+## Independent port-approach follow-up
+
+A shared departure/arrival offset can help one end clear a card while adding
+an unnecessary S connector and another turn at the clear end. After selecting
+a clear peer route, each end can now try one port-aligned approach to its first
+vertical segment. The remaining path is copied exactly. A replacement must
+respect port direction, continue the original vertical direction and pass the
+full rendered card/peer checks. The existing 42-pixel turn preference accounts
+for the two removed connector direction changes. Each end is checked
+independently, so a needed opposite detour is retained.
+
+In the latest saved test fixture, Otsu Threshold to Erosion keeps its left
+detour around Save Image. Its right departure now runs horizontally from
+(4,171, 445.5) to the rounded turn near X=4,411, then rises directly to the
+existing top route at Y=166.5. The former shifted S connector joined at
+(4,375, 361.5), followed by another short step before reaching that column.
+Rendered length grows from 3,114.66 to 3,176.30 pixels because the removed
+S connector cut across its corner; the two fewer direction changes improve
+the length-plus-turn preference. This is a bounded visual-quality choice,
+not a globally shortest-path claim.
+
+The refinement tries at most two prefixes on the chosen clear path. It does
+not regenerate the candidate catalogue, add offsets or start visibility
+searches. Cancellation and the existing background revision checks remain
+active, and computational connections and cached scientific data are unchanged.
+
+The [port-approach comparison](benchmarks/wire-routing-port-approaches-2026-10-09.json)
+records baseline `985754d`, final source/input hashes and three sequential
+repetitions per workflow. Only Otsu Threshold to Erosion changes in the saved
+27-node/28-wire fixture; its left approach's final four control elements are
+byte-identical. The exhaustive inspector changes only Threshold to Logical AND
+input 0. Both workflows retain zero sampled rendered card/tunnel/note
+intersections and zero checked independent straight overlaps longer than one
+pixel. Every settled background layout equals its synchronous Qt geometry.
+
+The latest saved layout remains expensive: baseline/final full-pass medians
+are 2,313.44/2,302.92 ms and background completion medians are
+3,094.20/2,393.88 ms. Both versions perform four visibility searches per pass
+in that fixture, including the reported wire and mesh connections. The
+exhaustive inspector's full-pass medians are 659.31/487.96 ms and its background
+medians are 644.94/524.02 ms, with no searches. These sequential three-sample
+timings are variable; they do not establish a speedup or latency bound. The
+small post-clear refinement leaves search counts unchanged and does not solve
+the saved fixture's existing multi-second routing cost.
+
+Five new full-route regressions cover clear upward/downward departures, a
+mirrored clear arrival and retained approaches when a card or distinct-source
+run blocks the straight alternative. The three clear-approach cases fail the
+baseline. The affected-domain suite passes all 451 checks. Ruff, manifest
+validation and wheel/sdist builds pass; both built packages contain the tested
+routing source. The earlier complete repository run predates this follow-up.
+The companion manual change is commit
+`006690a8bfab93f3dc750267c101251e4773919c`; its 18 content contracts, 50 route
+checks and strict build pass.
+
+The latest saved layout was reopened in a maximized development tester using
+the exact tested source hashes. The UI reports complete calculations and a
+6.1 MB cache, with 27 distinct calculated outputs, the same 29 computational
+connections, one registered widget and settled background routing. The target
+wire's first segment is horizontal and its useful left approach remains curved.
+Both ends were brought into view for the user's next test. The original
+acquired-data recovery windows remain open and untouched.
