@@ -20,6 +20,7 @@ VIPP 0.16.0a4 adds linked, read-only image review, a bounded ImageJ-compatible G
 ## Batch, Results and workspace improvements
 
 - Use consistent Select all / Deselect all controls across Batch items and Overrides, parameter columns, Results visible columns, Statistics measurements and Select Table Columns, retaining existing filtering and scientific selection rules.
+- Wrapped measurement-selection controls and registration inspector sections retain their spacing without overlapping following rows after live font or width changes.
 - Blocked batch outputs explain duplicate names, input-file overlaps and overwrite protection. Find problem focuses the affected output node without calculating or saving; changed output settings require destination rechecking, and matching-item selection spans pages without dropping filtered-out selections.
 - Detached VIPP, Batch and Results workspaces maximize or restore once and minimize independently from their Windows host, while keeping their workflow/data ownership. Reopening a minimized workspace restores its prior state. Native Linux/macOS window-manager ownership and minimization remain unqualified.
 - Threshold sliders use the displayed float-image histogram while preserving saved cutoffs and the wider numeric-entry domain. Histogram guide edits remain synchronized after constrained or rounded changes. GPU-conversion advisories wrap fully, and a defensive napari layer-list decoration guard avoids errors from temporarily missing size hints.

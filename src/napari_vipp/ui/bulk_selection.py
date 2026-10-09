@@ -5,6 +5,7 @@ from __future__ import annotations
 from qtpy.QtCore import QEvent, QRect, QSize, Qt, QTimer
 from qtpy.QtWidgets import QLabel, QLayout, QSizePolicy, QVBoxLayout, QWidget
 
+from napari_vipp.ui.inspector import sync_layout_ancestor_geometry
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
 
@@ -145,11 +146,15 @@ class BulkSelectionControls(QWidget):
         # and the complete scope survive resizing and live font changes.
         if not self.isVisible():
             return
+        # Qt invalidates this layout for child text/font/size changes. Merely
+        # measuring it must not post another LayoutRequest: this callback is
+        # also scheduled by that event, which would otherwise create idle work.
         height = self.layout().totalHeightForWidth(max(1, self.width()))
         if height >= 0 and (
             self.minimumHeight() != height or self.maximumHeight() != height
         ):
             self.setFixedHeight(height)
+            sync_layout_ancestor_geometry(self)
 
     def _refresh_icons(self) -> None:
         for button, kind in (

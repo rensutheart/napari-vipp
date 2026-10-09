@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from qtpy.QtCore import QPoint, QRect, QSize, Qt
+from qtpy.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt
 from qtpy.QtGui import QColor, QFont, QIcon, QPalette
-from qtpy.QtWidgets import QLineEdit
+from qtpy.QtWidgets import QApplication, QLabel, QLineEdit, QVBoxLayout, QWidget
 
 from napari_vipp._tests.test_batch_override_reset_actions import _editor
 from napari_vipp._tests.test_batch_table_theme import _palette
@@ -263,6 +263,108 @@ def test_numeric_measurement_scope_wraps_completely_in_a_narrow_inspector(qtbot,
         heights.append(label.height())
     assert heights[1] >= heights[0]
     assert heights[2] == heights[0]
+
+
+def test_scope_height_timer_commits_sibling_geometry_in_the_same_turn(qtbot):
+    owner = QWidget()
+    layout = QVBoxLayout(owner)
+    layout.setAlignment(Qt.AlignTop)
+    layout.setSpacing(7)
+    controls = BulkSelectionControls(scope="Choose measurements.")
+    choices = QLabel("Measurement choices")
+    choices.setFixedHeight(40)
+    layout.addWidget(controls)
+    layout.addWidget(choices)
+    qtbot.addWidget(owner)
+    owner.resize(260, 700)
+    owner.show()
+    qtbot.waitUntil(lambda: controls.isVisible() and choices.y() > controls.y())
+    controls._sync_height()
+    layout.activate()
+    previous_height = controls.height()
+
+    controls.set_scope(
+        "Select: eligible numeric measurements. "
+        "Deselect: all selected measurements. "
+        "Grouping and identity columns are excluded from automatic selection."
+    )
+    # Exercise the production timer callback without processing the parent's
+    # queued LayoutRequest. The callback must not leave the next row at its
+    # old y coordinate while its own fixed height has already grown.
+    controls._sync_height()
+    assert controls.height() > previous_height
+    assert (
+        _rectangle(choices, owner).top()
+        - _rectangle(controls, owner).bottom() - 1
+    ) == 7
+
+
+@pytest.mark.parametrize("change", ("show", "scope", "font", "width"))
+def test_bulk_geometry_timer_quiesces_after_layout_changes(
+    qtbot, record_property, change,
+):
+    owner = QWidget()
+    layout = QVBoxLayout(owner)
+    layout.setAlignment(Qt.AlignTop)
+    layout.setSpacing(7)
+    controls = BulkSelectionControls(scope="Choose measurements.")
+    following = QLabel("Measurement choices")
+    following.setFixedHeight(40)
+    layout.addWidget(controls)
+    layout.addWidget(following)
+    qtbot.addWidget(owner)
+
+    class RequestCounter(QObject):
+        requests = 0
+
+        def eventFilter(self, watched, event):  # noqa: N802
+            if watched is controls and event.type() == QEvent.LayoutRequest:
+                self.requests += 1
+            return False
+
+    counter = RequestCounter(controls)
+    controls.installEventFilter(counter)
+    timeouts = []
+    controls._geometry_timer.timeout.connect(lambda: timeouts.append(1))
+
+    def dispatch_turns(count):
+        # Drain a bounded number of posted-layout/timer turns, not a timed
+        # sleep. A stable control must eventually stop creating more work.
+        for _ in range(count):
+            QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+            QApplication.processEvents()
+
+    owner.resize(340, 700)
+    owner.show()
+    dispatch_turns(12)
+    if change == "scope":
+        controls.set_scope(
+            "Select: eligible numeric measurements. "
+            "Deselect: all selected measurements. "
+            "Grouping and identity columns are excluded from automatic selection."
+        )
+    elif change == "font":
+        owner.setFont(QFont("Segoe UI", 14))
+    elif change == "width":
+        owner.resize(260, 700)
+    dispatch_turns(12)
+    before = (len(timeouts), counter.requests, controls.geometry())
+    dispatch_turns(8)
+    after = (len(timeouts), counter.requests, controls.geometry())
+    record_property("idle_timeout_delta", after[0] - before[0])
+    record_property("idle_layout_request_delta", after[1] - before[1])
+    record_property("total_height_timeouts", after[0])
+    record_property("total_layout_requests", after[1])
+    assert after == before, (before, after)
+    assert not controls._geometry_timer.isActive()
+    assert controls.minimumHeight() == controls.maximumHeight() == controls.height()
+    assert controls.scope_label.height() == controls.scope_label.heightForWidth(
+        controls.scope_label.width()
+    )
+    assert (
+        _rectangle(following, owner).top()
+        - _rectangle(controls, owner).bottom() - 1
+    ) == 7
 
 
 def test_measurement_scope_reflows_and_shrinks_after_inspector_width_changes(qtbot):

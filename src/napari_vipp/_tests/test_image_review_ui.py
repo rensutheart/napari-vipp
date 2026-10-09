@@ -675,7 +675,16 @@ def test_rendering_explanation_wraps_to_full_height_in_themed_narrow_sidebar(
     narrow_width, narrow_height = note.width(), note.height()
     window.main_splitter.setSizes([350, 520])
     qtbot.waitUntil(lambda: note.width() > narrow_width)
-    qtbot.waitUntil(lambda: note.height() < narrow_height)
+    # QFormLayout can shrink the row before the queued height-fit callback
+    # restores its exact bounds. Wait for that callback's completed contract,
+    # not the intermediate geometry (and retain all exact assertions below).
+    qtbot.waitUntil(
+        lambda: (
+            note.height() < narrow_height
+            and note.minimumHeight() == note.maximumHeight() == note.height()
+            and note.height() >= note.heightForWidth(note.width())
+        )
+    )
     assert note.height() >= note.heightForWidth(note.width())
     assert note.minimumHeight() == note.maximumHeight() == note.height()
     window._set_style("a", "rendering", "attenuated_mip")

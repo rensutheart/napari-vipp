@@ -8,8 +8,9 @@ This iterative alpha covers the complete delta from published `v0.16.0a3`
 at `70bb25ac732e15670c9d86c984079a87fafc5091`: accepted Review Images,
 ImageJ Gaussian Blur, detached/workspace window fixes, Batch/Results selection
 and blocked-output review, OME-Zarr writer compatibility, legacy OME-TIFF unit
-aliases, float threshold/histogram synchronization, advisory wrapping and
-layer-list decoration safety. NRF support acknowledgement is included. The
+aliases, float threshold/histogram synchronization, advisory wrapping,
+inspector height propagation and layer-list decoration safety. NRF support
+acknowledgement is included. The
 user authorized publication on 2026-10-09. This declaration names required
 gates and existing evidence; it does not claim final-main CI, native packages,
 reproducible release artifacts or publication have already passed.

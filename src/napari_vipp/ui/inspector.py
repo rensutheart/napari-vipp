@@ -143,6 +143,34 @@ def _independent_layout_constraints_available(layout: QLayout) -> bool:
     return callable(getattr(layout, "setSizeConstraints", None))
 
 
+def sync_layout_ancestor_geometry(widget: QWidget) -> None:
+    """Commit a height change and its enclosing rows without an event-loop turn.
+
+    Fixed/minimum heights resize a child immediately, but its parent's queued
+    LayoutRequest can retain the old sibling positions. Recompute bottom-up so
+    the resized child cannot overlap the following row while that request is
+    pending. This neither processes arbitrary events nor changes width policy.
+    """
+    if getattr(widget, "_vipp_syncing_ancestor_geometry", False):
+        return
+    widget._vipp_syncing_ancestor_geometry = True
+    try:
+        current = widget
+        while current is not None:
+            layout = current.layout()
+            if layout is not None:
+                layout.invalidate()
+                guard = getattr(current, "_vipp_minimum_height_constraint", None)
+                if guard is not None:
+                    guard._sync_height()
+                else:
+                    layout.activate()
+            current.updateGeometry()
+            current = current.parentWidget()
+    finally:
+        widget._vipp_syncing_ancestor_geometry = False
+
+
 class _MinimumHeightConstraint(QObject):
     """Qt < 6.10 equivalent of a vertical-only minimum layout constraint."""
 
@@ -215,14 +243,7 @@ def sync_reserved_layout_height(layout: QLayout) -> None:
     """Propagate an active height reservation in the current layout turn."""
     if not hasattr(layout, "_vipp_minimum_height_state"):
         return
-    parent = layout.parentWidget()
-    guard = getattr(parent, "_vipp_minimum_height_constraint", None)
-    if guard is not None:
-        # A descendant can change its fixed height after the parent's queued
-        # LayoutRequest was handled. Commit that newer minimum bottom-up rather
-        # than depending on another event that Qt may coalesce away.
-        guard._sync_height()
-    parent.updateGeometry()
+    sync_layout_ancestor_geometry(layout.parentWidget())
 
 
 class _InspectorBusySpinner(QWidget):

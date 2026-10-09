@@ -11,7 +11,7 @@ from qtpy.QtCore import (
     QSortFilterProxyModel,
     Qt,
 )
-from qtpy.QtGui import QImage, QPainter
+from qtpy.QtGui import QImage, QMovie, QPainter
 from qtpy.QtWidgets import QListView, QMainWindow, QStyleOptionViewItem, QWidget
 
 from napari_vipp.ui.napari_compat import (
@@ -182,7 +182,7 @@ def test_layer_delegate_missing_roles_reproduce_and_fix_height_error(
     assert install_layer_delegate_safety(ctx.viewer)
     # Exercise the full original delegate, not just a replacement test helper.
     ctx.delegate.paint(ctx.painter, ctx.option, ctx.index)
-    assert ctx.delegate._load_movie.state() == ctx.delegate._load_movie.NotRunning
+    assert ctx.delegate._load_movie.state() == QMovie.MovieState.NotRunning
 
 
 def test_layer_delegate_invalid_index_is_safe(layer_paint_context) -> None:
@@ -190,7 +190,7 @@ def test_layer_delegate_invalid_index_is_safe(layer_paint_context) -> None:
     install_layer_delegate_safety(ctx.viewer)
     ctx.delegate._paint_loading(ctx.painter, ctx.option, QModelIndex())
     ctx.delegate._paint_thumbnail(ctx.painter, ctx.option, QModelIndex())
-    assert ctx.delegate._load_movie.state() == ctx.delegate._load_movie.NotRunning
+    assert ctx.delegate._load_movie.state() == QMovie.MovieState.NotRunning
 
 
 @pytest.mark.parametrize("loaded", [False, True])

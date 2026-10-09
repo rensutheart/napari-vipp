@@ -61,6 +61,51 @@ def registration_widget(qtbot, registration_layout_compat):
     return widget, node
 
 
+@pytest.mark.parametrize(
+    "registration_layout_compat", ("native", "portable"), indirect=True,
+)
+def test_reserved_guidance_growth_commits_sibling_geometry_in_current_turn(
+    qtbot, registration_layout_compat,
+):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+    from napari_vipp.ui.inspector import (
+        InspectorSection,
+        constrain_layout_minimum_height,
+        sync_reserved_layout_height,
+    )
+
+    owner = QWidget()
+    outer = QVBoxLayout(owner)
+    outer.setAlignment(Qt.AlignTop)
+    outer.setSpacing(7)
+    section = InspectorSection("Registration guidance")
+    content = QVBoxLayout(section.content_widget)
+    note = QLabel("Physical-grid registration guidance")
+    note.setFixedHeight(30)
+    content.addWidget(note)
+    following = QLabel("Registration results")
+    following.setFixedHeight(40)
+    outer.addWidget(section)
+    outer.addWidget(following)
+    for layout in (content, section.layout(), outer):
+        constrain_layout_minimum_height(layout)
+    qtbot.addWidget(owner)
+    owner.resize(340, 600)
+    owner.show()
+    qtbot.waitUntil(lambda: following.y() > section.y())
+
+    note.setFixedHeight(180)
+    for layout in (content, section.layout(), outer):
+        sync_reserved_layout_height(layout)
+    # Child height constraints are immediate; every reserved ancestor and its
+    # following sibling must be committed before returning, not a later frame.
+    assert note.geometry().bottom() < section.content_widget.height()
+    assert section.content_widget.geometry().bottom() < section.height()
+    assert section.geometry().bottom() < following.geometry().top()
+
+
 def _publish(widget, node):
     transform = _transform()
     diagnostics = TableData(("time", "overlap"), ((0, 0.95),),

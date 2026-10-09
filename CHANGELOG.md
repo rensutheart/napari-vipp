@@ -13,6 +13,8 @@
   Statistics measurements and Select Table Columns. Keep the same outline
   icons, spacing and above-list placement, with readable scope text and wrapping
   in narrow panels. Existing filtering, visibility and measurement rules remain.
+- Keep wrapped measurement-selection controls and registration inspector
+  sections from overlapping following rows after live font or width changes.
 - Give the Batch workflow and Results Workspace native minimize/maximize
   controls and maximize/restore on title-bar or unused-toolbar double-click.
   On Windows, keep each workspace visible when napari or detached VIPP is
