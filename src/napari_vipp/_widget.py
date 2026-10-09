@@ -804,6 +804,7 @@ from napari_vipp.ui.workflow_view import (
     fit_layer_view,
     restore_viewer_state,
 )
+from napari_vipp.ui.workspace_window import show_workspace_window
 
 _provisional_generated_layer_contrast_limits = (
     provisional_generated_layer_contrast_limits
@@ -15648,9 +15649,7 @@ class VippWidget(QWidget):
                 "opening another batch workspace.",
                 severity=MessageSeverity.INFO,
             )
-            pending_dialog.show()
-            pending_dialog.raise_()
-            pending_dialog.activateWindow()
+            show_workspace_window(pending_dialog)
             return pending_dialog
         if self._collection_batch_running:
             batch_job = self._active_collection_batch_job
@@ -15677,15 +15676,11 @@ class VippWidget(QWidget):
                 else self._active_collection_batch_dialog
             )
             if active_dialog is not None:
-                active_dialog.show()
-                active_dialog.raise_()
-                active_dialog.activateWindow()
+                show_workspace_window(active_dialog)
             return active_dialog
         active_dialog = self._active_collection_batch_dialog
         if active_dialog is not None and config_path is None and config is None:
-            active_dialog.show()
-            active_dialog.raise_()
-            active_dialog.activateWindow()
+            show_workspace_window(active_dialog)
             return active_dialog
         if active_dialog is not None:
             self._discard_collection_batch_dialog(active_dialog)
@@ -15779,9 +15774,7 @@ class VippWidget(QWidget):
                 return None
         if config_path is not None or config is not None:
             self._engage_collection_batch_workspace(dialog)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        show_workspace_window(dialog)
         self._sync_current_workflow_tab_state()
         return dialog
 
@@ -16900,7 +16893,62 @@ class VippWidget(QWidget):
             workflow_summary=lambda: self._collection_batch_workflow_summary(
                 origin_session_id
             ),
+            focus_problem_node=lambda node_id: (
+                self._focus_collection_batch_problem_node(node_id, origin_session_id)
+            ),
         )
+
+    def _focus_collection_batch_problem_node(
+        self,
+        node_id: str,
+        origin_session_id: str,
+    ) -> bool:
+        """Reveal one blocked output in its inspector without calculating it."""
+        from napari_vipp.ui.batch_output_policy import output_action
+
+        dialog = self._active_collection_batch_dialog
+        if (
+            dialog is None
+            or not self._workflow_tab_is_active(origin_session_id)
+            or self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+            or dialog._run_in_progress
+            or dialog._checking_plan
+            or dialog._representative_pending
+            or getattr(dialog, "_run_preparing", False)
+        ):
+            return False
+        plan = dialog._preview_result
+        if (
+            plan is None
+            or node_id not in self.pipeline.nodes
+            or not any(
+                output.node_id == node_id
+                and output_action(output, plan.config) == "blocked"
+                for item in plan.items
+                for output in item.outputs
+            )
+        ):
+            return False
+
+        self._engage_collection_batch_workspace(dialog)
+        # A deliberate navigation action must not launch smart-cache restore
+        # or queue calculation when committing a pending Crop ROI draft.
+        self._commit_crop_draft(schedule_run=False)
+        previous_selection_guard = self._workflow_load_selection_in_progress
+        self._workflow_load_selection_in_progress = True
+        try:
+            self.graph_view.focus_node(node_id)
+        finally:
+            self._workflow_load_selection_in_progress = previous_selection_guard
+        window = self.window()
+        show_workspace_window(window)
+        self._set_status(
+            f"Focused '{self._node_title(node_id)}'. Edit its output settings, "
+            "then reopen Batch and Recheck all.",
+            severity=MessageSeverity.INFO,
+        )
+        return True
 
     def _check_collection_batch(
         self,
@@ -17920,6 +17968,14 @@ class VippWidget(QWidget):
             or not self._interactive_collection_batch_items
             or self._interactive_collection_batch_workflow_stale
         ):
+            # Metadata-only checking can retain a plan before a representative
+            # sample is opened. Its destinations still depend on the workflow.
+            dialog = self._active_collection_batch_dialog
+            preview = getattr(dialog, "_preview_result", None)
+            if preview is not None and scientific_workflow_hash(
+                self._batch_workflow_document()
+            ) != preview.config.workflow_sha256:
+                dialog.invalidate_for_workflow_change()
             return
         if scientific_workflow_hash(self._batch_workflow_document()) == (
             config.workflow_sha256

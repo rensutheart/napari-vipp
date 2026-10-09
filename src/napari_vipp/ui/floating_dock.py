@@ -1,11 +1,11 @@
-"""Native owner repair for a floating dock, without changing its Qt lifetime."""
+"""Native owner repair for top-level windows, preserving their Qt lifetime."""
 
 from __future__ import annotations
 
 import ctypes
 import sys
 
-from qtpy.QtWidgets import QApplication, QDockWidget
+from qtpy.QtWidgets import QApplication, QDockWidget, QWidget
 
 _GW_OWNER = 4
 _GWLP_HWNDPARENT = -8
@@ -60,42 +60,62 @@ class _WindowsOwnerApi:
             raise ctypes.WinError(error)
 
 
-def make_floating_dock_independent(dock: QDockWidget) -> bool:
-    """Remove only a floating Windows dock's native ownership by its Qt host.
+def make_window_independent(window: QWidget) -> bool:
+    """Remove a top-level Windows window's native ownership by its Qt host.
 
-    The QMainWindow/QObject parent stays intact for docking and destruction.
+    The QWidget/QObject parent stays intact for destruction and session ownership.
     Windows owned windows are hidden when their owner is minimized, regardless
     of Qt.Window flags. Clearing GWLP_HWNDPARENT avoids that coupling without
     moving VIPP into another widget or scientific session.
 
     Return True only when native Windows independence has been verified. Return
-    False for docked widgets, other operating systems and non-native Qt plugins
+    False for child widgets, other operating systems and non-native Qt plugins
     (including offscreen tests). Native API errors and unexpected ownership are
     raised so the caller can report the failure, not silently claim success.
     """
     if (
         sys.platform != "win32"
         or QApplication.platformName() != "windows"
-        or not dock.isFloating()
+        or not window.isWindow()
     ):
         return False
 
-    hwnd = int(dock.winId())
+    hwnd = int(window.winId())
     api = _WindowsOwnerApi()
     if not api.is_window(hwnd):
-        raise OSError("The floating VIPP window has no valid native window handle.")
+        raise OSError("The VIPP window has no valid native window handle.")
     if api.is_child_window(hwnd):
         raise RuntimeError("Refusing to change the parent of a native child window.")
     owner = api.owner(hwnd)
     if not owner:
         return True
 
-    parent = dock.parentWidget()
-    expected_owner = int(parent.window().winId()) if parent is not None else 0
-    if not expected_owner or owner != expected_owner:
-        raise RuntimeError("The floating VIPP window has an unexpected native owner.")
+    # After a dock detaches, Qt can restore a workspace's cached napari owner
+    # when showing it again, rather than its newly floating containing dock.
+    # Both are legitimate top-level ancestors. Accept only native top-level
+    # windows in the current Qt parent chain, never other process windows.
+    parent = window.parentWidget()
+    while parent is not None:
+        if parent.isWindow():
+            parent_hwnd = int(parent.winId())
+            if (
+                owner == parent_hwnd
+                and api.is_window(parent_hwnd)
+                and not api.is_child_window(parent_hwnd)
+            ):
+                break
+        parent = parent.parentWidget()
+    if parent is None:
+        raise RuntimeError("The VIPP window has an unexpected native owner.")
 
     api.clear_owner(hwnd)
     if api.owner(hwnd):
-        raise OSError("Windows did not remove the floating VIPP window's owner.")
+        raise OSError("Windows did not remove the VIPP window's owner.")
     return True
+
+
+def make_floating_dock_independent(dock: QDockWidget) -> bool:
+    """Repair a floating dock's native owner without changing docking lifetime."""
+    if not dock.isFloating():
+        return False
+    return make_window_independent(dock)

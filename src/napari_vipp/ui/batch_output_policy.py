@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import replace
+from string import Formatter
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -31,6 +32,112 @@ def output_action(output, config=None) -> str:
     ):
         return "blocked"
     return "ask"
+
+
+def output_problem_kind(output, config=None) -> str | None:
+    """Name the primary blocking reason using the same facts as output_action."""
+    if output.duplicate:
+        return "duplicate"
+    if output.input_collision:
+        return "input_overlap"
+    if output_action(output, config) == "blocked":
+        return "protected"
+    return None
+
+
+def output_problem(output, config=None) -> str:
+    """Explain a blocked destination and its remedy without changing its policy."""
+    kind = output_problem_kind(output, config)
+    if kind == "duplicate":
+        message = (
+            "Duplicate output path: more than one planned output would save to "
+            f"{output.path.name}. Use {{batch_id}}__{{node_id}} in Filename template "
+            "so each batch item and output node has its own file."
+        )
+        if config is not None and len(config.outputs) > 1:
+            spec = next(
+                (entry for entry in config.outputs if entry.node_id == output.node_id),
+                None,
+            )
+            if _template_uses_tag(spec):
+                message += (
+                    " If this path is shared with another output node, changing "
+                    "this node's Tag or Subfolder can separate those nodes."
+                )
+            else:
+                message += (
+                    " If different output nodes share this path, give them "
+                    "different Subfolder values."
+                )
+        message += " Overwrite cannot resolve a shared destination."
+        if output.input_collision:
+            message += (
+                " This path also overlaps an input; choose a destination outside "
+                "that input."
+            )
+        return message
+    if kind == "input_overlap":
+        return (
+            "Output path overlaps an input source. Choose a different output "
+            "folder or filename so the source is preserved. An input stored as "
+            "a folder also protects files inside that folder. "
+            "Overwrite cannot replace an input."
+        )
+    if kind == "protected":
+        return (
+            "This file already exists and this Batch Output node has Overwrite = "
+            "no. Choose Keep existing outputs for this item, choose a new "
+            "destination, or change the node's Overwrite to batch default before "
+            "choosing an existing-file policy."
+        )
+    return ""
+
+
+def _template_uses_tag(spec) -> bool:
+    if spec is None:
+        return False
+    try:
+        return any(
+            field == "tag" for _text, field, _format, _conversion
+            in Formatter().parse(spec.filename_template)
+        )
+    except ValueError:
+        return False
+
+
+def _duplicate_remedy(outputs, config) -> str:
+    names = _problem_node_names(outputs)
+    node_ids = {output.node_id for output in outputs}
+    repeated = Counter((output.node_id, output.path) for output in outputs)
+    if len(node_ids) == 1 or any(count > 1 for count in repeated.values()):
+        return (
+            f"Use {{batch_id}} in Filename template on {names} to separate batch "
+            "items; {batch_id}__{node_id} also separates output nodes."
+        )
+    specs = {spec.node_id: spec for spec in config.outputs}
+    fields = (
+        "Tag or Subfolder" if all(_template_uses_tag(specs.get(node_id))
+        for node_id in node_ids) else "Subfolder"
+    )
+    return (
+        f"Give {names} different {fields} values, or use "
+        "{batch_id}__{node_id} in Filename template."
+    )
+
+
+def _problem_node_names(outputs) -> str:
+    names = dict.fromkeys(
+        (
+            f"{output.node_title} ({output.node_id})"
+            if output.node_title and output.node_title != output.node_id
+            else output.node_id
+        )
+        for output in outputs
+    )
+    shown = ", ".join(tuple(names)[:2])
+    if len(names) > 2:
+        shown += f", and {len(names) - 2} more nodes"
+    return shown
 
 
 def output_counts(outputs, config=None):
@@ -85,10 +192,53 @@ def checked_output_message(preview) -> str:
     outputs = tuple(output for item in preview.items for output in item.outputs)
     counts = output_counts(outputs, preview.config)
     if counts["blocked"]:
-        return (
-            f"{counts['blocked']:,} output destinations are blocked. Change duplicate "
-            "paths, input overlaps, or protected Batch Output node settings."
+        problems = {
+            "duplicate": tuple(output for output in outputs if output.duplicate),
+            "input_overlap": tuple(
+                output for output in outputs if output.input_collision
+            ),
+            "protected": tuple(
+                output
+                for output in outputs
+                if output_problem_kind(output, preview.config) == "protected"
+            ),
+        }
+        destination_text = (
+            "output destination is" if counts["blocked"] == 1
+            else "output destinations are"
         )
+        messages = [f"{counts['blocked']:,} {destination_text} blocked."]
+        if duplicates := problems["duplicate"]:
+            shared_text = (
+                "output shares a planned file path" if len(duplicates) == 1
+                else "outputs share planned file paths"
+            )
+            messages.append(
+                f"{len(duplicates):,} {shared_text}. "
+                + _duplicate_remedy(duplicates, preview.config)
+            )
+        if overlaps := problems["input_overlap"]:
+            overlap_text = (
+                "output path overlaps an input" if len(overlaps) == 1
+                else "output paths overlap inputs"
+            )
+            messages.append(
+                f"{len(overlaps):,} {overlap_text}. Choose a different "
+                f"output folder or filename for {_problem_node_names(overlaps)}."
+            )
+        if protected := problems["protected"]:
+            protected_text = (
+                "existing output is protected" if len(protected) == 1
+                else "existing outputs are protected"
+            )
+            messages.append(
+                f"{len(protected):,} {protected_text} by Overwrite = "
+                f"no on {_problem_node_names(protected)}. Keep these outputs, "
+                "choose a new destination, or change the node's Overwrite to "
+                "batch default."
+            )
+        messages.append("Recheck after changing output settings.")
+        return " ".join(messages)
     if counts["ask"]:
         return (
             f"{counts['ask']:,} existing outputs need a decision. Ask before overwrite "

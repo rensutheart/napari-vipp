@@ -13,7 +13,6 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QFrame,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -30,6 +29,7 @@ from napari_vipp.core.statistics import (
     StatisticsRecipe,
     measurement_columns,
 )
+from napari_vipp.ui.bulk_selection import BulkSelectionControls
 from napari_vipp.ui.statistics_overview import StatisticsOverview
 
 STATISTIC_LABELS = {
@@ -265,12 +265,17 @@ class StatisticsPanel(QWidget):
 
         self.modern = QWidget()
         self.modern.setObjectName("StatisticsControls")
-        self.modern.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
+        self.modern.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         modern_layout = QVBoxLayout(self.modern)
         modern_layout.setContentsMargins(0, 0, 0, 0)
         modern_layout.setSpacing(14)
         self.sections = {}
         measurements_layout = self._section(modern_layout, "Measurements")
+        # Wrapped selection guidance must reserve its height before the list.
+        self.sections["Measurements"].setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred
+        )
+        measurements_layout.setAlignment(Qt.AlignTop)
         measurements_layout.addWidget(self.input_note)
         self.auto_measurements = QCheckBox("Auto-select measurements")
         self.auto_measurements.setToolTip(
@@ -287,10 +292,29 @@ class StatisticsPanel(QWidget):
         measurements_layout.addWidget(self.auto_measurements)
         self.measurement_selection_note = _label()
         measurements_layout.addWidget(self.measurement_selection_note)
-        measurement_actions = QHBoxLayout()
-        measurement_actions.setSpacing(6)
-        self.select_all_measurements_button = QPushButton("Select all")
-        self.select_no_measurements_button = QPushButton("Select none")
+        self.measurement_selection_controls = BulkSelectionControls(
+            self,
+            scope=(
+                "Select: eligible numeric measurements. "
+                "Deselect: all selected measurements."
+            ),
+            select_tooltip=_tooltip(
+                "Select the currently available numeric measurements as a fixed "
+                "selection. Exclude known IDs, text, grouping and identity fields. "
+                "Turn off auto-selection; new columns will not be added "
+                "automatically."
+            ),
+            deselect_tooltip=_tooltip(
+                "Deselect all measurements and turn off auto-selection. "
+                "Choose at least one measurement before calculating a summary."
+            ),
+        )
+        self.select_all_measurements_button = (
+            self.measurement_selection_controls.select_all_button
+        )
+        self.select_no_measurements_button = (
+            self.measurement_selection_controls.deselect_all_button
+        )
         for button, select_all in (
             (self.select_all_measurements_button, True),
             (self.select_no_measurements_button, False),
@@ -301,31 +325,17 @@ class StatisticsPanel(QWidget):
                 if select_all
                 else "Deselect all measurements"
             )
-            button.setToolTip(
-                _tooltip(
-                    "Select the currently available numeric measurements as a fixed "
-                    "selection. Exclude known IDs, text, grouping and identity fields. "
-                    "Turn off auto-selection; new columns will not be added "
-                    "automatically."
-                    if select_all
-                    else "Clear every measurement selection and turn off "
-                    "auto-selection. "
-                    "Choose at least one measurement before calculating a summary."
-                )
-            )
             button.clicked.connect(
                 lambda _checked=False, all_values=select_all: (
                     self._set_all_measurements_selected(all_values)
                 )
             )
-            measurement_actions.addWidget(button)
-        measurement_actions.addStretch(1)
-        measurements_layout.addLayout(measurement_actions)
+        measurements_layout.addWidget(self.measurement_selection_controls)
         self.measurements = self._checklist("Measurements")
         self.measurements.setToolTip(
             _tooltip(
                 "Choose which table columns to summarize. Turn off Auto-select "
-                "measurements, or use Select all or Select none, to edit this list. "
+                "measurements, or use Select all or Deselect all, to edit this list. "
                 "Each selection keeps its units and valid-value count. Columns marked "
                 "not automatic require individual selection; Select all skips them."
             )

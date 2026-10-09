@@ -27,6 +27,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
+from napari_vipp.ui.bulk_selection import BulkSelectionControls
 from napari_vipp.ui.controls import _configure_numeric_spin_box
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.sliders import SliderColors, VippSlider, slider_colors
@@ -1052,6 +1053,16 @@ class SelectTableColumnsControl(QWidget):
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
 
+        self.column_selection_controls = BulkSelectionControls(
+            self,
+            scope="All columns",
+            select_tooltip="Select all columns to include in the output table.",
+            deselect_tooltip="Deselect all columns from the output table.",
+        )
+        self.select_all_button = self.column_selection_controls.select_all_button
+        self.deselect_all_button = self.column_selection_controls.deselect_all_button
+        layout.addWidget(self.column_selection_controls)
+
         self.list_widget = AxisOrderListWidget()
         self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
         self.list_widget.setDragEnabled(True)
@@ -1071,13 +1082,9 @@ class SelectTableColumnsControl(QWidget):
         layout.addWidget(self.list_widget)
 
         button_row = _ColumnActionLayout()
-        self.select_all_button = QPushButton("Select all")
-        self.deselect_all_button = QPushButton("Deselect all")
         self.move_up_button = QPushButton("Move up")
         self.move_down_button = QPushButton("Move down")
         self.reset_button = QPushButton("Reset order")
-        button_row.addWidget(self.select_all_button)
-        button_row.addWidget(self.deselect_all_button)
         button_row.addWidget(self.move_up_button)
         button_row.addWidget(self.move_down_button)
         button_row.addWidget(self.reset_button)

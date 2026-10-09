@@ -6,6 +6,22 @@
   0.20 and newer, retaining channel display metadata, calibration and provenance.
 - Acknowledge NRF Thuthuka Post PhD Track support (Grant No. TTK240321210363)
   in the repository README.
+- Use the same paired **Select all** / **Deselect all** buttons across Batch
+  items and Overrides, the parameter-column chooser, Results visible columns,
+  Statistics measurements and Select Table Columns. Keep the same outline
+  icons, spacing and above-list placement, with readable scope text and wrapping
+  in narrow panels. Existing filtering, visibility and measurement rules remain.
+- Give the Batch workflow and Results Workspace native minimize/maximize
+  controls and maximize/restore on title-bar or unused-toolbar double-click.
+  On Windows, keep each workspace visible when napari or detached VIPP is
+  minimized, with independent taskbar controls and retained session ownership.
+  Reopening a minimized workspace restores its previous window state.
+- Explain the specific reasons for blocked batch outputs, including duplicate
+  filenames, input-file overlaps and output-node overwrite protection. Add
+  **Find problem** to open an affected Batch Output node without calculating or
+  saving, and **Select all** / **Deselect all** for matching items across pages.
+  Batch settings and filtered-out selections are retained. Editing an output
+  node marks its checked destinations as needing recheck.
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
   references cover the direct convolution and rounding behavior. Existing
