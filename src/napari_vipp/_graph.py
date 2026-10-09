@@ -6511,6 +6511,16 @@ def _orthogonal_route_candidates(
             route_end,
             end,
         ],
+        # The arrival-side turn is as short as the departure-side turn. Without
+        # it, a blocked midpoint can force an unnecessary two-step staircase
+        # even when the source's horizontal lane stays clear to the target.
+        [
+            start,
+            route_start,
+            QPointF(route_end.x(), route_start.y()),
+            route_end,
+            end,
+        ],
         [
             start,
             route_start,

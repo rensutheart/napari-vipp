@@ -64,6 +64,10 @@ ports in stable connection order. Positive-length collinear runs from different
 outputs are rejected; branches of the same output retain natural routes and may
 share a trunk. Isolated crossings remain permitted. Visible
 tunnel labels also reserve clearance, and label changes invalidate their routes.
+The cheap orthogonal catalogue includes both departure-side and arrival-side
+vertical turns. A clear late turn can replace an equal-Manhattan-length
+staircase without increasing search budgets; the existing turn cost keeps
+extra rounded corners from winning solely by cutting corner distance.
 Peer lane candidates prefer shorter control polygons with fewer turns before
 checking clearance, skipping duplicate control polygons. An excessive clear peer
 detour adding more than 160 pixels beyond its card-only route compares at most

@@ -151,3 +151,53 @@ intersections occur in the existing endpoint-only transient preview mode.
 The companion manual change is commit `13c0000f0f1239158efb96ae577718356dacc333`;
 its content checks and strict build passed. No live user workflow was changed
 to reproduce the compact-route regressions.
+
+## Unnecessary-staircase follow-up
+
+The cheap orthogonal catalogue now includes the arrival-side vertical turn as
+well as the departure-side turn. This lets a clear wire stay horizontal until
+near its destination, without adding visibility searches or increasing search
+budgets. Existing rendered-clearance and independent-output lane checks still
+filter the candidates, and the existing turn penalty selects the simpler route.
+
+In the saved test layout, Logical XOR to Remove Small Objects changes from four
+rounded corners to two. Both control polygons travel 1,195 scene pixels. The
+rounded rendered path grows by 13.53 pixels because two corner cuts disappear;
+the simpler route still has the lower existing length-plus-turn score. This is a
+heuristic improvement, not a guarantee of globally minimal routes.
+
+The [staircase timing record](benchmarks/wire-routing-staircase-2026-10-09.json)
+records the baseline `0b3922e`, frozen source/input hashes and all samples. Its
+27-node saved fixture predates the user's latest Combine Meshes placement.
+Only the reported wire changes in that fixture; all 124 rendered paths in the
+164-node exhaustive inspector remain unchanged. Both workflows have zero sampled
+rendered card/tunnel/note intersections and zero independent straight-segment
+overlaps longer than one pixel.
+
+Three sequential repetitions gave saved-workflow full-pass medians of 70.60 ms
+before and 69.90 ms after. The exhaustive inspector's synchronous median grew
+from 441.34 to 507.07 ms (+14.9%), while its background completion median grew
+from 416.79 to 418.50 ms (+0.4%). Five further repetitions with reversed order
+gave synchronous medians of 508.60 and 530.18 ms (+4.2%) and background medians
+of 485.90 and 478.15 ms (-1.6%). Maximum 10 ms heartbeat gaps were about 82 ms
+before and 79 ms after in that second comparison. These small, variable samples
+show a bounded extra candidate cost; they establish neither a speedup nor a
+worst-case responsiveness bound. Background geometry matches synchronous
+geometry in every measured pass, and neither workflow invokes visibility search.
+
+Four regressions cover clear upward/downward late turns, a blocked source lane
+and an occupied independent-output lane. Both clear-turn cases fail against the
+baseline implementation. The affected-domain suite passed all 446 checks;
+the earlier full repository run predates this follow-up. Ruff, plugin-manifest
+validation and wheel/sdist builds passed. The companion manual change is commit
+`b34045e5a1de3aee16f03b48365b9109160c6b77`; its 18 content checks, 50 route checks
+and strict build passed.
+
+The user's latest layout was saved before restarting the development tester
+(workflow SHA-256 `92fd5af4092dac7a2b63cb08aac5b4515ad00e05d1e6e258a10323e9719704f4`).
+The live source hashes match the tested files. After Calculate all, the UI
+reports complete calculations and a 6.1 MB cache; all 27 output identities are
+distinct, the 29 computational connections remain present and routing is
+settled. The reported wire has two rounded corners and a 660-pixel initial
+horizontal segment. One widget is registered in this maximized floating tester.
+The original acquired-data recovery session was left untouched.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Avoid unnecessary wire staircases when a clear straight departure and a turn
+  near the destination have the same travel distance. Keep card clearance and
+  separate lanes for different outputs when selecting the simpler route.
+
 - Prefer nearby clear wire lanes before distant perimeter routes. Forward
   connections with excessive vertical detours can use a bounded local search
   for a shorter route through gaps, while retaining card clearance and distinct
