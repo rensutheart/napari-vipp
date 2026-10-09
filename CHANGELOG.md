@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Give graph wires separate routing lanes and immediate fan-out at shared
+  ports so connections do not hide along identical segments. Right-click near
+  a wire at any zoom and choose **Replace with tunnel...** to convert that
+  connection in one undoable edit, reusing its output tunnel when available.
+
 - Acknowledge NRF Thuthuka Post PhD Track support (Grant No. TTK240321210363)
   in the repository README.
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and

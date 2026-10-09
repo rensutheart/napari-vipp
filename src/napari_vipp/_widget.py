@@ -7022,6 +7022,9 @@ class VippWidget(QWidget):
         self.graph_view.connection_insert_requested.connect(
             self._insert_node_from_connection_menu
         )
+        self.graph_view.connection_tunnel_requested.connect(
+            self._replace_connection_with_tunnel
+        )
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_selection_changed.connect(
             self._on_graph_node_selection_changed
@@ -21285,6 +21288,73 @@ class VippWidget(QWidget):
             )
         elif clear_action is not None and action == clear_action:
             self._clear_input_tunnel(node_id, port_index)
+
+    def _replace_connection_with_tunnel(self, connection_key) -> bool:
+        """Replace one exact visible wire with a named tunnel as one edit."""
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+        except (TypeError, ValueError):
+            self.status_label.setText("That wire is no longer available.")
+            return False
+        original = GraphConnection(source_id, target_id, target_port, source_port)
+        if original not in self.pipeline.connections:
+            self.status_label.setText("That wire is no longer available.")
+            return False
+
+        tunnel = self.pipeline.output_tunnel_for_port(source_id, source_port)
+        name = (
+            tunnel.name
+            if tunnel is not None
+            else self._prompt_tunnel_name(
+                "Replace Wire with Tunnel",
+                self._suggest_tunnel_name(source_id, source_port),
+            )
+        )
+        if not name:
+            self.status_label.setText("Replace with tunnel canceled.")
+            return False
+        # A naming dialog runs an event loop. Do not replace a newer input
+        # connection if the original wire changed while it was open.
+        if original not in self.pipeline.connections:
+            self.status_label.setText("That wire is no longer available.")
+            return False
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        original_connections = list(self.pipeline.connections)
+        original_tunnels = dict(self.pipeline.output_tunnels)
+        try:
+            tunnel = self.pipeline.output_tunnel_for_port(source_id, source_port)
+            if tunnel is None:
+                tunnel = self.pipeline.add_output_tunnel(name, source_id, source_port)
+            result = self.pipeline.connect_to_tunnel(
+                tunnel.name, target_id, target_port
+            )
+            if not result.success:
+                raise ValueError(result.message)
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self.status_label.setText(str(exc))
+            return False
+
+        try:
+            self._apply_connection_result_to_graph(result)
+            if self._selected_node_id in {source_id, target_id}:
+                self._refresh_selected_parameter_controls()
+            self._refresh_selected_connected_inputs(changed_node_id=target_id)
+            self._highlight_output_tunnel(tunnel.name)
+        except Exception as exc:
+            self._restore_history_snapshot(before, schedule_run=False)
+            self.status_label.setText(
+                f"Replace with tunnel failed and was rolled back: {exc}"
+            )
+            return False
+        self._push_undo_if_changed(before)
+        self.status_label.setText(f"Replaced wire with tunnel '{tunnel.name}'.")
+        return True
 
     def _create_output_tunnel(self, node_id: str, port_index: int) -> None:
         default = self._suggest_tunnel_name(node_id, port_index)

@@ -59,6 +59,17 @@ measurement parity and table-combination requirements are tracked in
 
 ## Current Shape
 
+Graph wire routing reserves earlier rendered paths in stable connection order.
+Positive-length collinear runs are rejected, with separate straight lanes and
+curved fan-out from common ports; isolated crossings remain permitted. Visible
+tunnel labels also reserve clearance, and label changes invalidate their routes.
+Node movement and connection addition/removal invalidate peer routes. During drag,
+the same wire separation and endpoint-card protection apply without scanning
+scene-wide card obstacles; release restores scene-wide obstacle routing. If an
+overlapping card buries a required port, that unavoidable obstacle is omitted
+while other card clearance and wire separation remain active. These paths and
+the wire-to-tunnel presentation change do not alter computational endpoints.
+
 `napari-vipp` is a napari `npe2` plugin that embeds a node-graph image
 processing workflow inside a dock widget. The graph is the main work surface:
 users add processing nodes, wire outputs to inputs, tune parameters in the

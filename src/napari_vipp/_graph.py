@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from heapq import heappop, heappush
@@ -2493,6 +2493,9 @@ class ConnectionItem(QGraphicsPathItem):
         self._insert_preview_state: str | None = None
         self._pulse_phase = 0
         self._last_route_key: tuple | None = None
+        self._route_serial = 0
+        self._route_points: tuple[QPointF, ...] = ()
+        self._last_peer_serials: tuple[int, ...] = ()
         self.setZValue(-10)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
@@ -2508,6 +2511,10 @@ class ConnectionItem(QGraphicsPathItem):
             self.source.sceneBoundingRect(),
             self.target.sceneBoundingRect(),
         )
+        peers, start_lane, end_lane = (
+            view.connection_routing_context(self) if view is not None else ((), 0, 0)
+        )
+        peer_serials = tuple(peer._route_serial for peer in peers)
         route_key = (
             round(start.x(), 3),
             round(start.y(), 3),
@@ -2515,6 +2522,9 @@ class ConnectionItem(QGraphicsPathItem):
             round(end.y(), 3),
             revision,
             bool(obstacle_aware),
+            start_lane,
+            end_lane,
+            peer_serials,
             *(rect.getRect() for rect in endpoint_rects),
         )
         if route_key == self._last_route_key:
@@ -2527,10 +2537,17 @@ class ConnectionItem(QGraphicsPathItem):
         # Even the cheap, pointer-tracking route must go around its own cards.
         # Endpoint geometry also belongs in the key: a multi-port card can grow
         # without moving the particular ports attached to this connection.
-        self.setPath(
-            _wire_path(start, end, obstacles=obstacles, endpoint_rects=endpoint_rects)
+        path = _wire_path(
+            start, end, obstacles=obstacles, endpoint_rects=endpoint_rects,
+            peer_paths=tuple(peer._route_points for peer in peers),
+            start_lane=start_lane, end_lane=end_lane,
         )
+        if path != self.path():
+            self.setPath(path)
+            self._route_points = _flatten_wire_path(path)
+            self._route_serial += 1
         self._last_route_key = route_key
+        self._last_peer_serials = peer_serials
 
     def shape(self) -> QPainterPath:
         stroker = QPainterPathStroker()
@@ -2568,12 +2585,16 @@ class ConnectionItem(QGraphicsPathItem):
         return result
 
     def contextMenuEvent(self, event):  # noqa: N802
+        self.show_context_menu(event.scenePos(), event.screenPos())
+
+    def show_context_menu(self, scene_pos: QPointF, global_pos: QPoint) -> None:
         view = _view_for_scene(self.scene())
         menu = QMenu()
         info_action = menu.addAction("Info")
         insert_action = menu.addAction("Insert node here...")
+        tunnel_action = menu.addAction("Replace with tunnel...")
         delete_action = menu.addAction("Delete")
-        action = _exec_menu(menu, event.screenPos())
+        action = _exec_menu(menu, global_pos)
         if view is not None and action == delete_action:
             view.delete_connection_item(self, notify=True)
         elif view is not None and action == insert_action:
@@ -2584,7 +2605,16 @@ class ConnectionItem(QGraphicsPathItem):
                     self.target_port,
                     self.source_port,
                 ),
-                event.scenePos(),
+                scene_pos,
+            )
+        elif view is not None and action == tunnel_action:
+            view.connection_tunnel_requested.emit(
+                (
+                    self.source_id,
+                    self.target_id,
+                    self.target_port,
+                    self.source_port,
+                )
             )
         elif view is not None and action == info_action:
             source_port = self.source.output_port_at(self.source_port)
@@ -2703,6 +2733,7 @@ class PipelineGraphView(QGraphicsView):
     node_append_requested = Signal(str, str, int, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
     connection_insert_requested = Signal(object, QPointF)
+    connection_tunnel_requested = Signal(object)
     connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
     port_context_requested = Signal(str, str, int, object)
@@ -2738,6 +2769,8 @@ class PipelineGraphView(QGraphicsView):
         self._image_drop_target_node_id: str | None = None
         self._isolated_tuning_node_id: str | None = None
         self._connections: list[ConnectionItem] = []
+        self._wire_routing_contexts: dict | None = None
+        self._routed_tunnel_badge_state: tuple = ()
         self._pending_source: PortItem | None = None
         self._pending_wire: PendingConnectionItem | None = None
         self._highlighted_input_port: PortItem | None = None
@@ -2868,6 +2901,7 @@ class PipelineGraphView(QGraphicsView):
         self._primary_node_id = None
         self._image_drop_target_node_id = None
         self._connections.clear()
+        self._wire_routing_contexts = None
         self._notes.clear()
         self._pending_source = None
         self._pending_wire = None
@@ -2895,17 +2929,23 @@ class PipelineGraphView(QGraphicsView):
             point = _to_pointf(positions.get(node.id)) or fallback
             self.add_node(node, point)
 
-        for connection in connections:
-            if getattr(connection, "tunnel_name", ""):
-                continue
-            self.add_connection(
-                connection.source_id,
-                connection.target_id,
-                connection.target_port,
-                getattr(connection, "source_port", 0),
-            )
-        self.set_port_tunnels(output_tunnels, connections)
-        self.set_notes(notes)
+        # Assemble all edges first; a single stable routing pass below assigns
+        # final fan-out lanes without repeatedly routing every partial graph.
+        self._rerouting_connections = True
+        try:
+            for connection in connections:
+                if getattr(connection, "tunnel_name", ""):
+                    continue
+                self.add_connection(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    getattr(connection, "source_port", 0),
+                )
+            self.set_port_tunnels(output_tunnels, connections)
+            self.set_notes(notes)
+        finally:
+            self._rerouting_connections = False
 
         graph_rect = self.scene.itemsBoundingRect()
         scene_rect = graph_rect.adjusted(-1600, -1200, 1800, 1200)
@@ -3282,6 +3322,8 @@ class PipelineGraphView(QGraphicsView):
                 continue
             proxy.setPos(new_position)
             self._move_attached_notes(node_id, new_position - old_position)
+        # Update peers after all endpoints moved, without scanning scene cards.
+        self.reroute_connections(obstacle_aware=False)
 
     def _finish_selected_node_drag(
         self,
@@ -3451,36 +3493,117 @@ class PipelineGraphView(QGraphicsView):
         margin = float(self.WIRE_OBSTACLE_MARGIN)
         rects: list[QRectF] = []
         for node_id, proxy in self._proxies.items():
-            if node_id in excluded:
-                continue
-            rect = proxy.sceneBoundingRect()
-            if rect.isNull() or not rect.isValid():
-                continue
-            rects.append(rect.adjusted(-margin, -margin, margin, margin))
+            if node_id not in excluded:
+                rect = proxy.sceneBoundingRect()
+                if not rect.isNull() and rect.isValid():
+                    rects.append(rect.adjusted(-margin, -margin, margin, margin))
+            for port in (*proxy.input_ports, *proxy.output_ports):
+                badge = port._tunnel_badge
+                if not port._tunnel_label or not badge.isVisible():
+                    continue
+                if connection is not None and (
+                    port.kind == "output"
+                    and port.node_id == connection.source_id
+                    and port.port_index == connection.source_port
+                ):
+                    # Named outputs can intentionally also feed direct wires.
+                    continue
+                rect = badge.sceneBoundingRect()
+                if not rect.isNull() and rect.isValid():
+                    rects.append(rect.adjusted(-4.0, -4.0, 4.0, 4.0))
         return tuple(rects)
 
-    def reroute_connections(self, affected_rect: QRectF | None = None) -> None:
+    def connection_routing_context(
+        self, connection: ConnectionItem
+    ) -> tuple[tuple[ConnectionItem, ...], float, float]:
+        """Reserve earlier routes in a stable order and fan out shared ports."""
+        def key(item):
+            return (item.source_id, item.source_port, item.target_id, item.target_port)
+
+        if self._wire_routing_contexts is None:
+            ordered = sorted(self._connections, key=key)
+            outputs, inputs = {}, {}
+            for item in ordered:
+                outputs.setdefault((item.source_id, item.source_port), []).append(item)
+                inputs.setdefault((item.target_id, item.target_port), []).append(item)
+            self._wire_routing_contexts = {}
+            for index, item in enumerate(ordered):
+                outgoing = outputs[item.source_id, item.source_port]
+                incoming = inputs[item.target_id, item.target_port]
+                self._wire_routing_contexts[item] = (
+                    tuple(ordered[:index]),
+                    (outgoing.index(item) - (len(outgoing) - 1) / 2) * 12.0,
+                    (incoming.index(item) - (len(incoming) - 1) / 2) * 12.0,
+                )
+        return self._wire_routing_contexts.get(connection, ((), 0, 0))
+
+    def reroute_connections(
+        self, affected_rect: QRectF | None = None, *, obstacle_aware: bool = True
+    ) -> None:
         if self._rerouting_connections:
             return
+        badge_state = (
+            self._tunnel_badge_routing_state() if obstacle_aware else None
+        )
+        if obstacle_aware and badge_state != self._routed_tunnel_badge_state:
+            # Labels can extend well beyond their parent card's changed area.
+            # A moved or resized badge therefore needs a complete routing pass.
+            affected_rect = None
+        affected = None
         if affected_rect is not None:
             affected = QRectF(affected_rect)
             if not affected.isValid() or affected.isNull():
                 return
             margin = float(self.WIRE_OBSTACLE_MARGIN) * 2.0
             affected = affected.adjusted(-margin, -margin, margin, margin)
-            connections = [
-                connection
-                for connection in self._connections
-                if self._connection_route_rect(connection).intersects(affected)
-            ]
-        else:
-            connections = list(self._connections)
+        # A changed route can displace later wires beyond the moved card's bounds.
+        connections = sorted(
+            self._connections,
+            key=lambda item: (
+                item.source_id, item.source_port, item.target_id, item.target_port
+            ),
+        )
         if not connections:
             return
         self._rerouting_connections = True
         try:
             for connection in connections:
-                connection.update_path()
+                if obstacle_aware and affected is not None and not (
+                    self._connection_route_rect(connection).intersects(affected)
+                ):
+                    peers, _, _ = self.connection_routing_context(connection)
+                    peer_serials = tuple(peer._route_serial for peer in peers)
+                    if peer_serials == connection._last_peer_serials:
+                        continue
+                    # A changed earlier route can displace a later wire beyond
+                    # the card's area. Repair only actual peer conflicts there.
+                    if not _wire_lane_conflict(
+                        connection._route_points,
+                        tuple(peer._route_points for peer in peers),
+                    ):
+                        connection._last_peer_serials = peer_serials
+                        continue
+                if not obstacle_aware:
+                    # Preserve clear unrelated routes during pointer tracking.
+                    # Only a moved endpoint or an actual peer conflict needs a
+                    # lightweight replacement of an already rendered wire.
+                    start = connection.source.port_scene_pos(
+                        "output", connection.source_port
+                    )
+                    end = connection.target.port_scene_pos(
+                        "input", connection.target_port
+                    )
+                    points = connection._route_points
+                    peers, _, _ = self.connection_routing_context(connection)
+                    if points and _points_close(points[0], start, 0.001) and (
+                        _points_close(points[-1], end, 0.001)
+                    ) and not _wire_lane_conflict(
+                        points, tuple(peer._route_points for peer in peers)
+                    ):
+                        continue
+                connection.update_path(obstacle_aware=obstacle_aware)
+            if obstacle_aware:
+                self._routed_tunnel_badge_state = badge_state
         finally:
             self._rerouting_connections = False
 
@@ -3580,9 +3703,12 @@ class PipelineGraphView(QGraphicsView):
         source.connections.append(item)
         target.connections.append(item)
         self._connections.append(item)
-        item.update_path()
+        self._wire_routing_contexts = None
+        self._mark_graph_geometry_changed()
+        self.reroute_connections()
 
     def set_port_tunnels(self, output_tunnels=(), connections=()) -> None:
+        before = self._tunnel_badge_routing_state()
         self._cancel_pending_tunnel_reroute()
         self._tunnel_source_ports.clear()
         self._tunnel_subscriber_ports.clear()
@@ -3617,6 +3743,18 @@ class PipelineGraphView(QGraphicsView):
                 port.set_tunnel_label(tunnel_name)
                 self._tunnel_subscriber_ports.setdefault(tunnel_name, []).append(port)
         self._apply_tunnel_highlight()
+        if before != self._tunnel_badge_routing_state():
+            self._mark_graph_geometry_changed()
+            self.reroute_connections()
+
+    def _tunnel_badge_routing_state(self) -> tuple:
+        """Track badge geometry so tunnel edits invalidate existing wire routes."""
+        return tuple(
+            (port, port._tunnel_label, port._tunnel_badge.sceneBoundingRect().getRect())
+            for proxy in self._proxies.values()
+            for port in (*proxy.input_ports, *proxy.output_ports)
+            if port._tunnel_label and port._tunnel_badge.isVisible()
+        )
 
     def highlight_tunnel(self, name: str, *, sticky: bool = True) -> None:
         tunnel_name = str(name or "").strip()
@@ -3851,11 +3989,14 @@ class PipelineGraphView(QGraphicsView):
         if item not in self._connections:
             return
         self._connections.remove(item)
+        self._wire_routing_contexts = None
         if item in item.source.connections:
             item.source.connections.remove(item)
         if item in item.target.connections:
             item.target.connections.remove(item)
         self.scene.removeItem(item)
+        self._mark_graph_geometry_changed()
+        self.reroute_connections()
         if notify:
             self.connection_removed.emit(
                 item.source_id,
@@ -4607,6 +4748,20 @@ class PipelineGraphView(QGraphicsView):
                 self._show_node_context_menu(node_id, _global_pos_from_event(event))
                 event.accept()
                 return
+            connection = (
+                self._connection_at_view_pos(pos)
+                if background_click or isinstance(self.itemAt(pos), ConnectionItem)
+                else None
+            )
+            if connection is not None:
+                self._clear_node_selection()
+                self.scene.clearSelection()
+                connection.setSelected(True)
+                connection.show_context_menu(
+                    self.mapToScene(pos), _global_pos_from_event(event)
+                )
+                event.accept()
+                return
             if background_click:
                 self._clear_node_selection()
                 self._show_canvas_context_menu(
@@ -5205,18 +5360,60 @@ class PipelineGraphView(QGraphicsView):
         candidates.sort(key=lambda candidate: candidate[0])
         return candidates[0][1]
 
+    def _connection_at_view_pos(self, pos: QPoint) -> ConnectionItem | None:
+        """Pick the nearest wire within a constant viewport-pixel tolerance."""
+        point = QPointF(pos)
+        radius = ConnectionItem.HIT_WIDTH / 2.0
+        best_distance = radius * radius
+        closest = None
+        for connection in self._connections:
+            if not connection.isVisible():
+                continue
+            transform = connection.deviceTransform(self.viewportTransform())
+            path = transform.map(connection.path())
+            if not path.boundingRect().adjusted(
+                -radius, -radius, radius, radius
+            ).contains(point):
+                continue
+            distance = self._distance_to_path(path, point)
+            if distance <= best_distance:
+                best_distance = distance
+                closest = connection
+        return closest
+
     @staticmethod
     def _distance_to_connection(item: ConnectionItem, scene_pos: QPointF) -> float:
-        path = item.path()
+        path = item.sceneTransform().map(item.path())
+        return PipelineGraphView._distance_to_path(path, scene_pos)
+
+    @staticmethod
+    def _distance_to_path(path: QPainterPath, point: QPointF) -> float:
+        """Return squared distance to flattened segments, including long runs."""
         if path.isEmpty():
             return float("inf")
         best = float("inf")
-        samples = 48
-        for index in range(samples + 1):
-            point = path.pointAtPercent(index / samples)
-            dx = point.x() - scene_pos.x()
-            dy = point.y() - scene_pos.y()
-            best = min(best, dx * dx + dy * dy)
+        for polygon in path.toSubpathPolygons():
+            for start, end in zip(polygon, polygon[1:], strict=False):
+                dx = end.x() - start.x()
+                dy = end.y() - start.y()
+                length_squared = dx * dx + dy * dy
+                fraction = (
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            (
+                                (point.x() - start.x()) * dx
+                                + (point.y() - start.y()) * dy
+                            ) / length_squared,
+                        ),
+                    )
+                    if length_squared
+                    else 0.0
+                )
+                offset_x = start.x() + fraction * dx - point.x()
+                offset_y = start.y() + fraction * dy - point.y()
+                best = min(best, offset_x * offset_x + offset_y * offset_y)
         return best
 
     @staticmethod
@@ -5600,6 +5797,214 @@ def _wire_path(
     *,
     obstacles: tuple[QRectF, ...] | list[QRectF] = (),
     endpoint_rects: tuple[QRectF, ...] = (),
+    peer_paths: tuple[tuple[QPointF, ...], ...] = (),
+    start_lane: float = 0.0,
+    end_lane: float = 0.0,
+) -> QPainterPath:
+    """Keep card clearance and give distinct wires separate occupied lanes."""
+    reachable_obstacles = tuple(
+        rect for rect in obstacles if not any(
+            rect.left() < point.x() < rect.right()
+            and rect.top() < point.y() < rect.bottom()
+            for point in (start, end)
+        )
+    )
+    if len(reachable_obstacles) != len(obstacles):
+        # Overlapping cards can bury a port inside another card's margin. No
+        # route can clear that obstacle at its required endpoint. Preserve own
+        # card protection and wire separation without searching futile lanes.
+        return _wire_path(
+            start, end, obstacles=reachable_obstacles,
+            endpoint_rects=endpoint_rects, peer_paths=peer_paths,
+            start_lane=start_lane, end_lane=end_lane,
+        )
+    peer_paths = _WireReservations(peer_paths)
+    ordinary = _card_avoiding_wire_path(
+        start, end, obstacles=obstacles, endpoint_rects=endpoint_rects
+    )
+    if not start_lane and not end_lane and not _wire_lane_conflict(
+        _flatten_wire_path(ordinary), peer_paths
+    ):
+        return ordinary
+    protected = tuple(
+        rect.adjusted(0.5, 0.5, -0.5, -0.5) for rect in endpoint_rects
+        if rect.isValid() and rect.width() > 1 and rect.height() > 1
+    )
+    blockers = protected + tuple(obstacles)
+    first, last = _wire_port_stubs(start, end, blockers)
+    # Curved departure/arrival connectors separate at the port itself. A shared
+    # straight stub would still hide which branch belongs to which destination.
+    corridor = ordinary.boundingRect().adjusted(-80, -80, 80, 80)
+    low = np.array([corridor.left(), corridor.top()])
+    high = np.array([corridor.right(), corridor.bottom()])
+    nearby_peers = sum(
+        not np.any(high < peer_low) and not np.any(peer_high < low)
+        for peer_low, peer_high, *_ in peer_paths.segments
+    )
+    offsets = [0.0]
+    for index in range(1, nearby_peers + 4):
+        offsets.extend((index * 12.0, -index * 12.0))
+    fallback = []
+    search_anchors = []
+    column_shift = 12.0 * nearby_peers
+    for offset in offsets:
+        # Shift both axes: occupied vertical departures need another x lane,
+        # just as horizontal runs need another y lane.
+        a = QPointF(first.x() + column_shift + abs(offset),
+                    first.y() + start_lane + offset)
+        b = QPointF(last.x() - column_shift - abs(offset),
+                    last.y() + end_lane + offset)
+        for middle in _wire_middle_candidates(a, b, blockers):
+            path = _join_wire_ports(start, end, a, b, middle)
+            points = _flatten_wire_path(path)
+            collision = _route_collision_penalty(points, blockers)
+            if not _wire_lane_conflict(points, peer_paths):
+                if not collision:
+                    return path
+                fallback.append((_route_score(points, blockers, bends=0,
+                                              protected=protected), path))
+        if not _route_collision_penalty((start, a), blockers) and not (
+            _route_collision_penalty((b, end), blockers)
+        ):
+            search_anchors.append((a, b))
+    # Most crowded fan-outs use a cheap shifted candidate above. Only layouts
+    # needing multiple obstacle detours pay for the bounded visibility search.
+    for a, b in search_anchors:
+        middle = _wire_visibility_detour(
+            a, b, blockers, protected, peer_paths, port_stubs=False
+        )
+        if middle is None:
+            continue
+        path = _join_wire_ports(start, end, a, b, middle)
+        points = _flatten_wire_path(path)
+        if not _route_collision_penalty(points, blockers) and not (
+            _wire_lane_conflict(points, peer_paths)
+        ):
+            return path
+    # If cards overlap, a completely clear route may not exist. Keep the
+    # original endpoint-first obstruction policy, still rejecting shared runs.
+    # Outer lanes vary on every axis so even this fallback separates peers.
+    index = 0
+    while index < len(peer_paths) * 4 + 4 or not fallback:
+        index += 1
+        shift = 12.0 * index
+        a = QPointF(first.x() + shift, first.y() + start_lane + shift)
+        b = QPointF(last.x() - shift, last.y() + end_lane + shift)
+        right = max([a.x(), b.x(), *(rect.right() for rect in protected)]) + shift
+        left = min([a.x(), b.x(), *(rect.left() for rect in protected)]) - shift
+        top = min([a.y(), b.y(), *(rect.top() for rect in protected)]) - 44 - shift
+        middle = _rounded_polyline_path([
+            a, QPointF(right, a.y()), QPointF(right, top),
+            QPointF(left, top), QPointF(left, b.y()), b,
+        ])
+        path = _join_wire_ports(start, end, a, b, middle)
+        points = _flatten_wire_path(path)
+        if not _wire_lane_conflict(points, peer_paths, spacing=0):
+            fallback.append((_route_score(points, blockers, bends=4,
+                                          protected=protected), path))
+    return min(fallback, key=lambda candidate: candidate[0])[1]
+
+
+def _wire_middle_candidates(
+    first: QPointF, last: QPointF, blockers: tuple[QRectF, ...]
+) -> Iterator[QPainterPath]:
+    yield _bezier_wire_path(first, last)
+    # Check peer occupancy while selecting a card-clear route, rather than
+    # repeatedly choosing the same shortest occupied gap and invoking A*.
+    for points in _orthogonal_route_candidates(first, last, blockers):
+        clean = _clean_route_points(points)
+        if len(clean) >= 2 and not _route_doubles_back(clean):
+            yield _rounded_polyline_path(clean)
+
+
+def _join_wire_ports(
+    start: QPointF, end: QPointF, first: QPointF, last: QPointF, middle: QPainterPath
+) -> QPainterPath:
+    path = QPainterPath(start)
+    departure = (first.x() - start.x()) / 2
+    path.cubicTo(
+        QPointF(start.x() + departure, start.y()),
+        QPointF(first.x() - departure, first.y()), first,
+    )
+    path.connectPath(middle)
+    arrival = (end.x() - last.x()) / 2
+    path.cubicTo(
+        QPointF(last.x() + arrival, last.y()),
+        QPointF(end.x() - arrival, end.y()), end,
+    )
+    return path
+
+
+class _WireReservations:
+    """Owned points plus reusable numeric segments for a routing pass."""
+
+    def __init__(self, paths: tuple[tuple[QPointF, ...], ...]):
+        self.paths = paths
+        self.segments = []
+        for path in paths:
+            if len(path) < 2:
+                continue
+            coordinates = np.array([(p.x(), p.y()) for p in path])
+            self.segments.append((
+                coordinates.min(axis=0), coordinates.max(axis=0),
+                coordinates[:-1], np.diff(coordinates, axis=0),
+            ))
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __iter__(self):
+        return iter(self.paths)
+
+
+def _wire_lane_conflict(
+    points: tuple[QPointF, ...],
+    peer_paths: tuple[tuple[QPointF, ...], ...] | _WireReservations,
+    *,
+    spacing: float = 8.0,
+) -> bool:
+    """Reject shared runs; point crossings and common port endpoints are fine."""
+    if len(points) < 2 or not peer_paths:
+        return False
+    if not isinstance(peer_paths, _WireReservations):
+        peer_paths = _WireReservations(peer_paths)
+    coordinates = np.array([(p.x(), p.y()) for p in points])
+    low = coordinates.min(axis=0) - spacing - 0.001
+    high = coordinates.max(axis=0) + spacing + 0.001
+    starts = coordinates[:-1]
+    directions = np.diff(coordinates, axis=0)
+    lengths = np.hypot(directions[:, 0], directions[:, 1])
+    active = lengths >= 1e-7
+    starts, directions, lengths = starts[active], directions[active], lengths[active]
+    if not len(lengths):
+        return False
+    dx, dy = directions[:, 0, None], directions[:, 1, None]
+    lengths = lengths[:, None]
+    clearance = np.where((abs(dx) < 1e-7) | (abs(dy) < 1e-7), spacing, 1e-7)
+    for peer_low, peer_high, peer_starts, peer_directions in peer_paths.segments:
+        if np.any(high < peer_low) or np.any(peer_high < low):
+            continue
+        ex, ey = peer_directions[:, 0], peer_directions[:, 1]
+        parallel = abs(dx * ey - dy * ex) <= 1e-7 * np.maximum(lengths, 1)
+        if not np.any(parallel):
+            continue
+        cx = peer_starts[:, 0] - starts[:, 0, None]
+        cy = peer_starts[:, 1] - starts[:, 1, None]
+        nearby = parallel & (abs(dx * cy - dy * cx) <= clearance * lengths)
+        if not np.any(nearby):
+            continue
+        first = (cx * dx + cy * dy) / lengths
+        last = first + (ex * dx + ey * dy) / lengths
+        overlap = np.minimum(lengths, np.maximum(first, last)) - np.maximum(
+            0.0, np.minimum(first, last)
+        )
+        if np.any(nearby & (overlap > 1e-6)):
+            return True
+    return False
+
+
+def _card_avoiding_wire_path(
+    start: QPointF, end: QPointF, *, obstacles=(), endpoint_rects=()
 ) -> QPainterPath:
     # Ports sit on the card boundary. Protect the interior without treating the
     # required contact at the port itself as an obstacle collision.
@@ -5832,6 +6237,9 @@ def _wire_visibility_detour(
     end: QPointF,
     obstacles: tuple[QRectF, ...],
     protected: tuple[QRectF, ...],
+    peer_paths: tuple[tuple[QPointF, ...], ...] = (),
+    *,
+    port_stubs: bool = True,
 ) -> QPainterPath | None:
     """Bounded A* fallback for staggered cards that need more than one detour.
 
@@ -5839,7 +6247,9 @@ def _wire_visibility_detour(
     rounded path are checked against *all* cards. Failure leaves the ordinary
     least-obstructed route in place, with endpoint protection taking priority.
     """
-    first, last = _wire_port_stubs(start, end, obstacles)
+    first, last = (
+        _wire_port_stubs(start, end, obstacles) if port_stubs else (start, end)
+    )
     if _route_collision_penalty((start, first), obstacles) or _route_collision_penalty(
         (last, end), obstacles
     ):
@@ -5866,6 +6276,20 @@ def _wire_visibility_detour(
         {first.y(), last.y()}
         | {value for rect in lanes for value in (rect.top() - pad, rect.bottom() + pad)}
     )
+    # Occupied straight runs contribute adjacent lanes rather than rectangular
+    # obstacles, so a perpendicular wire can still cross at a single point.
+    peer_segments = [
+        (a, b) for peer in peer_paths
+        for a, b in zip(peer, peer[1:], strict=False)
+        if abs(a.x() - b.x()) < 1e-7 or abs(a.y() - b.y()) < 1e-7
+    ]
+    peer_segments.sort(key=lambda pair: distance(QRectF(*pair).normalized()))
+    for a, b in peer_segments[:48]:
+        if abs(a.x() - b.x()) < 1e-7:
+            xs.extend((a.x() - 12.0, a.x() + 12.0))
+        else:
+            ys.extend((a.y() - 12.0, a.y() + 12.0))
+    xs, ys = sorted(set(xs)), sorted(set(ys))
     origin = (xs.index(first.x()), ys.index(first.y()), 0)
     goal = (xs.index(last.x()), ys.index(last.y()))
     costs = {origin: 0.0}
@@ -5888,12 +6312,18 @@ def _wire_visibility_detour(
             if _route_doubles_back(points):
                 return None
             path = _rounded_polyline_path(points)
-            if not _route_collision_penalty(_flatten_wire_path(path), obstacles):
+            drawn = _flatten_wire_path(path)
+            if not _route_collision_penalty(drawn, obstacles) and not (
+                _wire_lane_conflict(drawn, peer_paths)
+            ):
                 return path
             # A lane squeezed against another card may leave no rounding room.
             # A square bend is preferable to cutting through that card.
             path = _rounded_polyline_path(points, radius=0)
-            if not _route_collision_penalty(_flatten_wire_path(path), obstacles):
+            drawn = _flatten_wire_path(path)
+            if not _route_collision_penalty(drawn, obstacles) and not (
+                _wire_lane_conflict(drawn, peer_paths)
+            ):
                 return path
             return None
         for nx, ny, next_direction in (
@@ -5911,8 +6341,10 @@ def _wire_visibility_detour(
                 continue
             key = tuple(sorted(((ix, iy), (nx, ny))))
             if key not in segment_clear:
-                segment_clear[key] = not _route_collision_penalty(
-                    (QPointF(xs[ix], ys[iy]), QPointF(xs[nx], ys[ny])), obstacles
+                segment = (QPointF(xs[ix], ys[iy]), QPointF(xs[nx], ys[ny]))
+                segment_clear[key] = (
+                    not _route_collision_penalty(segment, obstacles)
+                    and not _wire_lane_conflict(segment, peer_paths)
                 )
             if not segment_clear[key]:
                 continue

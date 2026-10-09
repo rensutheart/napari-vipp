@@ -1518,7 +1518,9 @@ def test_connection_context_menu_can_request_insert(qtbot, monkeypatch):
 
     view._connections[0].contextMenuEvent(FakeContextMenuEvent())
 
-    assert labels == ["Info", "Insert node here...", "Delete"]
+    assert labels == [
+        "Info", "Insert node here...", "Replace with tunnel...", "Delete"
+    ]
     assert requests == [(("input", "gaussian", 0, 0), QPointF(123, 45))]
 
 
