@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Acknowledge NRF Thuthuka Post PhD Track support (Grant No. TTK240321210363)
+  in the repository README.
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
   references cover the direct convolution and rounding behavior. Existing
