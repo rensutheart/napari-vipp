@@ -3516,24 +3516,22 @@ class PipelineGraphView(QGraphicsView):
     def connection_routing_context(
         self, connection: ConnectionItem
     ) -> tuple[tuple[ConnectionItem, ...], float, float]:
-        """Reserve earlier routes in a stable order and fan out shared ports."""
+        """Keep different outputs traceable while allowing same-output trunks."""
         def key(item):
             return (item.source_id, item.source_port, item.target_id, item.target_port)
 
         if self._wire_routing_contexts is None:
             ordered = sorted(self._connections, key=key)
-            outputs, inputs = {}, {}
-            for item in ordered:
-                outputs.setdefault((item.source_id, item.source_port), []).append(item)
-                inputs.setdefault((item.target_id, item.target_port), []).append(item)
             self._wire_routing_contexts = {}
             for index, item in enumerate(ordered):
-                outgoing = outputs[item.source_id, item.source_port]
-                incoming = inputs[item.target_id, item.target_port]
                 self._wire_routing_contexts[item] = (
-                    tuple(ordered[:index]),
-                    (outgoing.index(item) - (len(outgoing) - 1) / 2) * 12.0,
-                    (incoming.index(item) - (len(incoming) - 1) / 2) * 12.0,
+                    tuple(
+                        peer for peer in ordered[:index]
+                        if (peer.source_id, peer.source_port)
+                        != (item.source_id, item.source_port)
+                    ),
+                    0.0,
+                    0.0,
                 )
         return self._wire_routing_contexts.get(connection, ((), 0, 0))
 

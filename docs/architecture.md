@@ -59,9 +59,10 @@ measurement parity and table-combination requirements are tracked in
 
 ## Current Shape
 
-Graph wire routing reserves earlier rendered paths in stable connection order.
-Positive-length collinear runs are rejected, with separate straight lanes and
-curved fan-out from common ports; isolated crossings remain permitted. Visible
+Graph wire routing reserves earlier rendered paths from different source output
+ports in stable connection order. Positive-length collinear runs from different
+outputs are rejected; branches of the same output retain natural routes and may
+share a trunk. Isolated crossings remain permitted. Visible
 tunnel labels also reserve clearance, and label changes invalidate their routes.
 Node movement and connection addition/removal invalidate peer routes. During drag,
 the same wire separation and endpoint-card protection apply without scanning

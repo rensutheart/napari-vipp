@@ -120,7 +120,7 @@ LAYOUTS = (
     ),
     Layout(
         "07-shared-output-fanout",
-        "One output fans out immediately to four separately routed destinations",
+        "One output branches naturally to four destinations and may share a trunk",
         (
             ("source", "gaussian_blur", 0, 330),
             ("upper", "gaussian_blur", 700, 0),
@@ -134,7 +134,7 @@ LAYOUTS = (
     ),
     Layout(
         "08-shared-obstacle-detours",
-        "Two branches detour around a card on separate lanes",
+        "Branches of the same output may share a clear trunk around a card",
         (
             ("source", "split_channels", 0, 150),
             ("obstacle", "gaussian_blur", 350, 150),

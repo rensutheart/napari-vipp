@@ -277,8 +277,19 @@ def _assert_no_shared_runs(paths):
                     assert overlap < 1e-6
 
 
+def _ordinary_connection_path(view, item, *, obstacle_aware=True):
+    return _wire_path(
+        item.source.port_scene_pos("output", item.source_port),
+        item.target.port_scene_pos("input", item.target_port),
+        obstacles=view.connection_obstacle_rects(item) if obstacle_aware else (),
+        endpoint_rects=(
+            item.source.sceneBoundingRect(), item.target.sceneBoundingRect()
+        ),
+    )
+
+
 @pytest.mark.parametrize("backward", [False, True])
-def test_shared_output_fans_out_without_shared_stubs(qtbot, backward):
+def test_shared_output_retains_natural_routes_and_may_share_trunks(qtbot, backward):
     pipeline = PrototypePipeline()
     nodes = [pipeline.nodes["input"]]
     targets = [pipeline.add_node("gaussian_blur") for _ in range(5)]
@@ -293,9 +304,14 @@ def test_shared_output_fans_out_without_shared_stubs(qtbot, backward):
     for node in targets:
         view.add_connection("input", node.id)
 
-    _assert_no_shared_runs([item.path() for item in view._connections])
     for item in view._connections:
         _assert_connection_endpoints(item)
+        assert item.path() == _ordinary_connection_path(view, item)
+    if backward:
+        # All branches carry the exact same output; their common trunk is
+        # meaningful and does not need the artificial fan-out connectors.
+        with pytest.raises(AssertionError):
+            _assert_no_shared_runs([item.path() for item in view._connections])
     paths = [item.path() for item in view._connections]
     for _ in range(3):
         view.reroute_connections()
@@ -365,16 +381,16 @@ def test_peer_lane_search_preserves_staggered_card_clearance():
     _assert_no_shared_runs(paths)
 
 
-def test_deleting_branch_restores_single_wire_route(qtbot):
+def test_adding_and_deleting_same_output_branch_keeps_existing_route(qtbot):
     view, first = _build_view(qtbot, QPointF(0, 20), QPointF(750, 20))
     original = first.path()
     view.add_connection("input", "gaussian")
-    _assert_no_shared_runs([item.path() for item in view._connections])
+    assert first.path() == original
     view.delete_connection_item(view._connections[-1], notify=False)
     assert first.path() == original
 
 
-def test_fanout_drag_retains_distinct_routes_without_card_scan(qtbot, monkeypatch):
+def test_same_output_drag_retains_natural_routes_without_card_scan(qtbot, monkeypatch):
     view, _ = _build_view(qtbot)
     view.add_connection("input", "gaussian")
     calls = []
@@ -383,9 +399,11 @@ def test_fanout_drag_retains_distinct_routes_without_card_scan(qtbot, monkeypatc
     starts = {"input": QPointF(view._proxies["input"].pos())}
     view._move_selected_nodes_during_drag(starts, QPointF(100, 80))
     assert not calls
-    _assert_no_shared_runs([item.path() for item in view._connections])
     for item in view._connections:
         _assert_connection_endpoints(item)
+        assert item.path() == _ordinary_connection_path(
+            view, item, obstacle_aware=False
+        )
 
 
 def test_isolated_wire_crossing_keeps_the_direct_route():
@@ -435,9 +453,9 @@ def test_connection_order_does_not_change_assigned_wire_routes(qtbot, mode):
                     connection.target_port,
                     connection.source_port,
                 )
-        _assert_no_shared_runs([item.path() for item in view._connections])
         for item in view._connections:
             _assert_connection_endpoints(item)
+            assert item.path() == _ordinary_connection_path(view, item)
         results.append({
             (item.source_id, item.target_id, item.target_port, item.source_port):
             item.path()
@@ -651,7 +669,6 @@ def test_fanout_routes_clear_tunnel_badge_on_another_output_port(qtbot, mode):
             _route_collision_penalty(_flatten_wire_path(path), (rect,))
             for path in original_paths
         )
-    _assert_no_shared_runs([item.path() for item in view._connections])
     for item in view._connections:
         _assert_connection_endpoints(item)
         _assert_clear(item.path(), (rect,))
@@ -663,7 +680,6 @@ def test_fanout_routes_clear_tunnel_badge_on_another_output_port(qtbot, mode):
     assert badge.sceneBoundingRect().width() > rect.width()
     for item in view._connections:
         _assert_clear(item.path(), (badge.sceneBoundingRect(),))
-    _assert_no_shared_runs([item.path() for item in view._connections])
 
     view.set_port_tunnels((), connections)
     assert not badge.isVisible()

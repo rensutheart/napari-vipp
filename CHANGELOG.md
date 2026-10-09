@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Give graph wires separate routing lanes and immediate fan-out at shared
-  ports so connections do not hide along identical segments. Right-click near
+- Give graph wires from different output ports separate routing lanes so
+  connections remain traceable when they converge and separate. Branches from
+  the same output can share a natural trunk. Right-click near
   a wire at any zoom and choose **Replace with tunnel...** to convert that
   connection in one undoable edit, reusing its output tunnel when available.
 
