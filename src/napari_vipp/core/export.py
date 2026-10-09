@@ -148,7 +148,10 @@ def export_pipeline_to_python(
         or function_name in dir(builtins)
     ):
         raise ValueError(f"Invalid exported function name: {function_name!r}.")
-    order = pipeline.topological_order()
+    scientific_ids = pipeline.scientific_node_ids()
+    order = [
+        node_id for node_id in pipeline.topological_order() if node_id in scientific_ids
+    ]
 
     source_ids = [
         node_id
@@ -827,8 +830,12 @@ def _build_function_body(
             f"{_INDENT}{_INDENT}source_records,",
             f"{_INDENT})",
             f"{_INDENT}return PipelineResults(",
-            f"{_INDENT}{_INDENT}pipeline.outputs,",
-            f"{_INDENT}{_INDENT}pipeline.output_states,",
+            f"{_INDENT}{_INDENT}{{node_id: value for node_id, value "
+            "in pipeline.outputs.items()",
+            f"{_INDENT}{_INDENT} if node_id in pipeline.scientific_node_ids()}},",
+            f"{_INDENT}{_INDENT}{{node_id: value for node_id, value "
+            "in pipeline.output_states.items()",
+            f"{_INDENT}{_INDENT} if node_id in pipeline.scientific_node_ids()}},",
             f"{_INDENT}{_INDENT}execution_report=run_result.execution_report,",
             f"{_INDENT}{_INDENT}effective_compute_request=effective_request,",
             f"{_INDENT}{_INDENT}node_compute_provenance=",
@@ -2224,9 +2231,7 @@ def _terminal_nodes(pipeline: PrototypePipeline, order: list[str]) -> list[str]:
     ]
     if explicit:
         return explicit
-    consumed = {connection.source_id for connection in pipeline.connections}
-    terminals = [node_id for node_id in order if node_id not in consumed]
-    return terminals or list(order)
+    return pipeline.scientific_terminal_node_ids()
 
 
 def _used_function_names(pipeline: PrototypePipeline, order: list[str]) -> list[str]:

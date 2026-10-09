@@ -369,7 +369,7 @@ def test_every_effective_output_profile_has_only_valid_actions_and_pinning():
         profile = inspector_profile(spec)
         if spec.id == "input":
             expected_action = "source"
-        elif spec.id in _WRITER_OPERATION_IDS:
+        elif spec.id in _WRITER_OPERATION_IDS or spec.presentation_only:
             expected_action = "none"
         elif spec.is_multi_output:
             expected_action = (
@@ -549,14 +549,18 @@ def test_multi_output_actions_exist_only_for_multi_output_operations():
             ), spec.id
 
 
-def test_only_writers_suppress_the_duplicate_selected_output_action():
+def test_writers_and_presentation_sinks_have_no_scientific_output_action():
     actionless_operations = {
         spec.id
         for spec in NODE_LIBRARY
         if inspector_profile(spec).output_action_kind == "none"
     }
 
-    assert actionless_operations == _WRITER_OPERATION_IDS
+    assert actionless_operations == _WRITER_OPERATION_IDS | {"review_images"}
+    review = next(spec for spec in NODE_LIBRARY if spec.id == "review_images")
+    assert review.presentation_only
+    assert review.output_ports == ()
+    assert not inspector_profile(review).supports_pin
     for operation_id in _WRITER_OPERATION_IDS:
         profile = _profile(operation_id)
         assert not profile.supports_pin

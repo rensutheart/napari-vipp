@@ -2841,6 +2841,9 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
             operation.id
             for operation in NODE_LIBRARY
             if operation.has_input
+            # Presentation sinks have no scientific outputs or implementation
+            # to project for an accelerator consumer; checked separately below.
+            and not operation.presentation_only
             # Tables, plots and surfaces are domain objects, not image arrays whose
             # exact shape/dtype can be projected for an accelerator consumer.
             and operation.output_type not in {"table", "plot", "mesh"}
@@ -2868,6 +2871,69 @@ def test_every_cpu_only_image_transform_has_a_planning_contract():
     )
 
     assert cpu_only - handled == set()
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [operation.id for operation in NODE_LIBRARY if operation.presentation_only],
+)
+def test_presentation_sink_creates_no_planning_call_workload_or_array_facts(
+    operation_id,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    transform = pipeline.add_node("clip_intensity")
+    assert pipeline.connect("input", transform.id).success
+    data = np.arange(5 * 7, dtype=np.float32).reshape(5, 7)
+    data.setflags(write=False)
+    original = data.tobytes()
+    state = image_state_from_array(data)
+    assert state is not None
+    source_port = OutputPortKey("input", 0)
+    source_facts = execution_module._complete_array_facts(
+        data,
+        revision_fingerprint="presentation-sink-source",
+    )
+
+    def assemble(registry):
+        # Deliberately pass every graph node. Even an overly broad caller must
+        # not turn a connected display sink into a computation or facts scan.
+        return execution_module._assemble_workloads(
+            pipeline,
+            frozenset(pipeline.nodes),
+            {source_port: data},
+            {source_port: state},
+            registry,
+            False,
+            seed_facts_by_port={source_port: source_facts},
+        )
+
+    with ComputeRegistry() as registry:
+        before = assemble(registry)
+        review = pipeline.add_node(operation_id)
+        assert pipeline.connect(transform.id, review.id, target_port=0).success
+        assert pipeline.connect("input", review.id, target_port=1).success
+        spec = pipeline.operation_spec(operation_id)
+        assert spec.function is None and spec.output_ports == ()
+        assert registry.implementations_for_operation(
+            operation_id, allow_experimental=True
+        ) == ()
+        assert pipeline.prepare_node_call(
+            review.id, (data, data), (state, state)
+        ) is None
+        after = assemble(registry)
+
+    # Keep the scientific control branch and its exact planning descriptors.
+    assert before == after
+    workloads, facts_by_node, lineage = after
+    assert transform.id in {workload.node_id for workload in workloads}
+    assert review.id not in {workload.node_id for workload in workloads}
+    assert review.id not in facts_by_node
+    assert not any(port.node_id == review.id for port in lineage)
+    assert review.id not in pipeline.plan_execution().candidate_node_ids
+    assert review.id not in pipeline.completed_node_ids
+    assert review.id not in pipeline.node_compute_provenance
+    assert data.tobytes() == original and not data.flags.writeable
 
 
 @pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.float32])

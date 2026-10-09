@@ -22,12 +22,14 @@ from napari_vipp.core.compute import (
 )
 from napari_vipp.core.node_names import normalize_node_name
 from napari_vipp.core.pipeline import (
+    NODE_LIBRARY_BY_ID,
     GraphConnection,
     GraphNode,
     OutputTunnel,
     PrototypePipeline,
     graph_node_from_persisted_params,
 )
+from napari_vipp.core.review_images import validate_review_settings
 from napari_vipp.core.snapshots import (
     GraphSnapshot,
     NodeSnapshot,
@@ -90,7 +92,10 @@ def serialize_workflow(
         },
         "notes": [_note_to_dict(note) for note in notes or ()],
         "execution": {
-            "compute": _workflow_compute_to_dict(compute_request, node_id_set),
+            "compute": _workflow_compute_to_dict(
+                compute_request,
+                pipeline.scientific_node_ids(),
+            ),
         },
     }
     workflow_metadata = _workflow_metadata_to_dict(metadata, node_id_set)
@@ -246,7 +251,14 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
     compute_request = (
         ComputeRequest(mode=ComputeMode.CPU)
         if document_version == LEGACY_COMPUTE_WORKFLOW_VERSION
-        else _compute_request_from_execution(data.get("execution"), node_id_set)
+        else _compute_request_from_execution(
+            data.get("execution"),
+            {
+                node.id
+                for node in nodes
+                if not NODE_LIBRARY_BY_ID[node.operation_id].presentation_only
+            },
+        )
     )
 
     restored = {
@@ -788,6 +800,23 @@ def _inspector_metadata_to_dict(
             )
         result["source_channel_displays"] = {
             node_id: mode for node_id, mode in choices.items() if node_id in node_id_set
+        }
+    if "image_reviews" in raw_inspector:
+        reviews = raw_inspector["image_reviews"]
+        if not isinstance(reviews, dict) or any(
+            not isinstance(node_id, str) for node_id in reviews
+        ):
+            raise ValueError(
+                "Workflow image reviews must map node IDs to display recipes."
+            )
+        validated = {
+            node_id: validate_review_settings(recipe)
+            for node_id, recipe in reviews.items()
+        }
+        result["image_reviews"] = {
+            node_id: recipe
+            for node_id, recipe in validated.items()
+            if node_id in node_id_set
         }
     return result
 

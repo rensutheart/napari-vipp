@@ -14,6 +14,9 @@ contributions:
     - id: napari-vipp.tracking_sample_data
       title: VIPP synthetic tracking samples
       python_name: napari_vipp._sample_data:make_tracking_sample_data
+    - id: napari-vipp.image_review_sample_data
+      title: VIPP synthetic image-review samples
+      python_name: napari_vipp._sample_data:make_image_review_sample_data
   widgets:
     - command: napari-vipp.make_widget
       display_name: VIPP Workflow
@@ -27,3 +30,6 @@ contributions:
     - command: napari-vipp.tracking_sample_data
       key: vipp_synthetic_tracking
       display_name: VIPP synthetic tracking samples
+    - command: napari-vipp.image_review_sample_data
+      key: vipp_synthetic_image_review
+      display_name: VIPP synthetic image-review samples

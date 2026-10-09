@@ -657,11 +657,18 @@ def test_optimizer_returns_actionable_dtype_repair_instead_of_generic_refusal(
     assert "No unlocked node" not in str(caught.value)
 
 
+@pytest.mark.parametrize("include_review", [False, True])
 def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     tmp_path,
     monkeypatch,
+    include_review,
 ):
     pipeline, source_id, median_id, writer_id = _writer_workflow()
+    review_id = None
+    if include_review:
+        review = pipeline.add_node("review_images")
+        review_id = review.id
+        assert pipeline.connect(median_id, review_id).success
     document = serialize_workflow(pipeline, compute_request=ComputeRequest("custom"))
     values = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64).T
     original = values.copy()
@@ -714,6 +721,13 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     assert len(executor.target_sets) == 13
     assert writer_id not in {row.node_id for row in result.proposal.rows}
     assert all(writer_id not in targets for targets in executor.target_sets)
+    if review_id is not None:
+        assert review_id not in {row.node_id for row in result.proposal.rows}
+        assert all(review_id not in targets for targets in executor.target_sets)
+        assert all(review_id not in retained for retained in executor.retained_sets)
+        assert pipeline.node_outputs[review_id] == []
+        assert review_id not in pipeline.completed_node_ids
+        assert review_id not in pipeline.node_compute_provenance
     assert runtime.released == 3
     assert progress[0].phase is PipelineOptimizerPhase.PREPARING
     assert progress[-1].phase is PipelineOptimizerPhase.COMPLETE

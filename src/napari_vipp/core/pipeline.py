@@ -1158,6 +1158,7 @@ class OperationSpec:
     preserves_input_type: bool = False
     stack_processing_note: str = ""
     execution_policy: str = "auto"
+    presentation_only: bool = False
 
     @property
     def has_input(self) -> bool:
@@ -1183,6 +1184,8 @@ class OperationSpec:
         Nodes with a dynamic ``output_factory`` resolve their ports per node
         instance via ``PrototypePipeline.output_ports`` instead.
         """
+        if self.presentation_only:
+            return ()
         if self.outputs:
             return self.outputs
         return (OutputSpec("out", self.output_type),)
@@ -1982,6 +1985,22 @@ def _analyze_label_skeleton_inputs(
 
 
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
+    OperationSpec(
+        "review_images",
+        "Review Images",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "none",
+        max_inputs=2,
+        subcategory="Review",
+        inputs=(InputSpec("a", "array", "Image A"), InputSpec("b", "array", "Image B")),
+        presentation_only=True,
+        stack_processing_note=(
+            "Read-only linked review of calculated images, RGB/RGBA, masks or labels. "
+            "Display settings do not change pixels or calculations. "
+            "Image B is optional."
+        ),
+    ),
     *registration_node_specs(),
     *detection_node_specs(),
     *time_detection_node_specs(),
@@ -7170,6 +7189,11 @@ def graph_node_from_persisted_params(
             raise ValueError(f"Node {node_id!r} has an unsupported Statistics version.")
 
     required_params = {parameter.name for parameter in spec.parameters}
+    if spec.presentation_only and saved_params:
+        raise ValueError(
+            f"Node {node_id!r} is presentation-only and has no operation parameters. "
+            "Store its display recipe in workflow inspector metadata."
+        )
     missing_params = required_params - saved_params.keys()
     if operation_id == "estimate_registration":
         # Missing strategy fields retain the original fixed-reference contract.
@@ -7502,6 +7526,27 @@ class PrototypePipeline:
                 order.extend(remaining)
                 break
         return order
+
+    def scientific_node_ids(self) -> set[str]:
+        """Nodes with scientific outputs/execution, excluding presentation sinks."""
+        return {
+            node_id
+            for node_id, node in self.nodes.items()
+            if not self.operation_spec(node.operation_id).presentation_only
+        }
+
+    def scientific_terminal_node_ids(self) -> list[str]:
+        """Terminal scientific values, ignoring edges into display-only sinks."""
+        scientific = self.scientific_node_ids()
+        order = [
+            node_id for node_id in self.topological_order() if node_id in scientific
+        ]
+        consumed = {
+            connection.source_id
+            for connection in self.connections
+            if connection.target_id in scientific
+        }
+        return [node_id for node_id in order if node_id not in consumed] or order
 
     def add_node(self, operation_id: str) -> GraphNode:
         spec = self.operation_spec(operation_id)
@@ -9572,6 +9617,10 @@ class PrototypePipeline:
             candidates = requested_descendants | support_nodes
         if required_nodes is not None:
             candidates.intersection_update(required_nodes)
+        # A presentation sink has no kernel, outputs, compute provenance or
+        # reusable scientific cache. Its upstream results are reviewed by the
+        # application; including it in execution would invent a pseudo-result.
+        candidates.intersection_update(self.scientific_node_ids())
         candidates = self._nodes_with_available_input_chains(candidates)
         skipped = self._manual_nodes_to_skip(
             candidates,
@@ -12373,6 +12422,9 @@ class PrototypePipeline:
         return max(int(node.max_inputs), 1)
 
     def _required_inputs_for(self, node: GraphNode) -> int:
+        if node.operation_id == "review_images":
+            # Both ports stay visible, but Image B is an optional comparison.
+            return 1
         if node.operation_id == "estimate_registration":
             return 1 if node.params.get("mode") == "Time series" else 2
         if node.operation_id == "compare_images":

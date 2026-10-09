@@ -39,6 +39,85 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     return view, pipeline
 
 
+@pytest.mark.parametrize("dark", (False, True))
+def test_outputless_review_card_has_no_output_placeholder(qtbot, dark):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=dark))
+    node = pipeline.add_node("review_images")
+    view.add_node(node, QPointF(1_400, 0))
+    view.show()
+    card = view._cards[node.id]
+    proxy = view._proxies[node.id]
+
+    assert len(proxy.input_ports) == 2
+    assert not proxy.output_ports
+    assert card.preview.isHidden()
+    assert card.metadata_label.isHidden()
+    assert not card.result_button.isHidden()
+    height = card.height()
+
+    # Generic thumbnail refreshes cannot turn an outputless sink into an image
+    # card, even if stale presentation pixels are supplied defensively.
+    view.set_node_preview_enabled(node.id, True)
+    view.set_thumbnail(node.id, np.ones((8, 8, 3), dtype=np.uint8))
+    view.set_thumbnail_pending(node.id)
+    view.set_node_metadata(node.id, "No output")
+    assert card.preview.isHidden()
+    assert card.metadata_label.isHidden()
+    assert not view.node_has_thumbnail(node.id)
+    assert card.preview.text() == ""
+    assert card.height() == height
+    assert card.height() < view._cards["gaussian"].height()
+    for port in proxy.input_ports:
+        assert proxy.boundingRect().contains(port.pos())
+
+    with qtbot.waitSignal(view.node_result_requested) as signal:
+        card.result_button.click()
+    assert signal.args == [node.id]
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    ("gaussian_blur", "measure_objects", "mask_to_3d_mesh", "estimate_registration"),
+)
+def test_output_cards_keep_metadata_when_image_preview_is_disabled(qtbot, operation_id):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    node = pipeline.add_node(operation_id)
+    view.add_node(node, QPointF(0, 0))
+    card = view._cards[node.id]
+    view.set_node_preview_enabled(node.id, False)
+    view.set_node_metadata(node.id, "Calculated result")
+    assert not card.metadata_label.isHidden()
+    assert card.metadata_label.text() == "Calculated result"
+    assert card.preview.isHidden()
+
+
+def test_output_presentation_restores_after_dynamic_ports_return(qtbot):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    node = pipeline.add_node("split_channels")
+    view.add_node(node, QPointF(0, 0))
+    card = view._cards[node.id]
+    view.set_thumbnail(node.id, np.ones((8, 8, 3), dtype=np.uint8))
+    assert view.node_has_thumbnail(node.id)
+    view.set_node_output_ports(node.id, 0)
+    assert card.preview.isHidden()
+    assert card.metadata_label.isHidden()
+    assert not view.node_has_thumbnail(node.id)
+
+    view.set_node_output_ports(node.id, 3)
+    view.set_node_preview_enabled(node.id, True)
+    view.set_thumbnail(node.id, np.ones((8, 8, 3), dtype=np.uint8))
+    view.set_node_metadata(node.id, "Three image channels")
+    assert len(view._proxies[node.id].output_ports) == 3
+    assert not card.preview.isHidden()
+    assert not card.metadata_label.isHidden()
+    assert view.node_has_thumbnail(node.id)
+    assert card.metadata_label.text() == "Three image channels"
+
+
 @pytest.mark.parametrize(
     "operation_id,label",
     [
@@ -103,7 +182,9 @@ def test_node_cards_offer_result_shortcuts_for_semantic_measurements(
         assert signal.args == [node.id]
 
 
-@pytest.mark.parametrize("operation_id", ("intensity_histogram", "measure_objects"))
+@pytest.mark.parametrize(
+    "operation_id", ("intensity_histogram", "measure_objects", "review_images"),
+)
 def test_result_shortcut_mouse_click_does_not_select_or_drag_the_node(
     qtbot, operation_id,
 ):

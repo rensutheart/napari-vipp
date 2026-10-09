@@ -1,0 +1,148 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "execution": {
+    "compute": {
+      "mode": "cpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "node_names": {
+        "input": "Synthetic intensity",
+        "image_b": "Object labels",
+        "review": "Review Images"
+      },
+      "inspector": {
+        "selected_node_id": "review",
+        "right_panel_visible": true,
+        "image_reviews": {
+          "review": {
+            "version": 1,
+            "mode": "side-by-side",
+            "left": "a",
+            "right": "overlay",
+            "ndisplay": 3,
+            "link_navigation": true,
+            "link_contrast": false,
+            "a": {
+              "contrast_limits": [
+                0,
+                1
+              ],
+              "colormap": "gray",
+              "lock_contrast": false,
+              "opacity": 1,
+              "visible": true,
+              "mask_color": "#00FF66",
+              "threshold": null
+            },
+            "b": {
+              "contrast_limits": null,
+              "colormap": "green",
+              "lock_contrast": false,
+              "opacity": 0.45,
+              "visible": true,
+              "mask_color": "#00FF66",
+              "threshold": null
+            }
+          }
+        }
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP review time-series intensity",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "image_b",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP review time-series labels",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "review",
+      "operation_id": "review_images",
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "review",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "image_b",
+      "target": "review",
+      "source_port": 0,
+      "target_port": 1
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      60
+    ],
+    "image_b": [
+      0,
+      650
+    ],
+    "review": [
+      800,
+      340
+    ]
+  },
+  "notes": [
+    {
+      "id": "review_step1",
+      "attached_node": "input",
+      "text": "1. FOUR ALIGNED TIMEPOINTS\nCalculate all, then Open Review. Move the shared time slider: both views always show the same timepoint, even with Link viewpoint off. The exact labels 7 and 42 are constructed IDs, with 2 seconds per frame.",
+      "position": [
+        0,
+        -230
+      ],
+      "width": 500
+    },
+    {
+      "id": "review_step2",
+      "attached_node": "review",
+      "text": "2. LABELS ARE CATEGORICAL\nReview intensity beside intensity plus labels. Labels use object colours, not scalar contrast. Toggle linked navigation and review 2D/3D slices. This example performs no detection, linking or identity inference.",
+      "position": [
+        1390,
+        270
+      ],
+      "width": 490
+    }
+  ],
+  "view": {
+    "zoom": 0.8,
+    "pan": [
+      0,
+      0
+    ]
+  }
+}

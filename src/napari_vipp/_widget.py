@@ -1959,6 +1959,7 @@ class VippWidget(QWidget):
     NODE_LIBRARY_GRAPH_MINIMUM_WIDTH = 320
     FLOATING_DOCK_DRAG_RETRY_MS = 40
     WORKFLOW_TAB_RUNTIME_FIELDS = (
+        "_image_review_settings",
         "_source_inspection_cache",
         "_source_inspection_errors",
         "_source_preview_errors",
@@ -2135,6 +2136,7 @@ class VippWidget(QWidget):
         self._source_preview_errors: dict[str, str] = {}
         self._source_view_modes: dict[str, str] = {}
         self._source_channel_displays: dict[str, str] = {}
+        self._image_review_settings: dict[str, dict] = {}
         self._node_names: dict[str, str] = {}
         self._node_presentation_key = None
         self._node_presentation_cache: dict[str, NodePresentation] = {}
@@ -2224,6 +2226,9 @@ class VippWidget(QWidget):
         from napari_vipp.ui.statistics_controller import StatisticsController
 
         self._result_plots = ResultPlotController(self)
+        from napari_vipp.ui.image_review_controller import ImageReviewController
+
+        self._image_reviews = ImageReviewController(self)
         self._statistics = StatisticsController(self)
         self._results_workspace = ResultsWorkspaceController(self)
         self._workflow_tab_loading_visible = False
@@ -3905,6 +3910,7 @@ class VippWidget(QWidget):
         self._table_sources.close()
         self._results_workspace.close()
         self._result_plots.close()
+        self._image_reviews.close()
         self._statistics.close()
         if hasattr(self, "_detection_results"):
             self._detection_results.close()
@@ -10501,6 +10507,7 @@ class VippWidget(QWidget):
             "_histogram_dialog": None,
             "_histogram_dialog_node_id": "",
             "_result_table_dialog": None,
+            "_image_review_settings": {},
             "_tunnel_manager_dialog": None,
             "_live_source_adapter": self._new_tab_live_source_adapter(
                 session.session_id
@@ -10811,6 +10818,7 @@ class VippWidget(QWidget):
         if current is not None:
             self._finish_parameter_history_group()
             self._remember_current_inspect_display_profiles()
+            self._image_reviews.hide_session(current.session_id)
             self._sync_current_workflow_tab_state()
             self._store_workflow_tab_runtime(current)
             for name in (
@@ -10968,6 +10976,7 @@ class VippWidget(QWidget):
         """Rebuild Qt presentation around retained state without recomputing."""
         workflow = snapshot.workflow
         self._restore_node_names(workflow.metadata)
+        self._restore_image_review_metadata(workflow.metadata)
         valid_node_ids = set(self.pipeline.nodes)
         self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
         self._compute_fallback_policy = FallbackPolicy.parse(
@@ -11161,7 +11170,7 @@ class VippWidget(QWidget):
                 self._graph_note_documents()
                 if notes_override is None
                 else notes_override,
-                metadata=self._node_name_metadata(),
+                metadata=self._history_presentation_metadata(),
                 compute_request=self._current_compute_request(),
             ),
             selected_node_id=(
@@ -11804,6 +11813,7 @@ class VippWidget(QWidget):
                 self._remove_layer(pinned_layer)
             workflow.graph.restore_into(self.pipeline)
             self._restore_node_names(workflow.metadata)
+            self._restore_image_review_metadata(workflow.metadata)
             self._restore_graph_notes(note.to_mapping() for note in workflow.notes)
             valid_node_ids = set(self.pipeline.nodes)
             self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
@@ -14537,6 +14547,7 @@ class VippWidget(QWidget):
         self,
         session: WorkflowTabSession,
     ) -> None:
+        self._image_reviews.close_session(session.session_id)
         deferred_preview = session.runtime_cache.pop(
             "_batch_workspace_preview_outcome",
             None,
@@ -14644,6 +14655,12 @@ class VippWidget(QWidget):
                 for node_id, mode in self._source_channel_displays.items()
                 if node_id in valid_node_ids
             }
+        if self._image_review_settings:
+            inspector["image_reviews"] = {
+                node_id: deepcopy(settings)
+                for node_id, settings in self._image_review_settings.items()
+                if node_id in valid_node_ids
+            }
 
         vipp: dict[str, object] = {"inspector": inspector}
         if names := self._node_name_metadata().get("vipp", {}).get("node_names"):
@@ -14660,6 +14677,23 @@ class VippWidget(QWidget):
                 )
             }
         return {"vipp": vipp}
+
+    def _history_presentation_metadata(self) -> dict:
+        """Retain review recipes across structural undo without scientific params."""
+        metadata = self._node_name_metadata()
+        if self._image_review_settings:
+            metadata.setdefault("vipp", {})["inspector"] = {
+                "image_reviews": deepcopy(self._image_review_settings)
+            }
+        return metadata
+
+    def _restore_image_review_metadata(self, metadata: dict) -> None:
+        vipp = metadata.get("vipp", {})
+        inspector = vipp.get("inspector", {}) if isinstance(vipp, dict) else {}
+        reviews = (
+            inspector.get("image_reviews", {}) if isinstance(inspector, dict) else {}
+        )
+        self._image_reviews.load_settings(reviews)
 
     @staticmethod
     def _workflow_vipp_metadata(workflow: dict) -> dict:
@@ -15188,6 +15222,7 @@ class VippWidget(QWidget):
         self._load_source_channel_displays(
             inspector_metadata.get("source_channel_displays", {})
         )
+        self._image_reviews.load_settings(inspector_metadata.get("image_reviews", {}))
         selected_node_id = str(inspector_metadata.get("selected_node_id", "") or "")
         if selected_node_id not in valid_node_ids:
             selected_node_id = ""
@@ -19523,6 +19558,10 @@ class VippWidget(QWidget):
             and self._colocalization_scatter_dialog_node_id in self.pipeline.nodes
         ):
             nodes.add(str(self._colocalization_scatter_dialog_node_id))
+        # A visible linked review needs its accepted A/B endpoints even when
+        # another node is selected. The ordinary direct-input retention rule
+        # retains those endpoints, not their entire upstream calculation.
+        nodes.update(self._image_reviews.visible_review_nodes())
         return nodes
 
     def _direct_input_cache_nodes(self, node_ids: set[str]) -> set[str]:
@@ -21642,6 +21681,7 @@ class VippWidget(QWidget):
             self._source_preview_errors.pop(node_id, None)
             self._source_view_modes.pop(node_id, None)
             self._source_channel_displays.pop(node_id, None)
+            self._image_review_settings.pop(node_id, None)
             self._node_names.pop(node_id, None)
             self._source_channel_stack_positions.pop(node_id, None)
             self._inspector_output_port_by_node.pop(node_id, None)
@@ -22332,6 +22372,7 @@ class VippWidget(QWidget):
         self._detection_next_step.refresh()
         self._detection_results.refresh()
         self._tracking_results.refresh()
+        self._image_reviews.refresh()
         self._sync_writer_status_ui(profile)
         self._update_object_filter_feedback()
         self._sync_histogram_interaction_hint()
@@ -22593,6 +22634,16 @@ class VippWidget(QWidget):
         icon = operation_icon(spec, QWidget.palette(self), 18)
         self.selected_operation_icon.setPixmap(icon.pixmap(18, 18))
         self.selected_operation_icon.setToolTip(spec.category)
+        if spec.presentation_only:
+            self.selected_category_label.setText(f"{spec.category} · Display only")
+            self.selected_category_label.setToolTip(
+                "Read-only image review. No scientific output or recalculation."
+            )
+            self.selected_title.setToolTip(
+                "Compare cached images in an independent linked viewer. "
+                "Display settings never change image values."
+            )
+            return
         execution = "manual" if spec.execution_policy == "manual" else "automatic"
         data, _state, output_port = self._node_display_payload(self._selected_node_id)
         output_label = self._node_output_type_for_payload(
@@ -23470,6 +23521,7 @@ class VippWidget(QWidget):
             )
 
     def _sync_execution_ui(self) -> None:
+        self._image_reviews.refresh()
         if hasattr(self, "_registration_next_step"):
             self._registration_next_step.refresh()
             self._registration_results.refresh()
@@ -23847,6 +23899,9 @@ class VippWidget(QWidget):
             return
         if node.operation_id == "plot_results":
             self._result_plots.render_parameters(node_id)
+            return
+        if node.operation_id == "review_images":
+            self._image_reviews.render_parameters(node_id)
             return
         if node.operation_id == "summarize_measurements":
             self._statistics.render_parameters(node_id)
@@ -38358,6 +38413,13 @@ class VippWidget(QWidget):
         scientific_payload: tuple[object, object, int] | None = None,
     ) -> None:
         """Render one card without requiring its result in the live pipeline cache."""
+        if node_id in self.pipeline.nodes and not self.pipeline.output_ports(node_id):
+            # Review sinks consume cached upstream images; they do not produce
+            # pixels or output metadata for a thumbnail card.
+            self.graph_view.set_node_preview_enabled(node_id, False)
+            self.graph_view.set_node_metadata(node_id, "")
+            self._clear_node_thumbnail_statistics_presentation(node_id)
+            return
         mode = self.preview_mode_combo.currentText()
         contrast_mode = self.thumbnail_contrast_combo.currentText()
         contrast_scope = self.thumbnail_scope_combo.currentText()
@@ -42647,6 +42709,9 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return
+        if node.operation_id == "review_images":
+            self._image_reviews.open_review(node_id)
+            return
         if node.operation_id == "intensity_histogram":
             self._open_histogram_dialog_for_node(node_id)
             return
@@ -43896,10 +43961,14 @@ class VippWidget(QWidget):
         self,
         node_id: str,
         output_port: int,
+        *,
+        accepted_only: bool = False,
     ) -> tuple[object | None, object | None]:
         """Return one exact output port without mutating the display selector."""
 
-        result = self._background_node_result_override(node_id)
+        result = (
+            None if accepted_only else self._background_node_result_override(node_id)
+        )
         primary_data = (
             result.output if result is not None else self.pipeline.outputs.get(node_id)
         )
@@ -46181,11 +46250,13 @@ class VippWidget(QWidget):
         panel.show()
 
     def _sync_preview_ui(self) -> None:
-        previewable = self._node_output_type(self._selected_node_id) not in {
-            "table",
-            "mesh",
-            "plot",
-        }
+        previewable = bool(self.pipeline.output_ports(self._selected_node_id)) and (
+            self._node_output_type(self._selected_node_id) not in {
+                "table",
+                "mesh",
+                "plot",
+            }
+        )
         self.thumbnail_checkbox.setVisible(previewable)
         self.thumbnail_checkbox.setEnabled(previewable)
         with QSignalBlocker(self.thumbnail_checkbox):
@@ -46251,6 +46322,8 @@ class VippWidget(QWidget):
             )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
+        if not self.pipeline.output_ports(node_id):
+            return False
         if self._node_output_type(node_id) in {"table", "mesh", "transform"}:
             return False
         return node_id not in self._preview_disabled_node_ids

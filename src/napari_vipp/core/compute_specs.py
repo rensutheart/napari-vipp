@@ -1266,6 +1266,7 @@ def compute_specs_for(
 
     The CPU declaration is synthesized lazily from the authoritative operation
     library so this module does not create a pipeline import cycle.
+    Presentation-only operations deliberately have no CPU/GPU declarations.
     """
 
     operation_id = str(operation_id).strip()
@@ -1278,6 +1279,11 @@ def compute_specs_for(
         and spec.visible_for(allow_experimental=allow_experimental)
     )
     if include_cpu:
+        from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
+
+        operation = NODE_LIBRARY_BY_ID.get(operation_id)
+        if operation is not None and operation.presentation_only:
+            return ()
         return (_cpu_compute_spec(operation_id), *selected)
     return selected
 
