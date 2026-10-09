@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr
+  0.20 and newer, retaining channel display metadata, calibration and provenance.
 - Acknowledge NRF Thuthuka Post PhD Track support (Grant No. TTK240321210363)
   in the repository README.
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
