@@ -56,6 +56,22 @@
   positions and display settings. Compact routine status messages avoid pane
   resizing during edits. Changed input types, grids or input presence require
   reopening the review; scientific values and resource guards remain unchanged.
+- Read older OME-TIFF spatial calibration written with `micrometer` or
+  `micrometre` unit aliases. Normalize equivalent unit names in the parser
+  copy while preserving numeric calibration, pixels and original file bytes.
+
+- Use the displayed input histogram to tune threshold slider ranges for large
+  float images whose intensities are outside 0–1. Preserve saved cutoffs and
+  synchronize histogram guide edits with numeric values, including constrained
+  or rounded edits that leave the cutoff unchanged.
+
+- Keep the Compute GPU-conversion advisory fully visible as the inspector is
+  resized, with its action button below the wrapped text.
+
+- Guard napari layer-list painting while a row is being replaced or loaded, so
+  a temporarily missing size hint does not cause repeated loading-indicator
+  errors. The fix only affects display; workflow parameters and results stay
+  unchanged.
 
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
