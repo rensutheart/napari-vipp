@@ -1,6 +1,118 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-10-05
+Last reviewed: 2026-10-09
+
+## 0.16.0a4 qualification declaration
+
+This iterative alpha covers the complete delta from published `v0.16.0a3`
+at `70bb25ac732e15670c9d86c984079a87fafc5091`: accepted Review Images,
+ImageJ Gaussian Blur, detached/workspace window fixes, Batch/Results selection
+and blocked-output review, OME-Zarr writer compatibility, legacy OME-TIFF unit
+aliases, float threshold/histogram synchronization, advisory wrapping and
+layer-list decoration safety. NRF support acknowledgement is included. The
+user authorized publication on 2026-10-09. This declaration names required
+gates and existing evidence; it does not claim final-main CI, native packages,
+reproducible release artifacts or publication have already passed.
+
+```yaml
+tier: alpha
+changed:
+  core_ui: true
+  cpu_scientific: true
+  workflow_schema_provenance: true
+  gpu_scientific_shared_execution: true
+  source_reader_writer_compatibility: true
+  windows_installer_runtime: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+  packaging_release: true
+  documentation: true
+carried_forward:
+  unchanged_gpu_kernels_and_admission_regions: v0.16.0a3
+  unchanged_vendor_reader_codecs: v0.16.0a3
+  unchanged_dependency_and_installer_lifecycle_inputs: v0.16.0a3
+```
+
+- [Review Images implementation](image-review-implementation.md) records the
+  approved presentation-only boundary: explicit YX/ZYX with optional T, declared
+  RGB/RGBA or scalar/mask/labels, read-only source views, exact physical/time
+  grid checks and saved display recipes outside scientific cache/hash identity.
+  The sink has no kernel, output/cache value, batch output or generated-Python
+  execution. It does not silently resample, reorder, normalize or cast sources.
+  Canonical Boolean mask display borrows a read-only byte view; unusual Boolean
+  storage may need one guarded, one-byte-per-voxel presentation conversion,
+  prepared once per window without modifying scientific storage.
+- Native Windows development checks exercised scalar/mask/labels/RGB review,
+  initial calibrated slices, 2D/3D transitions, linked navigation, saved recipes,
+  axes/scale bars, transparent backgrounds and live accepted-pair refresh. The
+  latest focused record has 275 passing cases, with 27 separate cache-neighbor
+  cases and 20 overlapping status checks; these are not a new full-suite total.
+  Its private a3-labelled wheel is non-publishable. Historical incomplete and
+  memory-pressure full runs remain failed/incomplete, not clean qualification.
+  The combined a4 candidate requires its own focused shared-boundary checks,
+  exact installed imports/resources and native Windows representative review.
+- Scalar MIP, attenuated MIP and isosurface are display modes, not quantitative
+  equivalence. Mask display interpolation is not scientific smoothing or an
+  exact biological surface. RGB 3D is an explicitly labelled per-component MIP;
+  RGBA 3D, RACC custom-shader parity and physical inter-layer occlusion are not
+  implemented. Real labels remain categorical. Minimum-dependency rendering,
+  native Linux/macOS renderer/window-manager equivalence, large-volume
+  memory/performance and acquired-microscopy accuracy are untested limits, not
+  alpha-wide accuracy claims or reasons to repeat every historical suite.
+- [ImageJ Gaussian qualification](validation/imagej-gaussian-compatibility.md)
+  records 37 bit-for-bit independent ImageJ 1.54p direct-branch fixtures and 85
+  focused kernel/reference checks, plus separate calibrated planning/workflow
+  evidence. The new CPU-only filter supports scalar uint8/uint16/finite float32
+  independent YX planes at sigma 0–8.5 pixels. Existing Gaussian/GPU providers
+  are unchanged. Larger sigma/downsampling, physical-unit sigma, encoded RGB
+  and true ImageJ 3D blur are unsupported; whole-image memory-bounded execution
+  and biological validation are not claimed. Final platform CI must execute the
+  numerical fixtures and shared execution/roundtrip/generated-Python tests.
+- Batch/Results bulk-selection and blocked-output actions retain authored
+  filtering, measurement population, destination safety and cancellation rules.
+  Review recipe save/reopen, structural undo, same-ID workflow-tab isolation,
+  accepted/cancelled/superseded/error terminal results, low-memory exact direct
+  retention and generated/batch terminal selection are affected integration
+  gates. Existing workflow and batch schema version numbers are unchanged;
+  presentation metadata and scientific canonicalization behavior are changed.
+- OME-Zarr 0.4/0.5 image/analysis exports require exact newer-writer API tests
+  retaining display metadata, calibration, analysis provenance and readability.
+  Legacy OME-TIFF alias normalization changes only the parser copy, not original
+  bytes, numeric scale or pixels. Require focused read/write and state roundtrips
+  across supported CI routes. This is not a new vendor-codec qualification.
+- [Workspace-window evidence](workspace-window-qualification.md) verifies
+  native Windows ownership, title-bar/passive-toolbar maximize and independent
+  minimization, including detached VIPP, without scientific state changes.
+  Linux/macOS native ownership/minimization, multi-monitor/DPI transitions and
+  full frozen Windows GUI lifecycle remain unqualified. Focused portable tests
+  and exact-native smoke are required; unchanged installer lifecycle evidence
+  may be carried forward without relabelling it as those unrun scenarios.
+- Review sink filtering changes shared planning, optimizer, export/batch/hash
+  and cache-currentness boundaries despite unchanged GPU kernels, policies and
+  dependency pins. The a3 RTX 5090 canary is historical evidence, not proof of
+  this integration. Require a bounded exact-candidate installed real-CUDA
+  interoperability canary: CPU/GPU scientific parity with/without Review Images,
+  no review workload/provider decision, authenticated host endpoint handoff,
+  source preservation and finalization/cleanup. Use small representative scalar
+  processing and label/measurement paths; do not run the full GPU catalogue or
+  describe provider-free lifecycle tests as actual CUDA numerical evidence.
+- The complete previous-tag diff leaves runtime/build pins, supported Python
+  routes, installer engines/recipes and publishing workflows unchanged.
+  Packaged Review modules/examples and manifest resources do change: require
+  exact-final-main six-lane full CI, clean wheel/source installs with exact
+  imports, packaged example/recipe validation, ImageJ fixture checks and focused
+  installed/native behavior. Build independent wheel/canonical-source pairs
+  that match before retaining one exact-main artifact pair. No development wheel
+  may substitute for those release bytes. Retain source fingerprints, exact
+  imported paths, artifact inventories/sizes/hashes and run identities externally.
+- After a passing clean final main, tag `v0.16.0a4` immutably and build Windows
+  x86_64 plus separate macOS arm64/x86_64 unsigned installers against the exact
+  retained wheel. Audit source/tag/version/architecture, embedded qualified
+  wheel, native smoke, unsigned/unnotarized state and checksum inventories.
+  Unchanged install/repair/update/removal evidence alone does not prove the
+  exact new artifact. Publish the same qualified Python bytes to GitHub/PyPI,
+  deploy the numbered/default a4 manual and verify public bytes/live content.
+  Record completion receipts externally; this declaration is not one.
 
 ## 0.16.0a3 qualification declaration
 
