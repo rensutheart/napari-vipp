@@ -183,6 +183,15 @@ questions in [GitHub Discussions](https://github.com/rensutheart/napari-vipp/dis
 use [SUPPORT.md](SUPPORT.md) for help, report vulnerabilities privately through
 [SECURITY.md](SECURITY.md), and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Acknowledgments
+
+This work is based on research supported in part by the National Research
+Foundation (NRF) of South Africa through the Thuthuka Post PhD Track
+(Grant No. TTK240321210363).
+
+Opinions, findings, conclusions and recommendations expressed are those of the
+authors, and the NRF accepts no liability in this regard.
+
 ## Citation And License
 
 If VIPP contributes to your work, acknowledge `napari-vipp` and link to this
