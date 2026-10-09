@@ -113,6 +113,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Implementation Records
 
+- [Image review implementation](image-review-implementation.md): presentation-only
+  sink, explicit input/grid contracts, saved review recipes, synthetic examples
+  and display qualification boundaries.
+
 These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not
 override the current planning documents above.

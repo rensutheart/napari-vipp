@@ -230,8 +230,8 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
         "Skeleton mask": ("skeletonize_1", 0, 5),
         "Watershed labels": ("auto_watershed_from_mask_1", 0, 2),
         "Registration moving image": ("input_10", 0, 1),
-        "Registration reference image": ("input_11", 0, 1),
-        "Registration aligned image": ("apply_transform_1", 0, 1),
+        "Registration reference image": ("input_11", 0, 2),
+        "Registration aligned image": ("apply_transform_1", 0, 2),
         "Registration valid coverage": ("apply_transform_1", 1, 1),
         "Detection selected image": ("extract_channel_2", 0, 1),
         "Detection valid support": ("template_match_1", 1, 1),
@@ -256,7 +256,7 @@ def test_exhaustive_inspector_showcase_uses_tunnels_selectively():
             for name, (*_, subscriber_count) in expected_tunnels.items()
         }
     )
-    assert sum(tunnel_counts.values()) == 73
+    assert sum(tunnel_counts.values()) == 75
     assert sum(not connection.tunnel_name for connection in pipeline.connections) == 124
 
     for connection in pipeline.connections:

@@ -98,7 +98,12 @@ from napari_vipp.core.metadata import (
     apply_axis_declaration,
 )
 from napari_vipp.core.operations import save_array_output
-from napari_vipp.core.pipeline import MANUAL_RUN_SKIP, PrototypePipeline, SourcePayload
+from napari_vipp.core.pipeline import (
+    MANUAL_RUN_SKIP,
+    NODE_LIBRARY_BY_ID,
+    PrototypePipeline,
+    SourcePayload,
+)
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.reproduction import (
     ReproductionCheck,
@@ -1209,12 +1214,25 @@ def scientific_workflow_document(workflow: object) -> dict[str, object]:
     data = _require_object(workflow, "Workflow")
     # Full deserialization validates operation ids, params, ports, and references.
     restored = deserialize_workflow(data)
+    scientific_ids = {
+        node.id
+        for node in restored["nodes"]
+        if not NODE_LIBRARY_BY_ID[node.operation_id].presentation_only
+    }
     nodes = sorted(
-        (_canonical_scientific_node(item) for item in data["nodes"]),
+        (
+            _canonical_scientific_node(item)
+            for item in data["nodes"]
+            if item["id"] in scientific_ids
+        ),
         key=lambda item: str(item.get("id", "")),
     )
     connections = sorted(
-        (_canonical_mapping(item) for item in data["connections"]),
+        (
+            _canonical_mapping(item)
+            for item in data["connections"]
+            if item["target"] in scientific_ids
+        ),
         key=lambda item: (
             str(item.get("source", "")),
             int(item.get("source_port", 0)),
@@ -3831,10 +3849,7 @@ def _validate_pipeline_config(
     if explicit:
         expected_outputs = explicit
     else:
-        consumed = {connection.source_id for connection in pipeline.connections}
-        order = pipeline.topological_order()
-        expected_outputs = [node_id for node_id in order if node_id not in consumed]
-        expected_outputs = expected_outputs or order
+        expected_outputs = pipeline.scientific_terminal_node_ids()
         multi_output_terminals = [
             node_id
             for node_id in expected_outputs

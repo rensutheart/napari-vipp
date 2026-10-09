@@ -46,6 +46,14 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "VIPP synthetic 3D template detection",
         "VIPP synthetic 2D spot tracking",
         "VIPP synthetic 3D label tracking",
+        "VIPP review 2D red intensity",
+        "VIPP review 2D green intensity",
+        "VIPP review 3D intensity",
+        "VIPP review 3D mask",
+        "VIPP review time-series intensity",
+        "VIPP review time-series labels",
+        "VIPP review 3D RGB composite",
+        "VIPP review 3D synthetic index",
     ]
     assert shapes[0] == (12, 96, 128)
     assert shapes[1] == (3, 12, 96, 128)
@@ -90,6 +98,14 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "TCZYX",
         "TCYX",
         "TZYX",
+        "YX",
+        "YX",
+        "ZYX",
+        "ZYX",
+        "TZYX",
+        "TZYX",
+        "ZYXC",
+        "ZYX",
     ]
     assert preferred_flags == [
         False,
@@ -108,7 +124,7 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         False,
         False,
         False,
-    ] + [False] * 10
+    ] + [False] * 18
     assert samples[0][1]["visible"] is False
     assert samples[1][1]["visible"] is False
 

@@ -1,0 +1,148 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 6,
+  "execution": {
+    "compute": {
+      "mode": "cpu",
+      "fallback_policy": "visible",
+      "node_preferences": {},
+      "precision_policy": "scientific-default-v1",
+      "workload_policy": "vipp-best-available-v1"
+    }
+  },
+  "metadata": {
+    "vipp": {
+      "node_names": {
+        "input": "Original RGB",
+        "image_b": "Scalar index",
+        "review": "Review Images"
+      },
+      "inspector": {
+        "selected_node_id": "review",
+        "right_panel_visible": true,
+        "image_reviews": {
+          "review": {
+            "version": 1,
+            "mode": "side-by-side",
+            "left": "a",
+            "right": "b",
+            "ndisplay": 2,
+            "link_navigation": true,
+            "link_contrast": false,
+            "a": {
+              "contrast_limits": null,
+              "colormap": "gray",
+              "lock_contrast": false,
+              "opacity": 1,
+              "visible": true,
+              "mask_color": "#00FF66",
+              "threshold": null
+            },
+            "b": {
+              "contrast_limits": [
+                0,
+                1
+              ],
+              "colormap": "magma",
+              "lock_contrast": true,
+              "opacity": 1,
+              "visible": true,
+              "mask_color": "#00FF66",
+              "threshold": 0.05
+            }
+          }
+        }
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP review 3D RGB composite",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "image_b",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP review 3D synthetic index",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "review",
+      "operation_id": "review_images",
+      "params": {}
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "review",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "image_b",
+      "target": "review",
+      "source_port": 0,
+      "target_port": 1
+    }
+  ],
+  "positions": {
+    "input": [
+      0,
+      60
+    ],
+    "image_b": [
+      0,
+      650
+    ],
+    "review": [
+      800,
+      340
+    ]
+  },
+  "notes": [
+    {
+      "id": "review_step1",
+      "attached_node": "input",
+      "text": "1. ORIGINAL RGB BESIDE A SCALAR INDEX\nCalculate all, then Open Review. RGB is explicitly declared in metadata; its original colours are retained. The right input remains numeric and uses a fixed 0-1 colour scale.",
+      "position": [
+        0,
+        -230
+      ],
+      "width": 500
+    },
+    {
+      "id": "review_step2",
+      "attached_node": "review",
+      "text": "2. SYNTHETIC INDEX, NOT RACC\nThe index is a constructed spatial gradient inside two physical spheres, not a computed RACC or colocalization result. Hide low values without shifting the colour scale. RGB starts in 2D; any offered 3D adapter is a labelled display projection, not custom RACC shader parity.",
+      "position": [
+        1390,
+        270
+      ],
+      "width": 490
+    }
+  ],
+  "view": {
+    "zoom": 0.8,
+    "pan": [
+      0,
+      0
+    ]
+  }
+}

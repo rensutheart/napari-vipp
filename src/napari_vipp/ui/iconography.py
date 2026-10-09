@@ -339,6 +339,48 @@ def _draw_glyph(painter: QPainter, kind: str, color: QColor) -> None:
                 )
             )
         return
+    if kind == "side-by-side":
+        painter.drawRoundedRect(QRectF(2.5, 3.5, 15, 13), 1, 1)
+        painter.drawLine(QPointF(10, 3.5), QPointF(10, 16.5))
+        return
+    if kind == "link":
+        path.moveTo(8.5, 6)
+        path.lineTo(6.5, 6)
+        path.cubicTo(1.5, 6, 1.5, 14, 6.5, 14)
+        path.lineTo(8.5, 14)
+        painter.drawPath(path)
+        path = QPainterPath(QPointF(11.5, 6))
+        path.lineTo(13.5, 6)
+        path.cubicTo(18.5, 6, 18.5, 14, 13.5, 14)
+        path.lineTo(11.5, 14)
+        painter.drawPath(path)
+        painter.drawLine(QPointF(6.5, 10), QPointF(13.5, 10))
+        return
+    if kind in {"plane-xy", "plane-xz", "plane-yz"}:
+        top = QPolygonF([QPointF(10, 2.5), QPointF(17, 6.5),
+                         QPointF(10, 10.5), QPointF(3, 6.5)])
+        left = QPolygonF([QPointF(3, 6.5), QPointF(10, 10.5),
+                          QPointF(10, 17.5), QPointF(3, 13.5)])
+        right = QPolygonF([QPointF(10, 10.5), QPointF(17, 6.5),
+                           QPointF(17, 13.5), QPointF(10, 17.5)])
+        face = {"plane-xy": top, "plane-xz": left, "plane-yz": right}[kind]
+        fill = QColor(color)
+        fill.setAlphaF(0.35)
+        painter.setBrush(fill)
+        painter.drawPolygon(face)
+        painter.setBrush(Qt.NoBrush)
+        for polygon in (top, left, right):
+            painter.drawPolygon(polygon)
+        return
+    if kind == "reset":
+        path.moveTo(4.2, 6)
+        path.cubicTo(7, 2, 14, 2.5, 16.5, 7)
+        path.cubicTo(20, 13, 13, 19, 7.5, 16)
+        path.cubicTo(4.5, 14.5, 3, 12.5, 3.5, 10)
+        painter.drawPath(path)
+        painter.drawLine(QPointF(4.2, 6), QPointF(4.2, 2.5))
+        painter.drawLine(QPointF(4.2, 6), QPointF(7.7, 6))
+        return
     if kind == "regions":
         painter.setPen(Qt.NoPen)
         painter.setBrush(color)
@@ -379,7 +421,7 @@ def _draw_glyph(painter: QPainter, kind: str, color: QColor) -> None:
         painter.drawEllipse(QRectF(2.5, 4.0, 10.0, 12.0))
         painter.drawEllipse(QRectF(7.5, 4.0, 10.0, 12.0))
         return
-    if kind == "crop":
+    if kind in {"crop", "fit-view"}:
         for start, corner, end in (
             ((3, 7), (3, 3), (7, 3)),
             ((13, 3), (17, 3), (17, 7)),

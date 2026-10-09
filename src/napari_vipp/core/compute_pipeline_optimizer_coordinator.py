@@ -2121,10 +2121,12 @@ def _probe_optimizer_environment_for_pipeline(
 def _writer_free_node_ids(
     pipeline: PrototypePipeline,
 ) -> tuple[frozenset[str], frozenset[str]]:
+    scientific_ids = pipeline.scientific_node_ids()
     direct_unsafe = {
         node_id
         for node_id, node in pipeline.nodes.items()
-        if compute_specs_for(node.operation_id)[0].side_effect_policy_id
+        if node_id in scientific_ids
+        and compute_specs_for(node.operation_id)[0].side_effect_policy_id
         == "host-writer-v1"
     }
     unsafe = set(direct_unsafe)
@@ -2135,7 +2137,7 @@ def _writer_free_node_ids(
             if connection.source_id in unsafe and connection.target_id not in unsafe:
                 unsafe.add(connection.target_id)
                 changed = True
-    safe = frozenset(set(pipeline.nodes) - unsafe)
+    safe = frozenset(scientific_ids - unsafe)
     if not safe:
         _refuse(
             "writer_only_pipeline",

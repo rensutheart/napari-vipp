@@ -72,8 +72,21 @@ def test_chooser_prioritizes_analysis_and_collapses_developer_workflows(qtbot):
     qtbot.addWidget(dialog)
     assert dialog.tree.columnCount() == 1
     assert dialog.tree.wordWrap()
-    assert len(list(_items(dialog))) == len(EXAMPLE_WORKFLOWS) == 31
-    assert "31" in dialog.count_label.text()
+    assert len(list(_items(dialog))) == len(EXAMPLE_WORKFLOWS) == 35
+    assert "35" in dialog.count_label.text()
+    review_ids = {
+        "review-channels-2d",
+        "review-mask-3d",
+        "review-labels-time-series",
+        "review-rgb-index-3d",
+    }
+    assert {
+        spec.id for spec in EXAMPLE_WORKFLOWS if spec.category == "Image Review"
+    } == review_ids
+    for example_id in review_ids:
+        category = _item(dialog, example_id).parent()
+        assert category.text(0).startswith("Image Review")
+        assert category.childCount() == 4
     first_category = dialog.tree.topLevelItem(0)
     last_category = dialog.tree.topLevelItem(dialog.tree.topLevelItemCount() - 1)
     assert "segmentation" in first_category.text(0).lower()

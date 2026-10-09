@@ -529,9 +529,14 @@ def test_every_cpu_declaration_and_planning_path_share_versioned_identity():
     request = ComputeRequest(mode="cpu")
     workloads = tuple(
         WorkloadDescriptor(operation_id, operation_id, ((8, 9),), ("uint16",))
-        for operation_id in NODE_LIBRARY_BY_ID
+        for operation_id, spec in NODE_LIBRARY_BY_ID.items()
+        if not spec.presentation_only
     )
     planned = plan_compute_decisions(request, workloads).decisions
+    for operation_id, spec in NODE_LIBRARY_BY_ID.items():
+        if spec.presentation_only:
+            assert spec.function is None and spec.output_ports == ()
+            assert compute_specs_for(operation_id) == ()
     assert len(planned) == len(workloads)
     for decision in planned:
         operation_id = decision.operation_id

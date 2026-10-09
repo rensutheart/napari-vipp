@@ -563,6 +563,7 @@ class NodeCard(QFrame):
         self._image_drop_target = False
         self._append_drop_state: str | None = None
         self._preview_enabled = True
+        self._output_presentation_enabled = True
         self._thumbnail_stats_tooltip = ""
         self._processing = False
         self._processing_queued = False
@@ -804,7 +805,16 @@ class NodeCard(QFrame):
             self.pin_button.setText("Pin")
         self._refresh_style()
 
+    def set_output_presentation_enabled(self, enabled: bool) -> None:
+        """Outputless viewer cards have neither pixels nor output metadata."""
+        self._output_presentation_enabled = bool(enabled)
+        self.metadata_label.setVisible(self._output_presentation_enabled)
+        if not self._output_presentation_enabled:
+            self.metadata_label.clear()
+            self.set_preview_enabled(False)
+
     def set_preview_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled) and self._output_presentation_enabled
         self._preview_enabled = enabled
         self.preview.setVisible(enabled)
         if not enabled:
@@ -1020,7 +1030,7 @@ class NodeCard(QFrame):
         return True
 
     def set_metadata_summary(self, text: str) -> None:
-        self.metadata_label.setText(text)
+        self.metadata_label.setText(text if self._output_presentation_enabled else "")
 
     def set_subtitle(self, text: str, tooltip: str | None = None) -> None:
         self.subtitle_label.set_full_text(text, tooltip)
@@ -2179,7 +2189,7 @@ class NodeProxy(QGraphicsProxyWidget):
         colors: list[str | None] | None = None,
         data_types: list[str] | None = None,
     ) -> None:
-        self._output_port_count = max(int(count), 1)
+        self._output_port_count = max(int(count), 0)
         self._output_port_labels = labels or []
         self._output_port_colors = colors or []
         self._output_port_types = data_types or []
@@ -3506,6 +3516,7 @@ class PipelineGraphView(QGraphicsView):
             node.category,
             can_pin=node.output_type in PINNABLE_OUTPUT_TYPES,
         )
+        card.set_output_presentation_enabled(bool(_node_output_port_count(node)))
         # Output capability is known before the first calculation. Tables and
         # meshes must not reserve an image placeholder while waiting for data.
         card.set_preview_enabled(
@@ -4243,6 +4254,9 @@ class PipelineGraphView(QGraphicsView):
         if proxy is None:
             return
         before = proxy.sceneBoundingRect()
+        card = self._cards.get(node_id)
+        if card is not None:
+            card.set_output_presentation_enabled(int(count) > 0)
         proxy.set_output_ports(count, labels, colors, data_types)
         self._finish_port_geometry_update(proxy, before)
 
@@ -6186,7 +6200,7 @@ def _node_output_port_count(node) -> int:
     spec = _operation_spec_for_node(node)
     if spec is None or spec.output_factory is not None:
         return 1
-    return max(len(spec.output_ports), 1)
+    return len(spec.output_ports)
 
 
 def _node_output_port_labels(node) -> list[str]:

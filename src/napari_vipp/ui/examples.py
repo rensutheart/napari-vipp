@@ -26,6 +26,42 @@ class ExampleWorkflowSpec:
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
     ExampleWorkflowSpec(
+        "review-channels-2d",
+        "Image Review",
+        "Linked Red and Green Channel Review",
+        "synthetic-image-review-channels-2d.json",
+        ("VIPP review 2D red intensity", "VIPP review 2D green intensity"),
+        "Compare aligned scalar channels in linked panes or an additive overlay; "
+        "adjust their display contrast independently without changing pixels.",
+    ),
+    ExampleWorkflowSpec(
+        "review-mask-3d",
+        "Image Review",
+        "3D Intensity and Mask Review",
+        "synthetic-image-review-mask-3d.json",
+        ("VIPP review 3D intensity", "VIPP review 3D mask"),
+        "Review a calibrated anisotropic volume beside its Boolean construction "
+        "mask; compare intensity alone with intensity plus transparent overlay.",
+    ),
+    ExampleWorkflowSpec(
+        "review-labels-time-series",
+        "Image Review",
+        "Time-series Intensity and Label Review",
+        "synthetic-image-review-labels-time-series.json",
+        ("VIPP review time-series intensity", "VIPP review time-series labels"),
+        "Navigate four aligned labelled volumes with synchronized time, slices "
+        "and camera while retaining categorical object IDs.",
+    ),
+    ExampleWorkflowSpec(
+        "review-rgb-index-3d",
+        "Image Review",
+        "3D RGB and Synthetic Index Review",
+        "synthetic-image-review-rgb-index-3d.json",
+        ("VIPP review 3D RGB composite", "VIPP review 3D synthetic index"),
+        "Compare an explicitly declared RGB volume with a colour-mapped 0–1 "
+        "phantom index. The index is synthetic and is not a RACC calculation.",
+    ),
+    ExampleWorkflowSpec(
         "tracking-spots-2d",
         "Tracking",
         "2D Spots, Missing Frame and Crossing Review",

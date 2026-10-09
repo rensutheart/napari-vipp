@@ -1392,7 +1392,8 @@ def build_workflow() -> tuple[
         "correct by Y=-4.25, X=+6.5 pixels. Apply Transform resamples the original "
         "once; Compare Images checks only valid coverage, with intensity range 1. "
         "Inspect the transform and diagnostics outputs; scores are not proof "
-        "of biological correspondence.",
+        "of biological correspondence. Open Review on Review Images to compare "
+        "the aligned result beside the reference without changing any pixels.",
         -440,
         11680,
     )
@@ -1428,6 +1429,7 @@ def build_workflow() -> tuple[
         data_range=1.0,
         window_size=7,
     )
+    registration_review = place("review_images", 1240, 12400)
     moving_tunnel = add_tunnel("Registration moving image", registration_moving)
     reference_tunnel = add_tunnel(
         "Registration reference image", registration_reference
@@ -1451,6 +1453,13 @@ def build_workflow() -> tuple[
         target_port=2,
         source_port=1,
         tunnel_name=coverage_tunnel,
+    )
+    wire(registration_reference, registration_review, tunnel_name=reference_tunnel)
+    wire(
+        registration_apply,
+        registration_review,
+        target_port=1,
+        tunnel_name=aligned_tunnel,
     )
 
     # Lane 11 explicitly removes T and C before native 2D template matching.

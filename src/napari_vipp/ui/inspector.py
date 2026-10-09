@@ -122,6 +122,8 @@ _THRESHOLD_DIAGNOSTIC_OPERATION_IDS = frozenset(
 
 def node_card_result_action_label(spec: OperationSpec) -> str:
     """Name a direct histogram/measurement window action, when appropriate."""
+    if spec.presentation_only:
+        return "Open review…"
     if not any(port.output_type == "table" for port in spec.output_ports):
         return ""
     if spec.id == "intensity_histogram":
@@ -318,6 +320,16 @@ def inspector_profile(
     """
 
     operation_id = str(spec.id)
+    if spec.presentation_only:
+        return InspectorProfile(
+            operation_id=operation_id,
+            parameter_title="Image review",
+            primary_sections=(PARAMETERS_SECTION,),
+            show_connected_inputs=True,
+            output_action_kind="none",
+            supports_pin=False,
+            execution_is_manual=False,
+        )
     is_source = operation_id == "input"
     is_writer = operation_id in _WRITER_OPERATION_IDS
     is_multi_output = bool(spec.is_multi_output)

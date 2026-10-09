@@ -372,12 +372,26 @@ def test_registered_operation_specs_match_callable_and_ui_contracts():
     assert REGISTRATION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
     assert DETECTION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
     assert TIME_DETECTION_RUNTIME_KEYWORDS.keys() <= set(operation_ids)
+    assert {spec.id for spec in NODE_LIBRARY if spec.presentation_only} == {
+        "review_images"
+    }
 
     for spec in NODE_LIBRARY:
         assert spec.execution_policy in EXECUTION_POLICIES, spec.id
         if spec.inputs:
             assert spec.max_inputs == len(spec.inputs), spec.id
-        assert (spec.function is not None) == spec.has_input, spec.id
+        if spec.presentation_only:
+            # A display sink consumes image references, not scientific inputs
+            # to a callable. Display controls belong to inspector metadata.
+            assert spec.has_input, spec.id
+            assert spec.function is None, spec.id
+            assert spec.output_type == "none", spec.id
+            assert spec.output_ports == (), spec.id
+            assert spec.output_factory is None, spec.id
+            assert spec.parameters == (), spec.id
+            assert not spec.supports_bypass, spec.id
+        else:
+            assert (spec.function is not None) == spec.has_input, spec.id
         if spec.function is not None:
             signature_params = tuple(
                 inspect.signature(spec.function).parameters.values()

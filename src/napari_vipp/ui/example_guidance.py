@@ -32,6 +32,102 @@ class ExampleGuidance:
 
 EXAMPLE_GUIDANCE_BY_ID: Mapping[str, ExampleGuidance] = MappingProxyType(
     {
+        "review-channels-2d": ExampleGuidance(
+            purpose="Compare channels without changing the scientific image values.",
+            data=(
+                "Two calibrated scalar planes with constructed partially "
+                "overlapping structures."
+            ),
+            explore=(
+                "Open Review from the review node after its sources are calculated.",
+                "Compare red and green panes with linked zoom and pan.",
+                "Switch to overlay and tune each channel's black and white levels.",
+            ),
+            results=(
+                "Read-only linked views",
+                "Saved display settings, not a new image",
+            ),
+            try_this=(
+                "Increase green opacity and change its white level; "
+                "source pixels must remain unchanged."
+            ),
+            caution=(
+                "Yellow overlap is a display cue, not a quantitative "
+                "colocalization measurement."
+            ),
+        ),
+        "review-mask-3d": ExampleGuidance(
+            purpose=(
+                "Inspect a segmentation overlay beside its original intensity volume."
+            ),
+            data=(
+                "Two analytical physical spheres with unequal Z/Y/X spacing and a "
+                "Boolean construction mask."
+            ),
+            explore=(
+                "Open Review and compare intensity with intensity plus mask.",
+                "Rotate both 3D views together, then switch to 2D slices.",
+                "Change foreground colour and opacity without changing the mask.",
+            ),
+            results=("Transparent-background mask overlay", "Linked 2D and 3D review"),
+            try_this=(
+                "Set the right pane to Image B alone, then restore Image A + Image B."
+            ),
+            caution=(
+                "The mask is authored geometry; reviewing it does not validate "
+                "a segmentation method."
+            ),
+        ),
+        "review-labels-time-series": ExampleGuidance(
+            purpose=(
+                "Review categorical labels and intensity through time on the same grid."
+            ),
+            data="Four anisotropic volumes with two constructed label IDs, 7 and 42.",
+            explore=(
+                "Advance time and check that both panes show the same frame.",
+                "Use shared time and slice controls; rotate with linked viewpoints.",
+                "Adjust label opacity while keeping original object IDs intact.",
+            ),
+            results=(
+                "Read-only time-series review",
+                "Original categorical label values",
+            ),
+            try_this=(
+                "Turn off Link viewpoint and rotate or pan the panes independently; "
+                "their timepoint and slice still stay shared."
+            ),
+            caution=(
+                "This display fixture does not perform detection, tracking "
+                "or identity inference."
+            ),
+        ),
+        "review-rgb-index-3d": ExampleGuidance(
+            purpose=(
+                "Compare original RGB colours with a meaningful fixed scalar "
+                "colour scale."
+            ),
+            data=(
+                "An explicitly declared 8-bit RGB volume and an aligned "
+                "constructed index between zero and one."
+            ),
+            explore=(
+                "Compare RGB on the left with a colour-mapped index on the right.",
+                "Keep the index scale at zero to one when hiding weak values.",
+                "Inspect linked RGB slices without stretching their original colours.",
+            ),
+            results=(
+                "Preserved original RGB colours",
+                "Numeric scalar-index display, not RGB conversion",
+            ),
+            try_this=(
+                "Hide low index values and check that the colour scale "
+                "remains zero to one."
+            ),
+            caution=(
+                "This index is a spatial phantom, not computed RACC "
+                "or a colocalization result."
+            ),
+        ),
         "tracking-spots-2d": ExampleGuidance(
             purpose=(
                 "Link detected spots while keeping missing frames and "
