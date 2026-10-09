@@ -723,6 +723,7 @@ from napari_vipp.ui.plots import (
 from napari_vipp.ui.plots import (
     _qcolor_from_channel_color as _qcolor_from_channel_color,
 )
+from napari_vipp.ui.plugin_dock import install_plugin_dock_restorer
 from napari_vipp.ui.presentation_settings import (
     THUMBNAIL_RESOLUTION_CHOICES,
     THUMBNAIL_STATISTICS_POLICY_CHOICES,
@@ -2202,6 +2203,7 @@ class VippWidget(QWidget):
             self._refresh_source_preview_for_current_dims
         )
         self._dock_chrome_configured = False
+        self._plugin_dock_restorer = None
         self._dock_window_behavior_configured = False
         self._floating_dock_configuration_warning = ""
         self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
@@ -4775,7 +4777,15 @@ class VippWidget(QWidget):
         if self._closing or not isalive(self):
             return
         dock = self._dock_widget()
-        if dock is None or self._dock_chrome_configured:
+        if dock is None:
+            return
+        if self._plugin_dock_restorer is None:
+            window = self._dock_main_window(dock)
+            if window is not None:
+                self._plugin_dock_restorer = install_plugin_dock_restorer(
+                    self, dock, window, self._lifecycle
+                )
+        if self._dock_chrome_configured:
             return
         try:
             if not self._dock_window_behavior_configured:

@@ -18,6 +18,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Validation and release
 
+- [Floating VIPP recovery on Windows](validation/floating-dock-windows-2026-10-09.md):
+  native taskbar registration, plugin reuse and minimized-window recovery.
+
 - [ImageJ Gaussian compatibility](validation/imagej-gaussian-compatibility.md):
   bounded independent bytecode references and tissue mask reproduction evidence.
 

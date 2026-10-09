@@ -12,6 +12,7 @@ from napari_vipp._widget import (
     VippWidget,
     _example_workflow_path,
 )
+from napari_vipp.ui.plugin_dock import VIPP_DOCK_NAME
 
 _LEGACY_ALIASES = {
     "intensity": "object-intensity",
@@ -37,7 +38,7 @@ def main(argv: list[str] | None = None) -> None:
     viewer.window.add_dock_widget(
         widget,
         area="bottom",
-        name="VIPP Workflow",
+        name=VIPP_DOCK_NAME,
     )
     _load_selected_workflow(widget, workflow)
     if selected_node:

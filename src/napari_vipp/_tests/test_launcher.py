@@ -170,13 +170,15 @@ def test_application_brands_only_explicit_desktop_launch(qtbot, monkeypatch, des
 
     viewer_calls = []
     branding_calls = []
+    dock_calls = []
     dock_window = object()
+
+    def add_dock_widget(widget, **kwargs):
+        dock_calls.append((widget, kwargs))
+        return SimpleNamespace(window=lambda: dock_window)
+
     viewer = SimpleNamespace(
-        window=SimpleNamespace(
-            add_dock_widget=lambda *_args, **_kwargs: SimpleNamespace(
-                window=lambda: dock_window
-            )
-        ),
+        window=SimpleNamespace(add_dock_widget=add_dock_widget),
         show=lambda **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -202,6 +204,14 @@ def test_application_brands_only_explicit_desktop_launch(qtbot, monkeypatch, des
         == 0
     )
     assert viewer_calls == [{"title": "VIPP", "show": False}]
+    # The standalone editor must be discoverable by napari's plugin command,
+    # which reuses docks by this registry key rather than by their title.
+    assert len(dock_calls) == 1
+    assert dock_calls[0][0].viewer is viewer
+    assert dock_calls[0][1] == {
+        "area": "bottom",
+        "name": "VIPP Workflow (napari-vipp)",
+    }
     assert branding_calls == (["identity", dock_window] if desktop else [])
 
 

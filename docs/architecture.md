@@ -1664,11 +1664,32 @@ unqualified.
 Window-state flags survive a floating-window flag rebuild.
 
 `ui/floating_dock.py:make_floating_dock_independent()` clears and verifies the
-Windows native owner of the floating dock so VIPP and napari have independent
-minimize/restore and taskbar behaviour. It does not remove the dock's Qt object
-parent, replace the viewer, or start another process. Redocking restores normal
-dock ownership and sizing; closing napari still owns plugin teardown. Keep this
-behaviour plugin-local; do not patch napari internals.
+Windows native owner of the floating dock and sets `WS_EX_APPWINDOW` while
+clearing `WS_EX_TOOLWINDOW`. Repair must inspect taskbar styles even when the
+native owner is already zero. A visible window uses the Windows hide/style/show
+sequence to refresh Shell registration, retaining its minimized/maximized
+state without activation. Unchanged native settings cause no frame or visibility
+changes. See Microsoft's [taskbar contract](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#managing-taskbar-buttons).
+This does not remove the dock's Qt object parent, replace the viewer, or start
+another process. Redocking restores normal dock ownership and sizing; closing
+napari still owns plugin teardown.
+
+Standalone and development launchers register their dock with
+`ui/plugin_dock.py:VIPP_DOCK_NAME`, matching napari's plugin registry key.
+Changing the window title does not change that key. Napari's normal Plugins
+action reuses the registered dock but toggles visibility, including for a
+minimized floating window. The plugin-local restorer observes only the owning
+main window's Plugins menu. It captures a minimized floating dock on menu open
+and restores that same dock after the VIPP command runs, clearing only the
+minimized state bit. Other actions, canceled menus, normal visible-window
+toggles, redocking, and close/shutdown do not restore a window. A weak latest-menu
+token invalidates captures from other viewers. The active Qt window's parent
+chain must reach the owning main window both when the shared plugin action
+triggers and when the queued restore runs, including if another viewer has no
+VIPP instance yet. Lifecycle-owned connections and generation checks prevent
+stale recovery. No pipeline,
+workflow, or cache replacement occurs. Keep this behaviour plugin-local; do
+not patch napari internals.
 
 ## Input, Output, Persistence, And Export
 

@@ -295,6 +295,8 @@ def _frame_capture_graph(widget: VippWidget, spec: CaptureSpec) -> None:
 
 
 def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
+    from napari_vipp.ui.plugin_dock import VIPP_DOCK_NAME
+
     viewer = napari.Viewer(title="VIPP documentation capture")
     viewer.theme = "dark"
     viewer.window.resize(1800, 1180)
@@ -302,7 +304,7 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
     dock = viewer.window.add_dock_widget(
         widget,
         area="bottom",
-        name="VIPP Workflow",
+        name=VIPP_DOCK_NAME,
     )
     qt_window = viewer_qt_window(viewer, anchor=dock)
     qt_window.resizeDocks([dock], [710], Qt.Vertical)

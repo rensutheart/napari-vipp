@@ -33,9 +33,12 @@
   redocking. Handle plain Qt title-bar notifications without assuming mouse
   event attributes exist.
 - Allow detached VIPP and napari to minimize and restore independently on
-  Windows, with separate taskbar windows. Keep the same workflow session and
-  napari viewer; redocking and napari's ownership of the plugin lifetime remain
-  intact. Native Linux/macOS window-manager behaviour is not yet qualified.
+  Windows, with explicit taskbar registration for the detached editor. Reopen
+  a minimized VIPP from napari's Plugins menu to restore the same workflow and
+  previous maximized state. Register standalone and development launchers under
+  the plugin's dock name so reopening cannot create a second editor. Redocking
+  and napari's ownership of the plugin lifetime remain intact. Native
+  Linux/macOS window-manager behaviour is not yet qualified.
 
 ## 0.16.0a3 - 2026-10-05
 
