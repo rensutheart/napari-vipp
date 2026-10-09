@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Calculate graph wire layouts in cancellable background work, with quick
+  temporary routes and combined updates so complex connections do not freeze
+  editing. Restore a single input tunnel with **Replace with wire**, or all
+  subscribers of an output tunnel with **Replace with wires**. These edits and
+  their undo/redo retain connection ports and calculated results.
+
 - Give graph wires from different output ports separate routing lanes so
   connections remain traceable when they converge and separate. Branches from
   the same output can share a natural trunk. Right-click near

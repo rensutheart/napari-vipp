@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "recorded_date": "2026-10-09",
+  "status": "unreleased local implementation evidence",
+  "environment": {
+    "os": "Windows",
+    "python": "3.12.9",
+    "qt_platform": "offscreen",
+    "package": "source imported through PYTHONPATH",
+    "scientific_operations_executed": false,
+    "live_editor_used": false
+  },
+  "method": {
+    "phase": "ready",
+    "units": "milliseconds",
+    "full_pass": "Explicit route-cache invalidation followed by synchronous reroute",
+    "baseline_variant": "Source-group separation with scalar collision clipping",
+    "final_variant": "Source-group separation with scoped vectorized collision clipping and owned background snapshots",
+    "baseline_repetitions": 3,
+    "final_repetitions": 2,
+    "profiled_passes_in_timings": false,
+    "background_timer_interval_ms": 10,
+    "background_request": "Immediate GUI call; deferred snapshot and worker time excluded",
+    "background_completion": "Request through current result publication, including coalescing timer and GUI application",
+    "snapshot": "Separate GUI-side owned geometry capture"
+  },
+  "source": {
+    "final_graph_file": "src/napari_vipp/_graph.py",
+    "final_graph_sha256": "43beccec4cac9780c3b45834aed249f655c740fc366ded37d3e82653ef8ceadd",
+    "final_graph_modified_utc": "2026-10-09T16:29:48.5933560Z",
+    "final_result_modified_utc": "2026-10-09T16:31:33.9760200Z",
+    "measured_benchmark_file": "scripts/benchmark_wire_routing.py",
+    "measured_benchmark_sha256": "a2716d6966b4c7ac1eb3f7406eaad71f014c9a5c101aa75ec1d1b79a8c37b26e",
+    "benchmark_followup": "Only the module docstring was expanded after measurement",
+    "baseline_graph_sha256": null,
+    "local_baseline_record": ".cache/routing-performance-background.json",
+    "local_baseline_record_sha256": "af0ffd5d1b0002af66d96e5969976cee1e6e3bfb5e378cea8f43386a904a2819",
+    "local_final_record": ".cache/routing-performance-final-verified.json",
+    "local_final_record_sha256": "86c224b760d5237bc9c741b49ea122e003a7d6a8ca00c8dfb3c5083e3c9b3ccc"
+  },
+  "workflows": [
+    {
+      "name": "Local refined workflow",
+      "input_sha256": "dd1d2b93fc45d3ec5a76931482066f9ff4a0b66d2ab184c31c8a94cfe0415e8b",
+      "input_tracked": false,
+      "nodes": 27,
+      "visible_wires": 29,
+      "baseline_full_pass_ms": [21.053399992524646, 21.397700009401888, 21.26019999559503],
+      "baseline_median_full_pass_ms": 21.26019999559503,
+      "final_full_pass_ms": [14.810399996349588, 14.67380000394769],
+      "final_median_full_pass_ms": 14.742100000148639,
+      "final_unchanged_pass_ms": 0.32980000833049417,
+      "visibility_search_calls": 0,
+      "background": {
+        "snapshot_ms": [0.41090000013355166, 0.4023999936180189],
+        "request_ms": [0.2506000018911436, 0.2556999970693141],
+        "completion_ms": [32.628000000840984, 31.608100005541928],
+        "heartbeat_count": 6,
+        "median_heartbeat_gap_ms": 10.049900003650691,
+        "maximum_heartbeat_gap_ms": 20.911399988108315,
+        "geometry_matches_synchronous": true
+      }
+    },
+    {
+      "name": "Bundled exhaustive inspector",
+      "input": "examples/exhaustive-inspector-showcase.json",
+      "input_sha256": "db116e802aa7364d587a7f8d98fd6bd7bd2aae7fb0c920015ec3a1dbde48993a",
+      "input_tracked": true,
+      "nodes": 164,
+      "visible_wires": 124,
+      "baseline_full_pass_ms": [688.5227000020677, 580.482999997912, 601.1647000123048],
+      "baseline_median_full_pass_ms": 601.1647000123048,
+      "final_full_pass_ms": [416.5200999996159, 427.5078000064241],
+      "final_median_full_pass_ms": 422.01395000302,
+      "final_unchanged_pass_ms": 2.112899994244799,
+      "visibility_search_calls": 0,
+      "background": {
+        "snapshot_ms": [4.258600005414337, 3.9520999998785555],
+        "request_ms": [1.2348000018391758, 1.084100003936328],
+        "completion_ms": [386.046500003431, 401.09970000048634],
+        "heartbeat_count": 78,
+        "median_heartbeat_gap_ms": 9.99085000512423,
+        "maximum_heartbeat_gap_ms": 12.775800001691096,
+        "geometry_matches_synchronous": true
+      }
+    }
+  ],
+  "limits": [
+    "Few local repetitions; no universal timing or worst-case latency guarantee",
+    "Timer gaps measure event-loop scheduling, not actual drawing or frame rate",
+    "An earlier final run recorded a 79.6 ms maximum timer gap during concurrent test activity",
+    "Native Linux/macOS, installed or frozen builds, and arbitrary large/pathological workflows are unqualified",
+    "No claim of a completed full repository test suite"
+  ]
+}

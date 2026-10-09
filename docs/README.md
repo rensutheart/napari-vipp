@@ -115,6 +115,10 @@ These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not
 override the current planning documents above.
 
+- [Workflow wire routing and responsiveness](wire-routing-responsiveness.md):
+  source-aware shared trunks, owned background geometry, cancellation and dated
+  offscreen routing benchmarks.
+
 - [Workflow-tab preview isolation](workflow-tab-preview-isolation.md): runtime-only
   camera/dimension restoration, owned Crop retirement and focused regression scope.
 

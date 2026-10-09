@@ -72,11 +72,19 @@ outside the original port corridor. A capped rectilinear search is used only
 when the ordinary candidates are blocked. Overlapping cards can make a clear
 route impossible; endpoint protection takes priority over other intersections.
 All of this is presentation-only: routing does not change topology or execution.
+The interactive widget enables `set_background_wire_routing(True)`: a short timer
+combines requests, workers receive numerical snapshots, and cancelled or stale
+results never touch the current scene. Pointer movement increments the snapshot
+revision once per group move. Temporary endpoint-card routes keep the ports
+connected while final routing completes. Standalone renderers use synchronous
+routes; interactive checks can wait for `wire_routing_pending` to become false.
 
 `test_graph_wire_routing.py` covers backward/multi-port connections, movement,
 card growth and detours. `scripts/check_wire_routing_layouts.py --output-dir PATH`
-renders six actual Qt layouts before, during and after a drag; optional
+renders eight actual Qt layouts before, during and after a drag; optional
 `--baseline-ref REF` renders an earlier implementation without changing files.
+`scripts/benchmark_wire_routing.py` records routing, snapshot and background
+request times plus an event-loop heartbeat for actual saved workflows.
 
 ## Rescale Output Direction
 

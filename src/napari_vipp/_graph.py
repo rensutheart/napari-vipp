@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -11,7 +12,20 @@ from html import escape
 from math import ceil
 
 import numpy as np
-from qtpy.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from qtpy.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRectF,
+    QRunnable,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+    Slot,
+)
 from qtpy.QtGui import (
     QColor,
     QFont,
@@ -2358,6 +2372,10 @@ class NodeProxy(QGraphicsProxyWidget):
             view = _view_for_scene(self.scene())
             if view is not None:
                 if view._node_drag_in_progress:
+                    if view._background_wire_routing:
+                        # The group gesture invalidates once after every card
+                        # moved; do not snapshot an intermediate group layout.
+                        return result
                     for connection in self.connections:
                         connection.update_path(obstacle_aware=False)
                     return result
@@ -2472,6 +2490,96 @@ class NodeProxy(QGraphicsProxyWidget):
         return False
 
 
+def _wire_connection_order(connection) -> tuple[str, int, str, int]:
+    return (
+        connection.source_id, connection.source_port,
+        connection.target_id, connection.target_port,
+    )
+
+
+@dataclass(frozen=True)
+class _WireRouteInput:
+    key: tuple[str, int, str, int]
+    start: tuple[float, float]
+    end: tuple[float, float]
+    endpoint_rects: tuple[tuple[float, float, float, float], ...]
+    obstacles: tuple[tuple[float, float, float, float], ...]
+
+
+@dataclass(frozen=True)
+class _WireRouteResult:
+    generation: int
+    revision: int
+    obstacle_aware: bool
+    routes: tuple = ()
+    cancelled: bool = False
+    error: str = ""
+
+
+class _WireRoutingCancelled(Exception):
+    pass
+
+
+def _check_wire_routing_cancelled(cancel_callback) -> None:
+    if cancel_callback is not None and cancel_callback():
+        raise _WireRoutingCancelled
+
+
+class _WireRoutingSignals(QObject):
+    finished = Signal(object)
+
+
+class _WireRoutingWorker(QRunnable):
+    def __init__(self, generation, revision, obstacle_aware, requests, shutdown):
+        super().__init__()
+        self.generation = generation
+        self.revision = revision
+        self.obstacle_aware = obstacle_aware
+        self.requests = requests
+        self.shutdown = shutdown
+        self.cancel_event = threading.Event()
+        self.signals = _WireRoutingSignals()
+
+    def cancelled(self):
+        return self.cancel_event.is_set() or self.shutdown.is_set()
+
+    def run(self) -> None:
+        routes = []
+        try:
+            for request in self.requests:
+                _check_wire_routing_cancelled(self.cancelled)
+                peers = tuple(
+                    points for key, _path, points in routes
+                    if key[:2] != request.key[:2]
+                )
+                path = _wire_path(
+                    QPointF(*request.start), QPointF(*request.end),
+                    endpoint_rects=tuple(
+                        QRectF(*rect) for rect in request.endpoint_rects
+                    ),
+                    obstacles=tuple(QRectF(*rect) for rect in request.obstacles),
+                    peer_paths=peers, cancel_callback=self.cancelled,
+                )
+                routes.append((request.key, path, _flatten_wire_path(path)))
+            _check_wire_routing_cancelled(self.cancelled)
+            result = _WireRouteResult(
+                self.generation, self.revision, self.obstacle_aware, tuple(routes)
+            )
+        except _WireRoutingCancelled:
+            result = _WireRouteResult(
+                self.generation, self.revision, self.obstacle_aware, cancelled=True
+            )
+        except Exception as exc:
+            result = _WireRouteResult(
+                self.generation, self.revision, self.obstacle_aware,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        try:
+            self.signals.finished.emit(result)
+        except RuntimeError:
+            pass  # The application may have closed while cancelling this worker.
+
+
 class ConnectionItem(QGraphicsPathItem):
     HIT_WIDTH = 18.0
     PREVIEW_STATES = {"full", "partial", "place", "incompatible"}
@@ -2507,6 +2615,9 @@ class ConnectionItem(QGraphicsPathItem):
         end = self.target.port_scene_pos("input", self.target_port)
         view = _view_for_scene(self.scene())
         revision = int(view.route_revision) if view is not None else -1
+        if view is not None and view._background_wire_routing:
+            view.reroute_connections(obstacle_aware=obstacle_aware)
+            return
         endpoint_rects = (
             self.source.sceneBoundingRect(),
             self.target.sceneBoundingRect(),
@@ -2739,6 +2850,7 @@ class PipelineGraphView(QGraphicsView):
     port_context_requested = Signal(str, str, int, object)
     tunnel_selected = Signal(str)
     tunnel_reroute_requested = Signal(str, str, int)
+    tunnel_wires_requested = Signal(str, str, int)
     tunnel_insert_requested = Signal(str, QPointF)
     tunnel_node_insert_requested = Signal(str, str, QPointF)
     tunnel_node_splice_requested = Signal(str, str, object, object)
@@ -2823,6 +2935,19 @@ class PipelineGraphView(QGraphicsView):
         self._rerouting_connections = False
         self._node_drag_in_progress = False
         self._route_revision = 0
+        self._background_wire_routing = False
+        self._wire_routing_generation = 0
+        self._wire_routing_worker = None
+        self._wire_routing_pending_mode: bool | None = None
+        self._wire_routing_pending_revision = -1
+        self._wire_routing_applied_revision = -1
+        self._wire_routing_applied_full = False
+        self._wire_routing_shutdown = threading.Event()
+        self.destroyed.connect(self._wire_routing_shutdown.set)
+        self._wire_routing_timer = QTimer(self)
+        self._wire_routing_timer.setSingleShot(True)
+        self._wire_routing_timer.setInterval(16)
+        self._wire_routing_timer.timeout.connect(self._start_background_wire_routes)
         self._processing_timer = QTimer(self)
         self._processing_timer.setInterval(80)
         self._processing_timer.timeout.connect(self._advance_processing_spinners)
@@ -2889,6 +3014,7 @@ class PipelineGraphView(QGraphicsView):
         preserve_view: bool = False,
     ) -> None:
         preserved_center = self.mapToScene(self.viewport().rect().center())
+        self._cancel_background_wire_routes()
         preserved_transform = QTransform(self.transform())
         preserved_base_transform = QTransform(self._base_transform)
         preserved_zoom = float(self._zoom_percent)
@@ -3311,6 +3437,7 @@ class PipelineGraphView(QGraphicsView):
         # Attached wires still follow their ports during the gesture, while a
         # single exact obstacle-aware reroute is performed on release.
         self._node_drag_in_progress = True
+        moved = False
         for node_id, start_position in start_positions.items():
             proxy = self._proxies.get(node_id)
             if proxy is None:
@@ -3321,7 +3448,11 @@ class PipelineGraphView(QGraphicsView):
             if _points_close(old_position, new_position):
                 continue
             proxy.setPos(new_position)
+            moved = True
             self._move_attached_notes(node_id, new_position - old_position)
+        if moved and self._background_wire_routing:
+            # Pointer moves must invalidate worker results as well as previews.
+            self._mark_graph_geometry_changed()
         # Update peers after all endpoints moved, without scanning scene cards.
         self.reroute_connections(obstacle_aware=False)
 
@@ -3540,6 +3671,9 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         if self._rerouting_connections:
             return
+        if self._background_wire_routing:
+            self._request_background_wire_routes(obstacle_aware)
+            return
         badge_state = (
             self._tunnel_badge_routing_state() if obstacle_aware else None
         )
@@ -3604,6 +3738,170 @@ class PipelineGraphView(QGraphicsView):
                 self._routed_tunnel_badge_state = badge_state
         finally:
             self._rerouting_connections = False
+
+    def set_background_wire_routing(self, enabled: bool) -> None:
+        """Use coalesced background layouts in the interactive workflow editor.
+
+        Standalone graph renderers can retain synchronous, immediately complete
+        geometry. Workers receive owned values, never scene items or widgets.
+        """
+        enabled = bool(enabled)
+        if enabled == self._background_wire_routing:
+            return
+        self._cancel_background_wire_routes()
+        self._background_wire_routing = enabled
+        self.reroute_connections()
+
+    @property
+    def wire_routing_pending(self) -> bool:
+        return (
+            self._wire_routing_worker is not None
+            or self._wire_routing_pending_mode is not None
+        )
+
+    def _cancel_background_wire_routes(self) -> None:
+        self._wire_routing_generation += 1
+        self._wire_routing_timer.stop()
+        self._wire_routing_pending_mode = None
+        self._wire_routing_pending_revision = -1
+        self._wire_routing_applied_revision = -1
+        if self._wire_routing_worker is not None:
+            self._wire_routing_worker.cancel_event.set()
+
+    def _request_background_wire_routes(self, obstacle_aware: bool) -> None:
+        if not self._connections:
+            self._cancel_background_wire_routes()
+            return
+        revision = self.route_revision
+        if revision == self._wire_routing_applied_revision and (
+            self._wire_routing_applied_full or not obstacle_aware
+        ):
+            return
+        if self._wire_routing_pending_revision == revision and (
+            self._wire_routing_pending_mode == obstacle_aware
+        ):
+            return
+        worker = self._wire_routing_worker
+        if worker is not None and not worker.cancel_event.is_set() and (
+            worker.revision == revision and worker.obstacle_aware == obstacle_aware
+        ):
+            return
+        self._wire_routing_generation += 1
+        self._wire_routing_pending_mode = obstacle_aware
+        self._wire_routing_pending_revision = revision
+        if worker is not None:
+            worker.cancel_event.set()
+        else:
+            self._wire_routing_timer.start()
+        # Follow moved endpoints immediately. This bounded preview checks only
+        # the two connected cards; final obstacle/peer routing stays off the UI.
+        for connection in self._connections:
+            start = connection.source.port_scene_pos("output", connection.source_port)
+            end = connection.target.port_scene_pos("input", connection.target_port)
+            points = connection._route_points
+            if points and _points_close(points[0], start, 0.001) and (
+                _points_close(points[-1], end, 0.001)
+            ):
+                continue
+            path = _card_avoiding_wire_path(
+                start, end, endpoint_rects=(
+                    connection.source.sceneBoundingRect(),
+                    connection.target.sceneBoundingRect(),
+                ),
+            )
+            connection.setPath(path)
+            connection._route_points = _flatten_wire_path(path)
+            connection._route_serial += 1
+            connection._last_route_key = None
+
+    def _wire_route_snapshot(self, obstacle_aware: bool) -> tuple[_WireRouteInput, ...]:
+        # Query each live card/badge once, before leaving the GUI thread.
+        cards = {
+            node_id: proxy.sceneBoundingRect().getRect()
+            for node_id, proxy in self._proxies.items()
+        }
+        margin = float(self.WIRE_OBSTACLE_MARGIN)
+        padded_cards = {
+            node_id: QRectF(*rect).adjusted(-margin, -margin, margin, margin).getRect()
+            for node_id, rect in cards.items()
+        } if obstacle_aware else {}
+        badges = tuple(
+            ((port.node_id, port.port_index) if port.kind == "output" else None,
+             port._tunnel_badge.sceneBoundingRect().adjusted(-4, -4, 4, 4).getRect())
+            for proxy in self._proxies.values()
+            for port in (*proxy.input_ports, *proxy.output_ports)
+            if port._tunnel_label and port._tunnel_badge.isVisible()
+        ) if obstacle_aware else ()
+        requests = []
+        for connection in sorted(self._connections, key=_wire_connection_order):
+            start = connection.source.port_scene_pos("output", connection.source_port)
+            end = connection.target.port_scene_pos("input", connection.target_port)
+            source = (connection.source_id, connection.source_port)
+            obstacles = tuple(
+                rect for node_id, rect in padded_cards.items()
+                if node_id not in {connection.source_id, connection.target_id}
+            ) + tuple(rect for owner, rect in badges if owner != source)
+            requests.append(_WireRouteInput(
+                _wire_connection_order(connection),
+                (start.x(), start.y()), (end.x(), end.y()),
+                (cards[connection.source_id], cards[connection.target_id]),
+                obstacles,
+            ))
+        return tuple(requests)
+
+    def _start_background_wire_routes(self) -> None:
+        if self._wire_routing_worker is not None or (
+            self._wire_routing_pending_mode is None
+        ):
+            return
+        mode = self._wire_routing_pending_mode
+        self._wire_routing_pending_mode = None
+        self._wire_routing_pending_revision = -1
+        worker = _WireRoutingWorker(
+            self._wire_routing_generation, self.route_revision, mode,
+            self._wire_route_snapshot(mode), self._wire_routing_shutdown,
+        )
+        self._wire_routing_worker = worker
+        worker.signals.finished.connect(self._finish_background_wire_routes)
+        QThreadPool.globalInstance().start(worker)
+
+    @Slot(object)
+    def _finish_background_wire_routes(self, result: _WireRouteResult) -> None:
+        self._wire_routing_worker = None
+        if self._wire_routing_pending_mode is not None:
+            self._wire_routing_timer.start()
+            return
+        if result.generation != self._wire_routing_generation or (
+            result.revision != self.route_revision or result.cancelled
+        ):
+            return
+        if result.error:
+            self.status_message.emit(f"Could not update wire layout: {result.error}")
+            return
+        connections = sorted(self._connections, key=_wire_connection_order)
+        if tuple(_wire_connection_order(item) for item in connections) != tuple(
+            key for key, _path, _points in result.routes
+        ):
+            return
+        for connection, (_key, path, points) in zip(
+            connections, result.routes, strict=True
+        ):
+            if path != connection.path():
+                connection.setPath(path)
+                connection._route_points = points
+                connection._route_serial += 1
+            connection._last_route_key = None
+        for connection in connections:
+            peers, _, _ = self.connection_routing_context(connection)
+            connection._last_peer_serials = tuple(peer._route_serial for peer in peers)
+        self._wire_routing_applied_revision = result.revision
+        self._wire_routing_applied_full = result.obstacle_aware
+        if result.obstacle_aware:
+            self._routed_tunnel_badge_state = self._tunnel_badge_routing_state()
+
+    def closeEvent(self, event):  # noqa: N802
+        self._cancel_background_wire_routes()
+        super().closeEvent(event)
 
     def _connection_route_rect(self, connection: ConnectionItem) -> QRectF:
         start = connection.source.port_scene_pos("output", connection.source_port)
@@ -5234,10 +5532,15 @@ class PipelineGraphView(QGraphicsView):
             return
         menu = QMenu(self)
         insert_action = menu.addAction(f"Insert node before '{tunnel_name}'...")
+        wires_action = menu.addAction("Replace with wires")
         tunnel_options_action = menu.addAction("Tunnel options...")
         action = _exec_menu(menu, global_pos)
         if action == insert_action:
             self.tunnel_insert_requested.emit(tunnel_name, QPointF(scene_pos))
+        elif action == wires_action:
+            self.tunnel_wires_requested.emit(
+                tunnel_name, source_port.node_id, source_port.port_index
+            )
         elif action == tunnel_options_action:
             self.port_context_requested.emit(
                 source_port.kind,
@@ -5798,8 +6101,10 @@ def _wire_path(
     peer_paths: tuple[tuple[QPointF, ...], ...] = (),
     start_lane: float = 0.0,
     end_lane: float = 0.0,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> QPainterPath:
     """Keep card clearance and give distinct wires separate occupied lanes."""
+    _check_wire_routing_cancelled(cancel_callback)
     reachable_obstacles = tuple(
         rect for rect in obstacles if not any(
             rect.left() < point.x() < rect.right()
@@ -5815,10 +6120,12 @@ def _wire_path(
             start, end, obstacles=reachable_obstacles,
             endpoint_rects=endpoint_rects, peer_paths=peer_paths,
             start_lane=start_lane, end_lane=end_lane,
+            cancel_callback=cancel_callback,
         )
     peer_paths = _WireReservations(peer_paths)
     ordinary = _card_avoiding_wire_path(
-        start, end, obstacles=obstacles, endpoint_rects=endpoint_rects
+        start, end, obstacles=obstacles, endpoint_rects=endpoint_rects,
+        cancel_callback=cancel_callback,
     )
     if not start_lane and not end_lane and not _wire_lane_conflict(
         _flatten_wire_path(ordinary), peer_paths
@@ -5828,7 +6135,7 @@ def _wire_path(
         rect.adjusted(0.5, 0.5, -0.5, -0.5) for rect in endpoint_rects
         if rect.isValid() and rect.width() > 1 and rect.height() > 1
     )
-    blockers = protected + tuple(obstacles)
+    blockers = _WireObstacles(protected + tuple(obstacles))
     first, last = _wire_port_stubs(start, end, blockers)
     # Curved departure/arrival connectors separate at the port itself. A shared
     # straight stub would still hide which branch belongs to which destination.
@@ -5846,6 +6153,7 @@ def _wire_path(
     search_anchors = []
     column_shift = 12.0 * nearby_peers
     for offset in offsets:
+        _check_wire_routing_cancelled(cancel_callback)
         # Shift both axes: occupied vertical departures need another x lane,
         # just as horizontal runs need another y lane.
         a = QPointF(first.x() + column_shift + abs(offset),
@@ -5853,6 +6161,7 @@ def _wire_path(
         b = QPointF(last.x() - column_shift - abs(offset),
                     last.y() + end_lane + offset)
         for middle in _wire_middle_candidates(a, b, blockers):
+            _check_wire_routing_cancelled(cancel_callback)
             path = _join_wire_ports(start, end, a, b, middle)
             points = _flatten_wire_path(path)
             collision = _route_collision_penalty(points, blockers)
@@ -5869,7 +6178,8 @@ def _wire_path(
     # needing multiple obstacle detours pay for the bounded visibility search.
     for a, b in search_anchors:
         middle = _wire_visibility_detour(
-            a, b, blockers, protected, peer_paths, port_stubs=False
+            a, b, blockers, protected, peer_paths, port_stubs=False,
+            cancel_callback=cancel_callback,
         )
         if middle is None:
             continue
@@ -5884,6 +6194,7 @@ def _wire_path(
     # Outer lanes vary on every axis so even this fallback separates peers.
     index = 0
     while index < len(peer_paths) * 4 + 4 or not fallback:
+        _check_wire_routing_cancelled(cancel_callback)
         index += 1
         shift = 12.0 * index
         a = QPointF(first.x() + shift, first.y() + start_lane + shift)
@@ -6002,7 +6313,8 @@ def _wire_lane_conflict(
 
 
 def _card_avoiding_wire_path(
-    start: QPointF, end: QPointF, *, obstacles=(), endpoint_rects=()
+    start: QPointF, end: QPointF, *, obstacles=(), endpoint_rects=(),
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> QPainterPath:
     # Ports sit on the card boundary. Protect the interior without treating the
     # required contact at the port itself as an obstacle collision.
@@ -6014,7 +6326,7 @@ def _card_avoiding_wire_path(
     clean_obstacles = tuple(
         rect for rect in obstacles if rect.isValid() and not rect.isNull()
     )
-    all_obstacles = protected + clean_obstacles
+    all_obstacles = _WireObstacles(protected + clean_obstacles)
     bezier = _bezier_wire_path(start, end)
     if not all_obstacles:
         return bezier
@@ -6022,7 +6334,9 @@ def _card_avoiding_wire_path(
     if not _route_collision_penalty(bezier_points, all_obstacles):
         return bezier
 
-    candidates = _wire_route_candidates(start, end, all_obstacles, protected=protected)
+    candidates = _wire_route_candidates(
+        start, end, all_obstacles, protected=protected, cancel_callback=cancel_callback
+    )
     best_path, points, _score = min(
         candidates,
         key=lambda candidate: candidate[2],
@@ -6030,7 +6344,9 @@ def _card_avoiding_wire_path(
     if _route_collision_penalty(points, all_obstacles):
         # A few pleasant routes cover ordinary layouts. Only a blocked layout
         # pays for a bounded rectilinear search between obstacle-side lanes.
-        detour = _wire_visibility_detour(start, end, all_obstacles, protected)
+        detour = _wire_visibility_detour(
+            start, end, all_obstacles, protected, cancel_callback=cancel_callback
+        )
         if detour is not None:
             return detour
     return best_path
@@ -6057,6 +6373,7 @@ def _wire_route_candidates(
     obstacles: tuple[QRectF, ...],
     *,
     protected: tuple[QRectF, ...] = (),
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> list[tuple[QPainterPath, tuple[QPointF, ...], tuple[bool, float]]]:
     candidates = []
     bezier = _bezier_wire_path(start, end)
@@ -6074,6 +6391,7 @@ def _wire_route_candidates(
     # disappear from the candidate geometry in a crowded graph.
     blockers = protected + _route_relevant_obstacles(start, end, obstacles)
     for points in _orthogonal_route_candidates(start, end, blockers):
+        _check_wire_routing_cancelled(cancel_callback)
         clean = _clean_route_points(points)
         if len(clean) < 2 or _route_doubles_back(clean):
             continue
@@ -6238,6 +6556,7 @@ def _wire_visibility_detour(
     peer_paths: tuple[tuple[QPointF, ...], ...] = (),
     *,
     port_stubs: bool = True,
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> QPainterPath | None:
     """Bounded A* fallback for staggered cards that need more than one detour.
 
@@ -6296,6 +6615,7 @@ def _wire_visibility_detour(
     segment_clear = {}
     visits = 0
     while pending and visits < 12000:
+        _check_wire_routing_cancelled(cancel_callback)
         _estimate, cost, state = heappop(pending)
         if cost != costs[state]:
             continue
@@ -6395,12 +6715,62 @@ def _route_score(
     )
 
 
+class _WireObstacles(tuple):
+    """Owned rectangles and reusable numeric bounds for one route search."""
+
+    def __new__(cls, rectangles):
+        if isinstance(rectangles, cls):
+            return rectangles
+        rects = tuple(QRectF(rect) for rect in rectangles)
+        instance = super().__new__(cls, rects)
+        instance.bounds = np.array([rect.getRect() for rect in rects]).reshape(-1, 4)
+        instance.bounds[:, 2:] += instance.bounds[:, :2]
+        instance.bounds.flags.writeable = False
+        instance.valid = all(rect.isValid() for rect in rects)
+        return instance
+
+
 def _route_collision_penalty(
     points: tuple[QPointF, ...],
     obstacles: tuple[QRectF, ...],
 ) -> float:
     if len(points) < 2 or not obstacles:
         return 0.0
+    obstacles = _WireObstacles(obstacles)
+    if not obstacles.valid or (len(points) < 4 and len(obstacles) < 4):
+        return _scalar_route_collision_penalty(points, obstacles)
+    coordinates = np.array([(point.x(), point.y()) for point in points])
+    low, high = coordinates.min(axis=0) - 0.001, coordinates.max(axis=0) + 0.001
+    rectangles = obstacles.bounds
+    rectangles = rectangles[
+        np.all(rectangles[:, :2] < high, axis=1)
+        & np.all(low < rectangles[:, 2:], axis=1)
+    ]
+    if not len(rectangles):
+        return 0.0
+    starts, deltas = coordinates[:-1], np.diff(coordinates, axis=0)
+    enter = np.zeros((len(deltas), len(rectangles)))
+    leave = np.ones_like(enter)
+    valid = np.ones_like(enter, dtype=bool)
+    for axis in (0, 1):
+        origins, step = starts[:, axis, None], deltas[:, axis, None]
+        low_axis, high_axis = rectangles[None, :, axis], rectangles[None, :, axis + 2]
+        parallel = np.abs(step) < 1e-9
+        valid &= ~parallel | ((low_axis < origins) & (origins < high_axis))
+        safe_step = np.where(parallel, 1.0, step)
+        first = (low_axis - origins) / safe_step
+        last = (high_axis - origins) / safe_step
+        enter = np.where(parallel, enter, np.maximum(enter, np.minimum(first, last)))
+        leave = np.where(parallel, leave, np.minimum(leave, np.maximum(first, last)))
+    valid &= leave > enter
+    penalty = (
+        (leave - enter) * np.hypot(deltas[:, 0], deltas[:, 1])[:, None] + 25.0
+    )
+    return float(penalty[valid].sum())
+
+
+def _scalar_route_collision_penalty(points, obstacles) -> float:
+    """Small/invalid geometry fallback, also retained as a clipping oracle."""
     xs, ys = zip(*((point.x(), point.y()) for point in points), strict=True)
     bounds = QRectF(QPointF(min(xs), min(ys)), QPointF(max(xs), max(ys)))
     # A straight horizontal/vertical wire has zero-area bounds. Give its broad

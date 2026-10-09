@@ -64,8 +64,15 @@ ports in stable connection order. Positive-length collinear runs from different
 outputs are rejected; branches of the same output retain natural routes and may
 share a trunk. Isolated crossings remain permitted. Visible
 tunnel labels also reserve clearance, and label changes invalidate their routes.
+The workflow editor coalesces routing requests and computes complete paths on
+owned numerical geometry snapshots in a background worker. No worker accesses
+scene items, cards, or the pipeline. One running job and one replacement request
+bound work; edits cancel obsolete searches, and generation plus geometry revision
+checks reject stale results. The GUI draws bounded endpoint-card previews while
+the final peer/card-clear routes are pending. Standalone graph renderers retain
+synchronous routing for deterministic diagnostics.
 Node movement and connection addition/removal invalidate peer routes. During drag,
-the same wire separation and endpoint-card protection apply without scanning
+background peer routing and endpoint-card protection apply without scanning
 scene-wide card obstacles; release restores scene-wide obstacle routing. If an
 overlapping card buries a required port, that unavoidable obstacle is omitted
 while other card clearance and wire separation remain active. These paths and

@@ -85,9 +85,9 @@ def test_staggered_obstacles_use_clear_alternate_lanes(monkeypatch):
     calls = []
     original = graph._wire_visibility_detour
 
-    def traced(*args):
+    def traced(*args, **kwargs):
         calls.append(True)
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(graph, "_wire_visibility_detour", traced)
     path = _wire_path(start, end, obstacles=obstacles)
