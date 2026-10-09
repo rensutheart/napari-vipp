@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -560,6 +561,28 @@ def _metadata_source_label(format: str) -> str:
 def _parse_ome(xml: str | None):
     if not xml:
         return None
+    # Older writers used the spelled-out micrometer alias rather than the
+    # OME UnitsLength enum symbol. Normalize only these equivalent spatial
+    # unit attributes in the parser copy; original_metadata and file bytes
+    # retain the authored XML, and no numeric calibration is changed.
+    if "micromet" in xml:
+        root = ET.fromstring(xml)
+        namespace = root.tag.rpartition("}")[0] + "}" if "}" in root.tag else ""
+        attributes = {
+            f"{namespace}Pixels": (
+                "PhysicalSizeXUnit", "PhysicalSizeYUnit", "PhysicalSizeZUnit"
+            ),
+            f"{namespace}Plane": ("PositionXUnit", "PositionYUnit", "PositionZUnit"),
+        }
+        aliases = {"micrometer", "micrometre", "micrometers", "micrometres"}
+        changed = False
+        for element in root.iter():
+            for name in attributes.get(element.tag, ()):
+                if element.get(name) in aliases:
+                    element.set(name, "\u00b5m")
+                    changed = True
+        if changed:
+            xml = ET.tostring(root, encoding="unicode")
     return from_xml(xml, validate=False, warn_on_schema_update=False)
 
 

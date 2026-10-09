@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Read older OME-TIFF spatial calibration written with `micrometer` or
+  `micrometre` unit aliases. Normalize equivalent unit names in the parser
+  copy while preserving numeric calibration, pixels and original file bytes.
+
 - Use the displayed input histogram to tune threshold slider ranges for large
   float images whose intensities are outside 0–1. Preserve saved cutoffs and
   synchronize histogram guide edits with numeric values, including constrained
