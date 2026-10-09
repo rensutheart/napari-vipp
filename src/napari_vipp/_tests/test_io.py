@@ -368,7 +368,8 @@ def test_ome_zarr_metadata_only_state_preserves_multi_letter_axis_names(tmp_path
     assert inspected_state.value_range == "not computed (lazy)"
 
 
-def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path):
+@pytest.mark.parametrize("version", ["0.4", "0.5"])
+def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path, version):
     image = np.zeros((2, 4, 8, 9), dtype=np.uint16)
     image_state = image_state_from_array(
         image,
@@ -394,6 +395,7 @@ def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path):
         path,
         labels=(AnalysisLabel("Nuclei Labels", labels, label_state, "labels"),),
         image_state=image_state,
+        version=version,
     )
     inspection = inspect_image_source(path)
 
