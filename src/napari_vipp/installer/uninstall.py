@@ -1956,6 +1956,31 @@ def persistent_uninstaller_destination(
     return base / "VIPP" / "Uninstallers" / suffix / version / "VIPP-Setup.exe"
 
 
+def validate_registration_target(
+    backend: RegistryBackend,
+    *,
+    track: object,
+    previous_plan: RegistryRegistrationPlan | None,
+) -> None:
+    """Read-only preflight; an absent key or the exact prior owner is safe."""
+
+    key = registry_key_for_track(track)
+    if previous_plan is not None and previous_plan.key.casefold() != key.casefold():
+        raise RegistryOwnershipError(
+            "The previous Apps & Features entry uses a different CPU/GPU track."
+        )
+    current = backend.read_values(key)
+    if current is not None and (
+        previous_plan is None or not _registry_values_match(current, previous_plan)
+    ):
+        raise RegistryOwnershipError(
+            "The Windows Apps & Features entry does not exactly match the "
+            "installed VIPP ownership record. A stale or different installation "
+            "entry was preserved; matching the folder or installation ID alone "
+            "does not authorize replacing it."
+        )
+
+
 def register_apps_and_features(
     backend: RegistryBackend,
     plan: RegistryRegistrationPlan,
@@ -3085,4 +3110,5 @@ __all__ = [
     "schedule_deferred_self_delete",
     "stage_persistent_uninstaller",
     "persistent_uninstaller_destination",
+    "validate_registration_target",
 ]

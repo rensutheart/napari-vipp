@@ -1139,8 +1139,12 @@ class InstallerWindow:
                 self._use_default_location()
             elif state.blocked_action is BlockedAction.USE_CPU:
                 self._use_cpu()
-            elif state.blocked_action is BlockedAction.OPEN_HELP and state.help_url:
-                webbrowser.open(state.help_url)
+            elif state.blocked_action in {
+                BlockedAction.OPEN_HELP,
+                BlockedAction.OPEN_SETUP_HELP,
+            }:
+                if state.help_url:
+                    webbrowser.open(state.help_url)
             else:
                 self._controller.retry()
         elif state.screen in {InstallerScreen.CANCELLED, InstallerScreen.FAILED}:
@@ -1156,7 +1160,11 @@ class InstallerWindow:
             and state.target_kind is TargetKind.CURRENT
         ):
             self._controller.request_repair()
-        elif state.screen is InstallerScreen.BLOCKED and state.help_url:
+        elif (
+            state.screen is InstallerScreen.BLOCKED
+            and state.blocked_action is BlockedAction.OPEN_HELP
+            and state.help_url
+        ):
             self._controller.retry()
         else:
             self._close_requested()

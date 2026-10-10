@@ -208,6 +208,20 @@ graphical update/uninstall lifecycle, not another alpha publication step.
 
 ## Release Gates
 
+Unreleased after `0.16.0a4`, Windows setup checks the exact prior Apps & Features
+plan before resolution, under the apply lock, and immediately before the ownership
+commit. It permits an absent key or an exact prior plan, not a stale registration
+with only the same installation ID or root. An unverifiable cached prior uninstaller
+also blocks rather than silently dropping the prior registry authority. Detected
+conflicts leave the old ownership live and roll back staged candidates/shortcuts.
+Unsafe earlier-transaction recovery is a typed **Get setup help** block, not a
+generic failed-check retry loop. Its journal is preserved for diagnosis. Recovery
+still accepts only the recorded immediate old/new transition; the current journal
+does not prove a multi-generation predecessor. A concurrent registry change after
+the last check can still require post-commit recovery; registration is not atomic
+with filesystem ownership. These changes need fresh Windows lifecycle qualification
+before a future installer release; they do not alter the published a4 executable.
+
 Every installer or launcher release should verify:
 
 - the README, quick start, documentation index, release notes, and versioned

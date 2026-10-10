@@ -65,6 +65,7 @@ class BlockedAction(StrEnum):
 
     RETRY = "retry"
     OPEN_HELP = "open_help"
+    OPEN_SETUP_HELP = "open_setup_help"
     OPEN_INSTALLED_APPS = "open_installed_apps"
     RUN_OWNED_UNINSTALLER = "run_owned_uninstaller"
     USE_DEFAULT_LOCATION = "use_default_location"
@@ -935,6 +936,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         blocked_action = BlockedAction.OPEN_HELP
     primary_label = {
         BlockedAction.OPEN_HELP: "Get Python",
+        BlockedAction.OPEN_SETUP_HELP: "Get setup help",
         BlockedAction.OPEN_INSTALLED_APPS: "Open Installed apps",
         BlockedAction.RUN_OWNED_UNINSTALLER: "Open VIPP uninstaller",
         BlockedAction.USE_DEFAULT_LOCATION: "Use default location",
