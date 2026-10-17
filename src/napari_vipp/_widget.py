@@ -321,6 +321,7 @@ from napari_vipp.core.pipeline import (
     PARAMETER_VISIBILITY_PARAMETER_IN,
     PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
     SLICE_WISE_STACK_NOTICE,
+    SPATIAL_OPERATIONS,
     GraphConnection,
     GraphNode,
     InputSpec,
@@ -349,7 +350,7 @@ from napari_vipp.core.preview import (
     normalize_thumbnail_with_colormap,
 )
 from napari_vipp.core.result_plots import is_plot_data
-from napari_vipp.core.snapshots import GraphSnapshot
+from napari_vipp.core.snapshots import GraphSnapshot, NodeSnapshot, WorkflowSnapshot
 from napari_vipp.core.source_identity import (
     BundledSampleRevisionToken,
     LocalSourceIdentity,
@@ -397,7 +398,16 @@ from napari_vipp.core.workflow import (
     save_workflow,
     save_workflow_document,
     serialize_workflow,
+    workflow_document_from_snapshot,
+    workflow_snapshot_from_document,
     workflow_snapshot_from_pipeline,
+)
+from napari_vipp.core.workflow_proposal_outputs import validate_output_target
+from napari_vipp.core.workflow_proposals import (
+    PreparedProposal,
+    ProposalContext,
+    ProposalError,
+    capture_proposal_context,
 )
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_controls import (
@@ -936,6 +946,42 @@ class _CollectionBatchJobContext:
     validation_config_path: Path | None
     total: int
     graph_refresh_pending: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowAssistantRunRevision:
+    """Latest explicit edit, bound to its post-edit source and assessment scope."""
+
+    added_node_ids: tuple[str, ...]
+    context: ProposalContext
+    owner: tuple[str, WorkflowSnapshot]
+    before: WorkflowHistorySnapshot
+    edit_kind: str = "addition"
+    changed_node_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowAssistantFailedRun:
+    """Local-only terminal failure; never grants successful output authority."""
+
+    revision: _WorkflowAssistantRunRevision
+    dispatch_serial: int
+    run_id: str
+    owner: tuple[str, WorkflowSnapshot]
+    source_context: ProposalContext
+    failure: object
+    failed_node_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowAssistantAssessmentRun:
+    """Private authority for assessing one accepted, explicitly requested run."""
+
+    revision: _WorkflowAssistantRunRevision
+    dispatch_serial: int
+    run_id: str
+    owner: tuple[str, WorkflowSnapshot]
+    snapshot: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -2098,6 +2144,7 @@ class VippWidget(QWidget):
         self.viewer = viewer
         install_layer_delegate_safety(viewer)
         self._closing = False
+        self._workflow_recovery = None
         self._viewer_layer_change_suspension = 0
         if interaction_latency_telemetry is not None and not isinstance(
             interaction_latency_telemetry,
@@ -2219,6 +2266,24 @@ class VippWidget(QWidget):
         self._initial_dock_size_applied = False
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
         self._workflow_tabs = WorkflowTabModel()
+        self._workflow_assistant_dialog = None
+        self._workflow_assistant_run_revision: (
+            _WorkflowAssistantRunRevision | None
+        ) = None
+        self._workflow_assistant_assessment_serial = 0
+        self._workflow_assistant_assessment_armed = None
+        self._workflow_assistant_assessment_pending = None
+        self._workflow_assistant_assessment_run = None
+        self._workflow_assistant_failed_run = None
+        self._workflow_assistant_repair_feedback = None
+        self._workflow_assistant_assessment_unavailable = ""
+        # Cancellation ownership is separate from result-sharing authority.
+        # Revoking output permission may drop evidence while the exact worker
+        # still needs cooperative cancellation; no other dispatch inherits it.
+        self._workflow_assistant_owned_dispatch = None
+        self._workflow_assistant_history_pairs: list[
+            tuple[str, GraphSnapshot, GraphSnapshot]
+        ] = []
         from napari_vipp.ui.table_sources import TableSourceController
 
         self._table_sources = TableSourceController(self)
@@ -2636,7 +2701,7 @@ class VippWidget(QWidget):
             "QToolButton::menu-indicator { image: none; width: 0px; }"
         )
         self.workflow_actions_menu_button.setToolTip(
-            "Workflow actions: open an example, save workflow as, or export."
+            "Workflow actions: open an example, propose a workflow, save as, or export."
         )
         self.workflow_actions_menu_button.setAccessibleName("Workflow actions")
         self.workflow_actions_menu = QMenu(self.workflow_actions_menu_button)
@@ -3621,6 +3686,14 @@ class VippWidget(QWidget):
             compute_request_provider=self._current_compute_request,
         )
         self._select_node(self._selected_node_id)
+        from napari_vipp.ui.workflow_recovery import WorkflowRecoveryController
+
+        self._workflow_recovery = WorkflowRecoveryController(
+            self,
+            capture=self._capture_recovery_workspace,
+            restore=self._restore_recovery_workspace,
+            announce=self.status_label.setText,
+        )
         if not defer_initial_run:
             self.run_initial_pipeline_once()
 
@@ -3634,6 +3707,15 @@ class VippWidget(QWidget):
         :meth:`run_pipeline` directly.
         """
         if self._initial_pipeline_run_started or self._closing:
+            return False
+        if (
+            self._workflow_recovery is not None
+            and self._workflow_recovery.pending_recovery
+        ):
+            self.status_label.setText(
+                "Interrupted workflows are available. Recover a working copy, "
+                "or choose Calculate when ready; startup calculation was paused."
+            )
             return False
         self._initial_pipeline_run_started = True
         self.run_pipeline()
@@ -3912,10 +3994,14 @@ class VippWidget(QWidget):
             event.ignore()
             return
         self._closing = True
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.close()
         self._table_sources.close()
         self._results_workspace.close()
         self._result_plots.close()
         self._image_reviews.close()
+        if self._workflow_assistant_dialog is not None:
+            self._workflow_assistant_dialog.close()
         self._statistics.close()
         if hasattr(self, "_detection_results"):
             self._detection_results.close()
@@ -4774,6 +4860,9 @@ class VippWidget(QWidget):
             QTimer.singleShot(0, self._ensure_dock_widget_chrome)
         if not self._initial_dock_size_applied:
             QTimer.singleShot(80, self._apply_initial_dock_size)
+        if self._workflow_recovery is not None:
+            QTimer.singleShot(0, self._workflow_recovery.offer_once)
+            self._workflow_recovery.changed()
 
     def minimumSizeHint(self):  # noqa: N802
         return QSize(420, 120)
@@ -6140,9 +6229,26 @@ class VippWidget(QWidget):
             self._results_workspace.can_open(self._selected_node_id)
         )
         workspace_action.triggered.connect(self._open_results_workspace)
+        assistant_action = menu.addAction("Workflow assistant…")
+        assistant_action.setIcon(_toolbar_icon("assistant"))
+        assistant_action.setToolTip(
+            "Development prototype: review a validated existing-node proposal "
+            "before adding it to the graph. No automatic calculation."
+        )
+        assistant_action.triggered.connect(self._open_workflow_assistant)
         menu.addSeparator()
         self.save_workflow_as_action.setIcon(self.save_workflow_button.icon())
         menu.addAction(self.save_workflow_as_action)
+        if self._workflow_recovery is not None:
+            menu.addSeparator()
+            status = menu.addAction(self._workflow_recovery.summary)
+            status.setEnabled(False)
+            recovery = menu.addAction("Recover interrupted workflows…")
+            recovery.triggered.connect(
+                lambda _checked=False: self._workflow_recovery.show_recovery()
+            )
+            folder = menu.addAction("Choose recovery folder…")
+            folder.triggered.connect(self._workflow_recovery.choose_folder)
         menu.addSeparator()
         export_python_action = menu.addAction("Export Python…")
         export_python_action.triggered.connect(
@@ -6181,6 +6287,1014 @@ class VippWidget(QWidget):
             tunnels_action.triggered.connect(
                 lambda _checked=False: self.tunnel_manager_button.click()
             )
+
+    def _open_workflow_assistant(self) -> None:
+        from napari_vipp.ui.workflow_assistant import WorkflowAssistantDialog
+
+        dialog = self._workflow_assistant_dialog
+        if dialog is None or not isalive(dialog):
+            dialog = WorkflowAssistantDialog(
+                self,
+                sources=lambda: tuple(
+                    (node.id, self._node_title(node.id))
+                    for node in self.pipeline.nodes.values()
+                    if node.operation_id == "input"
+                ),
+                capture=self._capture_workflow_proposal_context,
+                assert_current=self._assert_workflow_proposal_current,
+                apply=self._apply_workflow_proposal,
+                run=self._run_workflow_assistant_plan,
+                output_sources=self._workflow_assistant_output_sources,
+                capture_results=self._capture_workflow_assessment_snapshot,
+                assert_results_current=self._assert_workflow_assessment_current,
+                cancel_run=self._cancel_workflow_assistant_run,
+                repair_run=self._repair_workflow_assistant_failure,
+                capture_investigation=self._capture_workflow_investigation,
+                current_compute=self._current_compute_request,
+                prepare_patch=self._prepare_workflow_patch,
+                apply_patch=self._apply_workflow_patch,
+                assert_session_destination=self._assert_assistant_session_destination,
+            )
+            self._workflow_assistant_dialog = dialog
+            dialog.destroyed.connect(self._workflow_assistant_closed)
+            dialog.output_assessment_checkbox.toggled.connect(
+                self._workflow_assessment_permission_changed
+            )
+        else:
+            dialog.refresh_sources()
+        show_workspace_window(dialog)
+
+    def _workflow_assistant_closed(self, *_args) -> None:
+        self._workflow_assistant_dialog = None
+        self._invalidate_workflow_assessment()
+
+    def _workflow_proposal_edit_guard(self) -> None:
+        blocked = self._compute_policy_edit_block_reason()
+        if blocked:
+            raise ProposalError(blocked)
+        if self._debounce_timer.isActive() or self._isolated_tuning_node_id is not None:
+            raise ProposalError(
+                "Finish pending parameter edits or isolated tuning before "
+                "preparing/applying a proposal."
+            )
+        if (
+            self._collection_batch_running
+            or self._pending_collection_batch_start is not None
+        ):
+            raise ProposalError(
+                "Finish the current batch before editing a proposed workflow."
+            )
+        if self._crop_draft_node_id is not None:
+            raise ProposalError(
+                "Finish the current crop edit before preparing/applying a proposal."
+            )
+
+    def _workflow_assistant_output_sources(self, source_id):
+        """Return only the effective local file binding, never a display name."""
+        node = self.pipeline.nodes.get(source_id)
+        if node is None or node.operation_id != "input":
+            return ()
+        path = self._file_source_path_for_node(node)
+        return (path,) if path is not None else ()
+
+    def _capture_workflow_proposal_context(
+        self, source_id, *, include_images=False, output_destination=None
+    ):
+        self._workflow_proposal_edit_guard()
+        self.node_name_editor.commit_pending()
+        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+        context = capture_proposal_context(
+            self.pipeline,
+            source_id,
+            include_images=include_images,
+            output_destination=output_destination,
+        )
+        owner = (
+            self._current_workflow_session_id(),
+            self._current_history_snapshot().workflow,
+        )
+        return context, owner
+
+    def _assert_workflow_proposal_current(self, context, owner) -> None:
+        self._workflow_proposal_edit_guard()
+        if owner is None or owner[0] != self._current_workflow_session_id():
+            raise ProposalError("The workflow tab changed. Prepare a new proposal.")
+        if owner[1] != self._current_history_snapshot().workflow:
+            raise ProposalError(
+                "The workflow or its settings changed. Prepare a new proposal."
+            )
+        if context._failure_feedback_guard is not None:
+            token = self._workflow_assistant_repair_feedback
+            if (
+                token is None
+                or token[0] != self._workflow_assistant_assessment_serial
+                or token[1] is not context._failure_feedback_guard
+            ):
+                raise ProposalError(
+                    "This calculation-repair request is no longer current."
+                )
+        context.assert_current(self.pipeline)
+
+    def _capture_workflow_investigation(
+        self, context, owner, *, completed_snapshot=None, completed_owner=None,
+        output_roles=None, preservation_constraint=None, protected_role=None,
+        existing_workflow=False, assert_existing=None,
+    ):
+        """GUI-thread capture; detached trial workers never touch the live graph.
+
+        Only the selected owned source cache is copied. The normal full graph
+        context/owner stays local for stale checks and the final checked Add;
+        the investigation core publishes only its source-local trial graph.
+        """
+        self._assert_workflow_proposal_current(context, owner)
+        if assert_existing is not None:
+            assert_existing.assert_current(self.pipeline)
+            return None
+        bundle = None
+        if existing_workflow:
+            # Explicit live-session attachment snapshots ONLY ready cached nodes
+            # downstream of the chosen source. This token identifies the capture,
+            # not a fabricated original execution Run ID. No calculation occurs.
+            from napari_vipp.core.workflow_assessment import capture_assessment_snapshot
+            from napari_vipp.core.workflow_investigation import (
+                capture_completed_candidate,
+            )
+            from napari_vipp.ui.workflow_assistant_refinement_investigation import (
+                default_completed_output_roles,
+            )
+
+            downstream = self.pipeline.descendants_inclusive({context.source_id})
+            candidates = tuple(
+                node_id for node_id in self.pipeline.nodes
+                if node_id in downstream and node_id != context.source_id
+            )
+            if candidates:
+                snapshot = capture_assessment_snapshot(
+                    self.pipeline, context.source_id, candidates,
+                    "livecache-" + context.context_id,
+                )
+                roles, _ = default_completed_output_roles(self.pipeline, snapshot)
+                bundle = capture_completed_candidate(self.pipeline, snapshot, roles)
+        if completed_snapshot is not None:
+            from napari_vipp.core.workflow_investigation import (
+                capture_completed_candidate,
+            )
+            from napari_vipp.ui.workflow_assistant_refinement_investigation import (
+                default_completed_output_roles,
+            )
+
+            self._assert_workflow_assessment_current(
+                completed_snapshot, completed_owner
+            )
+            if output_roles is None:
+                output_roles, protected_role = default_completed_output_roles(
+                    self.pipeline, completed_snapshot, preservation_constraint
+                )
+            bundle = capture_completed_candidate(
+                self.pipeline, completed_snapshot, output_roles,
+                preservation_constraint=preservation_constraint,
+                protected_role=protected_role,
+            )
+        source_id = context.source_id
+        outputs = self.pipeline.node_outputs.get(source_id, ())
+        states = self.pipeline.node_output_states.get(source_id, ())
+        data = outputs[0] if outputs else self.pipeline.outputs[source_id]
+        state = states[0] if states else self.pipeline.output_states[source_id]
+        detached = context.baseline.to_pipeline()
+        source = np.array(data, copy=True, order="C")
+        source.flags.writeable = False
+        metadata = deepcopy(state)
+        detached.outputs[source_id] = source
+        detached.output_states[source_id] = metadata
+        detached.node_outputs[source_id] = [source]
+        detached.node_output_states[source_id] = [metadata]
+        detached.completed_node_ids = {source_id}
+        detached.node_execution_states[source_id] = "ready"
+        self._assert_workflow_proposal_current(context, owner)
+        if bundle is not None:
+            if existing_workflow:
+                bundle.assert_current(self.pipeline)
+                return detached, self._current_compute_request(), bundle
+            self._assert_workflow_assessment_current(
+                completed_snapshot, completed_owner
+            )
+            bundle.assert_current(self.pipeline)
+            return detached, self._current_compute_request(), bundle
+        if existing_workflow:
+            return detached, self._current_compute_request(), None
+        return detached, self._current_compute_request()
+
+    def _assistant_history_requires_no_run(self, before, after) -> bool:
+        session = self._current_workflow_session_id()
+        return any(
+            session == item_session
+            and ((before == old and after == new) or (before == new and after == old))
+            for item_session, old, new in self._workflow_assistant_history_pairs
+        )
+
+    def _run_workflow_assistant_plan(self, added_node_ids: tuple[str, ...]) -> bool:
+        """Dispatch an explicit Run only for the exact latest successful Add.
+
+        Historical display records are not execution authority. This callback
+        does not reuse a PreparedProposal and never reconstructs/reapplies a
+        graph. It joins the normal Calculate-all path after fresh source,
+        workflow-session and full saved-workflow checks.
+        """
+        revision = self._workflow_assistant_run_revision
+        if (
+            revision is None
+            or type(added_node_ids) is not tuple
+            or added_node_ids != revision.added_node_ids
+        ):
+            raise ProposalError(
+                "Only the latest plan explicitly added to this workflow can be "
+                "run from the assistant. Review the active workflow first."
+            )
+        if self._closing:
+            raise ProposalError("VIPP is closing; no calculation was requested.")
+        self._workflow_proposal_edit_guard()
+        self.node_name_editor.commit_pending()
+        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+        self._assert_workflow_proposal_current(revision.context, revision.owner)
+        if revision.context.output_destination is not None:
+            for node_id in revision.added_node_ids:
+                node = self.pipeline.nodes[node_id]
+                if node.operation_id == "save_output":
+                    validate_output_target(
+                        revision.context.output_destination, node.params["path"]
+                    )
+        # Only this explicit Run can grant result-assessment authority. Merely
+        # opening the assistant, adding a graph, or finding cached outputs does
+        # not grant it. The permission is sampled again at accepted completion.
+        self._invalidate_workflow_assessment()
+        assessment_requested = self._workflow_assistant_output_assessment_enabled()
+        dispatch_serial = self._workflow_assistant_assessment_serial
+        if assessment_requested:
+            self._workflow_assistant_assessment_armed = revision
+        try:
+            self._calculate_all_nodes()
+        except Exception:
+            self._invalidate_workflow_assessment()
+            raise
+        finally:
+            # A no-op, denied, or queued calculation must not arm an unrelated
+            # future run. A real dispatch has already consumed this authority.
+            self._workflow_assistant_assessment_armed = None
+        if not assessment_requested:
+            # Manual Run remains valid when output sharing is off. Dispatch
+            # acceptance must not be confused with assessment availability.
+            return self._workflow_assistant_assessment_serial != dispatch_serial
+        pending = self._workflow_assistant_assessment_pending
+        completed = self._workflow_assistant_assessment_run
+        failed = self._workflow_assistant_failed_run
+        # A denied/no-op/queued Run must not leave automatic refinement waiting
+        # for results from an unrelated future dispatch. Existing manual callers
+        # may ignore this diagnostic return value.
+        return bool(
+            (pending is not None and pending[2] is revision)
+            or (completed is not None and completed.revision is revision)
+            or (failed is not None and failed.revision is revision)
+        )
+
+    def _cancel_workflow_assistant_run(self) -> bool:
+        """Cancel only the exact active background dispatch owned by Run.
+
+        Clearing assessment permission does not clear this cancellation ticket.
+        A subsequent ordinary run replaces the ticket before execution, so this
+        callback never stops a generic, another-session or unrelated worker.
+        Synchronous work cannot be interrupted by a GUI callback and has already
+        returned before the caller can request cancellation.
+        """
+        owned = self._workflow_assistant_owned_dispatch
+        active = self._active_pipeline_run_id
+        if owned is None or active is None or owned[0] != active:
+            return False
+        self._workflow_assistant_owned_dispatch = None
+        self._cancel_background_pipeline_run()
+        return True
+
+    def _workflow_assessment_dialog(self):
+        dialog = self._workflow_assistant_dialog
+        if dialog is None or getattr(dialog, "_closed", False):
+            return None
+        if isinstance(dialog, QWidget) and not isalive(dialog):
+            return None
+        return dialog
+
+    def _workflow_assistant_output_assessment_enabled(self) -> bool:
+        dialog = self._workflow_assessment_dialog()
+        checkbox = getattr(dialog, "output_assessment_checkbox", None)
+        return bool(checkbox is not None and checkbox.isChecked())
+
+    def _workflow_assessment_permission_changed(self, enabled: bool) -> None:
+        if not enabled:
+            self._invalidate_workflow_assessment()
+
+    def _invalidate_workflow_assessment(self, message=None, *, notify=True) -> None:
+        """Drop in-memory assessment authority, never scientific cache values."""
+        had_results = (
+            self._workflow_assistant_assessment_pending is not None
+            or self._workflow_assistant_assessment_run is not None
+            or self._workflow_assistant_repair_feedback is not None
+        )
+        self._workflow_assistant_assessment_armed = None
+        self._workflow_assistant_assessment_pending = None
+        self._workflow_assistant_assessment_run = None
+        self._workflow_assistant_failed_run = None
+        self._workflow_assistant_repair_feedback = None
+        if had_results and notify:
+            callback = getattr(
+                self._workflow_assessment_dialog(),
+                "assessment_results_unavailable",
+                None,
+            )
+            if callback is not None:
+                callback(
+                    message
+                    or "The workflow or calculation changed. "
+                    "Run the current plan again."
+                )
+
+    def _abandon_workflow_assistant_failure(self, pending, message):
+        """A stale/early terminal path must not leave refinement waiting forever."""
+        if (
+            pending is not None
+            and self._workflow_assistant_assessment_pending is pending
+        ):
+            self._invalidate_workflow_assessment(message)
+
+    def _notify_workflow_assistant_failure(self, pending, failure, message, failed_ids):
+        """Notify only after normal terminal adoption/cleanup, before any repair.
+
+        The error text is local UI only. Eligibility and public data are checked
+        separately; unknown, stale, denied and unowned failures cannot self-retry.
+        """
+        if (
+            pending is None
+            or self._workflow_assistant_assessment_pending is not pending
+        ):
+            return
+        serial, run_id, revision = pending
+        failed = None
+        try:
+            if (
+                self._closing
+                or serial != self._workflow_assistant_assessment_serial
+                or revision is not self._workflow_assistant_run_revision
+                or not self._workflow_assistant_output_assessment_enabled()
+                or self._active_pipeline_run_id is not None
+                or self._pipeline_run_pending
+                or not set(self._pending_dirty_node_ids) <= set(revision.added_node_ids)
+                or not set(self._pending_manual_node_ids)
+                <= set(revision.added_node_ids)
+                or revision.owner[0] != self._current_workflow_session_id()
+            ):
+                raise ProposalError(
+                    "The failed calculation is not the current owned attempt."
+                )
+            self._workflow_proposal_edit_guard()
+            workflow = self._current_history_snapshot().workflow
+            if self._workflow_assessment_normalized_workflow(workflow) != (
+                self._workflow_assessment_normalized_workflow(revision.owner[1])
+            ):
+                raise ProposalError(
+                    "The workflow changed during the failed calculation."
+                )
+            source = capture_proposal_context(self.pipeline, revision.context.source_id)
+            if source.source_fingerprint != revision.context.source_fingerprint:
+                raise ProposalError("The source changed during the failed calculation.")
+            from napari_vipp.core.mesh_refinement import safe_mesh_input_failure
+            from napari_vipp.core.workflow_refinement import (
+                assert_refinement_graph_safe,
+            )
+
+            assert_refinement_graph_safe(source.baseline, source.source_id)
+            ids = tuple(sorted(set(failed_ids)))
+            if (
+                failure is None
+                or failure.kind != "execution_error"
+                or failure.cleanup_succeeded is not True
+                or not ids
+                or not set(ids) <= set(revision.added_node_ids)
+                or any(
+                    safe_mesh_input_failure(
+                        self.pipeline.nodes[node_id].operation_id,
+                        failure.error_type,
+                        failure.message,
+                    )
+                    is None
+                    for node_id in ids
+                )
+            ):
+                raise ProposalError(
+                    "This failure requires manual review, not automatic repair."
+                )
+            failed = _WorkflowAssistantFailedRun(
+                revision,
+                serial,
+                run_id,
+                (self._current_workflow_session_id(), workflow),
+                source,
+                failure,
+                ids,
+            )
+        except (ValueError, TypeError, RuntimeError):
+            pass  # No failed/partial cache is promoted into result authority.
+        self._invalidate_workflow_assessment(notify=False)
+        self._workflow_assistant_failed_run = failed
+        callback = getattr(
+            self._workflow_assessment_dialog(), "assessment_calculation_failed", None
+        )
+        if callable(callback):
+            callback(failed, "Calculation failed: " + str(message))
+        else:
+            callback = getattr(
+                self._workflow_assessment_dialog(),
+                "assessment_results_unavailable",
+                None,
+            )
+            if callable(callback):
+                callback("Calculation failed: " + str(message))
+
+    def _repair_workflow_assistant_failure(self, failed, *, include_images=False):
+        """Remove only our exact failed Add as an undoable edit, retaining caches.
+
+        A new ordinary Add/Run is still required. This does not repair geometry,
+        bypass an operation, replay the failed calculation, or bless old results.
+        """
+        if type(failed) is not _WorkflowAssistantFailedRun:
+            raise ProposalError(
+                "No qualified failed assistant calculation was supplied."
+            )
+        revision = failed.revision
+        if revision.edit_kind != "addition":
+            raise ProposalError(
+                "This was an in-place edit, not an addition. Keep the workflow, "
+                "inspect the error or Undo the edit; addition-only replacement "
+                "repair cannot remove existing nodes."
+            )
+        if (
+            failed is not self._workflow_assistant_failed_run
+            or failed.dispatch_serial != self._workflow_assistant_assessment_serial
+            or revision is not self._workflow_assistant_run_revision
+            or self._closing
+            or not self._workflow_assistant_output_assessment_enabled()
+            or failed.owner[0] != self._current_workflow_session_id()
+            or failed.owner[1] != self._current_history_snapshot().workflow
+        ):
+            raise ProposalError(
+                "The failed attempt changed; nothing was removed or sent."
+            )
+        self._workflow_proposal_edit_guard()
+        failed.source_context.assert_current(self.pipeline)
+        current = self._current_history_snapshot()
+        baseline_ids = {node.id for node in revision.before.workflow.graph.nodes}
+        if set(self.pipeline.nodes) - baseline_ids != set(revision.added_node_ids):
+            raise ProposalError("The failed addition is not an isolated current edit.")
+        # Build and validate the public record BEFORE touching the user's graph.
+        from napari_vipp.core.workflow_run_failure import build_run_failure_feedback
+
+        baseline = revision.before.workflow.graph.to_pipeline()
+        baseline.nodes.update(
+            {
+                key: value
+                for key, value in self.pipeline.nodes.items()
+                if key in baseline_ids
+            }
+        )
+        # Context construction needs the unchanged source/cache, not a new run.
+        for name in ("outputs", "output_states", "node_outputs", "node_output_states"):
+            getattr(baseline, name).update(
+                {
+                    key: value
+                    for key, value in getattr(self.pipeline, name).items()
+                    if key in baseline_ids
+                }
+            )
+        preview_context = capture_proposal_context(
+            baseline,
+            revision.context.source_id,
+            include_images=include_images,
+        )
+        feedback = build_run_failure_feedback(
+            preview_context,
+            failed.source_context.baseline,
+            revision.added_node_ids,
+            failed.failed_node_ids,
+            failed.run_id,
+            failed.failure,
+        )
+        cache_names = (
+            "outputs",
+            "output_states",
+            "node_outputs",
+            "node_output_states",
+            "node_compute_provenance",
+            "node_cache_lineage",
+            "node_execution_states",
+            "node_execution_messages",
+            "_colocalization_costes_cache",
+        )
+        caches = {
+            name: {
+                key: value
+                for key, value in getattr(self.pipeline, name).items()
+                if key in baseline_ids
+            }
+            for name in cache_names
+        }
+        nodes = {
+            key: value
+            for key, value in self.pipeline.nodes.items()
+            if key in baseline_ids
+        }
+        completed = self.pipeline.completed_node_ids & baseline_ids
+        source_signature = self._last_pipeline_source_signature
+        self._restore_history_snapshot(
+            revision.before, current_snapshot=current, schedule_run=False
+        )
+        self.pipeline.nodes.update(nodes)
+        for name, values in caches.items():
+            getattr(self.pipeline, name).update(values)
+        self.pipeline.completed_node_ids.update(completed)
+        self._last_pipeline_source_signature = source_signature
+        self._workflow_assistant_run_revision = None
+        self._workflow_assistant_history_pairs.append(
+            (
+                failed.owner[0],
+                current.workflow.graph,
+                GraphSnapshot.from_pipeline(self.pipeline),
+            )
+        )
+        del self._workflow_assistant_history_pairs[: -self.HISTORY_LIMIT]
+        self._push_undo_snapshot(current)
+        # Rebind to the actual restored graph, rejecting any unexpected restore.
+        context, owner = self._capture_workflow_proposal_context(
+            revision.context.source_id,
+            include_images=include_images,
+        )
+        if context.baseline_fingerprint != feedback.baseline_fingerprint:
+            raise ProposalError(
+                "The replacement baseline changed; no repair request was sent."
+            )
+        self._workflow_assistant_repair_feedback = (failed.dispatch_serial, feedback)
+        self._sync_execution_ui()
+        self.status_label.setText(
+            "Removed only the failed assistant addition. "
+            "Earlier completed branches are retained."
+        )
+        return context, owner, feedback
+
+    def _begin_workflow_assessment_run(self) -> None:
+        """Invalidate on every scientific dispatch, including non-assistant runs."""
+        revision = self._workflow_assistant_assessment_armed
+        self._workflow_assistant_owned_dispatch = None
+        self._invalidate_workflow_assessment()
+        self._workflow_assistant_assessment_serial += 1
+        self._workflow_assistant_assessment_unavailable = ""
+        if revision is not None:
+            active = self._active_pipeline_run_id
+            if active is not None:
+                self._workflow_assistant_owned_dispatch = (active, revision)
+            run_id = (
+                f"background-{active}"
+                if active is not None
+                else f"synchronous-{self._workflow_assistant_assessment_serial}"
+            )
+            self._workflow_assistant_assessment_pending = (
+                self._workflow_assistant_assessment_serial,
+                run_id,
+                revision,
+            )
+
+    @staticmethod
+    def _workflow_assessment_normalized_workflow(workflow: WorkflowSnapshot):
+        """Ignore only the executor's derived spatial-rank cache during Run.
+
+        The shared executor records ``resolved_spatial_ndim`` for spatial
+        operations. This is not an authored parameter change. All authored
+        parameters, topology, compute intent and persisted UI state remain
+        exact; after acceptance even this derived field is checked exactly.
+        """
+        nodes = []
+        for node in workflow.graph.nodes:
+            params = node.params
+            if node.operation_id in SPATIAL_OPERATIONS:
+                resolved = params.get("resolved_spatial_ndim")
+                if resolved is None or (
+                    type(resolved) is int and resolved in {1, 2, 3}
+                ):
+                    params.pop("resolved_spatial_ndim", None)
+            nodes.append(
+                NodeSnapshot(node.id, node.operation_id, params, node.execution_mode)
+            )
+        return WorkflowSnapshot(
+            GraphSnapshot(
+                nodes, workflow.graph.connections, workflow.graph.output_tunnels
+            ),
+            workflow.positions,
+            workflow.notes,
+            workflow.metadata,
+            workflow.compute_request,
+        )
+
+    def _complete_workflow_assessment_run(self) -> None:
+        """Bind only a fully accepted normal Run, without statistics or sharing."""
+        pending = self._workflow_assistant_assessment_pending
+        self._workflow_assistant_assessment_pending = None
+        if pending is None or not self._workflow_assistant_output_assessment_enabled():
+            return
+        serial, run_id, revision = pending
+        try:
+            if revision is not self._workflow_assistant_run_revision:
+                raise ProposalError(
+                    "The assistant candidate changed during calculation."
+                )
+            self._workflow_proposal_edit_guard()
+            if (
+                self._pipeline_run_pending
+                or self._pending_dirty_node_ids
+                or self._pending_manual_node_ids
+            ):
+                raise ProposalError("The workflow still has pending calculation work.")
+            workflow = self._current_history_snapshot().workflow
+            if (
+                revision.owner[0] != self._current_workflow_session_id()
+                or self._workflow_assessment_normalized_workflow(workflow)
+                != self._workflow_assessment_normalized_workflow(revision.owner[1])
+            ):
+                raise ProposalError("The workflow changed during calculation.")
+            source_context = capture_proposal_context(
+                self.pipeline,
+                revision.context.source_id,
+                include_images=False,
+                output_destination=revision.context.output_destination,
+            )
+            if source_context.source_fingerprint != revision.context.source_fingerprint:
+                raise ProposalError("The input image changed during calculation.")
+            from napari_vipp.core.workflow_assessment import capture_assessment_snapshot
+
+            # Opt-in only: detach bounded already-cached results while the exact
+            # accepted run is known. Measurements/previews remain worker work;
+            # this neither executes nodes nor sends any model request.
+            snapshot = capture_assessment_snapshot(
+                self.pipeline,
+                revision.context.source_id,
+                revision.added_node_ids,
+                run_id,
+            )
+            self._workflow_assistant_assessment_run = _WorkflowAssistantAssessmentRun(
+                revision,
+                serial,
+                run_id,
+                (self._current_workflow_session_id(), workflow),
+                snapshot,
+            )
+            callback = getattr(
+                self._workflow_assessment_dialog(), "assessment_results_ready", None
+            )
+            if callback is not None:
+                callback(revision.added_node_ids, run_id)
+        except (ValueError, TypeError) as exc:
+            # Missing/pruned diagnostics do not retroactively turn a successful
+            # scientific execution into a failed run.
+            self._workflow_assistant_assessment_unavailable = str(exc)
+            callback = getattr(
+                self._workflow_assessment_dialog(),
+                "assessment_results_unavailable",
+                None,
+            )
+            if callback is not None:
+                callback("Results cannot be assessed: " + str(exc))
+
+    def _capture_workflow_assessment_snapshot(self, candidate_node_ids, source_id):
+        """Return one opt-in checkpoint, never bless whatever cache exists now."""
+        run = self._workflow_assistant_assessment_run
+        if run is None:
+            detail = self._workflow_assistant_assessment_unavailable
+            raise ProposalError(
+                "Run the latest added plan with output assessment enabled first. "
+                "If it was already run without this option, turn it on before "
+                "adding and running a fresh plan."
+                + (f" Results are unavailable: {detail}" if detail else "")
+            )
+        if (
+            type(candidate_node_ids) is not tuple
+            or candidate_node_ids != run.revision.added_node_ids
+            or source_id != run.revision.context.source_id
+        ):
+            raise ProposalError(
+                "Only the latest added and completed candidate can be assessed."
+            )
+        self._assert_workflow_assessment_current(run.snapshot, run)
+        return run.snapshot, run
+
+    def _assert_workflow_assessment_current(self, context_or_snapshot, owner) -> None:
+        """Reject stale work before preview, transmission and result adoption."""
+        run = self._workflow_assistant_assessment_run
+        if (
+            run is None or owner is not run
+            or run.dispatch_serial != self._workflow_assistant_assessment_serial
+            or run.revision is not self._workflow_assistant_run_revision
+        ):
+            raise ProposalError("These results are no longer the latest assistant Run.")
+        if self._closing or not self._workflow_assistant_output_assessment_enabled():
+            raise ProposalError(
+                "Output assessment is not enabled; no request was sent."
+            )
+        self._workflow_proposal_edit_guard()
+        if (
+            self._pipeline_run_pending
+            or self._pending_dirty_node_ids
+            or self._pending_manual_node_ids
+        ):
+            raise ProposalError(
+                "Wait for pending workflow calculation before assessing results."
+            )
+        if run.owner[0] != self._current_workflow_session_id():
+            raise ProposalError("The workflow tab changed. Run the current plan again.")
+        if run.owner[1] != self._current_history_snapshot().workflow:
+            raise ProposalError(
+                "The workflow or its settings changed. Run the current plan again."
+            )
+        run.snapshot.assert_current(self.pipeline)
+        if context_or_snapshot is not run.snapshot:
+            if getattr(context_or_snapshot, "_snapshot", None) is not run.snapshot:
+                raise ProposalError(
+                    "The assessment belongs to a different Run checkpoint."
+                )
+            context_or_snapshot.assert_current(self.pipeline)
+
+    def _apply_workflow_proposal(
+        self, prepared: PreparedProposal, owner
+    ) -> tuple[str, ...]:
+        """Append approved additions atomically, retaining existing cache/identity.
+
+        There is deliberately no scientific scheduler call here. Undo/redo of
+        this exact edit also restores without calculation; Calculate all remains
+        the user's separate choice. Ordinary later edits retain normal behavior.
+        """
+        self._assert_workflow_proposal_current(prepared._context, owner)
+        prepared.assert_current(self.pipeline)
+        self._workflow_recovery.checkpoint_now(
+            "before assistant additions", required=True
+        )
+        self._assert_workflow_proposal_current(prepared._context, owner)
+        prepared.assert_current(self.pipeline)
+        staged = prepared.candidate.to_pipeline()
+        ids = prepared.added_node_ids
+        added = set(ids)
+        before = self._current_history_snapshot()
+        original_nodes = dict(self.pipeline.nodes)
+        history_before = (
+            list(self._history.undo_stack), list(self._history.redo_stack),
+            self._history._pending_group_key,
+        )
+        pairs_before = list(self._workflow_assistant_history_pairs)
+        cache_names = (
+            "outputs",
+            "output_states",
+            "node_outputs",
+            "node_output_states",
+            "node_compute_provenance",
+            "node_cache_lineage",
+            "node_execution_states",
+            "node_execution_messages",
+            "_colocalization_costes_cache",
+        )
+        caches = {name: dict(getattr(self.pipeline, name)) for name in cache_names}
+        completed = set(self.pipeline.completed_node_ids)
+        counters = deepcopy(self.pipeline._counters)
+        dirty = set(self._pending_dirty_node_ids)
+        positions = self.graph_view.node_positions()
+        anchor_x = max((point[0] for point in positions.values()), default=0) + 420
+        anchor_y = positions.get(prepared._context.source_id, (0, 0))[1]
+        try:
+            prepared.candidate.restore_into(self.pipeline)
+            # Existing topology/params were checked exactly against the baseline.
+            # Restore old node identities and caches instead of recomputing them.
+            self.pipeline.nodes.update(original_nodes)
+            for name, values in caches.items():
+                getattr(self.pipeline, name).update(values)
+            self.pipeline.completed_node_ids.update(completed)
+            for operation_id, count in counters.items():
+                self.pipeline._counters[operation_id] = max(
+                    count, self.pipeline._counters[operation_id]
+                )
+            for node_id in ids:
+                x, y = prepared.positions[node_id]
+                self.graph_view.add_node(
+                    self.pipeline.nodes[node_id], QPointF(anchor_x + x, anchor_y + y)
+                )
+                self._sync_node_input_ports(node_id)
+                self._sync_node_output_ports(node_id)
+            for edge in staged.connections:
+                if edge.target_id in added:
+                    self.graph_view.add_connection(
+                        edge.source_id,
+                        edge.target_id,
+                        edge.target_port,
+                        edge.source_port,
+                    )
+            note_text = "Workflow assistant · starting proposal\n" + prepared.summary
+            note_text += "\n\nAssumptions:\n" + "\n".join(prepared.assumptions)
+            note_id = self._next_graph_note_id()
+            point = self.graph_view.suggest_note_position_for_node(ids[-1])
+            note = GraphNoteState(
+                note_id, note_text, (point.x(), point.y()), 320.0, ids[-1]
+            )
+            self._graph_notes[note_id] = note
+            self.graph_view.add_note(
+                note.id,
+                note.text,
+                point,
+                width=note.width,
+                attached_node=note.attached_node,
+            )
+            self._sync_port_tunnels()
+            self._sync_pin_ui()
+            self._refresh_graph_search_matches(reset_index=True)
+            self._mark_pipeline_branches_dirty(added)
+            self._push_undo_if_changed(before)
+            self._workflow_assistant_history_pairs.append(
+                (owner[0], before.workflow.graph,
+                 GraphSnapshot.from_pipeline(self.pipeline))
+            )
+            del self._workflow_assistant_history_pairs[: -self.HISTORY_LIMIT]
+            self._sync_current_workflow_tab_state()
+            # Capture no pixels or permission: this guards only a later explicit
+            # Run for the graph that was actually added. A historical proposal
+            # cannot supply or restore this post-edit authority.
+            run_context = capture_proposal_context(
+                self.pipeline, prepared._context.source_id, include_images=False,
+                output_destination=prepared._context.output_destination,
+            )
+            run_revision = _WorkflowAssistantRunRevision(
+                ids,
+                run_context,
+                (owner[0], self._current_history_snapshot().workflow),
+                before,
+            )
+        except Exception as exc:
+            self._restore_history_snapshot(before, schedule_run=False)
+            self.pipeline.nodes.update(original_nodes)
+            for name, values in caches.items():
+                setattr(self.pipeline, name, values)
+            self.pipeline.completed_node_ids = completed
+            self.pipeline._counters = counters
+            self._pending_dirty_node_ids = dirty
+            self._history.undo_stack[:] = history_before[0]
+            self._history.redo_stack[:] = history_before[1]
+            self._history._pending_group_key = history_before[2]
+            self._workflow_assistant_history_pairs[:] = pairs_before
+            self._sync_history_actions()
+            raise ProposalError(f"Proposal edit rolled back: {exc}") from exc
+        self._workflow_assistant_run_revision = run_revision
+        self.status_label.setText(
+            f"Added {len(ids)} proposed nodes without calculating. "
+            "Review, then Calculate all."
+        )
+        return ids
+
+    def _prepare_workflow_patch(self, context, owner, baseline, session):
+        from napari_vipp.core.workflow_patch import prepare_investigation_patch
+
+        self._assert_workflow_proposal_current(context, owner)
+        return prepare_investigation_patch(
+            self.pipeline, context=context, baseline=baseline, session=session
+        )
+
+    def _assert_assistant_session_destination(self, path):
+        target = Path(path).expanduser().resolve()
+        for tab in self._workflow_tabs:
+            if tab.path is not None and target == tab.path.resolve():
+                raise ValueError(
+                    "Choose a session file, not an original workflow file."
+                )
+            for node in tab.pipeline.nodes.values():
+                for name in ("file_path", "dataset_path"):
+                    value = node.params.get(name)
+                    if value and target == Path(value).expanduser().resolve():
+                        raise ValueError(
+                            "A session cannot overwrite a bound input file."
+                        )
+
+    def _apply_workflow_patch(self, prepared, context, owner):
+        """One checkpointed in-place transaction; never a calculation grant."""
+        self._assert_workflow_proposal_current(context, owner)
+        prepared.assert_current(self.pipeline)
+        self._workflow_recovery.checkpoint_now("before assistant patch", required=True)
+        # Disk I/O is not a substitute for a fresh scientific/GUI ownership check.
+        self._assert_workflow_proposal_current(context, owner)
+        prepared.assert_current(self.pipeline)
+        before = self._current_history_snapshot()
+        original_nodes = dict(self.pipeline.nodes)
+        caches = {
+            name: dict(getattr(self.pipeline, name))
+            for name in (
+                "outputs", "output_states", "node_outputs", "node_output_states",
+                "node_compute_provenance", "node_cache_lineage",
+                "node_execution_states", "node_execution_messages",
+                "_colocalization_costes_cache",
+            )
+        }
+        completed = set(self.pipeline.completed_node_ids)
+        counters = deepcopy(self.pipeline._counters)
+        dirty = set(self._pending_dirty_node_ids)
+        history = (
+            list(self._history.undo_stack), list(self._history.redo_stack),
+            self._history._pending_group_key,
+        )
+        pairs = list(self._workflow_assistant_history_pairs)
+        shadows = dict(self._bypass_shadow_results)
+        shadow_errors = dict(self._bypass_shadow_errors)
+        shadow_pending = set(self._bypass_shadow_pending_node_ids)
+        changed = set(prepared.changed_node_ids)
+        affected = set(prepared.affected_node_ids)
+        presentation = set(prepared.presentation_affected_node_ids)
+        try:
+            prepared.candidate.restore_into(self.pipeline)
+            self.pipeline.nodes.update(
+                {
+                    key: node for key, node in original_nodes.items()
+                    if key not in changed
+                }
+            )
+            for name, values in caches.items():
+                setattr(self.pipeline, name, dict(values))
+            self.pipeline.completed_node_ids = set(completed)
+            self.pipeline._counters = counters
+            for name in (
+                "outputs", "output_states", "node_outputs", "node_output_states",
+                "node_compute_provenance", "node_cache_lineage",
+                "_colocalization_costes_cache",
+            ):
+                cache = getattr(self.pipeline, name)
+                for node_id in affected:
+                    cache.pop(node_id, None)
+            self.pipeline.completed_node_ids.difference_update(affected)
+            self.pipeline.mark_nodes_stale(
+                affected, message="Assistant edit; calculate to update"
+            )
+            for node_id in presentation:
+                self._bypass_shadow_results.pop(node_id, None)
+                self._bypass_shadow_errors.pop(node_id, None)
+                self._bypass_shadow_pending_node_ids.discard(node_id)
+            self._restore_graph_notes(
+                note.to_mapping() for note in before.workflow.notes
+            )
+            self._build_graph_from_pipeline(
+                positions=before.workflow.positions_dict(), preserve_view=True
+            )
+            self._mark_pipeline_branches_dirty(changed)
+            selection_guard = self._workflow_load_selection_in_progress
+            self._workflow_load_selection_in_progress = True
+            try:
+                self._refresh_node_presentation_surfaces(set(self.pipeline.nodes))
+                if before.selected_node_id in self.pipeline.nodes:
+                    self.graph_view.select_node(before.selected_node_id)
+                    self._select_node(before.selected_node_id)
+            finally:
+                self._workflow_load_selection_in_progress = selection_guard
+            self._push_undo_if_changed(before)
+            self._workflow_assistant_history_pairs.append(
+                (
+                    owner[0], before.workflow.graph,
+                    GraphSnapshot.from_pipeline(self.pipeline),
+                )
+            )
+            del self._workflow_assistant_history_pairs[: -self.HISTORY_LIMIT]
+            self._sync_current_workflow_tab_state()
+            fresh = capture_proposal_context(
+                self.pipeline, context.source_id, include_images=False
+            )
+            self._workflow_assistant_run_revision = _WorkflowAssistantRunRevision(
+                tuple(prepared._baseline_bundle.snapshot.candidate_node_ids), fresh,
+                (owner[0], self._current_history_snapshot().workflow), before,
+                "patch", tuple(prepared.changed_node_ids),
+            )
+        except Exception as error:
+            self._restore_history_snapshot(before, schedule_run=False)
+            self.pipeline.nodes.update(original_nodes)
+            for name, values in caches.items():
+                setattr(self.pipeline, name, values)
+            self.pipeline.completed_node_ids = completed
+            self.pipeline._counters = counters
+            self._pending_dirty_node_ids = dirty
+            self._history.undo_stack[:] = history[0]
+            self._history.redo_stack[:] = history[1]
+            self._history._pending_group_key = history[2]
+            self._workflow_assistant_history_pairs[:] = pairs
+            self._bypass_shadow_results = shadows
+            self._bypass_shadow_errors = shadow_errors
+            self._bypass_shadow_pending_node_ids = shadow_pending
+            self._sync_history_actions()
+            raise ProposalError(f"In-place edit rolled back: {error}") from error
+        self.status_label.setText(
+            f"Updated {len(changed)} existing nodes as one undoable edit. "
+            "Affected results need recalculation; nothing was run."
+        )
+        return self._workflow_assistant_run_revision.added_node_ids
 
     def _populate_settings_toolbar_menu(self) -> None:
         menu = self.settings_menu
@@ -10350,6 +11464,151 @@ class VippWidget(QWidget):
             self.workflow_tab_bar.refresh_session(index, session)
         except (IndexError, KeyError, ValueError):
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
+
+    def _capture_recovery_workspace(self):
+        """Plain recipe snapshots only; no calculation, dialogs or clean marker."""
+        self._sync_current_workflow_tab_state()
+        tabs = []
+        active = self._current_workflow_session_id()
+        for session in self._workflow_tabs:
+            if not session.pipeline.nodes:
+                continue  # A truly blank canvas has no persisted recipe to lose.
+            editor = session.editor_snapshot
+            if session.pipeline is self.pipeline:
+                document = serialize_workflow(
+                    self.pipeline,
+                    self.graph_view.node_positions(),
+                    self._graph_note_documents(),
+                    self._workflow_metadata(),
+                    self._current_compute_request(),
+                )
+            else:
+                document = workflow_document_from_snapshot(editor.workflow)
+                inspector = (
+                    document.setdefault("metadata", {})
+                    .setdefault("vipp", {})
+                    .setdefault("inspector", {})
+                )
+                if editor.selected_node_id in session.pipeline.nodes:
+                    inspector["selected_node_id"] = editor.selected_node_id
+                if editor.inspect_display_profiles:
+                    inspector["display_profiles"] = list(
+                        editor.inspect_display_profiles
+                    )
+                if editor.source_channel_displays:
+                    inspector["source_channel_displays"] = dict(
+                        editor.source_channel_displays
+                    )
+            # Freeze the meaning of a relative image binding at capture time.
+            # Normal image sources resolve against the process working folder,
+            # not the workflow/recovery JSON folder. Do not read the image here.
+            for node in document["nodes"]:
+                params = node["params"]
+                if node["operation_id"] == "input" and params.get("file_path"):
+                    params["file_path"] = str(
+                        normalize_local_image_source_path(params["file_path"]).absolute()
+                    )
+            tabs.append(
+                {
+                    "tab_id": session.session_id,
+                    "title": session.title,
+                    "path": str(session.path) if session.path is not None else None,
+                    "base_dir": str(
+                        session.path.parent if session.path is not None else Path.cwd()
+                    ),
+                    "workflow": document,
+                    "dirty": session.dirty,
+                }
+            )
+        return tabs, active if any(t["tab_id"] == active for t in tabs) else ""
+
+    def _restore_recovery_workspace(self, checkpoint):
+        """Open verified copies in fresh tabs, without ordinary auto-run loading."""
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            raise ValueError(f"Wait until {reason} before recovering workflows.")
+        prepared = []
+        target = None
+        for tab in checkpoint.tabs:
+            snapshot = workflow_snapshot_from_document(tab["workflow"])
+            pipeline = snapshot.graph.to_pipeline()
+            # Match the ordinary loader's original-base table-path semantics,
+            # rather than treating the recovery directory as the input folder.
+            for node in pipeline.nodes.values():
+                if node.operation_id == "table_source" and node.params["dataset_path"]:
+                    path = Path(node.params["dataset_path"]).expanduser()
+                    if not path.is_absolute():
+                        node.params["dataset_path"] = str(
+                            (Path(tab["base_dir"]) / path).absolute()
+                        )
+            snapshot = workflow_snapshot_from_pipeline(
+                pipeline,
+                snapshot.positions_dict(),
+                [note.to_mapping() for note in snapshot.notes],
+                snapshot.metadata,
+                snapshot.compute_request,
+            )
+            inspector = snapshot.metadata.get("vipp", {}).get("inspector", {})
+            selected = inspector.get("selected_node_id", "input")
+            request = snapshot.compute_request
+            editor = WorkflowHistorySnapshot(
+                workflow=snapshot,
+                selected_node_id=selected,
+                compute_mode=request.mode.value,
+                compute_fallback_policy=request.fallback_policy.value,
+                compute_node_preferences=tuple(
+                    (key, value.kind.value, value.value)
+                    for key, value in request.node_preferences.items()
+                ),
+                inspect_display_profiles=tuple(inspector.get("display_profiles", ())),
+                source_channel_displays=tuple(
+                    inspector.get("source_channel_displays", {}).items()
+                ),
+            )
+            session = WorkflowTabSession(
+                pipeline, editor, title=f"Recovered — {tab['title']}"
+            )
+            session.mark_dirty()
+            session.runtime_cache.update(self._fresh_workflow_tab_runtime(session))
+            session.runtime_cache["_recovery_original_path"] = tab["path"]
+            prepared.append(session)
+            if tab["tab_id"] == checkpoint.active_id:
+                target = session
+        if not prepared:
+            raise ValueError("The recovery copy contains no workflow graph.")
+        self._sync_current_workflow_tab_state()
+        original = self._workflow_tabs.current
+        for session in prepared:
+            self._workflow_tabs.add(session, make_current=False)
+        target = target or prepared[0]
+        try:
+            if not self._activate_workflow_tab(
+                self._workflow_tabs.index_of(target.session_id), check_safety=True
+            ):
+                raise ValueError("The recovered tabs could not be activated.")
+        except Exception:
+            if original is not None:
+                self._workflow_tabs.activate(
+                    self._workflow_tabs.index_of(original.session_id)
+                )
+                self._install_workflow_tab_session(original)
+            for session in prepared:
+                self._workflow_tabs.close(
+                    self._workflow_tabs.index_of(session.session_id),
+                    discard_unsaved=True,
+                )
+                self._dispose_workflow_tab_session(session)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            raise
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self.status_label.setText(
+            f"Recovered {len(prepared)} workflow(s) from {checkpoint.created_utc}. "
+            "Original files are unchanged. Calculate when ready; "
+            "results were not saved."
+        )
+        return tuple(session.session_id for session in prepared)
 
     def _store_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
         """Move no state: retain references to this tab's live runtime objects."""
@@ -10819,6 +12078,7 @@ class VippWidget(QWidget):
             )
             return False
 
+        self._invalidate_workflow_assessment()
         current = self._workflow_tabs.current
         if current is not None:
             self._finish_parameter_history_group()
@@ -10866,6 +12126,13 @@ class VippWidget(QWidget):
         session: WorkflowTabSession,
     ) -> bool:
         """Atomically bind widget aliases and presentation to ``session``."""
+        # Historical result evidence is session-scoped even when two tabs use
+        # identical source bytes and goals. Ordinary graph edits retain their
+        # predecessor for comparison; installing another tab must not.
+        assistant = self._workflow_assessment_dialog()
+        reset_assessment = getattr(assistant, "assessment_session_changed", None)
+        if callable(reset_assessment):
+            reset_assessment()
         self._supersede_interaction_for_untraced_edit(
             "workflow_session",
             "active_tab",
@@ -11119,10 +12386,14 @@ class VippWidget(QWidget):
         snapshot = self._history.undo(current)
         if snapshot is None:
             return
+        assistant_edit = self._assistant_history_requires_no_run(
+            current.workflow.graph, snapshot.workflow.graph
+        )
         self._restore_history_snapshot(
             snapshot,
             current_snapshot=current,
-            prefer_parameter_restore=True,
+            prefer_parameter_restore=not assistant_edit,
+            schedule_run=not assistant_edit,
         )
         self._sync_history_actions()
         self._sync_current_workflow_tab_state()
@@ -11146,10 +12417,14 @@ class VippWidget(QWidget):
         snapshot = self._history.redo(current)
         if snapshot is None:
             return
+        assistant_edit = self._assistant_history_requires_no_run(
+            current.workflow.graph, snapshot.workflow.graph
+        )
         self._restore_history_snapshot(
             snapshot,
             current_snapshot=current,
-            prefer_parameter_restore=True,
+            prefer_parameter_restore=not assistant_edit,
+            schedule_run=not assistant_edit,
         )
         self._sync_history_actions()
         self._sync_current_workflow_tab_state()
@@ -11777,6 +13052,7 @@ class VippWidget(QWidget):
         prefer_parameter_restore: bool = False,
         schedule_run: bool = True,
     ) -> None:
+        self._invalidate_workflow_assessment()
         if (
             prefer_parameter_restore
             and current_snapshot is not None
@@ -14547,6 +15823,8 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Closed workflow '{closed.title}'.")
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.checkpoint_now("workflow tab closed")
 
     def _dispose_workflow_tab_session(
         self,
@@ -14597,6 +15875,8 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Renamed workflow tab to '{session.title}'.")
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
 
     def _reveal_workflow_tab(self, session_id: str) -> None:
         """Locate a tab's saved file without activating, saving or running it."""
@@ -14625,13 +15905,19 @@ class VippWidget(QWidget):
         self._workflow_tabs.move(source_index, target_index)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
 
-    def _build_graph_from_pipeline(self) -> None:
+    def _build_graph_from_pipeline(
+        self, *, positions=None, preserve_view=False
+    ) -> None:
         self.graph_view.build_graph(
             self.pipeline.nodes.values(),
             self.pipeline.connections,
+            positions,
             output_tunnels=self.pipeline.output_tunnel_list(),
             notes=self._graph_note_documents(use_view_positions=False),
+            preserve_view=preserve_view,
         )
         self._sync_pin_ui()
         self._sync_all_input_ports()
@@ -18824,6 +20110,7 @@ class VippWidget(QWidget):
         }
         if not valid_node_ids:
             return False
+        self._invalidate_workflow_assessment()
         if not interaction_traced:
             self._supersede_interaction_for_untraced_edit(
                 ",".join(sorted(valid_node_ids)),
@@ -19262,6 +20549,7 @@ class VippWidget(QWidget):
         later debounced run will not see an empty pending set and recompute the
         whole pipeline from the source.
         """
+        self._begin_workflow_assessment_run()
         cleared_overrides = self._discard_background_node_result_overrides()
         self._inflight_dirty_node_ids = (
             None if dirty_node_ids is None else set(dirty_node_ids)
@@ -22685,9 +23973,12 @@ class VippWidget(QWidget):
             data,
             output_port,
         )
-        return inspector_profile(
-            self.pipeline.operation_spec(node.operation_id),
-            effective_output_type=output_kind,
+        return replace(
+            inspector_profile(
+                self.pipeline.operation_spec(node.operation_id),
+                effective_output_type=output_kind,
+            ),
+            execution_is_manual=self.pipeline.is_manual_node(node_id),
         )
 
     def _sync_inspector_header(self, spec: OperationSpec) -> None:
@@ -35158,6 +36449,11 @@ class VippWidget(QWidget):
         if self._closing:
             return
         self._commit_crop_draft(schedule_run=False)
+        if self._workflow_recovery is not None:
+            # Capture before a synchronous scientific step can occupy the UI;
+            # only the detached JSON write runs in the background.
+            self._workflow_recovery.changed()
+            self._workflow_recovery.autosave()
         self._record_interaction_phase(
             self._interaction_current_generation(),
             InteractionLatencyPhase.DEBOUNCE_FINISHED,
@@ -35646,6 +36942,7 @@ class VippWidget(QWidget):
                 InteractionLatencyPhase.PIPELINE_TERMINAL,
                 detail=str(exc),
             )
+            assistant_pending = self._workflow_assistant_assessment_pending
             self._finish_interaction_generation(
                 interaction_generation,
                 InteractionLatencyOutcome.FAILED,
@@ -35696,6 +36993,19 @@ class VippWidget(QWidget):
                 self._interactive_collection_batch_requested_index,
                 str(exc),
                 graph_may_be_partial=True,
+            )
+            from napari_vipp.core.execution import _pipeline_execution_failure
+
+            self._notify_workflow_assistant_failure(
+                assistant_pending,
+                _pipeline_execution_failure(
+                    exc, cpu_only=True,
+                    known_cleanup=(
+                        True if compute_request.mode is ComputeMode.CPU else None
+                    ),
+                ),
+                str(exc),
+                status_error_node_ids,
             )
             return
         if self._interactive_collection_source_paths:
@@ -35761,6 +37071,7 @@ class VippWidget(QWidget):
             InteractionLatencyPhase.PIPELINE_ACCEPTED,
             once=True,
         )
+        self._complete_workflow_assessment_run()
         self._finish_pipeline_update(primary_layer, source_label)
         self._finish_interaction_without_preview_if_needed()
 
@@ -36940,6 +38251,37 @@ class VippWidget(QWidget):
         interaction_generation = self._interaction_pipeline_terminal(result)
         if result.run_id != self._active_pipeline_run_id:
             return
+        owned = self._workflow_assistant_owned_dispatch
+        if owned is not None and owned[0] == result.run_id:
+            self._workflow_assistant_owned_dispatch = None
+        if (
+            result.cancelled or result.error or result.failure is not None
+            or self._pipeline_user_cancel_requested_run_id == result.run_id
+            or self._pipeline_quarantine_cancel_requested_run_id == result.run_id
+        ):
+            if result.error and not (
+                result.cancelled
+                or self._pipeline_user_cancel_requested_run_id == result.run_id
+                or self._pipeline_quarantine_cancel_requested_run_id == result.run_id
+            ):
+                # Hold this exact terminal ticket until ordinary stale-source,
+                # workflow and cleanup checks have run. Early-return paths must
+                # still revoke it, but never acquire automatic repair authority.
+                terminal_pending = self._workflow_assistant_assessment_pending
+                def abandon_failure(pending=terminal_pending):
+                    self._abandon_workflow_assistant_failure(
+                        pending,
+                        "Calculation failed or was superseded. "
+                        "Review VIPP's calculation status.",
+                    )
+
+                QTimer.singleShot(
+                    0, abandon_failure,
+                )
+            else:
+                self._invalidate_workflow_assessment(
+                    "Calculation stopped or was cancelled. No results were assessed."
+                )
         # Stop the scientific timer before result merging, display preparation,
         # and thumbnail statistics.  The keyed pop makes duplicate terminal
         # delivery harmless.
@@ -37474,6 +38816,12 @@ class VippWidget(QWidget):
                     self._interactive_collection_batch_requested_index,
                     result.error,
                 )
+                self._notify_workflow_assistant_failure(
+                    self._workflow_assistant_assessment_pending,
+                    result.failure,
+                    result.error,
+                    tuple(failure_messages),
+                )
             return
         if result.pipeline is None:
             self._requeue_inflight_dirty_nodes()
@@ -37630,6 +38978,7 @@ class VippWidget(QWidget):
             InteractionLatencyPhase.PIPELINE_ACCEPTED,
             detail=f"pipeline run {result.run_id}",
         )
+        self._complete_workflow_assessment_run()
         self._finish_pipeline_update(primary_layer, source_label)
         self._finish_interaction_without_preview_if_needed()
         self._announce_compute_fallbacks()
@@ -37887,6 +39236,7 @@ class VippWidget(QWidget):
         )
 
     def _cancel_background_pipeline_run(self) -> None:
+        self._invalidate_workflow_assessment()
         run_id = self._active_pipeline_run_id
         if run_id is None:
             self._pipeline_run_pending = False

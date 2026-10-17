@@ -143,6 +143,25 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
         path.lineTo(6, 18)
         path.lineTo(14, 18)
         painter.drawPath(path)
+    elif kind == "assistant":
+        # Three four-point sparkles distinguish AI-assisted authoring from
+        # ordinary graph arrangement without depending on an emoji font.
+        for center_x, center_y, radius in (
+            (9.0, 13.0, 6.5),
+            (17.5, 5.0, 2.8),
+            (19.5, 18.5, 2.4),
+        ):
+            inset = radius * 0.28
+            path.moveTo(center_x, center_y - radius)
+            path.lineTo(center_x + inset, center_y - inset)
+            path.lineTo(center_x + radius, center_y)
+            path.lineTo(center_x + inset, center_y + inset)
+            path.lineTo(center_x, center_y + radius)
+            path.lineTo(center_x - inset, center_y + inset)
+            path.lineTo(center_x - radius, center_y)
+            path.lineTo(center_x - inset, center_y - inset)
+            path.closeSubpath()
+        painter.drawPath(path)
     elif kind == "archive":
         path.moveTo(3, 7)
         path.lineTo(12, 3)
@@ -220,6 +239,36 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
         path.moveTo(13, 5)
         path.lineTo(20, 12)
         path.lineTo(13, 19)
+        painter.drawPath(path)
+    elif kind == "send":
+        # Microsoft VS Code Codicons send.svg, CC BY 4.0; see NOTICE.
+        # Preserve its filled 16-unit outline, scaled to our 24-unit canvas.
+        painter.scale(1.5, 1.5)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(foreground))
+        path.setFillRule(Qt.WindingFill)
+        path.moveTo(1.17683, 1.11898)
+        path.cubicTo(1.32953, 0.989634, 1.54464, 0.963786, 1.72363, 1.05328)
+        path.lineTo(14.7236, 7.55328)
+        path.cubicTo(14.893, 7.63797, 15, 7.8111, 15, 8.00049)
+        path.cubicTo(15, 8.18987, 14.893, 8.36301, 14.7236, 8.4477)
+        path.lineTo(1.72363, 14.9477)
+        path.cubicTo(1.54464, 15.0372, 1.32953, 15.0113, 1.17683, 14.882)
+        path.cubicTo(1.02414, 14.7526, 0.96328, 14.5447, 1.02213, 14.3534)
+        path.lineTo(2.97688, 8.00049)
+        path.lineTo(1.02213, 1.64754)
+        path.cubicTo(0.96328, 1.45627, 1.02414, 1.24833, 1.17683, 1.11898)
+        path.closeSubpath()
+        path.moveTo(3.8693, 8.50049)
+        path.lineTo(2.32155, 13.5307)
+        path.lineTo(13.382, 8.00049)
+        path.lineTo(2.32155, 2.47027)
+        path.lineTo(3.8693, 7.50049)
+        path.lineTo(9.50001, 7.50049)
+        path.cubicTo(9.77615, 7.50049, 10, 7.72435, 10, 8.00049)
+        path.cubicTo(10, 8.27663, 9.77615, 8.50049, 9.50001, 8.50049)
+        path.lineTo(3.8693, 8.50049)
+        path.closeSubpath()
         painter.drawPath(path)
     elif kind == "compute":
         painter.drawRect(6, 6, 12, 12)

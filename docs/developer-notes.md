@@ -21,6 +21,18 @@ and the tests expected for common extensions. The detailed design is in the
 
 ## Dependency Direction
 
+Unreleased working-copy/assistant persistence keeps three boundaries separate:
+`core/workflow_recovery.py` journals ordinary tab recipes without arrays or
+canonical-file writes; `core/workflow_patch.py` prepares tested same-topology
+node diffs, while the widget owns checkpoint/Undo/commit/invalidation; and
+`core/workflow_assistant_session.py` plus the typed investigation persistence
+adapter load passive local evidence before explicit fresh binding/consent.
+Neither recovery nor archive Open may invoke Calculate, a provider or MCP.
+Qualify corrupt/latest fallback, OS lease/process exit, disk-full/post-replace
+failure, clean retirement, stale patch selection/rollback/Undo, and history-only
+versus paused exact-binding restore. Keep archive parsing Qt-free and never
+serialize credentials, callbacks, locks, workers or transmitted-evidence grants.
+
 For the unreleased surface-output path, `core/meshes.py` owns extraction,
 immutable geometry/calibration and atomic OBJ writing. Keep it Qt-free; the
 widget routes only presentation copies to napari Surface. See the

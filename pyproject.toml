@@ -68,6 +68,7 @@ dependencies = [
 vipp = "napari_vipp.__main__:main"
 vipp-compute-doctor = "napari_vipp.core.compute_diagnostics:main"
 vipp-install-plan = "napari_vipp.installer.cli:main"
+vipp-agent-mcp = "napari_vipp.core.workflow_agent_mcp_cli:main"
 
 [project.gui-scripts]
 vipp-app = "napari_vipp.launcher:main_auto"

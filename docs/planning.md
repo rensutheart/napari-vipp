@@ -1,6 +1,6 @@
 # napari-vipp Active Roadmap
 
-Last reviewed: 2026-09-30
+Last reviewed: 2026-10-17
 
 This document is the concise source of truth for active product priorities and
 release order. Delivered chronology and old qualification detail are preserved
@@ -13,6 +13,333 @@ early tester feedback from Tom Naber on
 [pull request 13](https://github.com/rensutheart/napari-vipp/pull/13).
 
 ## Product Direction
+
+### Next AI-assistant milestones
+
+The current unreleased foundation includes shared investigation tools, bounded
+visual trials, native/external-agent access, reviewed same-topology edits,
+workflow recovery and saved assistant sessions. The next emphasis is dependable
+analysis improvement. Engineering tests establish safety and persistence, not
+model judgment, scientific accuracy or parity between providers.
+
+1. **Improve an existing workflow end to end.** Make the intended branch/results
+   and protected outputs explicit. Demonstrate one useful localized improvement
+   in the native window, with matched before/after evidence and no helper scripts
+   or human steering of processing choices. Extend reviewed transactions to
+   bounded insertion, removal/bypass and reconnection of existing library nodes;
+   preserve unaffected branches, exact revision guards, a recovery checkpoint,
+   one Undo and separate Run. Arbitrary graph rewriting is not yet implemented.
+2. **Point to the desired visual change.** Add explicit problematic/protected
+   regions and plain-language acceptance checks for instructions such as “keep
+   this middle” or “remove this background.” Tie comparisons and measurements to
+   those regions. Make reconstruction and boundary/topology trade-offs visible;
+   annotations and attractive results are not biological ground truth.
+3. **Measure and improve experimental judgment.** Use a small blind regression
+   set spanning new tasks and existing workflows. Check experiment selection,
+   regressions, best-result retention, honest stopping and intervention needed.
+   Compare models with the same tools, sharing choices and finite allowances;
+   retain failed trials and avoid treating protocol tests as model-quality data.
+
+The immediate acceptance target is: open an existing workflow, describe one
+defect, and have the assistant demonstrate and offer a useful small edit entirely
+inside VIPP. Generalization beyond the circular/wavy demonstration remains to be
+established. Broader custom-node generation and unrestricted computer access are
+not prerequisites for this milestone and are not granted by it. See the
+[AI-assisted authoring plan](ai-assisted-authoring-plan.md#next-implementation-focus).
+
+### Implemented development slices
+
+Unreleased recovery/owned-edit/session-file slice, 2026-10-17: protect ordinary
+workflow tabs with bounded graph-only working copies, independent of manual
+Save. A two-second edit debounce and thirty-second pending-edit check feed
+atomic hashed generations; dead-instance recovery opens new dirty tabs without
+Run, caches or original-file writes. A tested alternative can now preview and
+apply up to eight existing-node parameter/compatible-operation edits, with exact
+source/graph/selection guards, unchanged topology, a durable pre-checkpoint and
+one Undo step. Local assistant archives separately retain supported evidence
+and consumed usage. Open never resumes or shares; explicit rebind/consent checks
+prepare a paused continuation, otherwise history remains available. Credentials,
+live leases and transmission authority are not portable. Arbitrary graph
+rewriting, automatic crash restart of agents and cross-version continuation are
+not promised. Fresh evidence belongs under
+`VIPP-local-tests/workflow-recovery-patching-sessions-20261017`.
+
+Unreleased live-session/provider-neutral slice, 2026-10-17: both the embedded
+agent and an optional external MCP client use the same guarded scientific
+tools. Native investigation now supports local image-capable models and
+explicit official API access, with provider-neutral actual-send accounting.
+Native effort controls and owner-only absolute grants preserve one session
+across safe pauses and answers. Hard resource ceilings remain finite. A local
+authenticated bridge attaches an external client to an explicitly chosen live
+source or eligible completed workflow; no automatic registration or new graph
+mutation authority. This supersedes the earlier isolated-only MCP and
+Codex-only investigation descriptions below. In-place diff/Keep/Revert editing
+of arbitrary graphs remains future work: separate-branch Add remains available
+alongside the narrower tested-node patch described above. Evidence belongs under
+`VIPP-local-tests/ai-assistant-live-harness-20261017`; offline wire/native tests
+do not establish local-model visual quality or scientific parity.
+
+Unreleased shared-agent implementation, 2026-10-17: unify Goal and
+accepted-result refinement around one continuing core loop and guarded named
+tool facade. Add bounded native-ROI diagnostic DAGs (six probes, eight safe
+nodes, four outputs, 262,144 input voxels) as a separate visible allocation
+inside the original action/time/evidence limits. An explicitly enabled local
+MCP/stdio adapter exposes those same tools, initially as a human-configured
+isolated NPY/ZYX CPU session, not live-GUI attachment or unrestricted computer
+control. Actual external exchanges are accounted conservatively, not claimed
+as measured external LLM turns. New cold image-test evidence belongs under
+`VIPP-local-tests/ai-assistant-shared-agent-20261017`; implementation and protocol
+tests alone do not demonstrate scientific success or parity with another agent.
+Direct arbitrary-existing-workflow selection and previewable atomic in-place
+edits with Undo remain follow-ups; the MCP interface does not bypass that scope.
+
+Unreleased first-review budget allocation, 2026-10-17: retain one original trial
+for **Keep improving** when finish review is enabled and the selected total is
+at least two. Initial exploration must assess and nominate within the remaining
+allocation, leaving action/call capacity for the continuation. Only a successful
+same-session Continue releases the hold. The selected total, absolute deadline,
+image/context/resource guards and all consumed counters remain unchanged. A
+single-trial setting cannot reserve a further test, and other exhausted limits
+can still disable continuation. This prevents the observed all-trials-before-
+first-review failure without choosing a method, parameters, winner or success
+verdict. Fresh implementation/test evidence belongs under
+`VIPP-local-tests/ai-assistant-review-budget-20261017`; older test results remain
+immutable and are not evidence of a successful new continuation.
+
+Unreleased finish-review continuation, 2026-10-17: make a model's completed
+nomination provisional when explicit finish review is enabled. The native
+ChatGPT investigation/refinement entry defaults **Review before finishing** on;
+the generic core's `review_before_finish=False` preserves existing callers.
+**Keep improving** can resume the same owned session with optional user feedback
+and further evidence-linked tests of addressable remaining issues under the
+original goal. It retains every consumed action/call/trial, image allowance,
+active-time allowance, notebook record and protected accepted baseline. Human
+pause/review time is excluded in the shared native continuation; used work is
+not reset and no further work starts after a hard limit. **Good enough**
+accepts only the exact completed, still-current nomination as a checked draft
+for separate Add/Run (or keeps the accepted baseline without a duplicate Add),
+including after the work deadline without new calculation
+or model work. **Stop** leaves the accepted graph unchanged. Limitations and
+topology warnings remain explicit; no rule forces a success verdict, zero
+limitations, a scientific method or a winner. Local-connector refinement stays
+on its existing path. New evidence belongs under
+`VIPP-local-tests/ai-assistant-finish-review-20261017`; earlier closed tests and
+their provisional quality judgments remain immutable. Provider-free checks,
+documentation builds and UI-control behavior are not new live quality evidence.
+
+Unreleased paired-assessment continuation, 2026-10-17: preserve an exact cached
+before/after pair through completed-test assessment rather than allowing a later
+inspection to displace all comparison images. Match explicit role, source/grid,
+region, view and display policy; disclose missing or omitted pairs under the
+same seven-PNG/2 MiB board and cumulative image limits. A bounded descriptor
+does not grant image authority without its actual current PNGs. Prioritize an
+exact typed delivered-mesh topology review so changed Euler counts, components,
+non-manifold edges or duplicate faces remain visible despite closed boundaries.
+These are diagnostics, not automatic repair, ranking or anatomical validation.
+A separately sealed fresh test under
+`VIPP-local-tests/ai-assistant-paired-assessment-20261017` keeps the original
+accepted own baseline, exact uneven-background goal/feedback and all existing
+trial/action/call/time limits. Its observers only record normal published
+requests, PNG boards and topology facts; no human workflow or old trial advice
+is supplied. Qualification and actual terminal evidence remain separate gates;
+implementation and offline checks alone establish no new quality result.
+
+Unreleased efficiency continuation, 2026-10-17: prioritize exact current-test
+facts and the latest comparison before duplicating unchanged accepted-recipe
+content in the bounded decision context. After a completed or product-rejected
+executed trial, the accepted baseline's top-level entry becomes an exact
+descriptor pointing to its immutable full record; failed/partial trials alone
+do not trigger this change. Optional retained-baseline content is packed last.
+The current recipe, whole active or explicitly
+requested contracts and typed measurements remain bounded with explicit
+omissions. Repeated notebook reads/pins should not be necessary just to recover
+current preservation, mesh or comparison evidence. Only actually supplied
+payloads grant citation authority; a descriptor does not supply unseen facts.
+This changes evidence presentation, not scientific recipes or the existing
+3-default-trial/32-action/40-call/30-minute limits. Input/output permissions
+remain separate and default off. A fresh authorized protected test under
+`VIPP-local-tests/ai-assistant-efficient-refinement-20261017` appends only the
+user-approved uneven-background consideration to the prior protected goal;
+it supplies no method or parameters and does not resume a closed experiment.
+Qualification and a genuine new result lock are required before comparison;
+the implementation or offline checks alone imply no live quality improvement.
+The first efficient run reached a genuine final choice after two trial attempts
+and retained the accepted baseline. Its frozen trace exposed a packing-priority
+bug: a large duplicate baseline displaced useful current facts. The post-terminal
+fix and fresh qualification/run2 remain separate from the immutable original
+qualification/run1; no trial ideas or parameters are carried into the new model
+dialogue by the harness, and no unfinished broad suite is described as clean.
+
+Implemented unreleased continuation, 2026-10-17: replace complete-inline
+investigation history with a bounded scientific working notebook. Full exact
+session-local public records remain indexed and retrievable; the model can pin
+small records and reuse exact cached preview views. A request index, quote or
+pin grants no measurement/image authority: only the exact approved payload and
+current PNG board supplied at an actual call can do so. Reserve context and
+remaining actions/calls for completed-test assessment and explicit Finish,
+without increasing the 192 KiB wire cap or existing trial/action/call/time/image
+budgets. Input/output choices stay independent and off by default. This contract
+and its offline checks do not establish a successful live refinement or quality
+improvement. Fresh protected warm-start acceptance is planned separately under
+`VIPP-local-tests/ai-assistant-evidence-notebook-20261017`; the prior closed
+experiment is not resumed or assigned a default winner.
+
+Implemented testing continuation, 2026-10-16: ChatGPT post-run refinement now
+warm-starts the investigation engine from an explicitly accepted current result.
+The original is retained while isolated trials test recorded small parameter
+or operation edits with stable output roles and actual protected-region checks.
+The same bounded discovery/inspection/hypothesis/assessment tools are reused;
+the later shared-agent slice above adds a bounded local MCP adapter, not an
+unrestricted server.
+The generic core can capture an eligible completed user-authored recipe, but
+the current window entry still requires its ordinary assistant-owned Run.
+Direct selection of an arbitrary existing manual workflow is a follow-up UI
+ownership task. New live quality claims require the separate frozen comparison
+under `VIPP-local-tests/ai-assistant-microedit-investigation-20261016`.
+
+That testing continuation completed two real detached trials, including a
+one-parameter edit, but stopped at the unchanged request-history cap before
+final assessment/nomination. Both trials preserved the accepted protected
+foreground; neither was automatically promoted. A lossless history-sharing fix
+allowed further inspection but did not eliminate the eventual cap. The next
+procedural priority led to the separate notebook/wire-contract implementation
+above, rather than a larger prompt or silently discarded history. Its new
+qualification and live acceptance must remain distinct from that closed run.
+Manual-workflow selection, previewable atomic in-place edits with Undo and an
+live-GUI MCP attachment remain separate follow-ups to the tested warm-start core.
+
+Implemented testing continuation, 2026-10-16: an independently started bounded
+investigation can request input/intermediate evidence, query existing node
+contracts, run detached trial branches, compare candidates and nominate a
+completed preferred result before the final draft. Goal exposes an opt-in
+**Investigate with trial runs** choice and a one-to-five trial-attempt limit.
+The original goal and explicit image permissions persist; output measurement
+sharing also needs output-assessment permission. Normal Add/Run still publish
+the chosen workflow separately. No shell/filesystem tools, new sources,
+writers or custom code are granted. The first blinded product test completed
+28 model actions and three CPU trials with both preview choices. Its fixed
+selection replayed exactly through normal Add/Run, including full metadata;
+the live driver and separate no-model replay continuation retain their distinct
+evidence. The result remained scientifically partial: cleanup and colouring
+improved, but the central wavy gap was not reconstructed. The current testing
+continuation adds required prospective experiment plans and outcome checks in
+the UI, exact native-region diagnostics, a compact safe-node index and batched
+contracts. A fresh blinded continuation tested four candidates; the model's
+explicit selected candidate reproduced all seven masks/labels/mesh roles
+through ordinary Add/Run. Its history-size interruption and separate one-turn
+finalization recovery are retained, not presented as an uninterrupted clean
+run. Reconstruction quality and inferred geometry remain separate from exact
+mechanical replay; neither a human recipe nor a visually appealing mesh is
+ground truth. Dated evidence is in
+`VIPP-local-tests/ai-assistant-reconstruction-investigation-20261016/REPORT.txt`.
+See
+[investigation acceptance](workflow-investigation-acceptance.md).
+
+Approved testing slice, continued 2026-10-13: a bounded **Workflow assistant** assembles
+existing nodes from a versioned catalogue, validates a detached proposal and
+applies it only after review as one undoable edit without calculation. A trusted
+local Ollama/compatible server and a restricted Codex connector are optional;
+the no-AI example is a fixed recipe. The continuation adds explicit input-preview
+sharing, reviewed mesh/selection nodes, plain-language step cards and questions,
+automatic validation and one bounded model repair. A dedicated non-modal native
+workspace now separates Goal, Discussion and Plans, retains text-only draft
+history with read-only earlier plans, and stages provider choices in Settings.
+Explicit Send/revision approves the disclosed request; previews remain a
+separate default-off choice. Add stays non-running and undoable; a separate
+guarded Run invokes ordinary Calculate-all, not model-led experimentation.
+Earlier Qwen comparisons
+remain separate from this new harness. This is unreleased development work,
+not biological accuracy or cloud-model parity evidence. See
+[prototype contract](workflow-assistant-prototype.md) and
+[longer-term plan](ai-assisted-authoring-plan.md). Custom code, model tools,
+full-volume transmission and unbounded scientific runs remain outside scope;
+the separately started finite continuation is below.
+
+Broader assistant continuation requested 2026-10-13: retain **output-aware
+assessment and iterative refinement** as the staged design below, not an
+autonomous capability or release commitment. The explicit assessment and finite
+continuation are recorded next; broader review-frequency and best-result policy
+remain future work. Each candidate should compare
+actual masks/meshes and relevant measurements against the original goal, explain
+what succeeded or failed, and record the next change or stop reason. Separate
+review-frequency control should span every iteration, checkpoints and final
+review, without changing clarification initiative, sharing permissions or hard
+iteration/time/resource/model-use budgets. Retain feedback, baseline and best
+observed candidate; completed execution or model confidence alone is not
+scientific success. Begin with one approved run/assessment/revision comparison
+using existing nodes, not a dependency on custom-node generation. Details and
+the two independent 3D structures acceptance case are in
+[result assessment](ai-assisted-authoring-plan.md#assessment-after-every-iteration)
+and [bounded iteration](ai-assisted-authoring-plan.md#4-bounded-self-directed-iteration).
+This request records the direction; it does not authorize an autonomous run now.
+
+Implemented continuation 2026-10-15: **explicit run-bound output feedback**.
+Prominent independent input-preview/output-assessment choices both default off.
+After an ordinary explicit Run completes, Preview results shared discloses
+bounded actual diagnostics and permitted PNGs; Assess results explicitly sends
+them. Source/graph/output revision guards reject stale evidence. The report
+distinguishes mask components, label IDs and mesh display groups/colours and
+does not equate execution or confidence with accuracy. Revise using results is
+a separate request for a fresh checked draft, still requiring manual Add/Run.
+The local connector remains measurements-only. See the
+[first increment](ai-assisted-authoring-plan.md#first-increment-explicit-run-bound-result-feedback).
+The finite continuation below adds separately started bounded rounds;
+review-frequency controls and best-candidate selection remain future work.
+Planning and assessment share a 600-second per-attempt
+default/maximum and local elapsed clock; at most two attempts can use up to
+20 minutes. The clock is not remote-model liveness, token or reasoning progress.
+Cancel remains available; timeout changes alone grant no output sharing or execution.
+
+Implemented continuation 2026-10-15: **finite output-aware refinement**. Actual
+captured meshes have two fixed calibrated oblique previews, with approximate
+depth-order/visibility caveats and no scientific-geometry change. Assessments
+receive only the last completed comparable run's diagnostics and report,
+not its images; source SHA/grid, original dialogue and image choices bind the
+comparison. Relative improvement is separate from accuracy or goal achievement.
+Goal's default-zero Manual-to-five-additional-attempts slider starts nothing.
+Separate Start in Plans, after the first ordinary run, delegates checked
+assess/revise/Add/Run attempts for at most 30 minutes and `2 * selected limit + 1` logical
+requests with existing format-repair limits. Whole-graph checks reject writers,
+other sources, external/custom or unreviewed operations. Earlier candidate
+branches remain; normal resource/cancellation policy applies. Stop conditions
+include limits, repeated drafts, questions, failed/stale work, changes,
+cancellation, unavailable evidence and explicitly labelled AI achievement.
+Failed calculations count toward that selected attempt limit and create no
+assessment. At most two known, owned mesh-topology repair transitions fit inside
+the same attempt/request/time caps, after rolling back only the exact failed
+Add; earlier completed branches and historical completed assessments remain.
+Unknown/resource/cancel/stale/security/provider/I/O or unsafe-cleanup failures
+stop for review. Repairs receive safe failure context with separately permitted
+input previews, not failed-output images or a fabricated result. Scientific
+mesh validity and resource guards stay strict. Assessment guidance weighs missed
+wanted signal, unwanted foreground, continuity, separation and mesh quality,
+not merely fewer fragments or smoother appearance.
+Six recent reports remain visible, without automatic best-result selection or
+scientific validation. See the
+[bounded implementation contract](workflow-assistant-prototype.md#separately-started-finite-refinement).
+
+Approved continuation expanded 2026-10-15: **registry-wide existing-node
+authoring and locally bound saving**. Catalogue version 4 exposes 143 of all
+146 registered operations through normal parameter, port and metadata contracts.
+Image Source and Table Source require explicit user bindings; Batch Output
+requires separate batch setup. Save Image may use a locally selected destination,
+including one verified input file folder; paths remain private and the model
+uses USER_OUTPUT_DIRECTORY. Add stays non-running; a separate explicit Run keeps
+normal resource and no-overwrite guards. Samples/live or ambiguous multi-file
+inputs require a folder choice. Branched/converging graphs retain 64-node and
+128-connection bounds; metadata-dependent ports are bounded to 256, without
+inventing counts. Lossless shared catalogue metadata preserves every parameter
+constraint/help and the complete bounded dialogue within the existing 192 KiB
+request budget; responses remain limited to 128 KiB. Cached finite numeric,
+mask/label and explicitly described time/channel sources remain bounded to
+64 MiB, and individual node contracts still decide validity. Image previews
+remain scalar YX/ZYX only. Earlier 24-node/28-connection synthetic topology
+evidence does not establish equivalent geometry, AI quality or success on the
+original images. Registry authoring alone introduces no output assessment,
+automatic iteration, arbitrary source creation, external actions or custom code;
+the separate explicit assessment slice is recorded above.
+The [current continuation](ai-assisted-authoring-plan.md#current-continuation-library-discovery-and-broader-composition)
+records the scope and remaining boundary before output-aware refinement.
 
 Approved continuation, 2026-09-29: implement previous-frame registration,
 time-aware detection and basic one-to-one object/spot tracking with read-only
@@ -1275,9 +1602,10 @@ operation while VIPP supplies trusted templates, validation, and a reviewable
 node-installation flow.
 
 Begin by assembling existing nodes, then introduce reusable custom-node
-packages after their trust/runtime contracts are ready. Later stages inspect
-selected images and measurements, adjust parameters, add/reconnect nodes,
-and arrange layouts. The long-term aim is a bounded self-iteration loop with
+packages after their trust/runtime contracts are ready. Result inspection and
+bounded iteration with existing nodes can proceed independently of custom-node
+work: inspect selected images and measurements, adjust parameters, add/reconnect
+nodes, and arrange layouts. The long-term aim is a bounded self-iteration loop with
 user-approved objectives, data access, budgets, checkpoints, and stop rules.
 
 Generated code is not automatically trustworthy, and visual improvement is

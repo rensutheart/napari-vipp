@@ -10,6 +10,7 @@ both return a new mesh and leave upstream geometry available for comparison.
 from __future__ import annotations
 
 import importlib.metadata
+import re
 import threading
 from dataclasses import replace
 
@@ -22,6 +23,47 @@ from napari_vipp.core.meshes import MeshData, _mesh_calibration
 # The provider stores mesh buffers in process-global native state. Distinct
 # workflow workers must not interleave load/simplify/return calls.
 _SIMPLIFICATION_LOCK = threading.Lock()
+
+_REFINEMENT_OPERATIONS = {
+    "smooth_mesh": "Smooth Mesh",
+    "simplify_mesh": "Simplify Mesh",
+}
+_INPUT_SURFACE_DETAILS = {
+    "nonfinite_coordinates": "non-finite coordinates",
+    "degenerate_faces": "finite, non-degenerate triangles are required",
+    "nonmanifold_or_inconsistent_winding": (
+        "consistently wound manifold edges are required"
+    ),
+}
+
+
+def _input_surface_detail(code, count=None):
+    if type(code) is not str:
+        raise ValueError("Unknown mesh-input topology diagnosis.")
+    if code == "duplicate_faces":
+        if (
+            isinstance(count, (bool, np.bool_))
+            or not isinstance(count, (int, np.integer))
+            or not 0 < count <= np.iinfo(np.int64).max
+        ):
+            raise ValueError("Duplicate-face count must be a positive int64 integer.")
+        noun = "face" if count == 1 else "faces"
+        return (
+            f"duplicate triangles ({int(count)} repeated {noun} "
+            "with the same three vertex IDs)"
+        )
+    if code not in _INPUT_SURFACE_DETAILS or count is not None:
+        raise ValueError("Unknown mesh-input topology diagnosis.")
+    return _INPUT_SURFACE_DETAILS[code]
+
+
+class _SurfaceContractViolation(ValueError):
+    """Known numerical checks, distinct from arbitrary provider exceptions."""
+
+    def __init__(self, code, count=None):
+        super().__init__(_input_surface_detail(code, count))
+        self.code = code
+        self.count = int(count) if count is not None else None
 
 
 def _check_progress(progress, current=None, total=None, message=""):
@@ -78,21 +120,17 @@ def _surface_contract(vertices, faces):
     if not len(faces):
         return np.empty((0, 2), np.int64), np.empty(0, np.int64), False, 0
     if not np.isfinite(vertices).all():
-        raise ValueError("non-finite coordinates")
+        raise _SurfaceContractViolation("nonfinite_coordinates")
     triangles = vertices[faces]
     normals = np.cross(
         triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
     )
     lengths = np.linalg.norm(normals, axis=1)
     if not np.isfinite(lengths).all() or np.any(lengths <= 0):
-        raise ValueError("finite, non-degenerate triangles are required")
+        raise _SurfaceContractViolation("degenerate_faces")
     duplicate_count = len(faces) - len(np.unique(np.sort(faces, axis=1), axis=0))
     if duplicate_count:
-        noun = "face" if duplicate_count == 1 else "faces"
-        raise ValueError(
-            f"duplicate triangles ({duplicate_count} repeated {noun} "
-            "with the same three vertex IDs)"
-        )
+        raise _SurfaceContractViolation("duplicate_faces", duplicate_count)
     directed = np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
     edges, inverse, counts = np.unique(
         np.sort(directed, axis=1), axis=0, return_inverse=True, return_counts=True
@@ -101,7 +139,7 @@ def _surface_contract(vertices, faces):
         inverse, weights=np.where(directed[:, 0] < directed[:, 1], 1, -1)
     )
     if np.any(counts > 2) or np.any((counts == 2) & (orientation != 0)):
-        raise ValueError("consistently wound manifold edges are required")
+        raise _SurfaceContractViolation("nonmanifold_or_inconsistent_winding")
     euler = len(np.unique(faces)) - len(edges) + len(faces)
     return edges, counts, bool(np.all(counts == 2)), euler
 
@@ -132,9 +170,108 @@ def _refinement_failure(operation, object_id, detail, *, settings=None, componen
     return ValueError(message + "No new mesh was produced; the input is unchanged.")
 
 
+class MeshInputTopologyError(ValueError):
+    """A positively identified input defect, never a failed refined result.
+
+    Public fields contain only a reviewed operation ID, a fixed diagnosis code,
+    an integer object identity and (for repeated faces) an integer count. The
+    canonical message contains no source names, metadata, paths or provider
+    exception text. It remains the existing actionable refinement error text.
+    This diagnosis neither repairs geometry nor certifies other topology.
+    """
+
+    def __init__(self, operation_id, object_id, code, count=None):
+        if type(operation_id) is not str or operation_id not in _REFINEMENT_OPERATIONS:
+            raise ValueError("Unknown mesh refinement operation.")
+        if (
+            isinstance(object_id, (bool, np.bool_))
+            or not isinstance(object_id, (int, np.integer))
+            or not 0 < object_id <= np.iinfo(np.int64).max
+        ):
+            raise ValueError("Mesh object ID must be a positive int64 integer.")
+        detail = _input_surface_detail(code, count)
+        self.operation_id = operation_id
+        self.code = code
+        self.object_id = int(object_id)
+        self.count = int(count) if count is not None else None
+        self.safe_message = str(
+            _refinement_failure(
+                _REFINEMENT_OPERATIONS[operation_id], self.object_id, detail
+            )
+        )
+        super().__init__(self.safe_message)
+
+
+def safe_mesh_input_failure(operation_id, error_type, message):
+    """Recover only our exact known diagnosis across the executor boundary.
+
+    The executor retains exception type/text rather than the original object.
+    Parse no arbitrary error: require the exact type, operation and a complete
+    canonical round trip. Appended paths, raw provider text, whitespace changes,
+    noncanonical numbers and generated-result failures all fail closed. Callers
+    still own current-run/graph and safe-failure eligibility checks.
+    """
+    if (
+        type(operation_id) is not str
+        or operation_id not in _REFINEMENT_OPERATIONS
+        or type(error_type) is not str
+        or error_type != "MeshInputTopologyError"
+        or type(message) is not str
+        or len(message) > 1024
+    ):
+        return None
+    match = re.fullmatch(
+        re.escape(_REFINEMENT_OPERATIONS[operation_id])
+        + r": object ([1-9][0-9]{0,18}) has an invalid input mesh: "
+        + r"([^\r\n]{1,160})\. "
+        + re.escape(
+            "Changing this node's settings will not repair the input. "
+            "Inspect the upstream mesh or regenerate it from the source mask/labels. "
+            "No new mesh was produced; the input is unchanged."
+        ),
+        message,
+    )
+    if match is None:
+        return None
+    object_id = int(match[1])
+    code = next(
+        (key for key, value in _INPUT_SURFACE_DETAILS.items() if value == match[2]),
+        None,
+    )
+    count = None
+    if code is None:
+        repeated = re.fullmatch(
+            r"duplicate triangles \(([1-9][0-9]{0,18}) repeated faces? "
+            r"with the same three vertex IDs\)",
+            match[2],
+        )
+        if repeated is None:
+            return None
+        code, count = "duplicate_faces", int(repeated[1])
+    try:
+        failure = MeshInputTopologyError(operation_id, object_id, code, count)
+    except ValueError:
+        return None
+    if failure.safe_message != message:
+        return None
+    return {
+        "code": failure.code,
+        "safe_message": failure.safe_message,
+        "object_id": failure.object_id,
+        "count": failure.count,
+    }
+
+
 def _input_surface_contract(vertices, faces, operation, object_id):
     try:
         return _surface_contract(vertices, faces)
+    except _SurfaceContractViolation as exc:
+        operation_id = next(
+            key for key, value in _REFINEMENT_OPERATIONS.items() if value == operation
+        )
+        raise MeshInputTopologyError(
+            operation_id, object_id, exc.code, exc.count
+        ) from exc
     except ValueError as exc:
         raise _refinement_failure(operation, object_id, exc) from exc
 

@@ -2,6 +2,362 @@
 
 ## Unreleased
 
+- Keep separate graph-only working copies of named and unnamed workflow tabs,
+  with a short edit debounce, pending-edit checkpoints and verified previous-copy
+  fallback. Recover interrupted work into new unsaved tabs without calculating,
+  restoring scientific caches or overwriting original workflow files. Normal
+  Save remains separate; clean shutdown retires only its own managed copies.
+- Review a tested assistant alternative as explicit in-place changes to an
+  eligible completed workflow. Apply up to eight parameter/compatible-operation
+  node edits with unchanged wiring and output roles, a required pre-edit recovery
+  checkpoint and one Undo step. Preserve unrelated nodes/results; invalidate
+  affected results without running them. Topology changes still use separate Add.
+- Save local `.vipp-session` assistant archives containing conversation, drafts
+  and supported retained investigation evidence. Open is passive with sharing
+  disabled and saved drafts without Add/Run authority. Explicit continuation
+  requires fresh exact source/graph/compute/contract checks and sharing choices,
+  retains consumed usage, and starts paused until Continue. Incompatible or
+  unsupported sessions remain history only; no credentials, live MCP leases,
+  automatic calls or old transmission grants are restored. Session archives
+  may contain image data.
+- Connect an explicitly selected live Workflow assistant session to one external
+  MCP client using an authenticated loopback bridge and a protected temporary
+  descriptor. Optionally start from eligible ready cached workflow nodes; trial
+  edits stay detached and local Add/Run remain separate. Changing the source,
+  graph or permissions revokes stale authority. No automatic client setup.
+- Use the same investigation harness with Codex, a trusted local Ollama or
+  OpenAI-compatible model, or explicitly configured official OpenAI API access.
+  Local image-capable models can receive opted-in previews. API keys are read
+  from a named environment variable, never stored in a workflow or borrowed
+  from another client's credentials. API billing is separate.
+- Expose bounded working allowances and resumable native investigation pauses.
+  Questions and selected allowance limits can pause the same session without
+  resetting usage, trials or evidence. Explicit owner grants can raise total
+  allowances within unchanged hard ceilings. Human review time is excluded
+  from active time; an in-flight step finishes safely before a requested pause.
+  Cancellation, stale inputs, unsafe cleanup and hard limits remain terminal.
+- Share the guarded scientific tool layer and continuing agent loop between
+  Goal investigations and accepted-result refinement. Add up to six explicit
+  native-region diagnostic probes, each using at most eight ordinary safe nodes
+  and four named outputs, so small method/parameter comparisons need not spend
+  a whole workflow trial. Probes remain evidence, not automatically accepted
+  results, and use the original action, time, image and resource budgets.
+- Add an optional, explicitly launched local MCP/stdio adapter over those same
+  tools. Its first CLI entry owns an isolated CPU session with a human-bound
+  numeric NPY source and declared ZYX calibration; it neither attaches to another
+  live GUI in that isolated mode, and exposes no arbitrary code, shell, file
+  access, saving or publication. The opt-in live relay is described above.
+  External calls meter conservative tool/context exchanges, not known LLM turns.
+- Reserve capacity for the first **Keep improving** decision instead of letting
+  the initial investigation spend the entire trial allowance. With finish review
+  enabled and at least two selected trials, one trial and action/call capacity
+  are held within the original limits until a successful continuation. The
+  assistant must still assess its tests and propose its own completed result;
+  no result is selected automatically. Continuing releases held capacity, not
+  a new allowance. Time, context, image and resource limits still apply; a
+  one-trial setting cannot reserve a further trial.
+- Add an explicit review of a proposed investigation finish. ChatGPT's native
+  investigation/refinement UI defaults **Review before finishing** on: a model
+  nomination pauses for **Keep improving**, **Good enough** or **Stop**, rather
+  than immediately becoming an accepted draft. Further work can address known
+  remaining issues under the original goal, but uses the same session,
+  notebook, protected baseline, counters and absolute deadline. Review does not
+  reset or pause any budget, require zero limitations, certify accuracy or
+  change the accepted graph. Good enough accepts only the exact fresh completed
+  nomination for separate checked Add/Run, or retains the accepted baseline
+  without a duplicate Add; Stop preserves the accepted graph.
+  The core opt-in defaults off for legacy callers; the local connector's earlier
+  refinement path is unchanged. This unreleased control is not an unbounded
+  optimization loop or evidence of scientific improvement.
+- Keep exact cached, matched before/after preview pairs in the bounded
+  investigation assessment view when available, with explicit unavailable or
+  omitted status under the unchanged sharing and image limits. Add citable
+  before/after delivered-mesh topology reviews from actual measured counts;
+  closed boundary edges alone do not establish a simple solid, genus,
+  self-intersection safety or anatomical correctness. Descriptors do not supply
+  unseen pixels, and warnings neither repair geometry nor choose a winner.
+- Prioritize current-test measurements and the latest comparison in the bounded
+  investigation decision context, ahead of duplicate unchanged recipe content.
+  After a completed or product-rejected executed trial, use an exact accepted
+  baseline descriptor and retrievable full record rather than requiring its
+  duplicate inline body. Pack optional retained-baseline content last while
+  retaining the current recipe,
+  reusable whole node contracts and typed numerical evidence. Routine assessment
+  need not repeatedly retrieve and pin the same notebook records.
+  Make protected-foreground and delivered-mesh measurements directly citable
+  only after their complete payloads are actually sent. Disclose omitted whole
+  entries, retain the complete local notebook and keep existing consent,
+  preview, request, action, model-call, trial and time limits unchanged.
+  This procedural change does not choose a method, parameters or winner and
+  is not a scientific-quality claim.
+- Give experimental ChatGPT investigations a bounded working-evidence notebook
+  instead of resending the entire action history. Keep complete session-local
+  public records with exact identities and paged retrieval; allow small record
+  pins and reuse of exact cached preview views within the existing limits.
+  Only evidence actually supplied by an approved request can support a cited
+  assessment: an index, quotation or pin is not new measurement/image authority.
+  Reserve remaining actions, calls and context for pending assessments and an
+  explicit Finish; do not default to the latest candidate or silently discard
+  the complete local journal. Keep the 192 KiB request cap, trial/action/call/time
+  budgets, independent default-off input/output sharing and scientific/resource
+  guards unchanged. This is unreleased functionality, not a live quality claim.
+- Connect ChatGPT post-run refinement to the bounded investigation engine.
+  Import an explicitly accepted result without recalculating it, test bounded
+  parameter edits or compatible one-operation replacements on detached branches,
+  and keep stable output-role bindings. Retain the original if no tested change
+  is preferable; selected alternatives still require separate checked Add/Run.
+  Reject loss of protected foreground on actual trial outputs, not repaired
+  pixels. Add exact mesh surface-component/winding and calibrated axis-span
+  diagnostics; these are not anatomical accuracy or thickness measurements.
+- Add an off-by-default accepted-region preservation choice to experimental
+  Workflow assistant refinement. Select a completed mask/positive-label
+  foreground and an optional region mask; require its accepted intersection
+  to remain on the identical source grid in the explicitly nominated revised
+  structure. Stop on loss or stale evidence instead of silently repairing pixels
+  or declaring improvement. Preserve earlier branches and independent sharing,
+  preview, resource and finite-run limits; preservation is not anatomical truth.
+- Keep final Workflow assistant mesh feedback visible when a mesh feeds the
+  Mesh Morphology measurement node. Assess the actual geometry and its exact
+  input masks alongside available tables, within the existing diagnostic and
+  preview limits; disclose excess evidence instead of treating a table as a
+  replacement for the mesh. No scientific geometry or sharing default changes.
+- Improve experimental Workflow assistant investigations with prospective,
+  evidence-linked tests: record the observed problem, reconstruction idea,
+  expected change and risks before a trial, then assess the actual result and
+  unresolved checks. Distinguish structural reconstruction from cleanup and
+  colouring; inferred material is not observed signal or validated anatomy.
+  Add a compact safe-node index, batched registry-contract lookup and exact,
+  calibrated native-region diagnostics/comparisons within the existing limits.
+- Add an opt-in bounded Workflow assistant investigation before the final draft.
+  Start permits registry-contract queries, selected input/intermediate views,
+  exact diagnostics, detached ordinary-node trial calculations and explicit
+  candidate comparisons/selection. Keep candidate recipes, observations and
+  full source/grid/run identities; a later trial does not replace the retained
+  one automatically. Allow up to five trial attempts, 32 actions, 40 actual
+  model turns (including format repair) and 30 minutes. Output measurements and
+  previews require the independent output-assessment choice; input previews
+  remain separate. The restricted connection receives typed action proposals,
+  not shell/filesystem or general tools. Nothing is saved or added automatically;
+  the selected trial returns through ordinary checked Add and separate Run.
+  Scientific interpretations and explicit reconstruction hypotheses are not
+  measured confidence or ground truth. This is an unreleased testing feature.
+- Make experimental Workflow assistant refinement failure-aware. Show the
+  actual failing operation/reason, retain its draft and the last completed
+  assessment as history, and never assess partial failed outputs. Recognized
+  structured mesh-input topology errors can use at most two repair transitions
+  inside the same selected calculation-attempt, `2 * limit + 1` model-request
+  and 30-minute budgets; failed dispatches count toward the attempt limit.
+  Undo only the exact owned failed Add before a fresh checked replacement,
+  preserving earlier completed branches. Unknown/resource/cancel/stale/provider,
+  security, I/O or unsafe-cleanup failures stop for manual review. Repair shares
+  the safe code/operation/failed recipe, with source previews only under the
+  existing input choice, never failed-output images or a fabricated assessment.
+  Keep strict mesh rejection, scientific geometry and production resource guards
+  unchanged. Ask completed-run assessments to weigh missed wanted signal,
+  unwanted foreground, continuity, separation and mesh quality with explicit
+  trade-offs: fewer fragments or smoother appearance alone is not progress.
+  No ground-truth score, automatic best-candidate selection or unlimited retry
+  is introduced. This remains a post-0.16.0a4 unreleased testing prototype.
+- Extend experimental output-aware Workflow assistant feedback with actual
+  geometry previews, measured previous-run comparison and an explicitly started
+  finite refinement series. Share two fixed, calibrated oblique mesh renders
+  without simplifying scientific geometry; disclose approximate depth ordering,
+  transparency and shared preview omissions. Each assessment receives only the
+  immediately previous comparable run's bounded diagnostics and accepted report,
+  not previous images or recursive history. Report relative improvement, mixed,
+  worse, unchanged or insufficient comparison separately from goal achievement.
+  Add a default-zero Manual-to-five-additional-attempts slider and separate Start
+  in Plans after the first ordinary completed run. Start delegates checked
+  assess/revise/Add/Run rounds, retaining earlier candidate branches, within a
+  30-minute deadline and at most two logical requests per selected attempt plus one starting
+  assessment; existing format-repair limits still apply. Stop for questions,
+  errors, stale evidence, cancellation, withdrawn sharing, repeated drafts,
+  limits or an explicitly labelled AI judgment of goal achievement. Preserve
+  normal compute/resource guards; reject whole workflows containing writers,
+  other sources, external/custom or unreviewed operations instead of stripping
+  them. Both image choices remain off by default. Keep up to six result reports;
+  no best-candidate selector or scientific-success guarantee is introduced.
+- Add explicit output-aware assessment to the experimental Workflow assistant.
+  Goal presents prominent, independent **Include input image previews** and
+  **Assess workflow outputs** choices, both off by default. After an explicit
+  ordinary Run completes, **Preview results shared** discloses the actual
+  run-bound source/output diagnostics and any separately approved input images;
+  **Assess results** sends that evidence only when clicked. Output assessment
+  includes bounded output PNGs for Codex; the local connector uses measurements
+  only. Show goal checks, findings, limitations and suggested changes, then offer
+  **Revise using results** as a separate request for a checked draft. Source,
+  graph and output changes invalidate old evidence. Mask components and label
+  identities remain distinct from mesh display groups/colours; a model verdict
+  is not proof of accuracy. Manual mode keeps requests, Add and Run separate;
+  the separately started bounded refinement continuation is described above.
+  No full-volume upload, filesystem tool or relaxed resource guard is introduced.
+- Give Workflow assistant planning attempts a 10-minute (600-second) default
+  and maximum for both Codex and local providers. With at most two attempts,
+  including one validation repair, a request can use up to 20 minutes of model
+  time. Show live local elapsed request time while waiting; it is not evidence
+  that a remote model is alive, producing tokens or making reasoning progress.
+  Cancellation remains available. The elapsed clock does not itself enable
+  output sharing, execution or refinement.
+- Expand the experimental Workflow assistant to 143 of the 146 registered
+  operations, using registry parameter/port contracts and ordinary metadata
+  checks rather than a small operation allowlist. Image Source and Table Source
+  still need explicit user bindings; Batch Output needs separate batch setup.
+  Add locally bound Save Image proposals: choose an output folder, including
+  Same folder as input when one verified file folder exists. Keep actual paths
+  local and give the model only USER_OUTPUT_DIRECTORY. Send/Add never write;
+  explicit Run uses normal resource guards and cannot overwrite existing files.
+  Samples, live inputs and ambiguous file collections require Choose folder.
+  Support branched/converging graphs and metadata-resolved dynamic ports within
+  64-new-node/128-connection/256-port bounds. Expose the complete catalogue with
+  lossless shared metadata, keeping all parameter constraints/help and dialogue.
+  Retain the separate 192 KiB metadata-request budget;
+  returned proposals remain capped at 128 KiB.
+  Oversized requests stop before sending rather than shortening answers.
+  Accept bounded cached finite numeric images, masks and labels with explicit
+  spatial and any time/channel axes; each node's actual metadata contract still
+  decides validity. Preview generation remains limited to scalar YX/ZYX inputs.
+  Privacy, undo, freshness and manual-execution/resource guards remain; metadata
+  checks do not establish AI accuracy, output assessment or automatic iteration.
+- Add an experimental Workflow assistant for bounded, explicitly described
+  cached sources, with restricted Codex, trusted local models or a clearly labelled
+  no-AI example. Use a dedicated non-modal native Goal/Discussion/Plans window
+  with retained discussion and text-only draft history; earlier drafts are
+  read-only. Tabs and Back never send, add or calculate. Stage provider/model edits
+  in Settings with Apply/Cancel and keep the connection indicator status-only.
+  Make Settings compact and theme-aware, with a clear connection-status card,
+  explicit Sign in with ChatGPT / Sign in again browser actions and a separate
+  Check connection action. Show sign-in/checking progress in place; put optional
+  model, thinking effort and bounded request limits under collapsed Advanced.
+  Keep expanded Advanced on one continuous card background while its inputs
+  remain distinct; this visual polish changes no settings or sign-in behavior.
+  Distinguish connection setup needing attention from ordinary sign-in, without
+  resetting credentials or weakening the managed-profile protection. Offer an
+  explicit Repair connection setup action for a recognized runtime-feature
+  inventory update: verify the intact canonical owned template, back up its
+  managed configuration/marker, update only the owned disabled-feature inventory
+  and recheck status. No JSON/config editing, browser sign-in or model request is
+  needed for that repair; cached credentials stay untouched. Arbitrary modified,
+  redirected or extra configuration remains blocked, not silently reset. Opening or
+  changing Settings does not send a model request; Cancel discards staged edits
+  but does not erase a sign-in already completed through the explicit browser action.
+  Use full-width numbered stage tabs, framed source/goal, message and plan-summary
+  areas, an AI sparkle beside the workspace title and toolbar action, and a
+  Close button in the very bottom planning-only strip, separate from passive
+  Back/history navigation. Goal has one clear Send goal action and initially no
+  Next button. After a draft/history exists, Next: Discussion returns to retained
+  discussion without sending or signing in again; Discussion keeps View plan
+  and Plans has no Next. These shortcuts are disabled while planning; an initial
+  failed request without a draft does not reveal Next. Tabs remain passive.
+  Use compact, bounded Goal and Discussion editors that grow modestly with
+  available viewport space and respect the current font size. Keep action strips
+  fixed below scrolling content: Goal Preview/Send, Discussion Preview/Send
+  message plus Send answers when questions exist, and Plans Add/Run. The
+  Discussion message box stays in the scrolling page; Plans heading, draft
+  selector, review, Advanced details, caveat and refinement scroll above Add/Run.
+  Add an Assistant initiative slider: Ask first, Balanced or Use best judgment
+  (the UI default), with enforced per-response question caps of 3, 2 or 1.
+  Keep compact endpoint labels close to the track; show the chosen mode in bold
+  at the start of the explanation below, not as a separate top-right value.
+  Retain the planning-only reminder in the footer.
+  Delegate routine method/parameter choices as explicit reviewable assumptions,
+  not invented calibration, biological identity or promised scientific success.
+  Use best judgment aims for zero routine questions but can retain one genuine
+  blocker. Blank answer fields can request a fresh best-judgment draft through
+  explicit Send answers; unanswered questions still block the current Add.
+  Policy-only changes retain text/answers/history, cancel old requests and revoke
+  stale Add/Run eligibility. The slider changes planning, not model reasoning,
+  temperature or execution; changing it never sends or runs a workflow.
+  Explain the current initiative/image-preview choice when it makes a draft
+  stale, with an explicit Update plan action in the pinned status row. Before
+  a draft or in-flight request exists, show information rather than a nonexistent stale-plan
+  warning. Update retains goal/answers but excludes and keeps unsent discussion
+  text; capture follows an explicit action, never the choice change itself.
+  Required
+  unanswered fields open Discussion instead of sending; changed inputs open
+  Goal. Genuine failures offer fresh Retry plan/message/answers (Send edited
+  message when changed), using the same attempt/repair limits without a new
+  automatic retry loop or old invalid-response feedback. Connection/model/image
+  problems
+  lead to Settings, and request-format/capability/protocol problems to details.
+  Recovery never replaces or reruns already-added nodes; Add/Run stay explicit.
+  Give Send goal, Send message and Send answers the same paper-plane icon;
+  replace that icon with an inline spinner and a clear sending label while the
+  request is pending. Keep the header/toolbar AI sparkles distinct from Send.
+  Use roomier icon-to-label spacing throughout assistant buttons, including
+  sending states, without changing captions, shortcuts or actions.
+  Open Discussion for clarification questions or Plans otherwise.
+  Let Discussion scroll as one main page with natural-height conversation and
+  question sections, default-collapsed original-goal and conversation disclosures
+  with right/down chevrons, open question cards, readable answer rows and a bounded
+  message composer. Show current questions in their answer cards without their
+  duplicated appendix in the rendered conversation; retain full literal chat
+  and draft history, including earlier questions and answers.
+  Align neutral bordered assistant bubbles left and user messages right in
+  blue-accent blocks matching the stage tabs, with sender labels inside each
+  block.
+  Separate the inset Assistant’s question reference from the bold
+  Your answer heading and literal answer; keep the question caption and text
+  together in a blue-outlined, blue-tinted neutral inset inside the user reply.
+  Show free messages as messages, without
+  generated question anchors; retained text and requests are unchanged.
+  Keep collapsed disclosure rows compact without changing expanded spacing,
+  chevrons or text-size-aware click targets.
+  Point the global clarification warning to Discussion while Add remains blocked.
+  Match light/dark palettes, show a green header check only for confirmed Codex
+  sign-in, and keep a separate Settings gear; connection is not plan validation.
+  Defer assistant theme refresh until global stylesheet repolishing unwinds,
+  instead of applying local styling inside the change notification.
+  Explicit Send/revision approves the visibly disclosed request without a
+  repeated permission checkbox; Include input image previews remains separately
+  opt-in and off by default. Frame the sharing preview and its Advanced JSON
+  clearly, size short previews to their content and scroll longer/image content
+  without truncating the complete request. Opening a preview does not send or
+  copy it to the clipboard.
+  Show numbered step cards and clarification answers;
+  automatically check proposals and feed rejection details back for one bounded
+  AI repair. Keep Assumptions to check and What to check after running in separate
+  chevron sections, collapsed by default. Expand them for the full hanging-bullet
+  lists; accepted assumptions are not translated or dropped and remain in
+  Advanced details, history and graph notes after Add. Keep current questions and
+  blocking warnings prominent. What to check after running remains general,
+  conditional, non-exhaustive human review of wanted structures/background,
+  separate masks and whole Z stacks, and measurement scale/units/edge objects.
+  It is not automatic validation or new facts about the plan. Ask future AI
+  summary/reasons/assumptions for everyday choice/why/check wording, preserving
+  uncertainty and caveats while exact parameter keys stay in parameters.
+  Keep JSON under Advanced details.
+  Show Proposal JSON, Request, Attempts and shared-data JSON in a system
+  fixed-width font. JSON fields have local, theme-aware lexical colour cues;
+  Attempts is font-only, while Plan text, Goal and chat remain normal prose.
+  Highlighting is not validation or repair and does not change literal text,
+  copying, undo, read-only roles or plan authority.
+  Share bounded input PNG previews with Codex only by explicit opt-in through a
+  separate isolated sign-in profile.
+  Acknowledge completed browser sign-in in the window and offer a read-only
+  connection refresh; signing in never starts a plan or shares image data.
+  Distinguish failed requests with no plan from rejected proposals; retain
+  privacy-safe error categories instead of falsely blaming the goal or claiming
+  automatic repair was exhausted. Failed requests are not silently retried.
+  Allow explicitly retrying Codex connection events to recover within the same
+  acknowledged request and original timeout, rather than prematurely closing
+  its connection. Discard interrupted answers and retain cancellation/tool guards.
+  Use a simpler native Codex response envelope for compatibility, while retaining
+  the complete proposal contract and strict local validation before graph edits.
+  Keep the original goal separate from clarification history, so answering
+  several rounds does not incorrectly exceed the goal's 4,000-character limit.
+  Preserve answer fields after a failed or cancelled request; reject oversized
+  conversations explicitly without silently truncating earlier answers.
+  Changing image-preview sharing retains answers for the same unchanged input,
+  while cancelling pending requests and requiring a fresh explicit request.
+  The registry-backed catalogue includes separation/selection and 3D mesh
+  creation, combination and colouring. Adding is one undoable graph edit without
+  calculation. A separate guarded Run action after Add invokes ordinary
+  Calculate-all with normal manual-node and resource policies. No custom code,
+  source paths, model tools or automatic scientific
+  execution are provided. Planning alone does not assess outputs; the separate
+  opt-in assessment action is described above. Structural checks do not
+  establish segmentation quality or model equivalence.
+
 ## 0.16.0a4 - 2026-10-09
 
 - Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr

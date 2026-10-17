@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import os
 import shutil
+import sys
+import tempfile
 from dataclasses import replace
 from importlib.metadata import PackageNotFoundError, version
 from math import prod
@@ -378,8 +383,10 @@ def write_image(
     output_path = Path(raw_path).expanduser()
     selected = _resolve_write_format(output_path, format, image_state)
     output_path = _normalized_output_path(output_path, selected)
-    if output_path.exists() and not overwrite:
-        raise FileExistsError(f"Output already exists: {output_path}")
+    if not overwrite:
+        return _write_image_no_replace(
+            data, output_path, selected=selected, image_state=image_state
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if selected in {"ome-zarr", "ome-zarr-0.4", "ome-zarr-0.5"}:
@@ -419,6 +426,89 @@ def write_image(
             image_state=image_state,
         )
     raise ValueError(f"Unsupported save format: {format}")
+
+
+def _write_image_no_replace(
+    data,
+    output_path: Path,
+    *,
+    selected: str,
+    image_state: ImageState | dict[str, Any] | None,
+) -> Path:
+    """Stage a complete image privately, then publish only if still absent.
+
+    Existing destinations, including dangling symlinks and stores created while
+    serialization is running, are never removed. Files use the same hard-link
+    create-if-absent publication as mesh exports. Directory stores require a
+    native exclusive rename; unsupported filesystems/platforms fail closed.
+    This changes no scientific serialization or explicit overwrite behavior.
+    """
+    try:
+        output_path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError(f"Output already exists: {output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{output_path.name}.vipp-", dir=output_path.parent
+    ) as staging:
+        staged = Path(staging) / output_path.name
+        saved = write_image(
+            data, staged, format=selected, overwrite=True, image_state=image_state
+        )
+        if saved != staged:
+            raise RuntimeError("The image writer changed its staged output path.")
+        if staged.is_dir():
+            _rename_directory_no_replace(staged, output_path)
+        else:
+            # Never fall back to exists() followed by replace(), nor claim and
+            # replace a final pathname that another writer could have changed.
+            os.link(staged, output_path)
+    return output_path
+
+
+def _rename_directory_no_replace(source: Path, target: Path) -> None:
+    """Publish an owned directory with OS-level no-replacement semantics."""
+    if os.name == "nt":
+        # Unlike POSIX rename(), Windows rename fails if target already exists.
+        os.rename(source, target)
+        return
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux"):
+        function = getattr(library, "renameat2", None)
+        if function is not None:
+            function.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            function.restype = ctypes.c_int
+            # AT_FDCWD=-100, RENAME_NOREPLACE=1.
+            result = function(-100, os.fsencode(source), -100, os.fsencode(target), 1)
+        else:
+            result = None
+    elif sys.platform == "darwin":
+        function = getattr(library, "renamex_np", None)
+        if function is not None:
+            function.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+            function.restype = ctypes.c_int
+            # Darwin RENAME_EXCL=0x4 refuses any existing destination.
+            result = function(os.fsencode(source), os.fsencode(target), 0x4)
+        else:
+            result = None
+    else:
+        result = None
+    if result == 0:
+        return
+    code = ctypes.get_errno() if result is not None else errno.ENOTSUP
+    raise OSError(
+        code,
+        "Exclusive output-store publication failed; existing outputs were not replaced",
+        str(target),
+    )
 
 
 def _normalized_output_path(path: Path, format: str) -> Path:

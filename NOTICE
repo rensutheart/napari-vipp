@@ -1,6 +1,18 @@
 napari-vipp is distributed under the BSD 3-Clause License.
 Copyright (c) 2026, Rensu P. Theart.
 
+The send icon geometry in ui/toolbar_controls.py and its reference test is
+adapted from Microsoft Corporation's Visual Studio Code Codicons send.svg:
+https://github.com/microsoft/vscode-codicons/blob/main/src/icons/send.svg
+It is licensed under Creative Commons Attribution 4.0 International (CC BY 4.0),
+not VIPP's BSD license:
+https://creativecommons.org/licenses/by/4.0/
+https://github.com/microsoft/vscode-codicons/blob/main/LICENSE
+Modifications: the SVG path is translated to QPainterPath, scaled from 16 to
+24 units, and recolored using VIPP's normal/disabled palette. Geometry is
+unchanged. The icon is offered as-is, without warranties, under the upstream
+license's disclaimer. Its use does not imply Microsoft endorsement of VIPP.
+
 The qualified CPU median-filter implementation and rigid/affine registration
 call SimpleITK, distributed separately under the Apache License 2.0. SimpleITK
 is copyright NumFOCUS and wraps the Insight Toolkit (ITK). Its dependency

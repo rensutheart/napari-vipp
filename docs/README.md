@@ -85,8 +85,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Product ideas](product-ideas.md) preserves promising concepts that are not
   committed to a release, including conditional batch routing.
 - [AI-assisted nodes, workflows, and iterative analysis](ai-assisted-authoring-plan.md):
-  future, unassigned scope for description-driven authoring, system-generated
-  custom-node integration, and bounded image-guided refinement.
+  unreleased existing-node authoring, shared bounded image-guided investigation,
+  safe edits/persistence and the next existing-workflow improvement milestones;
+  custom-node generation remains later proposed scope.
 - [Planning history through 0.13.0a7](planning-history-0.13.md) preserves the
   delivered chronology and detailed qualification rationale removed from the
   active roadmap.
@@ -112,6 +113,16 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
   below remain implementation evidence rather than installation instructions.
 
 ## Implementation Records
+
+- [Bounded investigation acceptance](workflow-investigation-acceptance.md):
+  source-only model context, finite typed inspection/trial/comparison actions,
+  separate image permissions and exact selected-workflow replay evidence.
+
+- [Workflow assistant prototype](workflow-assistant-prototype.md): staged native
+  Goal/Discussion/Plans workspace, bounded existing-node proposals, text-only
+  draft history, sharing/staleness/undo and separate Run contracts, restricted
+  Codex/local providers, explicit run-bound output assessment/revision and the
+  limits of the local-model comparison.
 
 - [Image review implementation](image-review-implementation.md): presentation-only
   sink, explicit input/grid contracts, saved review recipes, synthetic examples

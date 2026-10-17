@@ -812,8 +812,9 @@ _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
     1,
 )
 
-# Manual measurement nodes persist this private execution preference alongside
-# their authored parameters.  Keeping a real ParameterSpec for it makes saved
+# Manual measurement nodes and explicitly guarded Save instances persist this
+# private execution preference alongside their authored parameters. Keeping a
+# real ParameterSpec for it makes saved
 # workflows reject malformed values instead of treating strings such as
 # ``"false"`` as truthy at runtime.
 MANUAL_AUTO_RECALCULATE_PARAM = "_vipp_auto_recalculate"
@@ -979,6 +980,7 @@ def optional_persisted_parameter_spec(
         return (
             _MANUAL_AUTO_RECALCULATE_PARAMETER
             if operation_spec.execution_policy == "manual"
+            or operation_spec.id == "save_output"
             else None
         )
     if name == "resolved_spatial_ndim":
@@ -8856,7 +8858,10 @@ class PrototypePipeline:
         node = self.nodes.get(node_id)
         if node is None or self.node_is_bypassed(node_id):
             return False
-        return self.operation_spec(node.operation_id).execution_policy == "manual"
+        return self.operation_spec(node.operation_id).execution_policy == "manual" or (
+            node.operation_id == "save_output"
+            and MANUAL_AUTO_RECALCULATE_PARAM in node.params
+        )
 
     def node_is_bypassed(self, node_id: str) -> bool:
         """Whether ``node_id`` is authored to forward its exact input."""

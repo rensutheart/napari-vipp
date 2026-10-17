@@ -24624,33 +24624,49 @@ def test_toolbar_compaction_remeasures_nested_groups_after_layout_changes(qtbot)
 
 
 @pytest.mark.parametrize("width", (1400, 900, 640))
-def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, width):
+def test_toolbar_workflow_actions_are_grouped_separately_from_settings(
+    qtbot, monkeypatch, width,
+):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     _show_toolbar_at_width(widget, qtbot, width)
+    assistant_requests = []
+    monkeypatch.setattr(
+        widget, "_open_workflow_assistant", lambda: assistant_requests.append(True),
+    )
     widget._populate_workflow_actions_menu()
     widget._populate_settings_toolbar_menu()
 
     menu = widget.workflow_actions_menu
     actions = menu.actions()
     labels = [None if action.isSeparator() else action.text() for action in actions]
-    assert labels[:8] == [
+    assert labels[:13] == [
         "Open example…",
         "Open Results Workspace…",
+        "Workflow assistant…",
         None,
         "Save workflow as…",
+        None,
+        widget._workflow_recovery.summary,
+        "Recover interrupted workflows…",
+        "Choose recovery folder…",
         None,
         "Export Python…",
         "Export reproducibility package…",
         "Export OME dataset…",
     ]
-    assert actions[3] is widget.save_workflow_as_action
+    assert actions[4] is widget.save_workflow_as_action
     assert not actions[0].icon().isNull()
-    assert not actions[3].icon().isNull()
+    assert not actions[2].icon().isNull()
+    assert not actions[4].icon().isNull()
+    assert "No automatic calculation" in actions[2].toolTip()
+    assert not actions[6].isEnabled()
+    actions[2].trigger()
+    assert assistant_requests == [True]
     if width == 640:
-        assert labels[8:] == [None, "Auto Arrange graph", "Tunnels…"]
+        assert labels[13:] == [None, "Auto Arrange graph", "Tunnels…"]
     else:
-        assert len(actions) == 8
+        assert len(actions) == 13
     assert not set(labels) & {
         action.text() for action in widget.settings_menu.actions()
     }
@@ -24686,6 +24702,17 @@ def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
         "_export_reproducibility_package_dialog",
         lambda: calls.append("Export reproducibility package…"),
     )
+    monkeypatch.setattr(
+        widget, "_open_workflow_assistant", lambda: calls.append("Workflow assistant…"),
+    )
+    monkeypatch.setattr(
+        widget._workflow_recovery, "show_recovery",
+        lambda: calls.append("Recover interrupted workflows…"),
+    )
+    monkeypatch.setattr(
+        widget._workflow_recovery, "choose_folder",
+        lambda: calls.append("Choose recovery folder…"),
+    )
     save_requests = []
     monkeypatch.setattr(
         widget,
@@ -24704,6 +24731,9 @@ def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
             action.trigger()
     assert calls == [
         "Open example…",
+        "Workflow assistant…",
+        "Recover interrupted workflows…",
+        "Choose recovery folder…",
         "Export Python…",
         "Export reproducibility package…",
         "Export OME dataset…",

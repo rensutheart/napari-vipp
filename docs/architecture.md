@@ -3,6 +3,102 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
+Unreleased persistence/owned-edit boundaries (2026-10-17):
+
+- `core/workflow_recovery.py` owns a Qt-free per-instance OS lease and bounded
+  immutable graph-only generations, exact size/SHA manifests and previous-copy
+  fallback. `ui/workflow_recovery.py` captures detached tab documents on Qt's
+  thread and debounces writes on a serial worker. Original paths/resolution bases,
+  tab order and active tab are recorded; original files, arrays, provider state
+  and Undo stacks are not. Recovery installs new dirty tabs without ordinary
+  loader auto-execution. Clean retirement deletes only the current store's known
+  managed files; unknown/locked files and other instances remain untouched.
+- `core/workflow_patch.py` stages an exact completed, selected trial against its
+  live-owned accepted bundle. At most eight parameter/compatible-operation edits
+  retain node IDs, wires, tunnels, execution policies and output roles. The UI
+  presents a literal diff; the widget rechecks ownership, requires a durable
+  recovery checkpoint, commits as one Undo transaction and invalidates only
+  affected caches. No patch API grants Run or source/writer/topology mutation.
+- `core/workflow_assistant_session.py` is a bounded passive ZIP_STORED container
+  for canonical JSON and content-hashed non-pickle NPY/PNG evidence; it never
+  extracts members or creates an agent. The typed investigation persistence
+  adapter validates source/state/graph/compute/operation contracts and historical
+  evidence before preparing continuation. Loading clears sharing and acceptance;
+  explicit owner consent/rebinding restores only a paused runtime, preserving
+  consumed usage with fresh clocks, locks, callbacks and empty actual-transmission
+  grants. Unsupported/changed/stopped evidence stays history only. Credentials,
+  MCP capabilities, workers and live cache-adoption tickets are not serialized.
+
+Unreleased shared-agent boundary (2026-10-17): `core/workflow_agent_tools.py`
+adapts one source-bound `InvestigationSession` into named schema tools. The
+same exact typed `perform` dispatch, current-source/grid checks, consent-bound
+PNG board, transmission/evidence accounting and exclusive session lease apply
+to native and external callers. `core/workflow_agent_loop.py` owns a continuing
+prepare/choose/execute cycle for both cold Goal and accepted-result refinement;
+prepared turns cannot be replayed after an interleaved action or review change.
+The existing restricted provider transport still selects typed actions; this
+does not enable general Codex workspace, Python, shell or network tools.
+
+Unreleased live/provider-neutral extension (2026-10-17):
+`core/workflow_agent_provider.py` routes the same action contract to Codex,
+trusted loopback Ollama/compatible services or official OpenAI Responses HTTPS.
+Only the approved public request/PNG board is sent. API credentials are read
+from an explicit environment-variable name, never copied from Codex or persisted.
+Local vision is explicit; opted-in images are never silently discarded. Ollama
+context allocation defaults to 16,384 tokens and is a visible bounded choice.
+
+`continuation_enabled=True` enables safe-boundary owner pauses, exact Question
+answers and monotonic absolute allowance grants. `core/workflow_agent_budget.py`
+owns the unchanged hard ceilings (5 trials, 64 actions, 80 calls/contexts,
+1,800 active seconds, 20 MiB transmitted PNGs). Native defaults are 3 trials,
+64 actions, 80 requests/contexts, 30 active minutes and 10 MiB. Explicit pauses
+freeze active time only after current work settles; counters/evidence never
+reset. Selected time allowances are safe-boundary checkpoints; an in-flight
+scientific action may finish past one, but the hard active-time and ordinary
+resource/cleanup guards remain cooperative and terminal. No model tool grants
+allowance. Unsafe/stale/cancelled sessions cannot resume. This supersedes the
+fixed native limits and continuing-review-clock descriptions below for opted-in
+sessions; legacy core callers retain their earlier behavior.
+
+`core/workflow_agent_live.py` is an opt-in single-owner IPv4-loopback capability
+bridge; `ui/workflow_assistant_live.py` marshals pre/post owner checks to Qt's
+composition thread and executes shared tools on a worker. Its owner-only
+temporary descriptor is a revocable bearer capability, never a source/model
+selector. The CLI `--enable-mcp --live DESCRIPTOR` relays stdio to that exact
+session. No automatic client registration, remote listener, provider credentials
+or new Add/Run authority is involved. Native receipt observation is local-only;
+it can show a completed step even when a disconnect prevents further delivery.
+
+Explicit current-workflow capture accepts only ready cached descendants of the
+chosen source, using the existing bounded safe-recipe/metadata/immutable-output
+capture. A `livecache-...` token identifies the capture, not an asserted original
+Run ID. Candidate0 costs no new trial. Private text, unsupported operations,
+outside/multi-source dependencies, missing results and resource excess fail
+closed without a hidden source-only fallback. Detached alternatives and
+separate-branch Add remain the general path; the narrower owner-reviewed patch
+above does not grant arbitrary in-place editing to an MCP client.
+
+`core/workflow_agent_probes.py` executes explicit diagnostic DAGs through
+`execute_pipeline_request`, never a second numerical engine. Six probes per
+session are available on native regions of at most 262,144 input voxels, eight
+safe ordinary nodes and four explicit output roles. They may read the bound
+source or an exact completed candidate role, retaining native axes/calibration.
+They share original action/time/context/image guards and cumulative immutable
+snapshot bounds. Probe outputs are inspectable/citable only through actual
+approved evidence delivery; they cannot be retained or finished as a candidate.
+No best method, parameter or final result is selected automatically.
+
+`core/workflow_agent_mcp.py` is an optional local stdio JSON-RPC adapter, disabled
+unless explicitly enabled. The CLI binds a human-authored NPY source and explicit
+ZYX calibration in a new isolated CPU session. The separate live relay described
+above attaches to a deliberately enabled GUI session. Neither mode grants
+arbitrary path access, automatic registration or an Add/Run acceptance interface.
+Both initial context and each nonterminal tool
+result deliver an exact current bounded request/PNG board through shared
+transmission accounting. A terminal response cannot manufacture a post-Finish
+evidence grant. External tool/context exchanges are conservatively metered;
+their count is not evidence of an external model's actual reasoning turns.
+
 Unreleased surface outputs use `core/meshes.py`: immutable `MeshData` vertices
 and faces, immutable per-face object IDs and `MeshObject` identity/colour/source
 records, with separate `MeshState` calibration/history, not an ImageState.
@@ -58,6 +154,275 @@ measurement parity and table-combination requirements are tracked in
 [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
 
 ## Current Shape
+
+Unreleased bounded investigation supports both Goal-started exploration and
+ChatGPT post-run refinement from an explicitly accepted completed candidate.
+`core/workflow_investigation.py` interprets a finite, source-bound action
+contract over existing registry operations, immutable cached evidence and the
+shared detached execution service. `core/workflow_investigation_model.py`
+requests one typed action at a time through the existing isolated Codex
+transport; no dynamic/general tools or profile privileges are enabled. Fresh
+provider contexts receive the original goal, permitted source evidence, a
+bounded working-evidence view and queryable exact session records/recipes.
+The warm-start path supplies only its explicitly accepted current recipe and
+bounded completed outputs, not a hidden reference solution.
+
+The GUI composition root captures `CompletedCandidateBundle` after exact
+successful Run/session/dispatch checks, including explicit role/key/alias/port
+and content-hash bindings. Workers receive immutable copies and a detached
+source graph, never live widgets or caches. Candidate0 costs no trial and is
+retained initially. `trial_edit` clones a completed recipe and applies one to
+eight explicit parameter updates or compatible operation replacements, keeping
+keys, connections and roles. Full ordinary validation and execution follow;
+no insertion, rewiring, writers, custom code or general tool authority is added.
+GUI ownership is checked before and after every worker, including permissions,
+compute settings and accepted-result freshness. A selected draft cannot be
+edited and promoted under the tested candidate's evidence. Candidate0 selection
+keeps the existing graph; an alternative returns through normal checked Add/Run.
+
+Protected-region checks bind the original accepted snapshot to the actual
+detached trial snapshot and delivered mesh lineage. They never fabricate a
+composite assessment graph or repair missing pixels. Exact mesh edge-connected
+surface counts, Euler characteristic and inconsistent winding are geometric
+diagnostics, not genus/anatomical/self-intersection certification. Per-axis
+foreground column spans are explicitly not perpendicular biological thickness.
+
+The generic experiment ledger records a prospective hypothesis, declared prior,
+predicted change, risks and evaluation checks before binding a trial. An
+assessment must refer to evidence actually transmitted from that exact trial;
+claims remain model judgments, not validated scientific conclusions. Structural
+reconstruction, cleanup and presentation are distinct intents. Discovery uses a
+bounded compact safe-node index and batched exact contracts. Explicit native
+ROI diagnostics preserve the parent grid and calibrated sample coordinates;
+they do not crop a scientific output or infer which foreground is wanted.
+
+Unreleased request version 2 uses `core/workflow_investigation_notebook.py`:
+an immutable session-local public journal, complete record index, hash-bound
+8 KiB retrieval pages, at most four pinned records (32 KiB of payload), and a
+64 KiB working-payload/96 KiB notebook-view bound. The journal itself is finite
+(256 records, 512 KiB per record, 16 MiB total). This is a deliberately partial
+working view, not a claim that complete history remains inline or a lossy rewrite
+of old records. Exact action requests/results, candidate and experiment records
+remain retrievable locally. `export_notebook()` is detached and pure, including
+after stop; reading, exporting, indexing or pinning cannot issue evidence handles.
+Legacy request-v1 lossless history codecs remain distinct from this v2 contract.
+
+The unreleased `decision_context` is a separate bounded exact working projection,
+not another history summary. Current-test facts and the latest exact comparison
+take priority over duplicate unchanged baseline content. After an actual
+post-baseline trial is completed or product-rejected, `accepted_candidate`
+becomes an exact candidate/status/full-record descriptor rather than requiring
+its large duplicate body; failed/partial trials alone do not trigger this.
+Its complete original record remains unchanged and queryable. Current
+preservation/mesh facts and recent actual comparisons/inspections precede other
+current facts, the current recipe and whole contracts; optional retained recipe
+and baseline facts are packed last. The current recipe/roles, whole registered
+contracts for its operations or explicit recent lookups, and complete typed
+numerical facts retain their exact values. Visible `evidence_ref` values accompany
+actual protected-retention and declared mesh-role measurements, plus recent
+source/inspection/comparison facts when available and within the bound. A
+baseline descriptor is not transmission of its omitted body or unseen evidence.
+Packing retains or excludes whole entries with explicit omission reasons; it
+does not choose an algorithm, alter parameters, infer semantic roles or nominate
+a candidate. The original notebook remains immutable and retrievable. Publication
+is pure; only the normal exact `before_call` may register supplied typed facts.
+A notebook/data hash or a copied handle still cannot substitute for that payload.
+Unchanged parameters and wires from a previously checked current recipe can be
+cloned without re-querying every contract; changed operations/parameters still
+require their applicable complete contract and ordinary whole-proposal validator.
+
+Unreleased optional request-v2 `comparison_previews` contains at most four whole
+matched groups in 8 KiB. Each group declares `candidate_ids` (baseline/current),
+`role`, `selection`, `views`, `status` and `reason`. Selection binds exact source
+content/state hashes, grid, native ROI, view and display policy; each view binds
+its candidate ID, cached view ID and original PNG hash. `supplied` requires both
+original views on the actual current PNG board. `omitted` and `unavailable`
+explain finite-board pressure or missing eligible evidence without substituting
+another role/view or manufacturing a render. Pure publication supplies no
+authority; actual approved PNG transmission remains the image boundary.
+
+Automatic mesh-topology reviews are complete typed numeric payloads in
+`decision_context.numeric_evidence`, not a new top-level measurement channel.
+The `<baseline>:<current>/mesh_topology_review` alias binds a
+`kind='mesh-topology-review'` payload with exact role-bound before/after counts,
+changes, warnings and limitations. Its normal numeric evidence reference becomes
+citable only after that exact payload is sent. A review does not change geometry,
+choose a candidate or infer genus, self-intersection safety, simple-solid status
+or anatomical validity from closed boundary edges. The complete journal,
+independent consent and all existing execution/request/image limits remain.
+
+Pages carry exact canonical-ASCII JSON byte fragments as canonical unpadded
+base64url (`encoding='base64url-canonical-json'`, `data_base64url`). A separate
+readable, reversible ASCII projection (`text_encoding='ascii-tilde-v1-display-only'`)
+starts with the fixed display marker `json|`, then uses `~b` for an original
+backslash and `~~` for an original tilde. Strip the marker before reversing the
+escapes; neither the marker nor projection enters the exact-byte hash. This is
+not an arbitrary summary or byte-identity claim: validation checks its exact
+projection, while hashes, Merkle proofs and counts bind decoded bytes. Encoded
+and readable lengths are bounded before decoding. Original structured-record
+path checks remain the privacy authority. A partial page proves its bytes and
+index binding, not privacy of unseen record content; fragment checks do not
+invent boundaries in split strings. The marker avoids false absolute-path
+boundaries without granting filesystem access or changing tool privileges.
+
+The production `before_call` binds the exact outgoing request and matching
+current PNG board before each actual transport attempt, including format repair.
+Only supplied typed scientific payloads grant numerical evidence authority;
+quoted handles, notebook indices/pages and stale pinned receipts cannot fabricate
+it. Cached inspection views bind source/candidate/grid/content and display
+selection; `pin_previews` reuses their original PNGs, not another scientific Run
+or render under a different identity. `pin_previews([])` clears explicit pins;
+deterministic reuse of eligible cached source/retained/latest views may remain,
+within consent and the same board limits, without another render or calculation.
+Repeated sends still consume the unchanged
+image-byte budget. The combined pinned/new/protected board stays within seven
+previews and 2 MiB, with no silent pin eviction or sharing fallback.
+
+The v2 wire targets 128 KiB within the unchanged 192 KiB hard cap. Its explicit
+closing phase restricts new exploration when context, actions, calls or elapsed
+time must be reserved for pending experiment assessments and Finish. The compact
+experiment index preserves every check/status; complete internal ledger entries
+still govern Finish. A bounded current window or closing phase never nominates
+a candidate automatically, invents a completed assessment, resets budgets or
+guarantees scientific success. The acceptance recorder saves the complete local
+notebook separately from each exact wire request and actual PNG transmission.
+
+The unreleased `review_before_finish` opt-in separates a model nomination from
+user acceptance. It defaults false in the core for compatibility; the native
+ChatGPT investigation/refinement entry defaults **Review before finishing** on.
+In this mode a valid Finish records an exact completed nomination and pauses
+model/scientific work for user review rather than making a final draft addable.
+The original session owns this state; it is not a new investigation or a reset.
+**Keep improving**, with optional literal user feedback, resumes only while the
+same source/workflow/permission authority and remaining hard budgets allow it.
+The notebook, experiment ledger, exact recipes, actual-send evidence authority,
+protected baseline, consumed counters and absolute deadline remain unchanged.
+Unresolved but addressable issues may motivate ordinary evidence-linked trials
+under the original goal; limitations are not automatically waived or treated
+as unfixable merely because a model proposed Finish.
+
+The first review now has an allocation reservation, not an enlarged budget.
+For review-enabled sessions with at least two selected attempts, the initial
+phase can use at most `max_attempts - 1` trials. One original trial is withheld
+until the first successful same-session Continue. Initial closing also reserves
+seven actions and fourteen actual-call slots after the proposed Finish for a
+planned trial, two evidence steps, assessment, another Finish and recovery.
+Closing reads cannot consume that held capacity. Trial dispatch enforces the
+hold independently of the advertised response schema. A nested optional
+`completion_review.reservation` describes the allocation; scientific choices
+and the complete ledger still belong to ordinary model actions.
+This is an allocation target with recovery room, not a guarantee against
+arbitrarily many invalid responses or failed requests: those still consume
+their ordinary counters. Actual remaining budgets and `continuation_allowed`
+govern whether further work can start; the withheld trial cannot be spent
+before a successful Continue even after errors.
+
+Prospective Continue checks exclude only this soft initial-phase hold, retaining
+the ordinary hard, elapsed-time, context and image checks. The existing
+transactional Continue releases the hold only on success; failed/stale feedback
+or context checks restore the pending state and reservation. No counter,
+deadline, evidence handle or notebook is renewed. A one-trial configuration
+keeps its sole initial trial and cannot reserve a further trial; limited
+configured capacity and other exhausted resources remain explicit reasons not
+to promise continuation. Legacy no-review behavior is unchanged.
+
+Review has no concurrent model worker, and elapsed time continues. **Good
+enough** accepts only that exact completed nomination after current-authority
+checks, without another model call or calculation; elapsed work-budget expiry
+alone does not invalidate an otherwise fresh completed nomination. Acceptance
+only enables the existing checked-draft/Add/Run boundary, never direct graph
+mutation or publication. Choosing the already accepted warm-start baseline
+retains that graph without a duplicate Add. **Stop** abandons further
+investigation and preserves the accepted graph. Changed source/graph/permissions
+still revoke stale result
+authority. Neither acceptance nor continued testing requires empty limitations,
+claims scientific accuracy, raises a limit or authorizes an unlimited loop.
+Legacy core callers and the local connector's separate refinement path retain
+their existing finish behavior unless explicitly opted in.
+
+`ui/workflow_assistant_investigation.py` checks live source/workflow/compute
+authority on the GUI thread before and after each worker step. Workers own
+detached inputs and never inspect a live widget. The explicit Goal option
+starts at most five trial attempts (default three), 32 actions, 40 actual model
+turns including repairs, and 30 minutes. Output assessment must be opted in
+before Start: it governs measurements as well as images. Source previews are
+independently default off. Trial calculations never mutate the accepted graph
+or publish files; only an explicitly selected completed recipe is rebound and
+revalidated against the original graph for normal Add, then separate Run.
+Unknown failures, unsafe cleanup, cancellation, permission/source/compute
+changes or exhausted limits stop; partial failed output is not assessment
+evidence. Retention is a recorded model preference, not an accuracy certificate.
+See [investigation acceptance](workflow-investigation-acceptance.md).
+
+Unreleased Workflow assistant result feedback is a separate, explicit boundary.
+`core/workflow_assessment.py` detaches a bounded snapshot only after an ordinary
+successful Run. It binds source, graph, selected scientific output ports and
+their metadata/content hashes to that completed run; mutation, replacement,
+execution-state or graph changes reject stale evidence. Full-population
+diagnostics never use sampled display pixels. Bounded source/output PNGs are
+presentation evidence with disclosed transforms, not replacement scientific
+arrays. `core/workflow_assessment_mesh.py` draws actual captured triangles in
+two fixed calibrated oblique views, without remeshing; centroid depth ordering,
+transparency and visibility are explicit display approximations. All images
+share the seven-preview/2 MiB budget, with omissions disclosed. Input previews
+and output assessment have independent default-off
+consents; the latter governs output diagnostics and previews, not source images.
+
+`core/workflow_assessment_model.py` validates a strict assessment/run identity,
+bounded goal checks, findings, recommendations and limitations through the same
+restricted provider transports. Codex retains its empty workspace, disabled
+tools/profile checks and scoped notification guards. The local connector accepts
+measurements only. Model assessments are interpretations, not independent
+validation or measured confidence. The widget repeats the live snapshot stale
+gate before accepting a reply. Preview, Assess results and Revise using results
+are separate explicit actions; revision uses fresh normal proposal validation
+and reuses only the same consent-bound bounded PNG evidence, not a new hidden
+capture; local revision remains measurements-only. Add and Run remain separate
+manual actions unless the user explicitly starts the finite refinement session.
+`core/workflow_assessment_history.py` freezes only the last completed assessment's
+bounded public diagnostics, graph and accepted report, not images or private
+owners; source SHA/grid, objective/dialogue and image-choice bindings are checked
+before attachment and every send. Relative improvement is distinct from overall
+goal achievement and candidate aliases are not stable anatomical identities.
+Goal-check guidance separates coverage/missed wanted signal, unwanted foreground,
+continuity versus false bridges, intended separation and mesh admissibility.
+Counts and smooth appearance alone are not scientific progress. Trade-offs and
+unavailable evidence remain explicit within the unchanged strict report schema;
+no reference mask, accuracy score or automatic winner is invented.
+
+For non-investigative/local connectors, `core/workflow_refinement.py` owns the
+retained Qt-free finite state machine;
+`ui/workflow_assistant_refinement.py` schedules ordinary guarded paths. Goal's
+default-zero slider permits at most five additional calculation attempts but sends/runs
+nothing. Separate Start in Plans requires an opt-in completed first run and
+whole-graph eligibility, then delegates assess/revise/checked Add/Run for at
+most 30 minutes and `2 * selected limit + 1` logical requests, keeping bounded format
+repairs. A positive operation inventory rejects writers, other sources,
+external/custom and unreviewed operations even in earlier/disabled branches.
+No writer is silently removed. Every new candidate remains an undoable branch;
+resource policy and cooperative executor cancellation stay authoritative.
+Failed Run dispatches count toward the selected attempt limit; successfully
+completed/assessed results are counted separately. At most two eligible repair
+transitions fit inside the same attempt, request and elapsed budgets. A known
+structured `MeshInputTopologyError` can trigger a fresh checked replacement only
+after exact failed own-Add/session/graph verification and rollback of that Add.
+The failed draft/error stays in history; prior completed graph branches remain.
+Unknown/resource/cancel/stale/security/provider/I/O or cleanup failures stop,
+without general exception-to-repair fallback or weaker mesh validity checks.
+The repair request carries safe code/operation/failed recipe and independently
+opted-in input previews only, not failed-output or prior output images.
+`core/workflow_run_failure.py` capsules are canonical, immutable and capped at
+48 KiB, with candidate-local aliases and registry-safe parameters rather than
+raw exceptions, paths or private dynamic text. The complete request still fits
+or fails the ordinary 192 KiB limit; no truncation or permission fallback occurs.
+Failed calculations create no new assessment; the last completed report remains only
+historical, and the next successful assessment compares with that last completed
+record. No current-result authority is inherited from a failure.
+Questions, other failed/denied/stale work, changes, cancellation, repeated semantic
+drafts, limits and AI goal-achievement judgments stop the loop. Up to six reports
+remain visible; no best-candidate selector or scientific-success claim follows.
+See the [assessment contract](workflow-assistant-prototype.md#completed-run-output-assessment)
+and [bounded refinement](workflow-assistant-prototype.md#separately-started-finite-refinement).
 
 `napari-vipp` is a napari `npe2` plugin that embeds a node-graph image
 processing workflow inside a dock widget. The graph is the main work surface:

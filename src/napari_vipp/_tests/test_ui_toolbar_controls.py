@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from qtpy.QtCore import QSize
-from qtpy.QtGui import QColor, QIcon, QPalette
+from qtpy.QtCore import QByteArray, QSize, Qt
+from qtpy.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
+from qtpy.QtSvg import QSvgRenderer
 from qtpy.QtWidgets import QPushButton
 
 from napari_vipp.ui.toolbar_controls import (
@@ -32,11 +33,13 @@ from napari_vipp.ui.toolbar_controls import (
         "images",
         "destination",
         "workflow",
+        "assistant",
         "archive",
         "setup",
         "checklist",
         "recheck_all",
         "next",
+        "send",
         "compute",
         "search",
         "preview",
@@ -108,6 +111,89 @@ def test_toolbar_icon_defaults_to_application_palette(qapp):
         toolbar_icon("open").pixmap(24, 24).toImage()
         == toolbar_icon("open", qapp.palette()).pixmap(24, 24).toImage()
     )
+
+
+@pytest.mark.parametrize("foreground", ("#e5e7eb", "#1f2937"))
+def test_send_icon_preserves_official_codicons_svg_geometry(qapp, foreground):
+    # Original Microsoft Codicons send.svg path, CC BY 4.0; see NOTICE.
+    svg = (
+        '<svg width="16" height="16" viewBox="0 0 16 16" '
+        'xmlns="http://www.w3.org/2000/svg" '
+        f'fill="{foreground}"><path d="'
+        'M1.17683 1.11898C1.32953 0.989634 1.54464 0.963786 1.72363 1.05328'
+        'L14.7236 7.55328C14.893 7.63797 15 7.8111 15 8.00049'
+        'C15 8.18987 14.893 8.36301 14.7236 8.4477L1.72363 14.9477'
+        'C1.54464 15.0372 1.32953 15.0113 1.17683 14.882'
+        'C1.02414 14.7526 0.96328 14.5447 1.02213 14.3534'
+        'L2.97688 8.00049L1.02213 1.64754'
+        'C0.96328 1.45627 1.02414 1.24833 1.17683 1.11898Z'
+        'M3.8693 8.50049L2.32155 13.5307L13.382 8.00049L2.32155 2.47027'
+        'L3.8693 7.50049H9.50001C9.77615 7.50049 10 7.72435 10 8.00049'
+        'C10 8.27663 9.77615 8.50049 9.50001 8.50049H3.8693Z"/></svg>'
+    )
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    assert renderer.isValid()
+    expected = QPixmap(24, 24)
+    expected.fill(Qt.transparent)
+    painter = QPainter(expected)
+    try:
+        renderer.render(painter)
+    finally:
+        painter.end()
+    assert _toolbar_icon_pixmap("send", foreground).toImage() == expected.toImage()
+
+
+@pytest.mark.parametrize("foreground", ("#e5e7eb", "#1f2937"))
+@pytest.mark.parametrize("size", (18, 24))
+def test_send_icon_is_distinct_from_navigation_and_assistant(
+    qapp, foreground, size
+):
+    palette = QPalette(qapp.palette())
+    palette.setColor(QPalette.ButtonText, QColor(foreground))
+    image = toolbar_icon("send", palette).pixmap(size, size).toImage()
+    for kind in ("unknown", "next", "calculate", "assistant"):
+        assert image != toolbar_icon(kind, palette).pixmap(size, size).toImage()
+    assert any(
+        image.pixelColor(x, y).alpha() > 200
+        for y in range(size)
+        for x in range(size)
+    )
+
+
+@pytest.mark.parametrize("foreground", ("#e5e7eb", "#1f2937"))
+@pytest.mark.parametrize("size", (18, 24))
+def test_assistant_sparkles_are_distinct_at_header_and_toolbar_sizes(
+    qapp, foreground, size
+):
+    palette = QPalette(qapp.palette())
+    palette.setColor(QPalette.ButtonText, QColor(foreground))
+    image = toolbar_icon("assistant", palette).pixmap(size, size).toImage()
+    for kind in ("unknown", "workflow", "arrange", "settings"):
+        assert image != toolbar_icon(kind, palette).pixmap(size, size).toImage()
+
+    # Separate sparkle silhouettes remain recognizable after downscaling.
+    occupied = {
+        (x, y)
+        for y in range(size)
+        for x in range(size)
+        if image.pixelColor(x, y).alpha() > 40
+    }
+    component_sizes = []
+    while occupied:
+        pending = [occupied.pop()]
+        count = 0
+        while pending:
+            x, y = pending.pop()
+            count += 1
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbor = (x + dx, y + dy)
+                    if neighbor in occupied:
+                        occupied.remove(neighbor)
+                        pending.append(neighbor)
+        component_sizes.append(count)
+    assert len(component_sizes) == 3
+    assert max(component_sizes) > 2 * min(component_sizes)
 
 
 def test_more_icon_has_three_separate_dots_in_one_horizontal_band(qapp):
