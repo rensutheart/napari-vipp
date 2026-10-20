@@ -108,10 +108,13 @@ def _isolate_ui_settings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_pipeline_timing_history(monkeypatch, tmp_path):
+def _isolate_pipeline_timing_history(monkeypatch, tmp_path, tmp_path_factory):
     """Keep every test and inherited subprocess out of user timing history."""
 
     monkeypatch.setenv(
         PIPELINE_TIMING_HISTORY_PATH_ENV,
         str(tmp_path / ".napari-vipp-test-state" / "pipeline-timing-history-v2.json"),
+    )
+    monkeypatch.setenv(
+        "VIPP_WORKFLOW_RECOVERY_ROOT", str(tmp_path_factory.mktemp("vipp-recovery"))
     )
