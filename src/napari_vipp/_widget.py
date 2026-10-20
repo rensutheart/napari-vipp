@@ -10582,14 +10582,16 @@ class VippWidget(QWidget):
             if isinstance(cache, dict):
                 cache.clear()
 
-    def _workflow_tab_switch_block_reason(self) -> str:
-        # Requests not yet handed to a worker are disposable presentation work.
-        # Dropping them is safer than making a newly opened widget appear
-        # permanently busy before Qt has had an opportunity to dispatch them.
-        if self._active_thumbnail_contrast_run_id is None:
-            self._queued_thumbnail_contrast_limit_requests.clear()
-            self._pending_thumbnail_contrast_limit_keys.clear()
-            self._thumbnail_contrast_busy_visible = False
+    def _workflow_tab_switch_block_reason(
+        self,
+        *,
+        discard_queued_thumbnails: bool = False,
+    ) -> str:
+        # Results Workspace also polls this check while updating progress.
+        # Only an explicit tab action may dispose of unstarted thumbnail work;
+        # do so before a modal open/close dialog can dispatch its queued timer.
+        if discard_queued_thumbnails and self._active_thumbnail_contrast_run_id is None:
+            self._discard_pending_thumbnail_contrast_limit_requests()
         if self._active_input_histogram_run_id is None:
             self._pending_input_histogram_request = None
         if self._active_label_volume_run_id is None:
@@ -10733,7 +10735,7 @@ class VippWidget(QWidget):
             return False
         if target_index == self._workflow_tabs.current_index:
             return True
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before switching workflow tabs."
@@ -10800,7 +10802,11 @@ class VippWidget(QWidget):
             return False
         if target_index == self._workflow_tabs.current_index:
             return True
-        reason = self._workflow_tab_switch_block_reason() if check_safety else ""
+        reason = (
+            self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
+            if check_safety
+            else ""
+        )
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before switching workflow tabs."
@@ -14401,7 +14407,7 @@ class VippWidget(QWidget):
 
     def _new_workflow(self) -> None:
         self._commit_crop_draft(schedule_run=False)
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before creating a workflow tab."
@@ -14445,7 +14451,7 @@ class VippWidget(QWidget):
             )
             self._reset_workflow_tab_bar_selection()
             return
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before closing a workflow tab."
@@ -14965,7 +14971,7 @@ class VippWidget(QWidget):
         in-place load because that dialog owns the current representative
         session. User-facing Load and Open example calls create a new tab.
         """
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             raise RuntimeError(f"Wait until {reason} before loading another workflow.")
         if preserve_batch_workspace:
@@ -31676,13 +31682,23 @@ class VippWidget(QWidget):
         self._pending_thumbnail_contrast_limit_keys.clear()
         self._active_thumbnail_contrast_cancel_event = None
         self._thumbnail_user_cancel_requested_run_id = None
+        self._clear_thumbnail_contrast_busy()
+
+    def _clear_thumbnail_contrast_busy(self) -> None:
+        """Release thumbnail feedback without hiding another progress owner."""
+        owned_busy = self._thumbnail_contrast_busy_visible
+        self._thumbnail_contrast_busy_visible = False
         if (
-            self._thumbnail_contrast_busy_visible
+            owned_busy
             and self._active_pipeline_run_id is None
+            and not self._pipeline_run_pending
             and self._active_source_load_id is None
+            and not self._source_load_pending
+            and not self._auto_contrast_busy_visible
+            and self._source_preview_status_run_id is None
+            and not self._workflow_tab_loading_visible
         ):
             self._set_pipeline_busy(False)
-        self._thumbnail_contrast_busy_visible = False
 
     def _thumbnail_contrast_limit_request(
         self,
@@ -32096,13 +32112,7 @@ class VippWidget(QWidget):
             for key in result.keys:
                 if key not in self._thumbnail_contrast_limit_cache:
                     self._thumbnail_contrast_identity_refs.pop(key, None)
-        if self._thumbnail_contrast_busy_visible:
-            self._thumbnail_contrast_busy_visible = False
-            if (
-                self._active_pipeline_run_id is None
-                and self._active_source_load_id is None
-            ):
-                self._set_pipeline_busy(False)
+        self._clear_thumbnail_contrast_busy()
         self._sync_compute_policy_editability()
 
         interaction_superseded = bool(
