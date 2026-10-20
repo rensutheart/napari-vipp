@@ -1,0 +1,184 @@
+"""Recovery copies never calculate, overwrite originals or confer AI authority."""
+
+from pathlib import Path
+
+import pytest
+from napari.components import ViewerModel
+
+from napari_vipp._widget import VippWidget
+from napari_vipp.core.compute import ComputeMode
+from napari_vipp.core.workflow import save_workflow
+from napari_vipp.core.workflow_recovery import RecoveryStore
+
+
+@pytest.fixture
+def recovery_widget(qtbot):
+    viewer = ViewerModel()
+    widget = VippWidget(
+        viewer, defer_initial_run=True, initial_compute_mode=ComputeMode.CPU
+    )
+    qtbot.addWidget(widget)
+    widget.pipeline.reset_empty_graph()
+    widget._build_graph_from_pipeline()
+    widget._sync_current_workflow_tab_state()
+    yield widget
+    widget._discard_incomplete_startup_on_close = True
+
+
+def _edit(widget, threshold=0.63):
+    node = widget.pipeline.add_node("binary_threshold")
+    assert widget.pipeline.connect("input", node.id).success
+    node.params["threshold"] = threshold
+    widget._build_graph_from_pipeline()
+    widget._sync_current_workflow_tab_state()
+    return node
+
+
+def test_normal_autosave_keeps_original_file_and_dirty_state(
+    recovery_widget, tmp_path, qtbot
+):
+    widget = recovery_widget
+    node = _edit(widget, 0.25)
+    original = save_workflow(tmp_path / "original.json", widget.pipeline)
+    before = original.read_bytes()
+    widget._workflow_tabs.current.mark_saved(original)
+    node.params["threshold"] = 0.63
+    widget._sync_current_workflow_tab_state()
+    controller = widget._workflow_recovery
+    assert controller.timer.interval() == 2000
+    qtbot.waitUntil(lambda: controller.last_checkpoint is not None, timeout=15_000)
+    checkpoint = controller.last_checkpoint
+    assert checkpoint.tabs[0]["workflow"]["nodes"][-1]["params"]["threshold"] == 0.63
+    assert widget._workflow_tabs.current.dirty
+    assert original.read_bytes() == before
+    assert not widget.pipeline.completed_node_ids
+    assert controller.store.recoverable() == []  # Never recover a live owner.
+
+
+def test_recovered_copy_retains_nodes_positions_and_does_not_calculate(
+    recovery_widget, monkeypatch, tmp_path
+):
+    widget = recovery_widget
+    node = _edit(widget)
+    original = save_workflow(tmp_path / "source.json", widget.pipeline)
+    widget._workflow_tabs.current.mark_saved(original)
+    before = original.read_bytes()
+    checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
+    calls = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda **_: calls.append("run"))
+    ids = widget._restore_recovery_workspace(checkpoint)
+    assert len(ids) == 1 and calls == []
+    recovered = widget._workflow_tabs.current
+    assert recovered.title.startswith("Recovered") and recovered.path is None
+    assert recovered.dirty and recovered.session_id == ids[0]
+    assert node.id in widget.pipeline.nodes
+    assert widget.pipeline.nodes[node.id].params["threshold"] == 0.63
+    assert not widget.pipeline.completed_node_ids
+    assert all(value is None for value in widget.pipeline.outputs.values())
+    assert not recovered.history.can_undo
+    assert original.read_bytes() == before
+
+
+def test_failed_preedit_checkpoint_aborts_without_graph_changes(
+    recovery_widget, monkeypatch
+):
+    widget = recovery_widget
+    _edit(widget)
+    controller = widget._workflow_recovery
+    before = widget._capture_recovery_workspace()
+
+    def denied(*_, **__):
+        raise PermissionError("Synthetic disk failure")
+
+    monkeypatch.setattr(controller.store, "checkpoint", denied)
+    with pytest.raises(ValueError, match="checkpoint failed"):
+        controller.checkpoint_now("before AI patch", required=True)
+    assert widget._capture_recovery_workspace() == before
+
+
+def test_recovery_base_folder_is_not_changed_to_checkpoint_directory(
+    recovery_widget, tmp_path
+):
+    widget = recovery_widget
+    tab = widget._capture_recovery_workspace()[0][0]
+    assert Path(tab["base_dir"]).is_absolute()
+    assert Path(tab["base_dir"]) != Path(widget._workflow_recovery.store.root)
+
+
+def test_relative_image_binding_survives_changed_working_directory(
+    recovery_widget, tmp_path, monkeypatch
+):
+    widget = recovery_widget
+    original = tmp_path / "image-folder"
+    original.mkdir()
+    monkeypatch.chdir(original)
+    widget.pipeline.nodes["input"].params.update(
+        source_mode="file path", file_path="image.ome.tif"
+    )
+    checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
+    monkeypatch.chdir(tmp_path)
+    widget._restore_recovery_workspace(checkpoint)
+    assert widget.pipeline.nodes["input"].params["file_path"] == str(
+        original / "image.ome.tif"
+    )
+    assert not widget.pipeline.completed_node_ids
+
+
+def test_opened_recovery_not_duplicated_when_bookkeeping_fails(
+    recovery_widget, tmp_path, monkeypatch
+):
+    widget = recovery_widget
+    controller = widget._workflow_recovery
+    tabs, active = widget._capture_recovery_workspace()
+    crashed = RecoveryStore(controller.store.root)
+    crashed.checkpoint(tabs, active)
+    crashed.close(clean=False)
+
+    def denied(*_, **__):
+        raise PermissionError("Synthetic disk full after opening recovered tabs")
+
+    monkeypatch.setattr(controller, "checkpoint_now", denied)
+    controller.show_recovery()
+    dialog = controller._dialog
+    from qtpy.QtWidgets import QPushButton
+
+    button = next(
+        b for b in dialog.findChildren(QPushButton) if b.text() == "Recover selected"
+    )
+    before = len(widget._workflow_tabs)
+    button.click()
+    assert len(widget._workflow_tabs) == before + 1
+    assert "Recovered tabs are open" in widget.status_label.text()
+    assert controller._dialog is None
+    controller.show_recovery()
+    assert controller._dialog is None
+    assert len(widget._workflow_tabs) == before + 1
+    assert len(controller.store.recoverable()) == 1  # Old copy retained, not erased.
+
+
+def test_folder_change_requires_durable_new_copy(
+    recovery_widget, tmp_path, monkeypatch
+):
+    import napari_vipp.ui.workflow_recovery as ui
+
+    widget = recovery_widget
+    controller = widget._workflow_recovery
+    original = controller.store
+    selected = tmp_path / "new-recovery-folder"
+    selected.mkdir()
+    monkeypatch.setattr(
+        ui.QFileDialog, "getExistingDirectory", lambda *a: str(selected)
+    )
+    real_checkpoint = RecoveryStore.checkpoint
+
+    def checkpoint(store, *args, **kwargs):
+        if store.root == selected:
+            raise PermissionError("Synthetic unavailable destination")
+        return real_checkpoint(store, *args, **kwargs)
+
+    monkeypatch.setattr(RecoveryStore, "checkpoint", checkpoint)
+    controller.choose_folder()
+    assert controller.store is original
+    assert controller.last_checkpoint is not None
+    assert "current folder is kept" in widget.status_label.text()
+    assert original.checkpoint(*widget._capture_recovery_workspace())
