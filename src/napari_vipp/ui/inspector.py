@@ -180,6 +180,9 @@ class _MinimumHeightConstraint(QObject):
         self._layout = layout
         self._syncing = False
         self._reserved_height = parent.minimumHeight()
+        self._geometry_sync_timer = QTimer(self)
+        self._geometry_sync_timer.setSingleShot(True)
+        self._geometry_sync_timer.timeout.connect(self._commit_ancestor_geometry)
         if not native:
             layout.setSizeConstraint(QLayout.SetNoConstraint)
         parent.installEventFilter(self)
@@ -208,6 +211,14 @@ class _MinimumHeightConstraint(QObject):
             # already positioned the following row. Commit that pending height
             # bottom-up, just as an explicit reserved-height update does.
             sync_layout_ancestor_geometry(parent)
+            # A child's Resize can run inside its ancestor's setGeometry().
+            # That older Qt layout plan can overwrite the sibling positions we
+            # just committed. Coalesce one commit after that activation exits;
+            # unchanged reservations never schedule another event-loop turn.
+            self._geometry_sync_timer.start(0)
+
+    def _commit_ancestor_geometry(self) -> None:
+        sync_layout_ancestor_geometry(self.parent())
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if event.type() in {QEvent.LayoutRequest, QEvent.Resize, QEvent.Show}:
@@ -245,6 +256,7 @@ def release_layout_minimum_height(layout: QLayout) -> None:
     parent = layout.parentWidget()
     guard = getattr(parent, "_vipp_minimum_height_constraint", None)
     if guard is not None:
+        guard._geometry_sync_timer.stop()
         parent.removeEventFilter(guard)
         guard.deleteLater()
         del parent._vipp_minimum_height_constraint

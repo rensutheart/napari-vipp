@@ -149,6 +149,13 @@ def test_guidance_layout_event_commits_sibling_geometry(
     QApplication.sendEvent(section.content_widget, QEvent(QEvent.LayoutRequest))
     assert section.height() < 180
     assert section.geometry().bottom() < following.geometry().top()
+    # Finish the single coalesced commit for these changed reservations before
+    # checking that stable geometry does not perpetually schedule more work.
+    qtbot.waitUntil(lambda: not any(
+        layout.parentWidget()._vipp_minimum_height_constraint
+        ._geometry_sync_timer.isActive()
+        for layout in (content, section.layout(), outer)
+    ))
     # Stable reservations must not keep invalidating/reposting their ancestors.
     calls = []
     original = inspector.sync_layout_ancestor_geometry
@@ -168,6 +175,86 @@ def test_guidance_layout_event_commits_sibling_geometry(
         assert not hasattr(layout.parentWidget(), "_vipp_minimum_height_constraint")
         assert layout.sizeConstraint() == constraint
         assert layout.parentWidget().minimumSize() == minimum_size
+
+
+@pytest.mark.parametrize(
+    "registration_layout_compat", ("native", "portable"), indirect=True,
+)
+def test_guidance_resize_inside_ancestor_layout_does_not_overlap_siblings(
+    qtbot, monkeypatch, registration_layout_compat,
+):
+    from qtpy.QtCore import QEvent, Qt
+    from qtpy.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+    from napari_vipp.ui import inspector
+
+    class WrappedGuidance(QLabel):
+        def resizeEvent(self, event):  # noqa: N802
+            super().resizeEvent(event)
+            # Resizing wrapped text can change its reservation while the outer
+            # layout is still assigning the previous sibling-height plan.
+            self.setFixedHeight(200 if self.width() < 400 else 30)
+
+    owner = QWidget()
+    outer = QVBoxLayout(owner)
+    outer.setAlignment(Qt.AlignTop)
+    outer.setSpacing(7)
+    section = inspector.InspectorSection("Registration guidance")
+    content = QVBoxLayout(section.content_widget)
+    note = WrappedGuidance("Physical-grid registration guidance")
+    note.setFixedHeight(30)
+    content.addWidget(note)
+    following = QLabel("Registration results")
+    following.setFixedHeight(40)
+    outer.addWidget(section)
+    outer.addWidget(following)
+    layouts = (content, section.layout(), outer)
+    for layout in layouts:
+        inspector.constrain_layout_minimum_height(layout)
+    qtbot.addWidget(owner)
+    owner.resize(600, 600)
+    owner.show()
+    qtbot.waitUntil(lambda: note.width() > 400)
+
+    for width, expected_height in ((340, 200), (600, 30), (340, 200)):
+        owner.resize(width, 600)
+        qtbot.wait(200)
+        assert note.height() == expected_height
+        assert note.geometry().bottom() < section.content_widget.height()
+        assert section.content_widget.geometry().bottom() < section.height()
+        assert section.geometry().bottom() < following.geometry().top(), (
+            section.geometry(), following.geometry(), note.geometry(),
+        )
+        assert not any(
+            layout.parentWidget()._vipp_minimum_height_constraint
+            ._geometry_sync_timer.isActive()
+            for layout in layouts
+        )
+
+    calls = []
+    original_sync = inspector.sync_layout_ancestor_geometry
+
+    def record_sync(widget):
+        calls.append(widget)
+        original_sync(widget)
+
+    monkeypatch.setattr(inspector, "sync_layout_ancestor_geometry", record_sync)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert not calls
+
+    # Releasing a reservation must cancel its owned queued commit, even before
+    # the deferred QObject deletion is processed.
+    note.setFixedHeight(240)
+    QApplication.sendEvent(section.content_widget, QEvent(QEvent.LayoutRequest))
+    guards = [layout.parentWidget()._vipp_minimum_height_constraint
+              for layout in layouts]
+    for layout in layouts:
+        inspector.release_layout_minimum_height(layout)
+    assert not any(guard._geometry_sync_timer.isActive() for guard in guards)
+    calls.clear()
+    QApplication.processEvents()
+    assert not calls
 
 
 def _publish(widget, node):
@@ -607,6 +694,19 @@ def test_registration_inspectors_render_at_narrow_width(
             container.layout().totalHeightForWidth(container.width()),
         )
         child = container
+    sections = [
+        item.widget()
+        for index in range(widget._inspector_layout.count())
+        if (item := widget._inspector_layout.itemAt(index)).widget() is not None
+        and not item.widget().isHidden()
+    ]
+    for first, second in zip(sections, sections[1:], strict=False):
+        assert first.geometry().bottom() < second.geometry().top(), (
+            first.objectName(), first.geometry(),
+            second.objectName(), second.geometry(),
+        )
+    # Grabbing a QWidget can itself trigger layout work. Run every ordinary
+    # geometry assertion first so optional local evidence cannot mask CI bugs.
     screenshot_dir = os.environ.get("VIPP_REGISTRATION_UI_SCREENSHOTS")
     if screenshot_dir:
         target = Path(screenshot_dir)
@@ -630,17 +730,6 @@ def test_registration_inspectors_render_at_narrow_width(
                 container.layout().totalHeightForWidth(container.width()),
             )
             child = container
-    sections = [
-        item.widget()
-        for index in range(widget._inspector_layout.count())
-        if (item := widget._inspector_layout.itemAt(index)).widget() is not None
-        and not item.widget().isHidden()
-    ]
-    for first, second in zip(sections, sections[1:], strict=False):
-        assert first.geometry().bottom() < second.geometry().top(), (
-            first.objectName(), first.geometry(),
-            second.objectName(), second.geometry(),
-        )
 
 
 @pytest.mark.parametrize(
