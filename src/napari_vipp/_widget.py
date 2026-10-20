@@ -15023,6 +15023,10 @@ class VippWidget(QWidget):
             positions,
             compute_request=compute_request,
         )
+        # This document comes from the live editor, not from a saved file.
+        # Bind relative image/table/output locations before the Batch config
+        # records its scientific hash and the save destination rebases paths.
+        workflow = transform_workflow_paths(workflow, Path.cwd())
         config = self._collection_batch_controller.build_config(
             **dialog.values(),
             workflow=workflow,

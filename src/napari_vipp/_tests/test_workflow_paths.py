@@ -29,6 +29,7 @@ from napari_vipp.core.source_items import (
     SourceRevisionProof,
 )
 from napari_vipp.core.workflow import (
+    deserialize_workflow,
     load_workflow,
     save_workflow,
     save_workflow_document,
@@ -295,3 +296,34 @@ def test_attached_batch_hash_is_checked_before_rebase_and_updated_after(tmp_path
     assert invalid["batch_config"] == raw["batch_config"]
     with pytest.raises(ValueError, match="hash does not match"):
         save_workflow_document(path.with_name("bad.json"), raw, source_path=path)
+
+
+def test_save_live_relative_bindings_keeps_runtime_base_not_destination(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "authoring-project"
+    pipeline, _original, item = _project(project)
+    relative = transform_workflow_paths(
+        serialize_workflow(pipeline), project, relative=True
+    )
+    live = _pipeline_from_loaded(deserialize_workflow(relative))
+    before = serialize_workflow(live)
+    monkeypatch.chdir(project)
+    target = project / "saved-elsewhere" / "nested" / "analysis.json"
+    target.parent.mkdir(parents=True)
+    save_workflow(target, live)
+    restored = load_workflow(target)
+    nodes = {node.operation_id: node for node in restored["nodes"]}
+    assert Path(nodes["input"].params["file_path"]) == project / "data" / "cells.npy"
+    assert nodes["input"].params["_vipp_source_item"] == item.to_dict()
+    assert Path(nodes["table_source"].params["dataset_path"]) == (
+        project / "data" / "measurements.json"
+    )
+    assert (
+        nodes["table_source"].params["dataset_sha256"]
+        == (pipeline.nodes[nodes["table_source"].id].params["dataset_sha256"])
+    )
+    assert Path(nodes["save_output"].params["path"]) == (
+        project / "results" / "mask.tif"
+    )
+    assert serialize_workflow(live) == before

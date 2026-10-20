@@ -52,7 +52,9 @@ def _save_as(widget, monkeypatch, target):
 
 
 def test_gui_save_as_rebases_image_and_explicit_batch_then_copied_batch_runs(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     project = tmp_path / "original project"
     inputs = project / "data"
@@ -107,10 +109,12 @@ def test_gui_save_as_rebases_image_and_explicit_batch_then_copied_batch_runs(
     graph = PrototypePipeline()
     graph.restore_graph(restored["nodes"], restored["connections"])
     runtime_document = serialize_workflow(
-        graph, compute_request=restored["compute_request"],
+        graph,
+        compute_request=restored["compute_request"],
     )
     runtime_config = BatchConfig.from_dict(
-        restored["batch_config"], base_dir=copied_workflow.parent,
+        restored["batch_config"],
+        base_dir=copied_workflow.parent,
     )
     assert runtime_config.resolve_path(runtime_config.workflow_file) == copied_workflow
     result = run_batch(runtime_document, runtime_config, workflow_path=copied_workflow)
@@ -122,17 +126,32 @@ def test_gui_save_as_rebases_image_and_explicit_batch_then_copied_batch_runs(
 
 
 def test_gui_save_as_rebases_verified_table_then_moved_results_execute(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     project = tmp_path / "results project"
     project.mkdir()
     table = TableData(("label_id", "area"), ((1, 3.5), (2, 6.5)))
-    collection = collect_measurements(MeasurementPreview(
-        MeasurementOutput("output", "Objects", "objects"),
-        (CollectionItem("item-a", 1, "image-a", "ready", row_count=2,
-                        result_sha256="c" * 64, table=table),),
-        "run-a", "a" * 64, "b" * 64,
-    ))
+    collection = collect_measurements(
+        MeasurementPreview(
+            MeasurementOutput("output", "Objects", "objects"),
+            (
+                CollectionItem(
+                    "item-a",
+                    1,
+                    "image-a",
+                    "ready",
+                    row_count=2,
+                    result_sha256="c" * 64,
+                    table=table,
+                ),
+            ),
+            "run-a",
+            "a" * 64,
+            "b" * 64,
+        )
+    )
     dataset = project / "measurements.vipp-results.json"
     save_measurement_collection(collection, dataset)
     digest = hashlib.sha256(dataset.read_bytes()).hexdigest()
@@ -166,7 +185,9 @@ def test_gui_save_as_rebases_verified_table_then_moved_results_execute(
 
 
 def test_gui_opens_graph_but_does_not_accept_stale_batch_hash_after_rebasing(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     inputs = tmp_path / "inputs"
     inputs.mkdir()
@@ -193,3 +214,56 @@ def test_gui_opens_graph_but_does_not_accept_stale_batch_hash_after_rebasing(
     assert widget._active_collection_batch_dialog is None
     assert "could not be restored" in widget._last_workflow_load_detail
     assert "hash" in widget._last_workflow_load_detail.lower()
+
+
+def test_gui_include_batch_save_keeps_new_relative_runtime_paths(
+    qtbot, monkeypatch, tmp_path
+):
+    project = tmp_path / "authoring-project"
+    inputs = project / "data"
+    inputs.mkdir(parents=True)
+    image = inputs / "field.npy"
+    np.save(image, np.arange(12, dtype=np.uint16).reshape(3, 4))
+    monkeypatch.chdir(project)
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    qtbot.addWidget(widget)
+    widget.pipeline.reset_empty_graph()
+    widget.pipeline.nodes["input"].params.update(
+        source_mode="file path", file_path="data/field.npy"
+    )
+    output = widget.pipeline.add_node("save_output")
+    output.params["path"] = "results/mask.npy"
+    assert widget.pipeline.connect("input", output.id).success
+    batch_output = widget.pipeline.add_node("batch_output")
+    batch_output.params["format"] = "npy"
+    assert widget.pipeline.connect("input", batch_output.id).success
+    widget._build_graph_from_pipeline()
+    dialog = widget._batch_collection_dialog()
+    assert dialog is not None
+    dialog.input_edit.setText(str(inputs))
+    dialog.pattern_edit.setText("*.npy")
+    dialog.output_edit.setText(str(project / "batch-results"))
+    dialog.format_combo.setCurrentText("npy")
+    target = project / "saved-elsewhere" / "nested" / "analysis.json"
+    target.parent.mkdir(parents=True)
+    _save_as(widget, monkeypatch, target)
+    raw = json.loads(target.read_text(encoding="utf-8"))
+    assert raw["batch_config"]["workflow"]["sha256"] == scientific_workflow_hash(raw)
+    loaded = load_workflow(target)
+    graph = PrototypePipeline()
+    graph.restore_graph(loaded["nodes"], loaded["connections"])
+    assert Path(graph.nodes["input"].params["file_path"]) == image
+    assert Path(graph.nodes[output.id].params["path"]) == (
+        project / "results" / "mask.npy"
+    )
+    assert loaded["batch_config"]["workflow"]["sha256"] == (
+        scientific_workflow_hash(
+            serialize_workflow(graph, compute_request=loaded["compute_request"])
+        )
+    )
+    attached = BatchConfig.from_dict(loaded["batch_config"], base_dir=target.parent)
+    assert attached.resolve_path(attached.sources[0].input_dir) == inputs
+    assert attached.resolve_path(attached.output_dir) == project / "batch-results"
+    assert widget.pipeline.nodes["input"].params["file_path"] == "data/field.npy"
+    assert widget.pipeline.nodes[output.id].params["path"] == "results/mask.npy"
+    assert not (project / "results").exists()

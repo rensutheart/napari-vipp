@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.file_sources import load_frozen_file_source_snapshot
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.source_item_persistence import SOURCE_ITEM_PARAMETER
+from napari_vipp.core.workflow import serialize_workflow
 
 
 def test_exported_script_survives_project_move_and_unrelated_working_directory(
@@ -102,3 +104,36 @@ def test_portable_export_checks_embedded_graph_before_path_resolution(tmp_path):
     namespace["_WORKFLOW_JSON"] = json.dumps(changed)
     with pytest.raises(RuntimeError, match="scientific integrity"):
         namespace["_workflow_document"]()
+
+
+def test_export_live_relative_bindings_keeps_runtime_base_not_script_folder(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "authoring-project"
+    data_dir = project / "data"
+    data_dir.mkdir(parents=True)
+    image = data_dir / "field.npy"
+    np.save(image, np.arange(12, dtype=np.uint16).reshape(3, 4))
+    graph = PrototypePipeline()
+    graph.reset_empty_graph()
+    graph.set_param("input", "file_path", "data/field.npy")
+    item = load_frozen_file_source_snapshot(image).source_item.to_dict()
+    graph.nodes["input"].params[SOURCE_ITEM_PARAMETER] = json.loads(json.dumps(item))
+    graph.nodes["input"].params[SOURCE_ITEM_PARAMETER]["container"]["uri"] = (
+        "data/field.npy"
+    )
+    output = graph.add_node("save_output")
+    assert graph.connect("input", output.id).success
+    graph.set_param(output.id, "path", "results/mask.npy")
+    before = serialize_workflow(graph)
+    monkeypatch.chdir(project)
+    script = project / "scripts" / "nested" / "analysis.py"
+    namespace = {"__name__": "generated_analysis", "__file__": str(script)}
+    code = export_pipeline_to_python(graph, script_path=script)
+    exec(compile(code, str(script), "exec"), namespace)
+    document = namespace["_workflow_document"]()
+    params = {node["id"]: node["params"] for node in document["nodes"]}
+    assert Path(params["input"]["file_path"]) == image
+    assert params["input"][SOURCE_ITEM_PARAMETER] == item
+    assert Path(params[output.id]["path"]) == project / "results" / "mask.npy"
+    assert serialize_workflow(graph) == before

@@ -376,6 +376,9 @@ def save_workflow(
         metadata,
         compute_request,
     )
+    # A live graph interprets newly authored relative bindings against its
+    # working folder. Freeze that meaning before the destination rebases them.
+    document = transform_workflow_paths(document, Path.cwd())
     return save_workflow_document(path, document)
 
 

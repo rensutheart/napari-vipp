@@ -555,6 +555,7 @@ def _build_workflow_constant(
             document,
             Path(script_path).expanduser().resolve().parent,
             relative=True,
+            source_base_dir=Path.cwd(),
         )
     deserialize_workflow(document)
     encoded = json.dumps(
