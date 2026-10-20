@@ -182,3 +182,111 @@ def test_folder_change_requires_durable_new_copy(
     assert controller.last_checkpoint is not None
     assert "current folder is kept" in widget.status_label.text()
     assert original.checkpoint(*widget._capture_recovery_workspace())
+
+
+@pytest.mark.parametrize("legacy_relative_copy", [False, True])
+def test_portable_recipe_recovery_keeps_original_bindings_and_source_proofs(
+    recovery_widget, tmp_path, monkeypatch, legacy_relative_copy
+):
+    """A new unsaved recovered tab must not use the recovery folder as its base."""
+    import hashlib
+    import shutil
+
+    from napari_vipp._tests.test_workflow_paths import _project
+    from napari_vipp.core.workflow import load_workflow
+    from napari_vipp.core.workflow_paths import transform_workflow_paths
+
+    pipeline, original, _item = _project(tmp_path / "original-project")
+    save_workflow(original, pipeline)
+    moved = tmp_path / "relocated-project"
+    shutil.copytree(original.parent.parent, moved)
+    saved_path = moved / "workflows" / original.name
+    before_file = saved_path.read_bytes()
+    source = moved / "data" / "cells.npy"
+    dataset = moved / "data" / "measurements.json"
+    before_source, before_dataset = source.read_bytes(), dataset.read_bytes()
+    unrelated = tmp_path / "unrelated-working-directory"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    loaded = load_workflow(saved_path)
+    widget = recovery_widget
+    widget.pipeline.restore_graph(
+        loaded["nodes"], loaded["connections"], loaded["output_tunnels"]
+    )
+    widget._build_graph_from_pipeline()
+    widget._sync_current_workflow_tab_state()
+    widget._workflow_tabs.current.mark_saved(saved_path)
+    controller = widget._workflow_recovery
+    if legacy_relative_copy:
+        # Working copies predating portable-path integration may retain
+        # relative bindings together with their original containing folder.
+        tabs, active = widget._capture_recovery_workspace()
+        tabs[0]["workflow"] = transform_workflow_paths(
+            tabs[0]["workflow"], saved_path.parent, relative=True
+        )
+        checkpoint = controller.store.checkpoint(tabs, active)
+    else:
+        checkpoint = controller.checkpoint_now(required=True)
+    calls = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda **_: calls.append("run"))
+    ids = widget._restore_recovery_workspace(checkpoint)
+    assert len(ids) == 1 and calls == []
+    params = widget.pipeline.nodes["input"].params
+    assert Path(params["file_path"]) == source
+    proof = params["_vipp_source_item"]["container"]
+    assert Path(proof["uri"]) == source
+    expected_proof = loaded["nodes"][0].params["_vipp_source_item"]["container"]
+    assert proof == expected_proof
+    table = next(
+        node
+        for node in widget.pipeline.nodes.values()
+        if node.operation_id == "table_source"
+    )
+    output = next(
+        node
+        for node in widget.pipeline.nodes.values()
+        if node.operation_id == "save_output"
+    )
+    assert Path(table.params["dataset_path"]) == dataset
+    assert table.params["dataset_sha256"] == hashlib.sha256(before_dataset).hexdigest()
+    assert Path(output.params["path"]) == moved / "results" / "mask.tif"
+    assert output.params["enabled"] == "off"
+    assert widget._workflow_tabs.current.path is None
+    assert widget._workflow_tabs.current.dirty
+    assert not widget.pipeline.completed_node_ids
+    assert saved_path.read_bytes() == before_file
+    assert source.read_bytes() == before_source
+    assert dataset.read_bytes() == before_dataset
+    assert not (moved / "results").exists()
+
+
+def test_new_relative_recipe_bindings_are_frozen_before_cwd_changes(
+    recovery_widget, tmp_path, monkeypatch
+):
+    widget = recovery_widget
+    authored = tmp_path / "authoring-folder"
+    authored.mkdir()
+    monkeypatch.chdir(authored)
+    widget.pipeline.nodes["input"].params.update(
+        source_mode="file path", file_path="input.ome.tif"
+    )
+    table = widget.pipeline.add_node("table_source")
+    table.params.update(dataset_path="measurements.json", dataset_sha256="a" * 64)
+    output = widget.pipeline.add_node("save_output")
+    output.params["path"] = "results/mask.tif"
+    widget._build_graph_from_pipeline()
+    widget._sync_current_workflow_tab_state()
+    checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
+    monkeypatch.chdir(tmp_path)
+    widget._restore_recovery_workspace(checkpoint)
+    assert Path(widget.pipeline.nodes["input"].params["file_path"]) == (
+        authored / "input.ome.tif"
+    )
+    assert Path(widget.pipeline.nodes[table.id].params["dataset_path"]) == (
+        authored / "measurements.json"
+    )
+    assert widget.pipeline.nodes[table.id].params["dataset_sha256"] == "a" * 64
+    assert Path(widget.pipeline.nodes[output.id].params["path"]) == (
+        authored / "results" / "mask.tif"
+    )
+    assert not widget.pipeline.completed_node_ids

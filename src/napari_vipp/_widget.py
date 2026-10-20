@@ -397,8 +397,11 @@ from napari_vipp.core.workflow import (
     save_workflow,
     save_workflow_document,
     serialize_workflow,
+    workflow_document_from_snapshot,
+    workflow_snapshot_from_document,
     workflow_snapshot_from_pipeline,
 )
+from napari_vipp.core.workflow_paths import transform_workflow_paths
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_controls import (
     AxisIntervalSlider as AxisIntervalSlider,
@@ -2121,6 +2124,7 @@ class VippWidget(QWidget):
         self._initial_pipeline_run_started = False
         self._initial_pipeline_run_completed = False
         self._discard_incomplete_startup_on_close = False
+        self._workflow_recovery = None
         self._lifecycle = WidgetLifecycle(self)
         self._live_source_adapter = LiveLayerSourceAdapter(
             self._on_live_source_invalidated
@@ -3626,6 +3630,14 @@ class VippWidget(QWidget):
             compute_request_provider=self._current_compute_request,
         )
         self._select_node(self._selected_node_id)
+        from napari_vipp.ui.workflow_recovery import WorkflowRecoveryController
+
+        self._workflow_recovery = WorkflowRecoveryController(
+            self,
+            capture=self._capture_recovery_workspace,
+            restore=self._restore_recovery_workspace,
+            announce=self.status_label.setText,
+        )
         if not defer_initial_run:
             self.run_initial_pipeline_once()
 
@@ -3639,6 +3651,15 @@ class VippWidget(QWidget):
         :meth:`run_pipeline` directly.
         """
         if self._initial_pipeline_run_started or self._closing:
+            return False
+        if (
+            self._workflow_recovery is not None
+            and self._workflow_recovery.pending_recovery
+        ):
+            self.status_label.setText(
+                "Interrupted workflows are available. Recover a working copy, "
+                "or choose Calculate when ready; startup calculation was paused."
+            )
             return False
         self._initial_pipeline_run_started = True
         self.run_pipeline()
@@ -3927,6 +3948,8 @@ class VippWidget(QWidget):
         if not self._confirm_close_dirty_workflow_tabs():
             event.ignore()
             return
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.close()
         self._closing = True
         self._table_sources.close()
         self._results_workspace.close()
@@ -4784,6 +4807,9 @@ class VippWidget(QWidget):
         super().showEvent(event)
         if self._closing:
             return
+        if self._workflow_recovery is not None:
+            QTimer.singleShot(0, self._workflow_recovery.offer_once)
+            self._workflow_recovery.changed()
         self._sync_toolbar_responsive_mode()
         self._schedule_node_library_responsive_sync()
         if not self._dock_chrome_configured:
@@ -6167,6 +6193,16 @@ class VippWidget(QWidget):
         menu.addSeparator()
         self.save_workflow_as_action.setIcon(self.save_workflow_button.icon())
         menu.addAction(self.save_workflow_as_action)
+        if self._workflow_recovery is not None:
+            menu.addSeparator()
+            status = menu.addAction(self._workflow_recovery.summary)
+            status.setEnabled(False)
+            recovery = menu.addAction("Recover interrupted workflows…")
+            recovery.triggered.connect(
+                lambda _checked=False: self._workflow_recovery.show_recovery()
+            )
+            folder = menu.addAction("Choose recovery folder…")
+            folder.triggered.connect(self._workflow_recovery.choose_folder)
         menu.addSeparator()
         export_python_action = menu.addAction("Export Python…")
         export_python_action.triggered.connect(
@@ -10380,6 +10416,142 @@ class VippWidget(QWidget):
             self.workflow_tab_bar.refresh_session(index, session)
         except (IndexError, KeyError, ValueError):
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
+
+    def _capture_recovery_workspace(self):
+        """Plain recipe snapshots only; no calculation, dialogs or clean marker."""
+        self._sync_current_workflow_tab_state()
+        tabs = []
+        active = self._current_workflow_session_id()
+        for session in self._workflow_tabs:
+            if not session.pipeline.nodes:
+                continue  # A truly blank canvas has no persisted recipe to lose.
+            editor = session.editor_snapshot
+            if session.pipeline is self.pipeline:
+                document = serialize_workflow(
+                    self.pipeline,
+                    self.graph_view.node_positions(),
+                    self._graph_note_documents(),
+                    self._workflow_metadata(),
+                    self._current_compute_request(),
+                )
+            else:
+                document = workflow_document_from_snapshot(editor.workflow)
+                inspector = (
+                    document.setdefault("metadata", {})
+                    .setdefault("vipp", {})
+                    .setdefault("inspector", {})
+                )
+                if editor.selected_node_id in session.pipeline.nodes:
+                    inspector["selected_node_id"] = editor.selected_node_id
+                if editor.inspect_display_profiles:
+                    inspector["display_profiles"] = list(
+                        editor.inspect_display_profiles
+                    )
+                if editor.source_channel_displays:
+                    inspector["source_channel_displays"] = dict(
+                        editor.source_channel_displays
+                    )
+            # Loaded portable documents already have absolute runtime bindings.
+            # Freeze any newly authored relative graph paths against their
+            # runtime working folder, never against the recovery JSON folder.
+            # This copies locations only: source revisions/checksums are intact.
+            document = transform_workflow_paths(document, Path.cwd())
+            tabs.append(
+                {
+                    "tab_id": session.session_id,
+                    "title": session.title,
+                    "path": str(session.path) if session.path is not None else None,
+                    "base_dir": str(
+                        session.path.parent if session.path is not None else Path.cwd()
+                    ),
+                    "workflow": document,
+                    "dirty": session.dirty,
+                }
+            )
+        return tabs, active if any(t["tab_id"] == active for t in tabs) else ""
+
+    def _restore_recovery_workspace(self, checkpoint):
+        """Open verified copies in fresh tabs, without ordinary auto-run loading."""
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            raise ValueError(f"Wait until {reason} before recovering workflows.")
+        prepared = []
+        target = None
+        for tab in checkpoint.tabs:
+            # Older working copies may retain relative table/output bindings.
+            # Resolve from their recorded original location, not this new tab
+            # or the recovery store. No image or dataset bytes are read here.
+            document = transform_workflow_paths(tab["workflow"], tab["base_dir"])
+            snapshot = workflow_snapshot_from_document(document)
+            pipeline = snapshot.graph.to_pipeline()
+            snapshot = workflow_snapshot_from_pipeline(
+                pipeline,
+                snapshot.positions_dict(),
+                [note.to_mapping() for note in snapshot.notes],
+                snapshot.metadata,
+                snapshot.compute_request,
+            )
+            inspector = snapshot.metadata.get("vipp", {}).get("inspector", {})
+            selected = inspector.get("selected_node_id", "input")
+            request = snapshot.compute_request
+            editor = WorkflowHistorySnapshot(
+                workflow=snapshot,
+                selected_node_id=selected,
+                compute_mode=request.mode.value,
+                compute_fallback_policy=request.fallback_policy.value,
+                compute_node_preferences=tuple(
+                    (key, value.kind.value, value.value)
+                    for key, value in request.node_preferences.items()
+                ),
+                inspect_display_profiles=tuple(inspector.get("display_profiles", ())),
+                source_channel_displays=tuple(
+                    inspector.get("source_channel_displays", {}).items()
+                ),
+            )
+            session = WorkflowTabSession(
+                pipeline, editor, title=f"Recovered — {tab['title']}"
+            )
+            session.mark_dirty()
+            session.runtime_cache.update(self._fresh_workflow_tab_runtime(session))
+            session.runtime_cache["_recovery_original_path"] = tab["path"]
+            prepared.append(session)
+            if tab["tab_id"] == checkpoint.active_id:
+                target = session
+        if not prepared:
+            raise ValueError("The recovery copy contains no workflow graph.")
+        self._sync_current_workflow_tab_state()
+        original = self._workflow_tabs.current
+        for session in prepared:
+            self._workflow_tabs.add(session, make_current=False)
+        target = target or prepared[0]
+        try:
+            if not self._activate_workflow_tab(
+                self._workflow_tabs.index_of(target.session_id), check_safety=True
+            ):
+                raise ValueError("The recovered tabs could not be activated.")
+        except Exception:
+            if original is not None:
+                self._workflow_tabs.activate(
+                    self._workflow_tabs.index_of(original.session_id)
+                )
+                self._install_workflow_tab_session(original)
+            for session in prepared:
+                self._workflow_tabs.close(
+                    self._workflow_tabs.index_of(session.session_id),
+                    discard_unsaved=True,
+                )
+                self._dispose_workflow_tab_session(session)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            raise
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self.status_label.setText(
+            f"Recovered {len(prepared)} workflow(s) from {checkpoint.created_utc}. "
+            "Original files are unchanged. Calculate when ready; "
+            "results were not saved."
+        )
+        return tuple(session.session_id for session in prepared)
 
     def _store_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
         """Move no state: retain references to this tab's live runtime objects."""
@@ -14649,6 +14821,8 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Closed workflow '{closed.title}'.")
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.checkpoint_now("workflow tab closed")
 
     def _dispose_workflow_tab_session(
         self,
@@ -14699,6 +14873,8 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Renamed workflow tab to '{session.title}'.")
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
 
     def _reveal_workflow_tab(self, session_id: str) -> None:
         """Locate a tab's saved file without activating, saving or running it."""
@@ -14727,6 +14903,8 @@ class VippWidget(QWidget):
         self._workflow_tabs.move(source_index, target_index)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
 
     def _build_graph_from_pipeline(self) -> None:
         self.graph_view.build_graph(
@@ -35541,6 +35719,11 @@ class VippWidget(QWidget):
         if self._closing:
             return
         self._commit_crop_draft(schedule_run=False)
+        if self._workflow_recovery is not None:
+            # Capture the recipe before synchronous scientific work can occupy
+            # the UI. Only detached JSON is sent to the background writer.
+            self._workflow_recovery.changed()
+            self._workflow_recovery.autosave()
         self._record_interaction_phase(
             self._interaction_current_generation(),
             InteractionLatencyPhase.DEBOUNCE_FINISHED,
