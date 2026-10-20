@@ -24950,23 +24950,30 @@ def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, wi
     menu = widget.workflow_actions_menu
     actions = menu.actions()
     labels = [None if action.isSeparator() else action.text() for action in actions]
-    assert labels[:8] == [
+    assert labels[:12] == [
         "Open example…",
         "Open Results Workspace…",
         None,
         "Save workflow as…",
+        None,
+        widget._workflow_recovery.summary,
+        "Recover interrupted workflows…",
+        "Choose recovery folder…",
         None,
         "Export Python…",
         "Export reproducibility package…",
         "Export OME dataset…",
     ]
     assert actions[3] is widget.save_workflow_as_action
+    assert not actions[5].isEnabled()  # Recovery status is not an action.
+    assert actions[6].isEnabled()
+    assert actions[7].isEnabled()
     assert not actions[0].icon().isNull()
     assert not actions[3].icon().isNull()
     if width == 640:
-        assert labels[8:] == [None, "Auto Arrange graph", "Tunnels…"]
+        assert labels[12:] == [None, "Auto Arrange graph", "Tunnels…"]
     else:
-        assert len(actions) == 8
+        assert len(actions) == 12
     assert not set(labels) & {
         action.text() for action in widget.settings_menu.actions()
     }
@@ -25002,6 +25009,23 @@ def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
         "_export_reproducibility_package_dialog",
         lambda: calls.append("Export reproducibility package…"),
     )
+    recovery = widget._workflow_recovery
+    monkeypatch.setattr(
+        recovery,
+        "show_recovery",
+        lambda: calls.append("Recover interrupted workflows…"),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "choose_folder",
+        lambda: calls.append("Choose recovery folder…"),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.ui.workflow_recovery.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Menu dispatch must not open a real recovery folder picker."
+        ),
+    )
     save_requests = []
     monkeypatch.setattr(
         widget,
@@ -25011,6 +25035,15 @@ def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
     widget.leave_batch_button.show()
     for _ in range(3):
         widget._populate_workflow_actions_menu()
+        rebuilt_actions = widget.workflow_actions_menu.actions()
+        rebuilt_labels = [action.text() for action in rebuilt_actions]
+        assert rebuilt_labels.count("Recover interrupted workflows…") == 1
+        assert rebuilt_labels.count("Choose recovery folder…") == 1
+        status = next(
+            action for action in rebuilt_actions if action.text() == recovery.summary
+        )
+        assert not status.isEnabled()
+        assert calls == [] and save_requests == []
     actions = widget.workflow_actions_menu.actions()
     assert [action.text() for action in actions[-3:]] == [
         "Leave batch mode", "Auto Arrange graph", "Tunnels…",
@@ -25020,6 +25053,8 @@ def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
             action.trigger()
     assert calls == [
         "Open example…",
+        "Recover interrupted workflows…",
+        "Choose recovery folder…",
         "Export Python…",
         "Export reproducibility package…",
         "Export OME dataset…",
