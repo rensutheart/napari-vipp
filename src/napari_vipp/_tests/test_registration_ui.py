@@ -257,6 +257,125 @@ def test_guidance_resize_inside_ancestor_layout_does_not_overlap_siblings(
     assert not calls
 
 
+@pytest.mark.parametrize(
+    "registration_layout_compat", ("native", "portable"), indirect=True,
+)
+@pytest.mark.parametrize("change", ("text", "font"))
+def test_late_wrapped_guidance_reserves_actual_width_and_releases_cleanly(
+    qtbot, monkeypatch, registration_layout_compat, change,
+):
+    from qtpy.QtCore import QEvent, Qt
+    from qtpy.QtGui import QFont
+    from qtpy.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+    from napari_vipp.ui import inspector
+
+    short = "Registration uses physical-grid guidance."
+    long = " ".join([short] * 20)
+
+    class LateGuidance(QLabel):
+        def resizeEvent(self, event):  # noqa: N802
+            super().resizeEvent(event)
+            narrow = self.width() < 400
+            if getattr(self, "_narrow", None) == narrow:
+                return
+            self._narrow = narrow
+            # These are real late font/wrap changes, not an injected incorrect
+            # sibling position. Text-only growth leaves intrinsic minimums
+            # unchanged while increasing the height needed at the new width.
+            if change == "text":
+                self.setText(long if narrow else short)
+            else:
+                font = QFont(self.font())
+                font.setPointSize(15 if narrow else 10)
+                self.setFont(font)
+
+    owner = QWidget()
+    outer = QVBoxLayout(owner)
+    outer.setAlignment(Qt.AlignTop)
+    outer.setSpacing(7)
+    section = inspector.InspectorSection("Registration guidance")
+    content = QVBoxLayout(section.content_widget)
+    note = LateGuidance(short if change == "text" else long)
+    note.setWordWrap(True)
+    content.addWidget(note)
+    following = QLabel("Registration results")
+    following.setFixedHeight(40)
+    outer.addWidget(section)
+    outer.addWidget(following)
+    layouts = (content, section.layout(), outer)
+    for layout in layouts:
+        inspector.constrain_layout_minimum_height(layout)
+    qtbot.addWidget(owner)
+    owner.resize(600, 900)
+    owner.show()
+    qtbot.waitUntil(lambda: note.width() > 400)
+    qtbot.wait(200)
+    wide_reservations = tuple(
+        layout.parentWidget().minimumHeight() for layout in layouts
+    )
+
+    def assert_complete_geometry():
+        assert note.height() >= note.heightForWidth(note.width()), (
+            note.size(), note.heightForWidth(note.width()),
+            section.sizeHint(), outer.itemAt(0).maximumSize(),
+        )
+        assert note.geometry().bottom() < section.content_widget.height()
+        assert section.content_widget.geometry().bottom() < section.height()
+        assert section.geometry().bottom() < following.geometry().top()
+        assert owner.width() <= 600
+
+    for width in (340, 600, 340):
+        owner.resize(width, 900)
+        qtbot.wait(200)
+        assert owner.width() == width
+        assert_complete_geometry()
+        assert not any(
+            layout.parentWidget()._vipp_minimum_height_constraint
+            ._geometry_sync_timer.isActive()
+            for layout in layouts
+        )
+        if width == 600:
+            assert tuple(layout.parentWidget().minimumHeight()
+                         for layout in layouts) == wide_reservations
+
+    expanded_height = section.height()
+    section.setExpanded(False)
+    qtbot.wait(200)
+    assert section.height() < expanded_height
+    assert section.geometry().bottom() < following.geometry().top()
+    section.setExpanded(True)
+    qtbot.wait(200)
+    assert_complete_geometry()
+
+    calls = []
+    original_sync = inspector.sync_layout_ancestor_geometry
+
+    def record_sync(widget):
+        calls.append(widget)
+        original_sync(widget)
+
+    monkeypatch.setattr(inspector, "sync_layout_ancestor_geometry", record_sync)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert not calls
+
+    note.setText(short)
+    QApplication.sendEvent(section.content_widget, QEvent(QEvent.LayoutRequest))
+    guards = [layout.parentWidget()._vipp_minimum_height_constraint
+              for layout in layouts]
+    assert any(guard._geometry_sync_timer.isActive() for guard in guards)
+    for layout in layouts:
+        constraint, minimum_size = layout._vipp_minimum_height_state
+        inspector.release_layout_minimum_height(layout)
+        assert layout.sizeConstraint() == constraint
+        assert layout.parentWidget().minimumSize() == minimum_size
+    assert not any(guard._geometry_sync_timer.isActive() for guard in guards)
+    calls.clear()
+    QApplication.processEvents()
+    assert not calls
+
+
 def _publish(widget, node):
     transform = _transform()
     diagnostics = TableData(("time", "overlap"), ((0, 0.95),),
