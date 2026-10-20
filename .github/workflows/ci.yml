@@ -190,7 +190,7 @@ jobs:
           vipp-install-plan --help
 
   tests:
-    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }}, ${{ matrix.test_group }})
     runs-on: ${{ matrix.os }}
     # Hosted Windows runners need room for the complete Qt-heavy suite.
     # This is the job budget, not a relaxation of individual test deadlines.
@@ -198,19 +198,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.12"
-          - os: macos-latest
-            python-version: "3.12"
-          - os: ubuntu-latest
-            python-version: "3.13"
-          - os: windows-latest
-            python-version: "3.13"
-          - os: macos-latest
-            python-version: "3.13"
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+        # Keep every test on each existing OS/Python boundary, but give the
+        # large Qt composition module its own unchanged job budget.
+        test_group: [general, widget]
     env:
       PYTEST_QT_API: pyqt6
       QT_QPA_PLATFORM: offscreen
@@ -243,7 +235,16 @@ jobs:
       - name: Run tests
         run: |
           python -c "from qtpy.QtWidgets import QApplication; from qtpy.QtGui import QFontDatabase; app = QApplication([]); families = QFontDatabase.families(); assert families, 'Headless Qt has no real fonts; rendered layout checks would be invalid'; print(f'Headless Qt: {len(families)} font families available')"
-          python -m pytest -o faulthandler_timeout=120 --durations=25
+          python -m pytest -o faulthandler_timeout=120 --durations=25 --junitxml=pytest-results.xml ${{ matrix.test_group == 'widget' && 'src/napari_vipp/_tests/test_widget.py' || '--ignore=src/napari_vipp/_tests/test_widget.py' }}
+
+      - name: Retain test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pytest-results-${{ matrix.os }}-py${{ matrix.python-version }}-${{ matrix.test_group }}-${{ github.sha }}
+          path: pytest-results.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   napari-compatibility:
     name: >-
