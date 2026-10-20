@@ -209,7 +209,7 @@ class GpuSetupBackend(WindowsInstallerBackend):
         repair: bool = False,
     ) -> PreparedInstall:
         try:
-            return self._inspect(
+            return self._inspect_gpu_setup(
                 selection,
                 progress=progress,
                 cancellation=cancellation,
@@ -218,7 +218,7 @@ class GpuSetupBackend(WindowsInstallerBackend):
         except InstallCancelled as exc:
             raise InstallationCancelled(details=str(exc)) from exc
 
-    def _inspect(self, selection, *, progress, cancellation, repair):
+    def _inspect_gpu_setup(self, selection, *, progress, cancellation, repair):
         if (
             selection.track is not TrackChoice.CUDA13
             or selection.install_root is not None

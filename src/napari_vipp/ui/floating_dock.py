@@ -137,9 +137,7 @@ class _WindowsOwnerApi:
             raise OSError("Windows did not show the floating VIPP window again.")
 
 
-def make_window_independent(
-    window: QWidget, *, register_taskbar: bool = False
-) -> bool:
+def make_window_independent(window: QWidget, *, register_taskbar: bool = False) -> bool:
     """Remove a top-level Windows window's native ownership by its Qt host.
 
     The QWidget/QObject parent stays intact for destruction and session ownership.
