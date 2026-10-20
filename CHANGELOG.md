@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Protect image exports from overwriting a file or OME-Zarr store created by
+  another process while an export is being written. Failed no-overwrite saves
+  leave existing outputs intact and do not publish incomplete files.
+
 ## 0.16.0a4 - 2026-10-09
 
 - Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr
