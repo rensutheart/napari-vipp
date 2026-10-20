@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.16.0a5 - 2026-10-20
+
+- Keep bounded local autosave working copies of named and unnamed workflow
+  tabs. Offer interrupted sessions as new unsaved recovered tabs without
+  overwriting the originals or calculating automatically. Preserve resolved
+  input/output paths through relocation and recovery. Source pixels, calculated
+  outputs, Undo history, in-flight work and Batch workspace/configuration are
+  not recovered; save Batch configuration separately. This graph-only feature
+  does not include assistant conversations, sessions, agent or MCP features.
 - Group GPU verification status with a prominent setup or repair action. Keep
   the session GPU choice visible, move package-track and labelled manual-command
   details into a chevron-based **Advanced details** section, and keep footer

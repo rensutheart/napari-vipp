@@ -1,36 +1,33 @@
-# VIPP 0.16.0a4
+# VIPP 0.16.0a5
 
-VIPP 0.16.0a4 adds linked, read-only image review, a bounded ImageJ-compatible Gaussian filter, clearer Batch/Results controls and Windows workspace-window fixes, plus OME export and loading compatibility repairs.
+VIPP 0.16.0a5 focuses on keeping workflows safe, moving projects between folders, clearer graph editing and guided Windows GPU setup. The unfinished AI assistant, agent/MCP, webhook-bot and saved assistant-session work is not included.
 
-**Alpha software.** Preserve original images, saved workflows and decisive outputs. Check representative data before scientific interpretation.
+**Alpha software.** Preserve original images, saved workflows, environments and decisive outputs. Check representative data before scientific interpretation.
 
-## Compare calculated images without changing the analysis
+## Keep and move your work
 
-- Review Images opens one or two already calculated, explicitly declared scalar, RGB/RGBA, mask or label inputs in linked side-by-side or overlay views. Both inputs must share their physical/time grid; the node never silently resamples, reorders, normalizes or casts scientific arrays.
-- Choose each pane's content, independent scalar black/white levels, colours, opacity and visibility from the inspector sidebar. Link viewpoints separately from shared time/slice navigation, use Oblique/XY/XZ/YZ and Fit controls, and toggle calibrated scale bars and 3D axes globally. Framed pane cards and compact status messages keep the display stable.
-- Scalar 3D review offers maximum intensity, depth-weighted intensity and a display-only isosurface. Binary-mask surfaces use display interpolation, not scientific mask smoothing. These shaded modes are not quantitative intensity/colour-scale review or physically correct inter-layer occlusion. RGB 3D uses an explicitly labelled per-component MIP adapter; RGBA 3D and RACC custom-shader parity are not supported.
-- Open reviews retain clearly marked previous results during upstream work, then replace the accepted same-grid A+B pair together while preserving viewpoints, navigation and the display recipe. Rejected or incomplete work stays noncurrent; changed grids, input kinds or input presence require explicit reopening.
-- Display recipes persist with the workflow but do not enter scientific cache/hash identity. Review Images has no scientific output, batch output or generated-Python kernel. Low-memory mode retains only a visible review's directly bound inputs, not its entire upstream graph. Four synthetic workflows cover channels, calibrated masks, labelled time series and RGB plus a constructed scalar index.
+- Workflow autosave keeps bounded, separate local graph working copies. After an interrupted session, recover named or unnamed workflows as new unsaved tabs without replacing the original files or calculating automatically.
+- Recovery preserves the workflow recipe and executable file bindings, including portable paths, but not source pixels, calculated images/tables, Undo history, in-flight work or the Batch workspace/configuration. Save Batch configuration separately. Autosave is not a source-data backup.
+- Workflow, batch and generated-Python paths resolve from their saved document's folder where possible. Copy documents and data together, preserving the folder layout. Save As rebases paths without moving data; another drive/share stays absolute. Source revisions and dataset checksums are retained. Recheck batch destinations and Skip/Overwrite choices after moving a project.
+- No-overwrite image saving stages the complete result privately and publishes only if its destination is still absent. Existing or racing output files/stores are preserved. Filesystems without a safe exclusive-publication primitive fail closed; there is no unsafe overwrite fallback. This protects an individual image write, not a transaction over every batch output and provenance file.
 
-## A separate ImageJ Gaussian option
+## Clearer Windows setup
 
-- ImageJ Gaussian Blur reproduces the reviewed direct-convolution branch of ImageJ 1.54p for scalar uint8, uint16 and finite float32 YX planes, independently over leading planes, at sigma 0–8.5 pixels. Existing Gaussian Blur and Gaussian Blur 3D retain their behavior.
-- The filter preserves source buffers, dtype, shape and calibration, with explicit history and conservative planning facts. Independent ImageJ bytecode fixtures match all 37 recorded cases bit-for-bit; this bounded evidence is not a guarantee for every input or platform. Larger sigma/downsampling, encoded RGB, physical-unit sigma and a true 3D ImageJ blur are unsupported. Numerical reproduction is not biological validation, and whole-image memory-bounded execution is not claimed.
+- Compute setup and memory offers **Set up GPU…** or **Repair GPU setup…** for the supported Windows NVIDIA route. Review a separate managed CUDA installation of the exact current VIPP build, follow progress, and open the verified build in another window. Current workflows remain open and are not transferred automatically. Verification alone does not install packages.
+- Matching status cards, a clear next action, collapsed advanced/technical details and a readable log make both verification and guided setup easier to follow. The manual command is labelled with its purpose, and an already-ready build focuses on **Open VIPP with GPU**, not irrelevant download estimates.
+- Setup checks Apps & Features ownership before downloads, environment replacement and upgrade commit. Unsafe registration or interrupted-recovery conflicts offer **Get setup help** instead of an ineffective retry loop. Automatic recovery still requires exact recorded ownership evidence; matching a folder or installation ID is not permission to overwrite a different installation.
 
-## Batch, Results and workspace improvements
+## Graph and preview improvements
 
-- Use consistent Select all / Deselect all controls across Batch items and Overrides, parameter columns, Results visible columns, Statistics measurements and Select Table Columns, retaining existing filtering and scientific selection rules.
-- Wrapped measurement-selection controls and registration inspector sections retain their spacing without overlapping following rows after live font or width changes.
-- Blocked batch outputs explain duplicate names, input-file overlaps and overwrite protection. Find problem focuses the affected output node without calculating or saving; changed output settings require destination rechecking, and matching-item selection spans pages without dropping filtered-out selections.
-- Detached VIPP, Batch and Results workspaces maximize or restore once and minimize independently from their Windows host, while keeping their workflow/data ownership. Reopening a minimized workspace restores its prior state. Native Linux/macOS window-manager ownership and minimization remain unqualified.
-- Threshold sliders use the displayed float-image histogram while preserving saved cutoffs and the wider numeric-entry domain. Histogram guide edits remain synchronized after constrained or rounded changes. GPU-conversion advisories wrap fully, and a defensive napari layer-list decoration guard avoids errors from temporarily missing size hints.
+- Wires from distinct output ports use separate lanes. Bounded background routing prefers clear local paths and avoids unnecessary staircases while retaining card clearance; complex routing is cancellable rather than blocking editing.
+- Convert wires to named tunnels, a tunnel input back to a wire, or all subscribers back to wires as one undoable edit, preserving connections and calculated results.
+- Reopen a minimized floating VIPP window from the original napari Plugins menu. Native Linux/macOS window-manager parity is not inferred from Windows checks.
+- Results/workflow readiness checks no longer discard queued thumbnail work or leave a stale thumbnail busy indicator. Scientific calculations, measurements and statistics are unchanged.
 
-## File compatibility and scope
+## Compatibility and qualification boundaries
 
-OME-Zarr 0.4/0.5 image and analysis-dataset export supports the newer ome-zarr writer API while retaining display metadata, calibration and provenance. Legacy OME-TIFF spatial unit aliases micrometer/micrometre are normalized only in the parser copy; numeric calibration, pixels and original file bytes are unchanged. NRF Thuthuka Post PhD Track support is acknowledged in the repository.
+Workflow, batch-config and manifest schema numbers remain 6. The node catalogue, scientific algorithms, GPU kernels/admission regions, runtime/build dependency pins, supported Python routes and macOS installer engine are unchanged. GPU setup does not admit additional hardware or scientific operation regions.
 
-Runtime/build dependencies, supported Python routes, installer engines and existing GPU kernels/admission regions are unchanged. Review Images affects shared execution, persistence and packaged resources, so exact integrated CI, installed/native checks, reproducible distributions and a bounded real-device interoperability gate remain release requirements; historical private development wheels are not release bytes. Earlier memory-pressure or incomplete full runs are not clean integrated qualification.
+The [release plan](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a5/docs/release-0.16.0a5-plan.md) and [qualification declaration](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a5/docs/release-qualification-baseline.md) separate changed-domain gates from evidence that may carry forward. Consult the release record for exact commits, platform runs and artifact hashes; a local unit-test pass is not a full frozen Windows GUI lifecycle, broad filesystem qualification, large-volume performance or biological validation.
 
-Synthetic and bounded native Windows checks do not establish acquired-microscopy accuracy, large-volume memory/performance, minimum-dependency coverage or native Linux/macOS renderer equivalence. Exact supported-platform CI and native artifact gates are recorded as they complete. macOS remains CPU-only. Desktop installers are explicitly unsigned alpha builds, and macOS packages are unnotarized.
-
-Preserve workflow copies before resaving; new nodes and recipes require this version, and reproduction acknowledgements and verified-resume restrictions remain in force. See the [qualification declaration](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a4/docs/release-qualification-baseline.md), [Review Images contract](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a4/docs/image-review-implementation.md), [ImageJ evidence](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a4/docs/validation/imagej-gaussian-compatibility.md) and [Windows workspace evidence](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a4/docs/workspace-window-qualification.md). Verify downloads using their release checksum files.
+Desktop installers are explicitly unsigned alpha builds. macOS packages are separate CPU-only arm64/x86_64 artifacts and are also unnotarized. Verify downloads using the matching release checksum files. The [versioned manual](https://rensutheart.github.io/vipp-mkdocs/0.16.0a5/) documents recovery, portable paths and setup limitations.
