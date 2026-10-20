@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import numpy as np
 
 from napari_vipp.core.batch import (
     BatchExecutionProgress,
@@ -8,14 +11,72 @@ from napari_vipp.core.batch import (
     BatchManifest,
     BatchRunResult,
     BatchStatus,
+    batch_config_hash,
+    load_batch_config,
+    run_batch,
 )
 from napari_vipp.ui.batch_controller import PreparedCollectionBatchPreview
 from napari_vipp.ui.batch_workers import (
     BatchWorkspacePreviewWorker,
     BatchWorkspacePreviewWorkerSpec,
+    CollectionBatchRunRequest,
     CollectionBatchWorker,
     PreparedCollectionBatchRun,
+    prepare_collection_batch_run,
 )
+
+
+def test_prepared_run_records_exact_saved_relative_config(tmp_path, monkeypatch):
+    from napari_vipp._tests.test_batch import (
+        _batch_config,
+        _batch_workflow,
+        _write_arrays,
+    )
+
+    inputs = tmp_path / "inputs"
+    pixels = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    _write_arrays(inputs, sample=pixels)
+    workflow, output_ids = _batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(workflow, inputs, output_dir, output_ids)
+    request = CollectionBatchRunRequest(
+        job_id=19,
+        origin_session_id="portable-run",
+        workflow=workflow,
+        config=config,
+        workflow_path=output_dir / "workflow.json",
+        config_path=output_dir / "batch-config.json",
+        script_path=output_dir / "runner.py",
+    )
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    prepared = prepare_collection_batch_run(request)
+    saved = load_batch_config(prepared.config_path)
+    assert prepared.config is prepared.plan.config
+    assert prepared.config.to_dict() == saved.to_dict()
+    assert prepared.config.base_dir == output_dir
+    assert prepared.config.resolve_path(prepared.config.output_dir) == output_dir
+    assert prepared.config.resolve_path(prepared.config.sources[0].input_dir) == inputs
+    assert prepared.config.resolve_path(prepared.config.workflow_file) == (
+        prepared.workflow_path
+    )
+    assert saved.sources[0].input_dir == Path("../inputs")
+    assert saved.output_dir == Path(".")
+    result = run_batch(
+        prepared.workflow,
+        prepared.config,
+        plan=prepared.plan,
+        workflow_path=prepared.workflow_path,
+        config_path=prepared.config_path,
+        performance_history_path=tmp_path / "history.json",
+    )
+    assert result.summary["completed"] == 1
+    assert result.manifest.config_sha256 == batch_config_hash(saved)
+    assert result.manifest.config_document == json.loads(
+        prepared.config_path.read_text(encoding="utf-8")
+    )
+    np.testing.assert_array_equal(np.load(result.saved_paths[0]), pixels)
 
 
 def _cancelled_result(tmp_path: Path) -> BatchRunResult:

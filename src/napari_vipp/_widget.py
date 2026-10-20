@@ -2604,11 +2604,13 @@ class VippWidget(QWidget):
         self.save_workflow_action = QAction("Save workflow", self)
         self.save_workflow_action.setToolTip(
             "Save the active workflow (Ctrl+S). The Settings save policy "
-            "controls subsequent saves."
+            "controls subsequent saves. Local paths are stored relative to "
+            "the workflow when possible."
         )
         self.save_workflow_as_action = QAction("Save workflow as…", self)
         self.save_workflow_as_action.setToolTip(
-            "Choose a new name and location for the active workflow."
+            "Choose a new name and location for the active workflow. "
+            "Relative paths are recalculated to keep the same data and outputs."
         )
         self.undo_button = QToolButton()
         self.undo_button.setDefaultAction(self.undo_action)
@@ -15413,6 +15415,12 @@ class VippWidget(QWidget):
         workflow: dict,
     ) -> BatchConfig:
         """Validate one attached config against its containing workflow."""
+        persisted_error = workflow.get("batch_config_error")
+        if persisted_error:
+            # The core checked the saved hash before resolving graph paths.
+            # A stale attachment must not become valid merely because rebasing
+            # happens to produce a hash equal to its recorded value.
+            raise ValueError(str(persisted_error))
         base_dir = source.parent.resolve()
         config = BatchConfig.from_dict(raw_config, base_dir=base_dir)
         config = replace(
@@ -15735,11 +15743,12 @@ class VippWidget(QWidget):
         if not path.lower().endswith(".py"):
             path += ".py"
         try:
+            target = Path(path).expanduser()
             code = export_pipeline_to_python(
                 self.pipeline,
                 compute_request=self._current_compute_request(),
+                script_path=target,
             )
-            target = Path(path).expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(code, encoding="utf-8")
         except Exception as exc:

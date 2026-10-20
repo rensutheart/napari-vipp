@@ -22,6 +22,7 @@ from napari_vipp.core.reproducibility import build_reproducibility_package
 from napari_vipp.core.source_identity import capture_local_source_bundle
 from napari_vipp.core.source_resolution import resolve_source_item
 from napari_vipp.core.workflow import serialize_workflow
+from napari_vipp.core.workflow_paths import transform_workflow_paths
 from napari_vipp.ui.reproduction import (
     ReproductionChoiceDialog,
     ReproductionOpenCancelled,
@@ -100,12 +101,19 @@ def test_dropped_recorded_workflow_uses_choice_and_opens_batch(
     assert not dialog.run_button.isEnabled()
     exported = json.loads(shared_run[0].read_text())
     assert (
+        scientific_workflow_hash(exported)
+        == exported["batch_config"]["workflow"]["sha256"]
+    )
+    # Runtime locators are based on the containing workflow. The portable
+    # artifact retains its original relative graph and corresponding digest.
+    resolved = transform_workflow_paths(exported, shared_run[0].parent)
+    assert (
         scientific_workflow_hash(
             serialize_workflow(
                 widget.pipeline, compute_request=widget._current_compute_request()
             )
         )
-        == exported["batch_config"]["workflow"]["sha256"]
+        == scientific_workflow_hash(resolved)
     )
 
 
@@ -122,14 +130,19 @@ def _open(qtbot, monkeypatch, shared_run, *, new_data=False):
     assert not dialog.run_button.isEnabled()
     exported = json.loads(shared_run[0].read_text())
     assert (
+        scientific_workflow_hash(exported)
+        == exported["batch_config"]["workflow"]["sha256"]
+    )
+    resolved = transform_workflow_paths(exported, shared_run[0].parent)
+    assert (
         scientific_workflow_hash(
             serialize_workflow(
                 widget.pipeline, compute_request=widget._current_compute_request()
             )
         )
-        == exported["batch_config"]["workflow"]["sha256"]
+        == scientific_workflow_hash(resolved)
     )
-    assert widget.pipeline.nodes["input"].params == exported["nodes"][0]["params"]
+    assert widget.pipeline.nodes["input"].params == resolved["nodes"][0]["params"]
     return widget, dialog
 
 

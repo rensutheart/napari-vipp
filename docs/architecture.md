@@ -1777,9 +1777,15 @@ Workflow persistence:
   enabled.
 - Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
   tables, environment provenance, benchmark evidence, or YAML.
-- Image Source paths and layer names are serialized as literal parameters;
-  resolved file sources additionally carry canonical SourceItem evidence. Input
-  files are not embedded and paths are not rebased for portable sharing.
+- In-memory graph serialization retains authored parameters. The file-persistence
+  boundary stores local Image Source, Table Source and Save Image paths relative
+  to the saved workflow when the filesystem permits it; attached batch paths use
+  that same base. File loading resolves these bindings against the document's
+  directory, independently of the process working directory. Save As rebases
+  locations without changing selected source revisions, selectors or dataset
+  checksums. Cross-drive/share paths remain absolute. Layer names, historical
+  provenance and embedded measurement-dataset records are not path-rewritten;
+  input bytes and environments are not embedded. This is unreleased behavior.
 - The loader requires the workflow type, accepts schema versions 3, 4, 5, and 6, and
   rejects unknown operations, malformed records, duplicate node ids, invalid
   positions, and dangling or multiply occupied connections. It also rejects
