@@ -606,6 +606,32 @@ def test_hash_bound_uninstaller_action_is_typed_and_controller_owned(tmp_path):
     assert backend.opened_uninstallers == [prepared]
 
 
+def test_setup_recovery_help_has_no_generic_retry_or_python_action(tmp_path):
+    workers = []
+    prepared = replace(
+        _prepared(TargetKind.BLOCKED, tmp_path),
+        blocked_action=BlockedAction.OPEN_SETUP_HELP,
+        help_url="https://example.invalid/installation/#troubleshooting",
+        reason="Try again cannot resolve a conflicting installation record.",
+    )
+    backend = _Backend(prepared)
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+
+    assert controller.state.screen is InstallerScreen.BLOCKED
+    assert controller.state.primary_label == "Get setup help"
+    assert controller.state.secondary_label == "Close"
+    assert controller.state.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert "Try again cannot resolve" in controller.state.status_message
+    controller.confirm()
+    assert backend.apply_calls == []
+
+
 def test_owned_cuda_path_blocker_exposes_installed_apps_action(tmp_path):
     workers = []
     prepared = replace(

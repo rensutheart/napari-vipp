@@ -18,11 +18,15 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Validation and release
 
+- [Floating VIPP recovery on Windows](validation/floating-dock-windows-2026-10-09.md):
+  native taskbar registration, plugin reuse and minimized-window recovery.
+
 - [ImageJ Gaussian compatibility](validation/imagej-gaussian-compatibility.md):
   bounded independent bytecode references and tissue mask reproduction evidence.
 
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
+- [0.16.0a5 non-AI release plan](release-0.16.0a5-plan.md)
 - [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)
 - [Release qualification baseline](release-qualification-baseline.md)
 - [Windows installer field acceptance](windows-installer-field-acceptance.md)
@@ -120,6 +124,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 These pages preserve accepted architecture, completed phases, scientific
 reasoning, and deferred work. They are useful design records, but they do not
 override the current planning documents above.
+
+- [Workflow wire routing and responsiveness](wire-routing-responsiveness.md):
+  source-aware shared trunks, owned background geometry, cancellation and dated
+  offscreen routing benchmarks.
 
 - [Workflow-tab preview isolation](workflow-tab-preview-isolation.md): runtime-only
   camera/dimension restoration, owned Crop retirement and focused regression scope.

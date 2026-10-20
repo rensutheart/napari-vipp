@@ -1,6 +1,84 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-10-09
+Last reviewed: 2026-10-20
+
+## 0.16.0a5 qualification declaration
+
+This iterative alpha covers the union from public `v0.16.0a4` at
+`86aee0f4056766828c53fd66067f4e67ea2570dc`: installer ownership/recovery,
+wire/tunnel and floating-window improvements, thumbnail cleanup, portable
+workflow/batch/generated-Python paths, exact-build in-app Windows GPU setup,
+image-writer no-clobber safety and standalone graph autosave/recovery.
+The [release plan](release-0.16.0a5-plan.md) records source histories and explicit
+AI exclusions. Requirements below are not claims of completed CI/publication.
+
+```yaml
+tier: alpha
+previous_public_tag: v0.16.0a4
+changed:
+  core_ui: true
+  workflow_schema_provenance: true
+  source_reader_writer_compatibility: true
+  windows_installer_runtime: true
+  packaging_release: true
+  documentation: true
+  cpu_scientific: false
+  gpu_scientific_shared_execution: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+carried_forward:
+  scientific_kernels_catalogue_and_gpu_admission: v0.16.0a4
+  shared_scientific_execution_and_review_renderer: v0.16.0a4
+  runtime_build_pins_and_supported_python: v0.16.0a4
+  unchanged_macos_installer_engine: v0.16.0a4
+```
+
+- Workflow, batch-config and manifest schema numbers remain 6, but path
+  serialization/resolution and local recovery behavior change. Require old and
+  relocated document fixtures, Save As/save-reopen round trips, exported Python,
+  representative batch outputs and hashes/revisions/checksums. Capture bindings
+  from their original base before saving/exporting into another folder, and
+  recover unsaved copies without redirecting inputs or outputs to the recovery
+  directory. Recovery does not restore Batch configuration/UI or calculate.
+- Recovery requires a fresh owned synthetic crash proof: normal background
+  autosave, abrupt termination of that exact producer only, recovery into new
+  unsaved tabs, original workflow/data hashes unchanged, no restored outputs or
+  automatic calculation, and an explicitly requested post-recovery calculation.
+  File locking, bounded JSON/generation retention and active-owner exclusion
+  remain guards, not optional cleanup steps. Source data is not backed up.
+- Writer tests must prove existing/racing file and directory destinations are
+  preserved when overwrite is false, including staging failures and unsupported
+  exclusive-publication primitives. Real Windows collision paths have focused
+  evidence; supported Linux/macOS primitives require their platform CI paths.
+  Do not describe this as a multi-file batch/provenance transaction.
+- Graph routing, tunnel conversion, floating-window reuse and thumbnail work
+  require affected UI tests and representative native Windows smoke. Preserve
+  a4 workspace ownership repair while adding floating-dock taskbar repair.
+  Native Linux/macOS window-manager parity is not inferred.
+- Installer ownership/recovery and the in-app exact-build GPU setup invalidate
+  their changed Windows lifecycle boundaries. Require packaging tests and the
+  affected registration-conflict/interrupted-upgrade recovery scenario in an
+  isolated supported Windows account/VM, plus exact-build GPU setup/verify/open
+  behavior and dependency checks without touching active/shared environments.
+  Historical focused tests with mutex-blocked deferred cases deselected, old
+  private a3-labelled wheels and frozen `--version` smokes do not establish this
+  gate. A complete unrelated install/repair/removal matrix is not an alpha gate.
+- The full previous-tag diff leaves scientific node implementations, compute
+  policies/catalogue, shared pipeline execution, runtime/build pins, supported
+  Python routes, macOS installer recipes and publishing workflows unchanged.
+  Carry only these unchanged behavioral boundaries from the a4 exact-main /
+  installed acceptance records; this is not new real-CUDA numerical evidence.
+  Setup UI changes do not require rerunning the full scientific GPU catalogue.
+- Exact candidate CI and exact final-main CI must pass, including supported
+  clean wheel/source installations. New packaged modules require import/content
+  checks and an independent matching wheel/canonical-source pair; retain one
+  exact-main pair with source, sizes and SHA-256 hashes. AI modules, assistant
+  UI/actions and the MCP entry point must be absent from artifacts.
+- Only after gates pass, tag clean final main immutably, qualify selected
+  exact-tag unsigned Windows x86_64 and separate macOS arm64/x86_64 artifacts,
+  publish identical Python bytes to GitHub/PyPI, then deploy and verify the
+  numbered/default manual. macOS remains CPU-only and unnotarized. Keep native
+  lifecycle and window-manager claims within their actual recorded scope.
 
 ## 0.16.0a4 qualification declaration
 

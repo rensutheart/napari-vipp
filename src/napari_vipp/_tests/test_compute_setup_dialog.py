@@ -4,8 +4,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from qtpy.QtCore import QPoint, QRect
 from qtpy.QtGui import QColor, QPalette
-from qtpy.QtWidgets import QApplication, QFormLayout
+from qtpy.QtWidgets import QApplication, QDialog, QFormLayout, QPlainTextEdit
 
 from napari_vipp.core.compute import (
     ComputeEnvironment,
@@ -160,6 +161,7 @@ def test_dialog_initial_state_does_not_probe_or_offer_a_command(qtbot):
     )
     assert dialog.progress.isHidden()
     assert dialog.command_edit.isHidden()
+    assert dialog.setup_button.isHidden()
     assert dialog.copy_button.isHidden()
     assert dialog.advanced_widget.isHidden()
     assert not dialog.export_button.isEnabled()
@@ -172,6 +174,71 @@ def test_dialog_initial_state_does_not_probe_or_offer_a_command(qtbot):
     ]
     assert calls == []
     assert pool.workers == []
+
+
+def test_missing_gpu_offers_one_reusable_setup_window_without_running_command(qtbot):
+    children = []
+
+    class SetupStub(QDialog):
+        running = False
+        cancelled = False
+
+        def cancel_setup(self):
+            self.cancelled = True
+
+    def make_setup(*, parent):
+        child = SetupStub(parent)
+        children.append(child)
+        return child
+
+    pool = _CapturingThreadPool()
+    dialog = ComputeSetupDialog(
+        thread_pool=pool,
+        doctor=lambda **_kwargs: _report(
+            status=DoctorStatus.UNAVAILABLE,
+            reason_code="cupy_missing",
+            repair_command="a command that must never run",
+        ),
+        gpu_setup_factory=make_setup,
+    )
+    qtbot.addWidget(dialog)
+    dialog.verify()
+    assert children == []
+    pool.workers[0].run()
+    assert not dialog.setup_button.isHidden()
+    assert dialog.advanced_widget.isHidden()
+    assert children == []
+
+    dialog.setup_button.click()
+    dialog.setup_button.click()
+    assert len(children) == 1
+    children[0].running = True
+    assert dialog.gpu_setup_running
+    assert not dialog.checking  # An install does not prevent workflow tab changes.
+    dialog.request_gpu_setup_cancel()
+    assert children[0].cancelled
+    children[0].running = False
+    children[0].close()
+
+
+def test_gpu_setup_launch_error_is_visible_and_retryable(qtbot):
+    def fail(**_kwargs):
+        raise RuntimeError("Package source is unavailable")
+
+    pool = _CapturingThreadPool()
+    dialog = ComputeSetupDialog(
+        thread_pool=pool,
+        doctor=lambda **_kwargs: _report(status=DoctorStatus.MISCONFIGURED),
+        gpu_setup_factory=fail,
+    )
+    qtbot.addWidget(dialog)
+    dialog.verify()
+    pool.workers[0].run()
+    assert dialog.setup_button.text() == "Repair GPU setup…"
+    dialog.setup_button.click()
+    assert "Package source is unavailable" in dialog.save_status_label.text()
+    assert dialog.setup_button.isEnabled()
+    assert not dialog.gpu_setup_running
 
 
 def test_verified_devices_follow_report_order_and_emit_exact_user_selection(qtbot):
@@ -484,6 +551,11 @@ def test_worker_failure_becomes_a_terminal_retryable_result(qtbot):
     assert dialog.verify_button.isEnabled()
     assert dialog._last_report is not None
     assert dialog._last_report.reason_code == "diagnostic_worker_failed"
+    assert dialog.status_heading.text() == "GPU check could not finish"
+    assert "try again" in dialog.status_description.text().lower()
+    assert "Advanced details" in dialog.status_description.text()
+    assert dialog.action_widget.isHidden()
+    assert not dialog.setup_button.isVisibleTo(dialog)
 
 
 def test_setup_semantic_text_restyles_live_with_the_dialog_palette(qtbot):
@@ -499,3 +571,229 @@ def test_setup_semantic_text_restyles_live_with_the_dialog_palette(qtbot):
     qtbot.waitUntil(lambda: dialog.summary_label.styleSheet() != dark_style)
 
     assert theme_colors(light).muted_text.name() in dialog.summary_label.styleSheet()
+
+
+def test_advanced_disclosure_has_stable_label_and_no_setup_side_effects(qtbot):
+    calls = []
+    setup_calls = []
+
+    def doctor(**kwargs):
+        calls.append(kwargs)
+        return _report(
+            status=DoctorStatus.UNAVAILABLE,
+            reason_code="cupy_missing",
+            repair_command="vipp-compute-doctor --track cuda13",
+        )
+
+    def make_setup(**kwargs):
+        setup_calls.append(kwargs)
+        return QDialog()
+
+    pool = _CapturingThreadPool()
+    dialog = ComputeSetupDialog(
+        thread_pool=pool,
+        doctor=doctor,
+        gpu_setup_factory=make_setup,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.advanced_button.text() == "Advanced details"
+    assert dialog.advanced_button.isCheckable()
+    assert not dialog.advanced_button.isChecked()
+    assert dialog.advanced_button.accessibleName() == "Expand advanced details"
+    assert not dialog.advanced_button.icon().isNull()
+    collapsed_icon = dialog.advanced_button.icon().cacheKey()
+
+    dialog.advanced_button.click()
+
+    assert dialog.advanced_button.text() == "Advanced details"
+    assert dialog.advanced_widget.isVisibleTo(dialog)
+    assert dialog.advanced_button.accessibleName() == "Collapse advanced details"
+    assert dialog.advanced_button.icon().cacheKey() != collapsed_icon
+    assert calls == []
+    assert pool.workers == []
+    assert setup_calls == []
+
+    dialog.verify()
+    pool.workers[0].run()
+    dialog.advanced_button.click()
+
+    assert dialog.advanced_widget.isHidden()
+    assert dialog.advanced_button.text() == "Advanced details"
+    assert dialog.advanced_button.accessibleName() == "Expand advanced details"
+    assert len(calls) == len(pool.workers) == 1
+    assert setup_calls == []
+
+
+def test_missing_gpu_pairs_setup_action_with_next_step_and_hides_raw_details(qtbot):
+    dialog, pool = _dialog(
+        qtbot,
+        doctor=lambda **_kwargs: _report(
+            status=DoctorStatus.UNAVAILABLE,
+            summary="CuPy could not be loaded: ModuleNotFoundError: cupy",
+            reason_code="cupy_missing",
+            repair_command="vipp-compute-doctor --track cuda13",
+        ),
+    )
+    dialog.verify()
+    pool.workers[0].run()
+
+    assert dialog.action_widget.isVisibleTo(dialog)
+    assert dialog.action_widget.isAncestorOf(dialog.setup_button)
+    assert dialog.action_widget.isAncestorOf(dialog.next_step_label)
+    assert dialog.setup_button.isVisibleTo(dialog)
+    assert dialog.next_step_label.text()
+    assert dialog.status_heading.text()
+    assert not dialog.summary_label.isVisibleTo(dialog)
+    assert not dialog.command_widget.isVisibleTo(dialog)
+
+    dialog.advanced_button.click()
+
+    assert dialog.summary_label.isVisibleTo(dialog)
+    assert dialog.command_widget.isVisibleTo(dialog)
+    assert not dialog.gpu_setup_running
+
+
+@pytest.mark.parametrize(
+    ("command", "copy_label", "explanation_word"),
+    [
+        (
+            'python -m pip install "napari-vipp[gpu-cuda13]"; '
+            "vipp-compute-doctor --track cuda13",
+            "Copy setup command",
+            "setup",
+        ),
+        (
+            'py -3.12 -m venv "C:\\VIPP GPU"',
+            "Copy setup command",
+            "setup",
+        ),
+        (
+            '"C:\\VIPP GPU\\Scripts\\python.exe" -m '
+            "napari_vipp.core.compute_diagnostics --track cuda13",
+            "Copy verification command",
+            "verif",
+        ),
+        (
+            '"C:\\VIPP\\.venv-vipp-gpu-cu13\\Scripts\\python.exe" -m '
+            "napari_vipp.core.compute_diagnostics --track cuda13",
+            "Copy verification command",
+            "verif",
+        ),
+        (
+            "vipp-compute-doctor --track cuda13",
+            "Copy verification command",
+            "verif",
+        ),
+        ("vendor-gpu-tool --check", "Copy command", "cop"),
+    ],
+)
+def test_manual_command_has_explanation_monospace_and_copy_only_behavior(
+    qtbot, command, copy_label, explanation_word
+):
+    dialog, pool = _dialog(
+        qtbot,
+        doctor=lambda **_kwargs: _report(
+            status=DoctorStatus.UNAVAILABLE,
+            reason_code="cupy_missing",
+            repair_command=command,
+        ),
+    )
+    dialog.verify()
+    pool.workers[0].run()
+    dialog.advanced_button.click()
+
+    assert dialog.command_widget.isVisibleTo(dialog)
+    assert dialog.command_title.text() == "Manual command"
+    assert explanation_word in dialog.command_help.text().lower()
+    assert dialog.copy_button.text() == copy_label
+    assert isinstance(dialog.command_edit, QPlainTextEdit)
+    assert dialog.command_edit.isReadOnly()
+    # Assert the request independently of headless font availability. Native
+    # screenshot qualification also checks the resolved font is monospace.
+    assert dialog.command_edit.font().fixedPitch()
+    assert dialog.command_edit.lineWrapMode() == QPlainTextEdit.WidgetWidth
+    assert dialog.command_edit.text() == command
+
+    dialog.copy_button.click()
+
+    assert QApplication.clipboard().text() == command
+    assert len(pool.workers) == 1
+    assert not dialog.gpu_setup_running
+
+
+def test_long_gpu_result_scrolls_without_pushing_close_out_of_window(qtbot):
+    command = (
+        '"C:\\A long folder name\\VIPP GPU environment\\Scripts\\python.exe" '
+        "-m napari_vipp.core.compute_diagnostics --track cuda13"
+    )
+    dialog, pool = _dialog(
+        qtbot,
+        doctor=lambda **_kwargs: _report(
+            status=DoctorStatus.UNAVAILABLE,
+            summary="GPU verification failed. " * 100,
+            reason_code="cupy_missing",
+            repair_command=command,
+        ),
+        host_memory=HostMemorySnapshot(64 * GIB, 40 * GIB),
+    )
+    dialog.verify()
+    pool.workers[0].run()
+    dialog.advanced_button.click()
+    dialog.resize(680, 520)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog.scroll_area.verticalScrollBar().maximum() > 0)
+
+    assert dialog.height() <= 520
+    footer_rect = QRect(
+        dialog.footer_widget.mapTo(dialog, QPoint()), dialog.footer_widget.size()
+    )
+    close_rect = QRect(
+        dialog.close_buttons.mapTo(dialog, QPoint()), dialog.close_buttons.size()
+    )
+    assert dialog.rect().contains(footer_rect)
+    assert footer_rect.contains(close_rect)
+    assert dialog.scroll_area.geometry().bottom() < footer_rect.top()
+    assert not dialog.scroll_area.isAncestorOf(dialog.close_buttons)
+    assert dialog.scroll_area.horizontalScrollBar().maximum() == 0
+
+
+def test_long_support_failure_scrolls_without_crowding_fixed_footer(
+    qtbot, monkeypatch, tmp_path
+):
+    def fail_support_write(*_args, **_kwargs):
+        raise RuntimeError("The selected support location is unavailable. " * 100)
+
+    dialog, pool = _dialog(
+        qtbot,
+        doctor=lambda **_kwargs: _report(),
+        support_writer=fail_support_write,
+    )
+    dialog.verify()
+    pool.workers[0].run()
+    monkeypatch.setattr(
+        "napari_vipp.ui.compute_setup_dialog.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (
+            str(tmp_path / "support.json"),
+            "JSON files (*.json)",
+        ),
+    )
+    dialog.resize(680, 520)
+    dialog.show()
+    dialog.export_button.click()
+    qtbot.waitUntil(lambda: dialog.scroll_area.verticalScrollBar().maximum() > 0)
+
+    assert "could not be saved" in dialog.save_status_label.text()
+    assert dialog.scroll_area.isAncestorOf(dialog.save_status_label)
+    assert dialog.height() <= 520
+    footer_rect = QRect(
+        dialog.footer_widget.mapTo(dialog, QPoint()), dialog.footer_widget.size()
+    )
+    close_rect = QRect(
+        dialog.close_buttons.mapTo(dialog, QPoint()), dialog.close_buttons.size()
+    )
+    assert dialog.rect().contains(footer_rect)
+    assert footer_rect.contains(close_rect)
+    assert dialog.scroll_area.geometry().bottom() < footer_rect.top()
+    assert dialog.export_button.isEnabled()
+    assert len(pool.workers) == 1

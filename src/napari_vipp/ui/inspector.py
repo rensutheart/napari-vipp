@@ -172,20 +172,26 @@ def sync_layout_ancestor_geometry(widget: QWidget) -> None:
 
 
 class _MinimumHeightConstraint(QObject):
-    """Qt < 6.10 equivalent of a vertical-only minimum layout constraint."""
+    """Commit vertical-only layout changes and their ancestor geometry."""
 
-    def __init__(self, layout: QLayout) -> None:
+    def __init__(self, layout: QLayout, *, native: bool = False) -> None:
         parent = layout.parentWidget()
         super().__init__(parent)
         self._layout = layout
         self._syncing = False
-        layout.setSizeConstraint(QLayout.SetNoConstraint)
+        self._reserved_height = parent.minimumHeight()
+        self._geometry_sync_timer = QTimer(self)
+        self._geometry_sync_timer.setSingleShot(True)
+        self._geometry_sync_timer.timeout.connect(self._commit_ancestor_geometry)
+        if not native:
+            layout.setSizeConstraint(QLayout.SetNoConstraint)
         parent.installEventFilter(self)
         self._sync_height()
 
     def _sync_height(self) -> None:
         if self._syncing:
             return
+        height_changed = False
         self._syncing = True
         try:
             self._layout.activate()
@@ -194,8 +200,25 @@ class _MinimumHeightConstraint(QObject):
             if parent.minimumHeight() != height:
                 parent.setMinimumHeight(height)
                 parent.updateGeometry()
+            # Native Qt can change the minimum before delivering Resize. Track
+            # the previous reservation rather than only our own setter calls.
+            height_changed = self._reserved_height != height
+            self._reserved_height = height
         finally:
             self._syncing = False
+        if height_changed:
+            # A LayoutRequest can grow this widget after its enclosing layout
+            # already positioned the following row. Commit that pending height
+            # bottom-up, just as an explicit reserved-height update does.
+            sync_layout_ancestor_geometry(parent)
+            # A child's Resize can run inside its ancestor's setGeometry().
+            # That older Qt layout plan can overwrite the sibling positions we
+            # just committed. Coalesce one commit after that activation exits;
+            # unchanged reservations never schedule another event-loop turn.
+            self._geometry_sync_timer.start(0)
+
+    def _commit_ancestor_geometry(self) -> None:
+        sync_layout_ancestor_geometry(self.parent())
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if event.type() in {QEvent.LayoutRequest, QEvent.Resize, QEvent.Show}:
@@ -216,10 +239,12 @@ def constrain_layout_minimum_height(layout: QLayout) -> None:
     layout._vipp_minimum_height_state = (
         layout.sizeConstraint(), parent.minimumSize(),
     )
-    if _independent_layout_constraints_available(layout):
+    native = _independent_layout_constraints_available(layout)
+    if native:
         layout.setSizeConstraints(QLayout.SetNoConstraint, QLayout.SetMinimumSize)
-    else:
-        parent._vipp_minimum_height_constraint = _MinimumHeightConstraint(layout)
+    parent._vipp_minimum_height_constraint = _MinimumHeightConstraint(
+        layout, native=native,
+    )
 
 
 def release_layout_minimum_height(layout: QLayout) -> None:
@@ -231,6 +256,7 @@ def release_layout_minimum_height(layout: QLayout) -> None:
     parent = layout.parentWidget()
     guard = getattr(parent, "_vipp_minimum_height_constraint", None)
     if guard is not None:
+        guard._geometry_sync_timer.stop()
         parent.removeEventFilter(guard)
         guard.deleteLater()
         del parent._vipp_minimum_height_constraint

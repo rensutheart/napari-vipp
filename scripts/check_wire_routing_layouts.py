@@ -118,6 +118,32 @@ LAYOUTS = (
         (("source", "target", 0),),
         ("source", 0, -200),
     ),
+    Layout(
+        "07-shared-output-fanout",
+        "One output branches naturally to four destinations and may share a trunk",
+        (
+            ("source", "gaussian_blur", 0, 330),
+            ("upper", "gaussian_blur", 700, 0),
+            ("middle", "gaussian_blur", 700, 300),
+            ("lower", "gaussian_blur", 700, 600),
+            ("backward", "gaussian_blur", -350, 650),
+        ),
+        (("source", "upper", 0), ("source", "middle", 0),
+         ("source", "lower", 0), ("source", "backward", 0)),
+        ("source", 70, 50),
+    ),
+    Layout(
+        "08-shared-obstacle-detours",
+        "Branches of the same output may share a clear trunk around a card",
+        (
+            ("source", "split_channels", 0, 150),
+            ("obstacle", "gaussian_blur", 350, 150),
+            ("upper", "gaussian_blur", 750, 0),
+            ("lower", "gaussian_blur", 750, 300),
+        ),
+        (("source", "upper", 0), ("source", "lower", 0)),
+        ("obstacle", 0, -80),
+    ),
 )
 
 

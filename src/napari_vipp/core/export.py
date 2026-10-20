@@ -17,6 +17,7 @@ import keyword
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp.core.batch import scientific_workflow_hash
@@ -26,6 +27,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
 )
 from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
+from napari_vipp.core.workflow_paths import transform_workflow_paths
 
 _INDENT = " " * 4
 _RESERVED_FUNCTION_NAMES = {
@@ -44,6 +46,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_GENERATED_SOURCE_SHA256",
     "_RUN_IDS",
     "_WORKFLOW_JSON",
+    "_WORKFLOW_RELATIVE_PATHS",
     "_build_export_provenance",
     "_build_failure_provenance",
     "_build_publication_failure_provenance",
@@ -120,6 +123,7 @@ _RESERVED_FUNCTION_NAMES = {
     "sys",
     "tempfile",
     "threading",
+    "transform_workflow_paths",
     "warnings",
 }
 
@@ -129,12 +133,16 @@ def export_pipeline_to_python(
     *,
     function_name: str = "run_pipeline",
     compute_request: ComputeRequest | Mapping[str, object] | None = None,
+    script_path: str | Path | None = None,
 ) -> str:
     """Return Python source code that reproduces the pipeline headlessly.
 
     Workflow-v4 compute intent is embedded for lossless portability.  ``None``
     uses that authored request; callers and the generated CLI may supply an
     explicit run-only override without mutating the embedded workflow.
+    When ``script_path`` is supplied, local source paths are stored relative to
+    that script and resolved from its location when it runs. Moving the script
+    and its data together therefore does not depend on the working directory.
     """
     if any(node.operation_id == "table_source" for node in pipeline.nodes.values()):
         raise ValueError(
@@ -176,6 +184,7 @@ def export_pipeline_to_python(
         pipeline,
         compute_request=compute_request,
         function_name=function_name,
+        script_path=script_path,
     )
     helpers = _build_helpers()
     constants = _build_constants(source_ids, terminal_ids)
@@ -519,6 +528,10 @@ def _build_imports() -> str:
             "from napari_vipp.core.result_plots import is_plot_data",
             "from napari_vipp.core.plot_rendering import save_plot_output",
             "from napari_vipp.core.workflow import deserialize_workflow",
+            (
+                "from napari_vipp.core.workflow_paths import "
+                "transform_workflow_paths"
+            ),
         )
     )
 
@@ -528,6 +541,7 @@ def _build_workflow_constant(
     *,
     compute_request: ComputeRequest | Mapping[str, object] | None = None,
     function_name: str,
+    script_path: str | Path | None = None,
 ) -> str:
     """Embed one immutable, validated workflow snapshot.
 
@@ -536,6 +550,13 @@ def _build_workflow_constant(
     deserializes and validates a fresh document on every call.
     """
     document = serialize_workflow(pipeline, compute_request=compute_request)
+    if script_path is not None:
+        document = transform_workflow_paths(
+            document,
+            Path(script_path).expanduser().resolve().parent,
+            relative=True,
+            source_base_dir=Path.cwd(),
+        )
     deserialize_workflow(document)
     encoded = json.dumps(
         document,
@@ -557,6 +578,7 @@ def _build_workflow_constant(
         f"WORKFLOW_SHA256 = {workflow_sha256!r}\n"
         f"GENERATED_TEMPLATE_FINGERPRINT = {template_fingerprint!r}\n"
         f"_WORKFLOW_JSON = {encoded!r}\n"
+        f"_WORKFLOW_RELATIVE_PATHS = {script_path is not None!r}\n"
         "try:\n"
         "    _GENERATED_SOURCE_SHA256 = hashlib.sha256(\n"
         "        Path(__file__).read_bytes()\n"
@@ -988,6 +1010,15 @@ def _workflow_document():
             "The embedded workflow failed its scientific integrity check. "
             "Re-export the pipeline instead of editing _WORKFLOW_JSON."
         )
+    if _WORKFLOW_RELATIVE_PATHS:
+        try:
+            script_dir = Path(__file__).resolve().parent
+        except NameError as exc:
+            raise RuntimeError(
+                "This portable export must be run or imported from its saved "
+                "Python file so source paths can be resolved beside the script."
+            ) from exc
+        document = transform_workflow_paths(document, script_dir)
     return document
 
 

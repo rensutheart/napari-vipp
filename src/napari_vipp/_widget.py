@@ -397,8 +397,11 @@ from napari_vipp.core.workflow import (
     save_workflow,
     save_workflow_document,
     serialize_workflow,
+    workflow_document_from_snapshot,
+    workflow_snapshot_from_document,
     workflow_snapshot_from_pipeline,
 )
+from napari_vipp.core.workflow_paths import transform_workflow_paths
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_controls import (
     AxisIntervalSlider as AxisIntervalSlider,
@@ -724,6 +727,7 @@ from napari_vipp.ui.plots import (
 from napari_vipp.ui.plots import (
     _qcolor_from_channel_color as _qcolor_from_channel_color,
 )
+from napari_vipp.ui.plugin_dock import install_plugin_dock_restorer
 from napari_vipp.ui.presentation_settings import (
     THUMBNAIL_RESOLUTION_CHOICES,
     THUMBNAIL_STATISTICS_POLICY_CHOICES,
@@ -2120,6 +2124,7 @@ class VippWidget(QWidget):
         self._initial_pipeline_run_started = False
         self._initial_pipeline_run_completed = False
         self._discard_incomplete_startup_on_close = False
+        self._workflow_recovery = None
         self._lifecycle = WidgetLifecycle(self)
         self._live_source_adapter = LiveLayerSourceAdapter(
             self._on_live_source_invalidated
@@ -2207,6 +2212,7 @@ class VippWidget(QWidget):
             self._refresh_source_preview_for_current_dims
         )
         self._dock_chrome_configured = False
+        self._plugin_dock_restorer = None
         self._dock_window_behavior_configured = False
         self._floating_dock_configuration_warning = ""
         self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
@@ -2602,11 +2608,13 @@ class VippWidget(QWidget):
         self.save_workflow_action = QAction("Save workflow", self)
         self.save_workflow_action.setToolTip(
             "Save the active workflow (Ctrl+S). The Settings save policy "
-            "controls subsequent saves."
+            "controls subsequent saves. Local paths are stored relative to "
+            "the workflow when possible."
         )
         self.save_workflow_as_action = QAction("Save workflow as…", self)
         self.save_workflow_as_action.setToolTip(
-            "Choose a new name and location for the active workflow."
+            "Choose a new name and location for the active workflow. "
+            "Relative paths are recalculated to keep the same data and outputs."
         )
         self.undo_button = QToolButton()
         self.undo_button.setDefaultAction(self.undo_action)
@@ -2888,6 +2896,7 @@ class VippWidget(QWidget):
         self.palette = self.palette_panel.palette
         self.palette_search = self.palette_panel.search_edit
         self.graph_view = PipelineGraphView()
+        self.graph_view.set_background_wire_routing(True)
         self.graph_view.set_connection_insert_validator(
             self._connection_insert_preview_state
         )
@@ -3621,6 +3630,14 @@ class VippWidget(QWidget):
             compute_request_provider=self._current_compute_request,
         )
         self._select_node(self._selected_node_id)
+        from napari_vipp.ui.workflow_recovery import WorkflowRecoveryController
+
+        self._workflow_recovery = WorkflowRecoveryController(
+            self,
+            capture=self._capture_recovery_workspace,
+            restore=self._restore_recovery_workspace,
+            announce=self.status_label.setText,
+        )
         if not defer_initial_run:
             self.run_initial_pipeline_once()
 
@@ -3634,6 +3651,15 @@ class VippWidget(QWidget):
         :meth:`run_pipeline` directly.
         """
         if self._initial_pipeline_run_started or self._closing:
+            return False
+        if (
+            self._workflow_recovery is not None
+            and self._workflow_recovery.pending_recovery
+        ):
+            self.status_label.setText(
+                "Interrupted workflows are available. Recover a working copy, "
+                "or choose Calculate when ready; startup calculation was paused."
+            )
             return False
         self._initial_pipeline_run_started = True
         self.run_pipeline()
@@ -3893,6 +3919,17 @@ class VippWidget(QWidget):
         if self._closing:
             super().closeEvent(event)
             return
+        setup = self._compute_setup_dialog
+        if setup is not None and getattr(setup, "gpu_setup_running", False):
+            self._set_status(
+                "GPU setup is still running. Finish it, or cancel it in Compute "
+                "setup and wait for cancellation to finish before closing VIPP.",
+                severity=MessageSeverity.INFO,
+            )
+            setup.show()
+            setup.raise_()
+            event.ignore()
+            return
         if (
             self._collection_batch_running
             or self._pending_collection_batch_start is not None
@@ -3911,6 +3948,8 @@ class VippWidget(QWidget):
         if not self._confirm_close_dirty_workflow_tabs():
             event.ignore()
             return
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.close()
         self._closing = True
         self._table_sources.close()
         self._results_workspace.close()
@@ -4768,6 +4807,9 @@ class VippWidget(QWidget):
         super().showEvent(event)
         if self._closing:
             return
+        if self._workflow_recovery is not None:
+            QTimer.singleShot(0, self._workflow_recovery.offer_once)
+            self._workflow_recovery.changed()
         self._sync_toolbar_responsive_mode()
         self._schedule_node_library_responsive_sync()
         if not self._dock_chrome_configured:
@@ -4785,7 +4827,15 @@ class VippWidget(QWidget):
         if self._closing or not isalive(self):
             return
         dock = self._dock_widget()
-        if dock is None or self._dock_chrome_configured:
+        if dock is None:
+            return
+        if self._plugin_dock_restorer is None:
+            window = self._dock_main_window(dock)
+            if window is not None:
+                self._plugin_dock_restorer = install_plugin_dock_restorer(
+                    self, dock, window, self._lifecycle
+                )
+        if self._dock_chrome_configured:
             return
         try:
             if not self._dock_window_behavior_configured:
@@ -6143,6 +6193,16 @@ class VippWidget(QWidget):
         menu.addSeparator()
         self.save_workflow_as_action.setIcon(self.save_workflow_button.icon())
         menu.addAction(self.save_workflow_as_action)
+        if self._workflow_recovery is not None:
+            menu.addSeparator()
+            status = menu.addAction(self._workflow_recovery.summary)
+            status.setEnabled(False)
+            recovery = menu.addAction("Recover interrupted workflows…")
+            recovery.triggered.connect(
+                lambda _checked=False: self._workflow_recovery.show_recovery()
+            )
+            folder = menu.addAction("Choose recovery folder…")
+            folder.triggered.connect(self._workflow_recovery.choose_folder)
         menu.addSeparator()
         export_python_action = menu.addAction("Export Python…")
         export_python_action.triggered.connect(
@@ -7032,6 +7092,12 @@ class VippWidget(QWidget):
         self.graph_view.node_insert_requested.connect(self._insert_node_on_connection)
         self.graph_view.connection_insert_requested.connect(
             self._insert_node_from_connection_menu
+        )
+        self.graph_view.connection_tunnel_requested.connect(
+            self._replace_connection_with_tunnel
+        )
+        self.graph_view.tunnel_wires_requested.connect(
+            self._replace_output_tunnel_with_wires
         )
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_selection_changed.connect(
@@ -10350,6 +10416,142 @@ class VippWidget(QWidget):
             self.workflow_tab_bar.refresh_session(index, session)
         except (IndexError, KeyError, ValueError):
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
+
+    def _capture_recovery_workspace(self):
+        """Plain recipe snapshots only; no calculation, dialogs or clean marker."""
+        self._sync_current_workflow_tab_state()
+        tabs = []
+        active = self._current_workflow_session_id()
+        for session in self._workflow_tabs:
+            if not session.pipeline.nodes:
+                continue  # A truly blank canvas has no persisted recipe to lose.
+            editor = session.editor_snapshot
+            if session.pipeline is self.pipeline:
+                document = serialize_workflow(
+                    self.pipeline,
+                    self.graph_view.node_positions(),
+                    self._graph_note_documents(),
+                    self._workflow_metadata(),
+                    self._current_compute_request(),
+                )
+            else:
+                document = workflow_document_from_snapshot(editor.workflow)
+                inspector = (
+                    document.setdefault("metadata", {})
+                    .setdefault("vipp", {})
+                    .setdefault("inspector", {})
+                )
+                if editor.selected_node_id in session.pipeline.nodes:
+                    inspector["selected_node_id"] = editor.selected_node_id
+                if editor.inspect_display_profiles:
+                    inspector["display_profiles"] = list(
+                        editor.inspect_display_profiles
+                    )
+                if editor.source_channel_displays:
+                    inspector["source_channel_displays"] = dict(
+                        editor.source_channel_displays
+                    )
+            # Loaded portable documents already have absolute runtime bindings.
+            # Freeze any newly authored relative graph paths against their
+            # runtime working folder, never against the recovery JSON folder.
+            # This copies locations only: source revisions/checksums are intact.
+            document = transform_workflow_paths(document, Path.cwd())
+            tabs.append(
+                {
+                    "tab_id": session.session_id,
+                    "title": session.title,
+                    "path": str(session.path) if session.path is not None else None,
+                    "base_dir": str(
+                        session.path.parent if session.path is not None else Path.cwd()
+                    ),
+                    "workflow": document,
+                    "dirty": session.dirty,
+                }
+            )
+        return tabs, active if any(t["tab_id"] == active for t in tabs) else ""
+
+    def _restore_recovery_workspace(self, checkpoint):
+        """Open verified copies in fresh tabs, without ordinary auto-run loading."""
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            raise ValueError(f"Wait until {reason} before recovering workflows.")
+        prepared = []
+        target = None
+        for tab in checkpoint.tabs:
+            # Older working copies may retain relative table/output bindings.
+            # Resolve from their recorded original location, not this new tab
+            # or the recovery store. No image or dataset bytes are read here.
+            document = transform_workflow_paths(tab["workflow"], tab["base_dir"])
+            snapshot = workflow_snapshot_from_document(document)
+            pipeline = snapshot.graph.to_pipeline()
+            snapshot = workflow_snapshot_from_pipeline(
+                pipeline,
+                snapshot.positions_dict(),
+                [note.to_mapping() for note in snapshot.notes],
+                snapshot.metadata,
+                snapshot.compute_request,
+            )
+            inspector = snapshot.metadata.get("vipp", {}).get("inspector", {})
+            selected = inspector.get("selected_node_id", "input")
+            request = snapshot.compute_request
+            editor = WorkflowHistorySnapshot(
+                workflow=snapshot,
+                selected_node_id=selected,
+                compute_mode=request.mode.value,
+                compute_fallback_policy=request.fallback_policy.value,
+                compute_node_preferences=tuple(
+                    (key, value.kind.value, value.value)
+                    for key, value in request.node_preferences.items()
+                ),
+                inspect_display_profiles=tuple(inspector.get("display_profiles", ())),
+                source_channel_displays=tuple(
+                    inspector.get("source_channel_displays", {}).items()
+                ),
+            )
+            session = WorkflowTabSession(
+                pipeline, editor, title=f"Recovered — {tab['title']}"
+            )
+            session.mark_dirty()
+            session.runtime_cache.update(self._fresh_workflow_tab_runtime(session))
+            session.runtime_cache["_recovery_original_path"] = tab["path"]
+            prepared.append(session)
+            if tab["tab_id"] == checkpoint.active_id:
+                target = session
+        if not prepared:
+            raise ValueError("The recovery copy contains no workflow graph.")
+        self._sync_current_workflow_tab_state()
+        original = self._workflow_tabs.current
+        for session in prepared:
+            self._workflow_tabs.add(session, make_current=False)
+        target = target or prepared[0]
+        try:
+            if not self._activate_workflow_tab(
+                self._workflow_tabs.index_of(target.session_id), check_safety=True
+            ):
+                raise ValueError("The recovered tabs could not be activated.")
+        except Exception:
+            if original is not None:
+                self._workflow_tabs.activate(
+                    self._workflow_tabs.index_of(original.session_id)
+                )
+                self._install_workflow_tab_session(original)
+            for session in prepared:
+                self._workflow_tabs.close(
+                    self._workflow_tabs.index_of(session.session_id),
+                    discard_unsaved=True,
+                )
+                self._dispose_workflow_tab_session(session)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            raise
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self.status_label.setText(
+            f"Recovered {len(prepared)} workflow(s) from {checkpoint.created_utc}. "
+            "Original files are unchanged. Calculate when ready; "
+            "results were not saved."
+        )
+        return tuple(session.session_id for session in prepared)
 
     def _store_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
         """Move no state: retain references to this tab's live runtime objects."""
@@ -10594,14 +10796,16 @@ class VippWidget(QWidget):
             if isinstance(cache, dict):
                 cache.clear()
 
-    def _workflow_tab_switch_block_reason(self) -> str:
-        # Requests not yet handed to a worker are disposable presentation work.
-        # Dropping them is safer than making a newly opened widget appear
-        # permanently busy before Qt has had an opportunity to dispatch them.
-        if self._active_thumbnail_contrast_run_id is None:
-            self._queued_thumbnail_contrast_limit_requests.clear()
-            self._pending_thumbnail_contrast_limit_keys.clear()
-            self._thumbnail_contrast_busy_visible = False
+    def _workflow_tab_switch_block_reason(
+        self,
+        *,
+        discard_queued_thumbnails: bool = False,
+    ) -> str:
+        # Results Workspace also polls this check while updating progress.
+        # Only an explicit tab action may dispose of unstarted thumbnail work;
+        # do so before a modal open/close dialog can dispatch its queued timer.
+        if discard_queued_thumbnails and self._active_thumbnail_contrast_run_id is None:
+            self._discard_pending_thumbnail_contrast_limit_requests()
         if self._active_input_histogram_run_id is None:
             self._pending_input_histogram_request = None
         if self._active_label_volume_run_id is None:
@@ -10745,7 +10949,7 @@ class VippWidget(QWidget):
             return False
         if target_index == self._workflow_tabs.current_index:
             return True
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before switching workflow tabs."
@@ -10812,7 +11016,11 @@ class VippWidget(QWidget):
             return False
         if target_index == self._workflow_tabs.current_index:
             return True
-        reason = self._workflow_tab_switch_block_reason() if check_safety else ""
+        reason = (
+            self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
+            if check_safety
+            else ""
+        )
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before switching workflow tabs."
@@ -11769,6 +11977,68 @@ class VippWidget(QWidget):
         self._refresh_node_name_surfaces()
         return True
 
+    def _restore_tunnel_history_snapshot(
+        self,
+        current: WorkflowHistorySnapshot,
+        target: WorkflowHistorySnapshot,
+    ) -> bool:
+        """Restore wire/tunnel presentation while retaining computed results."""
+        current_workflow = current.workflow
+        target_workflow = target.workflow
+        current_graph = current_workflow.graph
+        target_graph = target_workflow.graph
+        if (
+            current_graph.nodes != target_graph.nodes
+            or current_workflow.positions != target_workflow.positions
+            or current_workflow.notes != target_workflow.notes
+            or current_workflow.metadata != target_workflow.metadata
+            or current_workflow.compute_request != target_workflow.compute_request
+        ):
+            return False
+        for attribute in (
+            "preview_disabled_node_ids",
+            "active_pinned_node_id",
+            "compute_mode",
+            "compute_fallback_policy",
+            "compute_node_preferences",
+            "compute_optimizer_locked_node_ids",
+            "source_channel_displays",
+        ):
+            if getattr(current, attribute) != getattr(target, attribute):
+                return False
+
+        def endpoints(graph):
+            return sorted(
+                (
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                )
+                for connection in graph.connections
+            )
+
+        if endpoints(current_graph) != endpoints(target_graph):
+            return False
+        if (
+            current_graph.connections == target_graph.connections
+            and current_graph.output_tunnels == target_graph.output_tunnels
+        ):
+            return False
+        with self._history.suspend_recording():
+            self.pipeline.connections = list(target_graph.connections)
+            self.pipeline.output_tunnels = {
+                tunnel.name.casefold(): tunnel for tunnel in target_graph.output_tunnels
+            }
+            self._sync_wire_tunnel_presentation(
+                {
+                    node_id
+                    for connection in target_graph.connections
+                    for node_id in (connection.source_id, connection.target_id)
+                }
+            )
+        return True
+
     def _restore_history_snapshot(
         self,
         snapshot: WorkflowHistorySnapshot,
@@ -11784,6 +12054,10 @@ class VippWidget(QWidget):
         ):
             return
         if current_snapshot is not None and self._restore_canvas_history_snapshot(
+            current_snapshot, snapshot
+        ):
+            return
+        if current_snapshot is not None and self._restore_tunnel_history_snapshot(
             current_snapshot, snapshot
         ):
             return
@@ -14416,7 +14690,7 @@ class VippWidget(QWidget):
 
     def _new_workflow(self) -> None:
         self._commit_crop_draft(schedule_run=False)
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before creating a workflow tab."
@@ -14460,7 +14734,7 @@ class VippWidget(QWidget):
             )
             self._reset_workflow_tab_bar_selection()
             return
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             self.status_label.setText(
                 f"Wait until {reason} before closing a workflow tab."
@@ -14547,6 +14821,8 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Closed workflow '{closed.title}'.")
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.checkpoint_now("workflow tab closed")
 
     def _dispose_workflow_tab_session(
         self,
@@ -14597,6 +14873,8 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(f"Renamed workflow tab to '{session.title}'.")
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
 
     def _reveal_workflow_tab(self, session_id: str) -> None:
         """Locate a tab's saved file without activating, saving or running it."""
@@ -14625,6 +14903,8 @@ class VippWidget(QWidget):
         self._workflow_tabs.move(source_index, target_index)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._results_workspace.refresh()
+        if self._workflow_recovery is not None:
+            self._workflow_recovery.changed()
 
     def _build_graph_from_pipeline(self) -> None:
         self.graph_view.build_graph(
@@ -14743,6 +15023,10 @@ class VippWidget(QWidget):
             positions,
             compute_request=compute_request,
         )
+        # This document comes from the live editor, not from a saved file.
+        # Bind relative image/table/output locations before the Batch config
+        # records its scientific hash and the save destination rebases paths.
+        workflow = transform_workflow_paths(workflow, Path.cwd())
         config = self._collection_batch_controller.build_config(
             **dialog.values(),
             workflow=workflow,
@@ -15004,7 +15288,7 @@ class VippWidget(QWidget):
         in-place load because that dialog owns the current representative
         session. User-facing Load and Open example calls create a new tab.
         """
-        reason = self._workflow_tab_switch_block_reason()
+        reason = self._workflow_tab_switch_block_reason(discard_queued_thumbnails=True)
         if reason:
             raise RuntimeError(f"Wait until {reason} before loading another workflow.")
         if preserve_batch_workspace:
@@ -15324,6 +15608,12 @@ class VippWidget(QWidget):
         workflow: dict,
     ) -> BatchConfig:
         """Validate one attached config against its containing workflow."""
+        persisted_error = workflow.get("batch_config_error")
+        if persisted_error:
+            # The core checked the saved hash before resolving graph paths.
+            # A stale attachment must not become valid merely because rebasing
+            # happens to produce a hash equal to its recorded value.
+            raise ValueError(str(persisted_error))
         base_dir = source.parent.resolve()
         config = BatchConfig.from_dict(raw_config, base_dir=base_dir)
         config = replace(
@@ -15646,11 +15936,12 @@ class VippWidget(QWidget):
         if not path.lower().endswith(".py"):
             path += ".py"
         try:
+            target = Path(path).expanduser()
             code = export_pipeline_to_python(
                 self.pipeline,
                 compute_request=self._current_compute_request(),
+                script_path=target,
             )
-            target = Path(path).expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(code, encoding="utf-8")
         except Exception as exc:
@@ -21315,6 +21606,13 @@ class VippWidget(QWidget):
                 self._show_tunnel_manager()
             return
 
+        subscribers = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.tunnel_name == tunnel.name
+        )
+        replace_action = menu.addAction("Replace with wires")
+        menu.addSeparator()
         reveal_action = menu.addAction(f"Reveal tunnel '{tunnel.name}'")
         focus_action = menu.addAction("Focus source")
         manage_action = menu.addAction("Manage tunnels...")
@@ -21322,7 +21620,14 @@ class VippWidget(QWidget):
         rename_action = menu.addAction(f"Rename tunnel '{tunnel.name}'...")
         remove_action = menu.addAction(f"Remove tunnel '{tunnel.name}'")
         action = menu.exec(global_pos)
-        if action == reveal_action:
+        if action == replace_action:
+            self._replace_output_tunnel_with_wires(
+                tunnel.name,
+                tunnel.source_id,
+                tunnel.source_port,
+                expected_connections=subscribers,
+            )
+        elif action == reveal_action:
             self._reveal_output_tunnel(tunnel.name)
         elif action == focus_action:
             self._focus_tunnel_source(tunnel.name)
@@ -21346,7 +21651,10 @@ class VippWidget(QWidget):
         reveal_action = None
         rename_action = None
         manage_action = None
+        replace_action = None
         if current is not None:
+            replace_action = menu.addAction("Replace with wire")
+            menu.addSeparator()
             reveal_action = menu.addAction(f"Reveal tunnel '{current.tunnel_name}'")
             rename_action = menu.addAction(f"Rename tunnel '{current.tunnel_name}'...")
             manage_action = menu.addAction("Manage tunnels...")
@@ -21370,7 +21678,11 @@ class VippWidget(QWidget):
             clear_action = menu.addAction(f"Clear tunnel '{current.tunnel_name}'")
 
         action = menu.exec(global_pos)
-        if reveal_action is not None and action == reveal_action:
+        if replace_action is not None and action == replace_action:
+            self._replace_input_tunnel_with_wire(
+                node_id, port_index, expected_connection=current
+            )
+        elif reveal_action is not None and action == reveal_action:
             self._reveal_output_tunnel(current.tunnel_name)
         elif rename_action is not None and action == rename_action:
             self._rename_output_tunnel(current.tunnel_name)
@@ -21384,6 +21696,255 @@ class VippWidget(QWidget):
             )
         elif clear_action is not None and action == clear_action:
             self._clear_input_tunnel(node_id, port_index)
+
+    def _sync_wire_tunnel_presentation(self, affected_node_ids: set[str]) -> None:
+        """Reconcile visible edges and badges without replacing runtime nodes."""
+        direct_connections = {
+            (
+                connection.source_id,
+                connection.target_id,
+                connection.target_port,
+                connection.source_port,
+            )
+            for connection in self.pipeline.connections
+            if not connection.tunnel_name
+        }
+        visible_connections = set()
+        for item in tuple(self.graph_view._connections):
+            key = (
+                item.source_id,
+                item.target_id,
+                item.target_port,
+                item.source_port,
+            )
+            if key not in direct_connections:
+                self.graph_view.delete_connection_item(item, notify=False)
+            else:
+                visible_connections.add(key)
+        for connection in self.pipeline.connections:
+            key = (
+                connection.source_id,
+                connection.target_id,
+                connection.target_port,
+                connection.source_port,
+            )
+            if not connection.tunnel_name and key not in visible_connections:
+                self.graph_view.add_connection(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                )
+        self._sync_port_tunnels()
+        self._refresh_split_channel_display_surfaces(affected_node_ids)
+        if self._selected_node_id in affected_node_ids:
+            self._refresh_selected_parameter_controls()
+        for node_id in affected_node_ids:
+            self._refresh_selected_connected_inputs(changed_node_id=node_id)
+
+    def _replace_input_tunnel_with_wire(
+        self,
+        node_id: str,
+        port_index: int,
+        *,
+        expected_connection: GraphConnection | None = None,
+    ) -> bool:
+        connection = self.pipeline.tunnel_connection_for_input(node_id, port_index)
+        if connection is None or (
+            expected_connection is not None and connection != expected_connection
+        ):
+            self.status_label.setText("That input tunnel is no longer available.")
+            return False
+        if not self._replace_tunnel_connections_with_wires((connection,)):
+            return False
+        self.status_label.setText(
+            f"Replaced input tunnel '{connection.tunnel_name}' with a wire."
+        )
+        return True
+
+    def _replace_output_tunnel_with_wires(
+        self,
+        name: str,
+        source_id: str | None = None,
+        source_port: int | None = None,
+        *,
+        expected_connections: tuple[GraphConnection, ...] | None = None,
+    ) -> bool:
+        tunnel = self.pipeline.output_tunnel(name)
+        if (
+            tunnel is None
+            or (source_id is not None and tunnel.source_id != source_id)
+            or (source_port is not None and tunnel.source_port != source_port)
+        ):
+            self.status_label.setText("That output tunnel is no longer available.")
+            return False
+        connections = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.tunnel_name == tunnel.name
+        )
+        if expected_connections is not None and connections != expected_connections:
+            self.status_label.setText(
+                "That output tunnel changed while its menu was open."
+            )
+            return False
+        if not self._replace_tunnel_connections_with_wires(
+            connections, remove_tunnel=tunnel
+        ):
+            return False
+        count = len(connections)
+        noun = "wire" if count == 1 else "wires"
+        self.status_label.setText(
+            f"Replaced output tunnel '{tunnel.name}' with {count} {noun}."
+        )
+        return True
+
+    def _replace_tunnel_connections_with_wires(
+        self,
+        connections: tuple[GraphConnection, ...],
+        *,
+        remove_tunnel: OutputTunnel | None = None,
+    ) -> bool:
+        """Validate a presentation conversion and record it as one atomic edit."""
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        original_connections = list(self.pipeline.connections)
+        original_tunnels = dict(self.pipeline.output_tunnels)
+        replacements = {}
+        try:
+            for connection in connections:
+                tunnel = self.pipeline.output_tunnel(connection.tunnel_name)
+                if (
+                    connection not in self.pipeline.connections
+                    or tunnel is None
+                    or (tunnel.source_id, tunnel.source_port)
+                    != (connection.source_id, connection.source_port)
+                ):
+                    raise ValueError("That tunnel connection is no longer available.")
+                result = self.pipeline.connect(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                )
+                if not result.success:
+                    raise ValueError(result.message)
+                replacements[connection] = replace(connection, tunnel_name="")
+                if result.connection != replacements[connection] or result.removed != (
+                    connection,
+                ):
+                    raise ValueError(
+                        "That tunnel connection changed during replacement."
+                    )
+            # Keep the same ordered computational edges; only their presentation
+            # changes. Pipeline.connect validates each exact port before this.
+            self.pipeline.connections = [
+                replacements.get(connection, connection)
+                for connection in original_connections
+            ]
+            if remove_tunnel is not None:
+                if self.pipeline.output_tunnel(remove_tunnel.name) != remove_tunnel:
+                    raise ValueError("That output tunnel is no longer available.")
+                if self.pipeline.remove_output_tunnel(remove_tunnel.name):
+                    raise ValueError("That output tunnel changed during replacement.")
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self.status_label.setText(str(exc))
+            return False
+
+        affected_node_ids = {
+            node_id
+            for connection in connections
+            for node_id in (connection.source_id, connection.target_id)
+        }
+        if remove_tunnel is not None:
+            affected_node_ids.add(remove_tunnel.source_id)
+        try:
+            self._sync_wire_tunnel_presentation(affected_node_ids)
+            if remove_tunnel is not None:
+                self.graph_view.clear_tunnel_highlight(sticky=True)
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self._sync_wire_tunnel_presentation(affected_node_ids)
+            self.status_label.setText(
+                f"Replace with wire failed and was rolled back: {exc}"
+            )
+            return False
+        self._push_undo_if_changed(before)
+        return True
+
+    def _replace_connection_with_tunnel(self, connection_key) -> bool:
+        """Replace one exact visible wire with a named tunnel as one edit."""
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+        except (TypeError, ValueError):
+            self.status_label.setText("That wire is no longer available.")
+            return False
+        original = GraphConnection(source_id, target_id, target_port, source_port)
+        if original not in self.pipeline.connections:
+            self.status_label.setText("That wire is no longer available.")
+            return False
+
+        tunnel = self.pipeline.output_tunnel_for_port(source_id, source_port)
+        name = (
+            tunnel.name
+            if tunnel is not None
+            else self._prompt_tunnel_name(
+                "Replace Wire with Tunnel",
+                self._suggest_tunnel_name(source_id, source_port),
+            )
+        )
+        if not name:
+            self.status_label.setText("Replace with tunnel canceled.")
+            return False
+        # A naming dialog runs an event loop. Do not replace a newer input
+        # connection if the original wire changed while it was open.
+        if original not in self.pipeline.connections:
+            self.status_label.setText("That wire is no longer available.")
+            return False
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        original_connections = list(self.pipeline.connections)
+        original_tunnels = dict(self.pipeline.output_tunnels)
+        try:
+            tunnel = self.pipeline.output_tunnel_for_port(source_id, source_port)
+            if tunnel is None:
+                tunnel = self.pipeline.add_output_tunnel(name, source_id, source_port)
+            result = self.pipeline.connect_to_tunnel(
+                tunnel.name, target_id, target_port
+            )
+            if not result.success:
+                raise ValueError(result.message)
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self.status_label.setText(str(exc))
+            return False
+
+        try:
+            self._apply_connection_result_to_graph(result)
+            if self._selected_node_id in {source_id, target_id}:
+                self._refresh_selected_parameter_controls()
+            self._refresh_selected_connected_inputs(changed_node_id=target_id)
+            self._highlight_output_tunnel(tunnel.name)
+        except Exception as exc:
+            self._restore_history_snapshot(
+                before,
+                current_snapshot=self._current_history_snapshot(),
+                schedule_run=False,
+            )
+            self.status_label.setText(
+                f"Replace with tunnel failed and was rolled back: {exc}"
+            )
+            return False
+        self._push_undo_if_changed(before)
+        self.status_label.setText(f"Replaced wire with tunnel '{tunnel.name}'.")
+        return True
 
     def _create_output_tunnel(self, node_id: str, port_index: int) -> None:
         default = self._suggest_tunnel_name(node_id, port_index)
@@ -31791,13 +32352,23 @@ class VippWidget(QWidget):
         self._pending_thumbnail_contrast_limit_keys.clear()
         self._active_thumbnail_contrast_cancel_event = None
         self._thumbnail_user_cancel_requested_run_id = None
+        self._clear_thumbnail_contrast_busy()
+
+    def _clear_thumbnail_contrast_busy(self) -> None:
+        """Release thumbnail feedback without hiding another progress owner."""
+        owned_busy = self._thumbnail_contrast_busy_visible
+        self._thumbnail_contrast_busy_visible = False
         if (
-            self._thumbnail_contrast_busy_visible
+            owned_busy
             and self._active_pipeline_run_id is None
+            and not self._pipeline_run_pending
             and self._active_source_load_id is None
+            and not self._source_load_pending
+            and not self._auto_contrast_busy_visible
+            and self._source_preview_status_run_id is None
+            and not self._workflow_tab_loading_visible
         ):
             self._set_pipeline_busy(False)
-        self._thumbnail_contrast_busy_visible = False
 
     def _thumbnail_contrast_limit_request(
         self,
@@ -32211,13 +32782,7 @@ class VippWidget(QWidget):
             for key in result.keys:
                 if key not in self._thumbnail_contrast_limit_cache:
                     self._thumbnail_contrast_identity_refs.pop(key, None)
-        if self._thumbnail_contrast_busy_visible:
-            self._thumbnail_contrast_busy_visible = False
-            if (
-                self._active_pipeline_run_id is None
-                and self._active_source_load_id is None
-            ):
-                self._set_pipeline_busy(False)
+        self._clear_thumbnail_contrast_busy()
         self._sync_compute_policy_editability()
 
         interaction_superseded = bool(
@@ -35158,6 +35723,11 @@ class VippWidget(QWidget):
         if self._closing:
             return
         self._commit_crop_draft(schedule_run=False)
+        if self._workflow_recovery is not None:
+            # Capture the recipe before synchronous scientific work can occupy
+            # the UI. Only detached JSON is sent to the background writer.
+            self._workflow_recovery.changed()
+            self._workflow_recovery.autosave()
         self._record_interaction_phase(
             self._interaction_current_generation(),
             InteractionLatencyPhase.DEBOUNCE_FINISHED,

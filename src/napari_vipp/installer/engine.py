@@ -105,6 +105,10 @@ class PreparationError(InstallerEngineError):
     """The selected plan could not safely reach package review."""
 
 
+class RegistrationConflictError(PreparationError):
+    """Windows installation registration cannot safely authorize this upgrade."""
+
+
 class ResolutionError(PreparationError):
     """pip did not produce one complete, hash-bound candidate set."""
 
@@ -974,6 +978,7 @@ class ManagedInstallerEngine:
         target: str | Path,
         *,
         shortcut_roots: Sequence[str | Path] = (),
+        expected_wheel_sha256: str = "",
     ) -> RollbackReport:
         """Recover one durable pre-commit journal, if present."""
 
@@ -985,10 +990,18 @@ class ManagedInstallerEngine:
         for root in allowed_shortcut_roots:
             _assert_direct_path(root, "shortcut recovery root")
         journal = _transaction_journal_path(state_root, managed_root)
+        if expected_wheel_sha256:
+            validate_build_target_identity(
+                managed_root, expected_wheel_sha256, state_root=state_root
+            )
         if not journal.is_file():
             return RollbackReport(False, True)
         recovery_id = str(uuid.uuid4())
         with _TargetLock(state_root, managed_root, recovery_id):
+            if expected_wheel_sha256:
+                validate_build_target_identity(
+                    managed_root, expected_wheel_sha256, state_root=state_root
+                )
             return _recover_transaction_journal(
                 journal,
                 managed_root=managed_root,
@@ -1011,6 +1024,7 @@ class ManagedInstallerEngine:
         filesystem = plan.discovery.filesystem
         recovery = self.recover_interrupted(
             filesystem.target,
+            expected_wheel_sha256=plan.request.managed_build_sha256,
             shortcut_roots=tuple(
                 root
                 for root in (
@@ -1067,6 +1081,7 @@ class ManagedInstallerEngine:
         if blocking:
             rendered = "; ".join(issue.message for issue in blocking)
             raise PreparationError(f"The installation plan is blocked: {rendered}")
+        self._inspect_registration(plan, inspection)
         if self._require_embedded_wheel and plan.release.wheel_path is None:
             raise PreparationError(
                 "This signed installer does not contain its exact VIPP release wheel."
@@ -1123,6 +1138,15 @@ class ManagedInstallerEngine:
             managed_root=inspection.target,
         )
         wheel_digest = _release_wheel_digest(plan.release, cancellation)
+        if wheel_digest:
+            from napari_vipp.installer.wheel_cache import cache_release_wheel
+
+            cache_root = self._known_folder_probe("local_app_data")
+            if cache_root is not None:
+                cache_release_wheel(
+                    replace(plan.release, wheel_sha256=wheel_digest),
+                    Path(cache_root),
+                )
         _emit(
             progress,
             ProgressStage.RESOLVING,
@@ -1291,19 +1315,7 @@ class ManagedInstallerEngine:
         retained_retired: tuple[OwnedEnvironment, ...] = ()
         old_record = prepared.target_inspection.record
         old_registry_plan = None
-        if old_record is not None and old_record.registry_key:
-            try:
-                from napari_vipp.installer.uninstall import (
-                    registry_plan_from_record,
-                )
-
-                old_inspection = inspect_ownership(prepared.target)
-                old_registry_plan = registry_plan_from_record(
-                    old_record,
-                    old_inspection.manifest_sha256,
-                )
-            except Exception:
-                old_registry_plan = None
+        journal_created = False
         try:
             with lock, log:
                 log.write("apply_started", resolution_id=prepared.resolution_id)
@@ -1321,6 +1333,12 @@ class ManagedInstallerEngine:
                     raise StalePreparedTransaction(
                         "The installation folder changed after it was reviewed."
                     )
+                if journal_path.exists() or _path_has_reparse_component(journal_path):
+                    raise RecoveryError(
+                        "An earlier setup recovery record appeared after review. "
+                        "It was preserved; check this installation again."
+                    )
+                old_registry_plan = self._inspect_registration(prepared.plan, current)
                 try:
                     actual_wheel = _release_wheel_digest(
                         prepared.plan.release,
@@ -1361,6 +1379,7 @@ class ManagedInstallerEngine:
                     setup_mutation=None,
                     previous_registry_plan=old_registry_plan,
                 )
+                journal_created = True
                 pip_temp = candidate / ".installer-tmp"
                 pip_temp.mkdir()
                 child_environment = _pip_environment(temp_directory=pip_temp)
@@ -1610,6 +1629,10 @@ class ManagedInstallerEngine:
                     created_at=created_at,
                     updated_at=now,
                 )
+                # Windows registration can change while packages are downloaded.
+                # Reject that conflict while the old ownership is still live and
+                # the candidate, shortcuts and cached setup can be rolled back.
+                self._inspect_registration(prepared.plan, current)
                 record_path = write_ownership_record(prepared.target, record)
                 committed = True
                 post_commit_warnings = _complete_committed_shortcuts(
@@ -1772,7 +1795,7 @@ class ManagedInstallerEngine:
                 committed=committed,
                 progress=progress,
             )
-            if rollback.completed:
+            if rollback.completed and journal_created:
                 try:
                     journal_path.unlink()
                 except OSError:
@@ -1813,7 +1836,7 @@ class ManagedInstallerEngine:
                 committed=committed,
                 progress=progress,
             )
-            if rollback.completed:
+            if rollback.completed and journal_created:
                 try:
                     journal_path.unlink()
                 except OSError:
@@ -1845,6 +1868,59 @@ class ManagedInstallerEngine:
                 pass
             _emit(progress, ProgressStage.FAILED, result.message, 6, 6)
             return result
+
+    def _inspect_registration(
+        self,
+        plan: InstallPlan,
+        inspection: ManagedTargetInspection,
+    ) -> _RegistryPlanLike | None:
+        """Verify the prior registry authority before resolution or commitment."""
+
+        record = inspection.record
+        if self._setup_source is None and not (record and record.registry_key):
+            return None
+        if self._registry_backend is None:
+            raise RegistrationConflictError(
+                "Windows installation registration could not be checked. "
+                "Registry integration is unavailable; the installation was preserved."
+            )
+        try:
+            from napari_vipp.installer.uninstall import (
+                registry_plan_from_record,
+                validate_registration_target,
+            )
+
+            previous_plan = None
+            if record is not None and record.registry_key:
+                ownership = inspect_ownership(inspection.target)
+                if (
+                    ownership.record != record
+                    or ownership.state is not OwnershipState.VALID
+                ):
+                    raise StalePreparedTransaction(
+                        "The ownership record changed after it was reviewed."
+                    )
+                previous_plan = registry_plan_from_record(
+                    record, ownership.manifest_sha256
+                )
+                if self._setup_source is None:
+                    raise RegistrationConflictError(
+                        "This setup cannot retain the installation's persistent "
+                        "uninstaller. Use the complete Windows release installer."
+                    )
+            validate_registration_target(
+                self._registry_backend,
+                track=plan.request.track,
+                previous_plan=previous_plan,
+            )
+            return previous_plan
+        except (StalePreparedTransaction, RegistrationConflictError):
+            raise
+        except Exception as exc:
+            raise RegistrationConflictError(
+                "Windows installation registration needs attention before setup "
+                f"can continue: {_redact_text(str(exc))}"
+            ) from exc
 
     def _stage_persistent_setup(
         self,
@@ -2160,6 +2236,13 @@ class ManagedInstallerEngine:
         if plan.request.mode is not InstallMode.MANAGED:
             raise PreparationError(
                 "This transactional slice supports managed environments only."
+            )
+        if plan.request.managed_build_sha256 and (
+            plan.release.wheel_path is None
+            or plan.release.wheel_sha256 != plan.request.managed_build_sha256
+        ):
+            raise PreparationError(
+                "The separate GPU environment must be bound to its exact VIPP wheel."
             )
 
     def _run(
@@ -3317,6 +3400,48 @@ def _transaction_journal_path(state_root: Path, target: Path) -> Path:
     return state_root / "transactions" / f"{digest}.json"
 
 
+def validate_build_target_identity(
+    target: Path, wheel_sha256: str, *, state_root: Path
+) -> None:
+    """Refuse shortened-name collisions before touching an existing build.
+
+    The name is only a locator. Neither a valid ownership record nor a pending
+    transaction for a different complete wheel hash authorizes its reuse.
+    """
+    if not _HEX_DIGEST.fullmatch(wheel_sha256):
+        raise PreparationError("The GPU build's complete wheel SHA-256 is invalid.")
+    _assert_direct_path(target, "GPU build location")
+    ownership = inspect_ownership(target)
+    if ownership.state is OwnershipState.VALID and ownership.record is not None:
+        packages = [
+            package for package in ownership.record.packages
+            if package.normalized_name == "napari-vipp"
+        ]
+        if len(packages) != 1 or packages[0].sha256 != wheel_sha256:
+            raise PreparationError(
+                "Another VIPP build occupies this GPU location. Its full wheel "
+                "identity differs; automatic setup left it unchanged."
+            )
+    journal = _transaction_journal_path(state_root, target)
+    if journal.exists() or journal.is_symlink():
+        try:
+            _assert_direct_path(journal, "GPU transaction journal")
+            document = json.loads(journal.read_text(encoding="utf-8"))
+            if (
+                not isinstance(document, dict)
+                or document.get("schema") != "napari-vipp-install-transaction"
+                or document.get("schema_version") != 1
+                or document.get("wheel_sha256") != wheel_sha256
+                or not _same_path(Path(document.get("managed_root", "")), target)
+            ):
+                raise ValueError("different or missing full wheel identity")
+        except (OSError, ValueError, TypeError, InstallerEngineError) as exc:
+            raise PreparationError(
+                "An unfinished GPU setup at this location has a different or "
+                "unverifiable full wheel identity. It was left unchanged."
+            ) from exc
+
+
 def _default_shortcut_roots(
     known_folder_probe: Callable[[str], Path | None],
 ) -> tuple[Path, ...]:
@@ -3434,6 +3559,7 @@ def _write_transaction_journal(
                 else None
             ),
             "managed_root": str(prepared.target),
+            "wheel_sha256": prepared.plan.request.managed_build_sha256 or None,
             "target_preexisting": prepared.target_inspection.target_preexisting,
             "run_directory": str(run_directory),
             "candidate": str(candidate),
@@ -4945,6 +5071,7 @@ __all__ = [
     "PackageDisposition",
     "PackageReviewChange",
     "PreparationError",
+    "RegistrationConflictError",
     "PreparedShortcut",
     "PreparedTransaction",
     "ProgressStage",

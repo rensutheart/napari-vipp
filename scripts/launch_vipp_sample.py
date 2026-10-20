@@ -5,6 +5,7 @@ from __future__ import annotations
 import napari
 
 from napari_vipp._widget import VippWidget
+from napari_vipp.ui.plugin_dock import VIPP_DOCK_NAME
 
 
 def main() -> None:
@@ -21,7 +22,7 @@ def main() -> None:
     viewer.window.add_dock_widget(
         widget,
         area="bottom",
-        name="VIPP Workflow",
+        name=VIPP_DOCK_NAME,
     )
     napari.run()
 

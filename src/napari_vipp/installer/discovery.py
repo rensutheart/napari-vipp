@@ -37,6 +37,7 @@ from napari_vipp.installer.models import (
     PythonSnapshot,
     ShortcutScope,
     installation_request_fingerprint,
+    managed_environment_name,
 )
 from napari_vipp.installer.ownership import OwnershipState, inspect_ownership
 
@@ -935,7 +936,7 @@ def _installation_target(
         root = Path(os.path.expandvars(local_app_data))
     else:
         root = Path.home() / "AppData" / "Local"
-    suffix = "cuda13" if request.track is ComputeTrack.CUDA13 else "cpu"
+    suffix = managed_environment_name(request.track, request.managed_build_sha256)
     return _absolute_path(root / "VIPP" / "environments" / suffix)
 
 
@@ -953,7 +954,7 @@ def _canonical_managed_root(
     if local_app_data is None:
         return None, "Windows did not return FOLDERID_LocalAppData."
     root = _absolute_path(Path(local_app_data))
-    suffix = "cuda13" if request.track is ComputeTrack.CUDA13 else "cpu"
+    suffix = managed_environment_name(request.track, request.managed_build_sha256)
     return root / "VIPP" / "environments" / suffix, ""
 
 

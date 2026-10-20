@@ -39,6 +39,7 @@ from napari_vipp.core.snapshots import (
 from napari_vipp.core.source_item_persistence import (
     canonicalize_source_item_params,
 )
+from napari_vipp.core.workflow_paths import transform_workflow_paths
 
 WORKFLOW_VERSION = 6
 LEGACY_COMPUTE_WORKFLOW_VERSION = 3
@@ -47,6 +48,10 @@ LEGACY_SOURCE_PREVIEW_WORKFLOW_VERSION = 5
 WORKFLOW_TYPE = "napari-vipp-workflow"
 
 Position = tuple[float, float]
+
+
+class _AttachedBatchHashMismatchError(ValueError):
+    """The graph can open, but its attached batch configuration cannot run."""
 
 
 def serialize_workflow(
@@ -371,19 +376,48 @@ def save_workflow(
         metadata,
         compute_request,
     )
+    # A live graph interprets newly authored relative bindings against its
+    # working folder. Freeze that meaning before the destination rebases them.
+    document = transform_workflow_paths(document, Path.cwd())
     return save_workflow_document(path, document)
 
 
-def save_workflow_document(path: str | Path, document: object) -> Path:
-    """Validate, migrate, and atomically write one canonical workflow document."""
+def save_workflow_document(
+    path: str | Path,
+    document: object,
+    *,
+    source_path: str | Path | None = None,
+) -> Path:
+    """Atomically save local bindings relative to the destination workflow.
+
+    Live graphs loaded through :func:`load_workflow` have absolute bindings.
+    For a raw document with relative bindings, pass its original workflow
+    ``source_path`` when saving elsewhere. No source data are copied.
+    """
     raw_path = str(path).strip()
     if not raw_path:
         raise ValueError("Workflow save path cannot be blank.")
     target = Path(raw_path).expanduser()
     canonical = canonical_workflow_document(document)
+    base_dir = target.absolute().parent
+    source_base_dir = (
+        Path(source_path).expanduser().absolute().parent
+        if source_path is not None
+        else base_dir
+    )
+    portable = transform_workflow_paths(
+        canonical, base_dir, relative=True, source_base_dir=source_base_dir
+    )
+    _transform_attached_batch_paths(
+        canonical,
+        portable,
+        target.absolute(),
+        relative=True,
+        source_base_dir=source_base_dir,
+    )
     return atomic_write_json(
         target,
-        canonical,
+        portable,
         ensure_ascii=True,
         trailing_newline=False,
     )
@@ -412,22 +446,71 @@ def canonical_workflow_document(data: Any) -> dict[str, Any]:
 
 
 def load_workflow(path: str | Path) -> dict[str, Any]:
-    """Read a JSON workflow file and return deserialized graph parts."""
+    """Read graph parts with local bindings based on the workflow's directory."""
     raw_path = str(path).strip()
     if not raw_path:
         raise ValueError("Workflow path cannot be blank.")
-    source = Path(raw_path).expanduser()
+    source = Path(raw_path).expanduser().absolute()
     data = json.loads(source.read_text(encoding="utf-8"))
-    restored = deserialize_workflow(data)
-    for node in restored["nodes"]:
-        if node.operation_id == "table_source":
-            dataset_path = node.params["dataset_path"]
-            if dataset_path:
-                resolved = Path(dataset_path).expanduser()
-                if not resolved.is_absolute():
-                    resolved = source.absolute().parent / resolved
-                node.params["dataset_path"] = str(resolved.absolute())
+    # Validate before transforming so malformed JSON gets the established
+    # schema errors rather than an incidental path traversal error.
+    deserialize_workflow(data)
+    resolved = transform_workflow_paths(data, source.parent)
+    batch_error = ""
+    try:
+        _transform_attached_batch_paths(data, resolved, source, relative=False)
+    except _AttachedBatchHashMismatchError as exc:
+        # Let the editor open the graph and explain that the batch attachment
+        # was rejected. The explicit error prevents an invalid stored hash
+        # from accidentally matching the graph only after path resolution.
+        batch_error = str(exc)
+    restored = deserialize_workflow(resolved)
+    if batch_error:
+        restored["batch_config_error"] = batch_error
     return restored
+
+
+def _transform_attached_batch_paths(
+    original: dict[str, Any],
+    transformed: dict[str, Any],
+    workflow_path: Path,
+    *,
+    relative: bool,
+    source_base_dir: Path | None = None,
+) -> None:
+    """Rebase a valid attachment only after verifying its original graph hash."""
+    if "batch_config" not in original:
+        return
+    # Batch imports workflow for its graph contract; delay this import until
+    # the persistence boundary has been called, after both modules are loaded.
+    from napari_vipp.core.batch import (
+        BatchConfig,
+        scientific_workflow_hash,
+        transform_batch_config_paths,
+    )
+
+    try:
+        config = BatchConfig.from_dict(original["batch_config"])
+    except (TypeError, ValueError):
+        # Historically workflows preserve opaque attached JSON, allowing the
+        # batch UI to explain unsupported batch schemas independently.
+        return
+    if config.workflow_sha256 != scientific_workflow_hash(original):
+        raise _AttachedBatchHashMismatchError(
+            "Attached batch configuration workflow hash does not match the "
+            "workflow. Refresh the batch configuration before saving or running."
+        )
+    attached = transform_batch_config_paths(
+        original["batch_config"],
+        base_dir=workflow_path.parent,
+        relative=relative,
+        source_base_dir=source_base_dir,
+    )
+    attached["workflow"]["file"] = (
+        workflow_path.name if relative else str(workflow_path)
+    )
+    attached["workflow"]["sha256"] = scientific_workflow_hash(transformed)
+    transformed["batch_config"] = attached
 
 
 def _node_to_dict(node: GraphNode) -> dict[str, Any]:

@@ -25,6 +25,25 @@ class ComputeTrack(StrEnum):
     CUDA13 = "cuda13"
 
 
+def managed_environment_name(track: ComputeTrack, build_sha256: str = "") -> str:
+    """Use a short locator; the complete digest remains the artifact identity.
+
+    Native NVIDIA DLL loading fails at long Windows paths even when Python's
+    long-path support is enabled. A 96-bit directory key keeps these paths
+    usable; ownership and recovery must still validate all 256 digest bits.
+    """
+    track = ComputeTrack(track)
+    if not build_sha256:
+        return track.value
+    if (
+        track is not ComputeTrack.CUDA13
+        or len(build_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in build_sha256)
+    ):
+        raise ValueError("A managed GPU build requires its complete wheel SHA-256.")
+    return f"cuda13-{build_sha256[:24]}"
+
+
 class ShortcutScope(StrEnum):
     """Where the later executor should create launcher shortcuts."""
 
@@ -60,12 +79,25 @@ class InstallRequest:
     install_root: Path | None = None
     shortcut_scope: ShortcutScope = ShortcutScope.DESKTOP
     shortcut_directory: Path | None = None
+    managed_build_sha256: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", InstallMode(self.mode))
         object.__setattr__(self, "track", ComputeTrack(self.track))
         object.__setattr__(self, "shortcut_scope", ShortcutScope(self.shortcut_scope))
         object.__setattr__(self, "python", Path(self.python))
+        digest = str(self.managed_build_sha256).strip().lower()
+        if digest and (
+            self.mode is not InstallMode.MANAGED
+            or self.track is not ComputeTrack.CUDA13
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError(
+                "managed_build_sha256 requires a managed CUDA 13 request and "
+                "a 64-digit hexadecimal wheel SHA-256."
+            )
+        object.__setattr__(self, "managed_build_sha256", digest)
         if self.install_root is not None:
             object.__setattr__(self, "install_root", Path(self.install_root))
         if self.shortcut_directory is not None:
@@ -76,7 +108,7 @@ class InstallRequest:
             )
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "mode": self.mode.value,
             "track": self.track.value,
             "python": str(self.python),
@@ -90,6 +122,9 @@ class InstallRequest:
                 else None
             ),
         }
+        if self.managed_build_sha256:
+            result["managed_build_sha256"] = self.managed_build_sha256
+        return result
 
 
 def installation_request_fingerprint(request: InstallRequest) -> str:

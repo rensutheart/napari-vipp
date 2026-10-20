@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+## 0.16.0a5 - 2026-10-20
+
+- Keep registration inspector sections from overlapping when help text grows
+  in a narrow panel.
+- Keep bounded local autosave working copies of named and unnamed workflow
+  tabs. Offer interrupted sessions as new unsaved recovered tabs without
+  overwriting the originals or calculating automatically. Preserve resolved
+  input/output paths through relocation and recovery. Source pixels, calculated
+  outputs, Undo history, in-flight work and Batch workspace/configuration are
+  not recovered; save Batch configuration separately. This graph-only feature
+  does not include assistant conversations, sessions, agent or MCP features.
+- Group GPU verification status with a prominent setup or repair action. Keep
+  the session GPU choice visible, move package-track and labelled manual-command
+  details into a chevron-based **Advanced details** section, and keep footer
+  actions visible while constrained content scrolls. Copying a command or
+  expanding details does not run setup. Give the GPU setup window matching
+  status and installation cards, a prominent footer action and initially
+  collapsed **Technical details** with a read-only monospaced log. Explain the
+  installation location and focus an already verified build on **Open VIPP
+  with GPU**, without irrelevant download estimates.
+- Add **Set up GPU…** / **Repair GPU setup…** to **Compute setup and memory**
+  for supported Windows NVIDIA systems. Review, install and verify a separate
+  managed CUDA environment using the exact current VIPP wheel, with progress,
+  cancellation and retry. **Open VIPP with GPU** starts the verified environment
+  in a new window while the current CPU environment and open workflows remain
+  available. Missing or changed build artifacts produce an actionable error
+  instead of silently substituting a different build.
+- Save local workflow inputs, table datasets, Save Image destinations and batch
+  bindings with paths relative to their workflow/configuration file where
+  possible. Resolve them independently of the launch directory and rebase them
+  during Save As while preserving source revisions and dataset checksums.
+  Cross-drive paths remain absolute; data and environments are not embedded.
+- Keep queued thumbnail work intact when Results Workspace checks whether a
+  workflow can be switched. When a tab action discards obsolete preview work,
+  clear its progress while preserving other tasks' progress. This
+  fixes a stuck "Calculating thumbnail contrast..." indicator and missing
+  previews without changing scientific calculations or cached results.
+
+- Check Windows Apps & Features ownership before package review, before starting
+  a managed install, and immediately before committing an upgrade. Preserve stale,
+  modified or foreign entries instead of creating another partially registered
+  upgrade. Unsafe interrupted-setup recovery now offers **Get setup help** with
+  diagnostic guidance instead of a generic failure and ineffective retry loop.
+  Automatic recovery still requires the exact saved old/new registration evidence;
+  matching only a folder or installation ID does not authorize overwriting it.
+
+- Straighten clear wire approaches independently at each end. Keep a necessary
+  detour around a card at one end without adding the same wiggle at the other;
+  validate the simpler approach against cards and distinct output lanes.
+
+- Avoid unnecessary wire staircases when a clear straight departure and a turn
+  near the destination have the same travel distance. Keep card clearance and
+  separate lanes for different outputs when selecting the simpler route.
+
+- Prefer nearby clear wire lanes before distant perimeter routes. Forward
+  connections with excessive vertical detours can use a bounded local search
+  for a shorter route through gaps, while retaining card clearance and distinct
+  output lanes.
+
+- Calculate graph wire layouts in cancellable background work, with quick
+  temporary routes and combined updates so complex connections do not freeze
+  editing. Restore a single input tunnel with **Replace with wire**, or all
+  subscribers of an output tunnel with **Replace with wires**. These edits and
+  their undo/redo retain connection ports and calculated results.
+
+- Give graph wires from different output ports separate routing lanes so
+  connections remain traceable when they converge and separate. Branches from
+  the same output can share a natural trunk. Right-click near
+  a wire at any zoom and choose **Replace with tunnel...** to convert that
+  connection in one undoable edit, reusing its output tunnel when available.
+- Protect image exports from overwriting a file or OME-Zarr store created by
+  another process while an export is being written. Failed no-overwrite saves
+  leave existing outputs intact and do not publish incomplete files.
+
 ## 0.16.0a4 - 2026-10-09
 
 - Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr
@@ -89,9 +163,12 @@
   redocking. Handle plain Qt title-bar notifications without assuming mouse
   event attributes exist.
 - Allow detached VIPP and napari to minimize and restore independently on
-  Windows, with separate taskbar windows. Keep the same workflow session and
-  napari viewer; redocking and napari's ownership of the plugin lifetime remain
-  intact. Native Linux/macOS window-manager behaviour is not yet qualified.
+  Windows, with explicit taskbar registration for the detached editor. Reopen
+  a minimized VIPP from napari's Plugins menu to restore the same workflow and
+  previous maximized state. Register standalone and development launchers under
+  the plugin's dock name so reopening cannot create a second editor. Redocking
+  and napari's ownership of the plugin lifetime remain intact. Native
+  Linux/macOS window-manager behaviour is not yet qualified.
 
 ## 0.16.0a3 - 2026-10-05
 

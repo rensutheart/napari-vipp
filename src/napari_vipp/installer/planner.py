@@ -69,6 +69,23 @@ def create_install_plan(
     issues: list[PlanIssue] = []
     _validate_request_binding(request, discovery, issues)
     _validate_request(request, issues)
+    if request.managed_build_sha256 and (
+        selected_release.wheel_path is None
+        or request.managed_build_sha256 != selected_release.wheel_sha256
+    ):
+        issues.append(
+            PlanIssue(
+                code="managed_build_identity_mismatch",
+                severity=IssueSeverity.ERROR,
+                subject="release",
+                message=(
+                    "The separate GPU location does not match its exact VIPP wheel."
+                ),
+                remediation=(
+                    "Check the installed wheel identity and prepare setup again."
+                ),
+            )
+        )
     _validate_host(discovery, issues)
     _validate_python(request, discovery, issues)
     _validate_target(request, discovery, selected_release, issues)

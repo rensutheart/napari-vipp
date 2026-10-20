@@ -18,6 +18,7 @@ from napari_vipp.core.batch import (
     BatchRunResult,
     atomic_write_json,
     atomic_write_text,
+    batch_config_document_for_path,
     bind_batch_plan_source_items,
     preflight_batch,
     require_reproduction_ready,
@@ -256,12 +257,24 @@ def prepare_collection_batch_run(
         raise OperationCancelled("Batch preparation cancelled before saving artifacts.")
     if progress_callback is not None:
         progress_callback(BatchPreflightProgress("artifacts"))
+    # Persistence rebases local bindings. Execute and record that exact saved
+    # representation, rather than hashing the editor's absolute-path version.
+    # Construct it from the known document, not a mutable file reread that
+    # could introduce unreviewed settings after preflight.
+    saved_config_document = batch_config_document_for_path(
+        config, request.config_path
+    )
     request.workflow_path.parent.mkdir(parents=True, exist_ok=True)
     artifacts = [atomic_write_json(request.workflow_path, request.workflow)]
     if config.save_python_script:
         atomic_write_text(request.script_path, export_batch_runner_to_python())
         artifacts.append(request.script_path)
     save_batch_config(request.config_path, config)
+    config = BatchConfig.from_dict(
+        saved_config_document,
+        base_dir=request.config_path.expanduser().resolve().parent,
+    )
+    plan = replace(plan, config=config)
     return PreparedCollectionBatchRun(
         job_id=request.job_id,
         origin_session_id=request.origin_session_id,

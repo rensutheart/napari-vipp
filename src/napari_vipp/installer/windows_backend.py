@@ -37,6 +37,7 @@ from napari_vipp.installer.models import (
     IssueSeverity,
     ReleaseSpec,
     ShortcutScope,
+    managed_environment_name,
 )
 from napari_vipp.installer.ownership import (
     MANAGED_ENVIRONMENTS_DIRECTORY,
@@ -53,6 +54,20 @@ from napari_vipp.installer.python_discovery import (
     choose_python,
     discover_python_candidates,
 )
+
+_SETUP_HELP_URL = (
+    "https://rensutheart.github.io/vipp-mkdocs/stable/"
+    "getting-started/installation/#troubleshooting"
+)
+
+
+class _SetupCheckBlocked(RuntimeError):
+    """Retain the exact root when prior-transaction recovery needs attention."""
+
+    def __init__(self, root: Path, details: str):
+        self.root = root
+        super().__init__(details)
+
 
 _ERROR_FRIENDLY_TEXT = {
     "host_platform_unsupported": (
@@ -120,6 +135,8 @@ class WindowsInstallerBackend:
             discover_python_candidates
         ),
         registry_backend: object | None = None,
+        shortcut_scope: ShortcutScope | None = None,
+        managed_build_sha256: str = "",
     ) -> None:
         self._preferred_python = (
             Path(preferred_python) if preferred_python is not None else None
@@ -130,9 +147,66 @@ class WindowsInstallerBackend:
         self._environ = dict(os.environ if environ is None else environ)
         self._candidate_finder = candidate_finder
         self._registry_backend = registry_backend
+        self._shortcut_scope = (
+            ShortcutScope(shortcut_scope) if shortcut_scope is not None else None
+        )
+        self._managed_build_sha256 = str(managed_build_sha256).strip().lower()
+        if self._managed_build_sha256 and (
+            release is None
+            or release.wheel_path is None
+            or self._managed_build_sha256 != release.wheel_sha256
+        ):
+            raise ValueError("The managed build requires its exact wheel SHA-256.")
         self._local_app_data = _known_local_app_data(self._services)
 
     def inspect(
+        self,
+        selection: InstallerSelection,
+        *,
+        progress: Callable[[ProgressUpdate], None],
+        cancellation: threading.Event,
+        repair: bool = False,
+    ) -> PreparedInstall:
+        try:
+            return self._inspect(
+                selection,
+                progress=progress,
+                cancellation=cancellation,
+                repair=repair,
+            )
+        except _SetupCheckBlocked as exc:
+            ownership = inspect_ownership(exc.root)
+            record = (
+                ownership.record if ownership.state is OwnershipState.VALID else None
+            )
+            release = self._release or bundled_release_spec()
+            return PreparedInstall(
+                kind=TargetKind.BLOCKED,
+                target=exc.root,
+                release_version=release.version,
+                installed_version=record.version if record is not None else None,
+                track=(
+                    record.track
+                    if record is not None
+                    else _explicit_track(selection.track)
+                ),
+                plain_summary=(
+                    "Setup stopped before starting this new installation. An "
+                    "earlier setup record or Windows installation registration "
+                    "needs attention."
+                ),
+                technical_details=str(exc),
+                reason=(
+                    "Try again cannot resolve a conflicting installation record. "
+                    "Save the Advanced details and any available setup log, then "
+                    "contact support. Do not delete VIPP folders, edit the Windows "
+                    "entry or run an older uninstaller to bypass this check."
+                ),
+                blocked_action=BlockedAction.OPEN_SETUP_HELP,
+                help_url=_SETUP_HELP_URL,
+            )
+
+    def _inspect(
         self,
         selection: InstallerSelection,
         *,
@@ -182,7 +256,7 @@ class WindowsInstallerBackend:
                 explicit_track is None
                 or not _same_path(
                     selection.install_root,
-                    _default_install_root(self._local_app_data, explicit_track),
+                    self._managed_install_root(explicit_track),
                 )
             )
             and selected_owned is None
@@ -202,14 +276,14 @@ class WindowsInstallerBackend:
                 explicit_track is None
                 or not _same_path(
                     selection.install_root,
-                    _default_install_root(self._local_app_data, explicit_track),
+                    self._managed_install_root(explicit_track),
                 )
             )
         ):
             return self._custom_managed_root_block(selection, release)
         if owned is not None and not _same_path(
             owned.record.managed_root,
-            _default_install_root(self._local_app_data, owned.record.track),
+            self._managed_install_root(owned.record.track),
         ):
             return self._owned_root_migration_block(
                 owned,
@@ -248,7 +322,7 @@ class WindowsInstallerBackend:
                 owned.record.managed_root
                 if owned is not None
                 else selection.install_root
-                or _default_install_root(self._local_app_data, track)
+                or self._managed_install_root(track)
             )
             python_requirement = (
                 "64-bit Python 3.12"
@@ -346,12 +420,22 @@ class WindowsInstallerBackend:
             )
         )
         token = _engine_cancellation_token(cancellation)
-        transaction = self._selected_engine().prepare(
-            plan,
-            progress=lambda event: progress(_progress_update(event)),
-            cancellation=token,
-            repair=repair,
+        from napari_vipp.installer.engine import (
+            RecoveryError,
+            RegistrationConflictError,
         )
+
+        try:
+            transaction = self._selected_engine().prepare(
+                plan,
+                progress=lambda event: progress(_progress_update(event)),
+                cancellation=token,
+                repair=repair,
+            )
+        except (RecoveryError, RegistrationConflictError) as exc:
+            raise _SetupCheckBlocked(
+                plan.discovery.filesystem.target, str(exc)
+            ) from exc
         self._check_cancelled(cancellation)
         prepared = _prepared_for_transaction(
             transaction,
@@ -512,6 +596,14 @@ class WindowsInstallerBackend:
             creationflags=creationflags,
         )
 
+    def _managed_install_root(self, track: ComputeTrack) -> Path:
+        root = _default_install_root(self._local_app_data, track)
+        if self._managed_build_sha256:
+            return root.with_name(
+                managed_environment_name(track, self._managed_build_sha256)
+            )
+        return root
+
     def _selected_engine(self):
         if self._engine is None:
             from napari_vipp.installer.engine import ManagedInstallerEngine
@@ -561,7 +653,7 @@ class WindowsInstallerBackend:
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
             roots = [
-                _default_install_root(self._local_app_data, track) for track in tracks
+                self._managed_install_root(track) for track in tracks
             ]
         for root in roots:
             inspection = inspect_ownership(root)
@@ -580,7 +672,7 @@ class WindowsInstallerBackend:
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
             roots = tuple(
-                _default_install_root(self._local_app_data, track) for track in tracks
+                self._managed_install_root(track) for track in tracks
             )
         for root in roots:
             self._recover_interrupted_root(root)
@@ -589,12 +681,17 @@ class WindowsInstallerBackend:
         recover = getattr(self._selected_engine(), "recover_interrupted", None)
         if not callable(recover):
             return
-        result = recover(root)
+        options = (
+            {"expected_wheel_sha256": self._managed_build_sha256}
+            if self._managed_build_sha256
+            else {}
+        )
+        result = recover(root, **options)
         if getattr(result, "completed", True) is False:
             errors = "; ".join(getattr(result, "errors", ()))
-            raise RuntimeError(
-                "An interrupted VIPP setup needs manual cleanup before setup "
-                f"can continue. {errors}"
+            raise _SetupCheckBlocked(
+                root,
+                "An interrupted VIPP setup could not be recovered safely. " + errors,
             )
 
     def _recommended_plan(
@@ -673,17 +770,22 @@ class WindowsInstallerBackend:
             return None
         request = InstallRequest(
             mode=InstallMode.MANAGED,
+            managed_build_sha256=self._managed_build_sha256,
             track=track,
             python=candidate.executable,
             install_root=(
                 selection.install_root
                 if selection.install_root is not None
-                else _default_install_root(self._local_app_data, track)
+                else self._managed_install_root(track)
             ),
             shortcut_scope=(
-                ShortcutScope.BOTH
-                if selection.create_desktop_shortcut
-                else ShortcutScope.START_MENU
+                self._shortcut_scope
+                if self._shortcut_scope is not None
+                else (
+                    ShortcutScope.BOTH
+                    if selection.create_desktop_shortcut
+                    else ShortcutScope.START_MENU
+                )
             ),
         )
         discovery = discover_installation(
@@ -775,8 +877,7 @@ class WindowsInstallerBackend:
                     prior_track is ComputeTrack.CUDA13
                     and self._local_app_data is not None
                     and not str(
-                        _default_install_root(
-                            self._local_app_data,
+                        self._managed_install_root(
                             ComputeTrack.CUDA13,
                         )
                     ).isascii()
@@ -814,7 +915,7 @@ class WindowsInstallerBackend:
                 )
             track = owned.record.track
             canonical_root = (
-                _default_install_root(self._local_app_data, track)
+                self._managed_install_root(track)
                 if self._local_app_data is not None
                 else None
             )
@@ -1000,7 +1101,17 @@ def _prepared_for_transaction(
         installed_version = getattr(inspection, "current_version", None)
     launcher = getattr(inspection, "launcher_path", None)
     if launcher is None and kind in {TargetKind.CURRENT, TargetKind.NEWER}:
-        launcher = _launcher_for_plan(plan)
+        # A verified managed installation has its own launcher even when this
+        # request deliberately creates no desktop or Start Menu shortcuts.
+        # Use the ownership-bound environment, not the managed root or a new
+        # installation's hypothetical target Python location.
+        record = getattr(inspection, "record", None)
+        if record is not None:
+            candidate = Path(record.environment_root) / "Scripts" / "vipp-app.exe"
+            if candidate.is_file():
+                launcher = candidate
+        if launcher is None:
+            launcher = _launcher_for_plan(plan)
     summary = _transaction_summary(
         kind,
         release_version=plan.release.version,

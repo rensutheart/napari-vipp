@@ -212,6 +212,85 @@ def _write_owned_cuda_installation(
     write_ownership_record(target, record)
 
 
+@pytest.mark.parametrize("existing_route", [False, True])
+def test_unsafe_recovery_is_a_help_block_not_a_failed_retry(tmp_path, existing_route):
+    target = tmp_path / "VIPP" / "environments" / "cuda13"
+    _write_owned_cuda_installation(
+        target, base_python=tmp_path / "Python312" / "python.exe", version="0.16.0a1"
+    )
+    ownership = inspect_ownership(target)
+    assert ownership.record is not None
+    manifest = (target / ".vipp-installer" / "ownership.json").read_bytes()
+
+    class UnsafeRecoveryEngine(_RecoveryEngine):
+        def recover_interrupted(self, root):
+            super().recover_interrupted(root)
+            return SimpleNamespace(
+                completed=False,
+                errors=("Could not finish Apps & Features registration: stale entry",),
+            )
+
+    engine = UnsafeRecoveryEngine()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a4"),
+        services=_services(tmp_path, gpu_ok=True),
+        candidate_finder=lambda **_kwargs: (),
+    )
+    selection = (
+        InstallerSelection(
+            existing_python=ownership.record.environment_root / "Scripts" / "python.exe"
+        )
+        if existing_route
+        else InstallerSelection(track=TrackChoice.CUDA13, install_root=target)
+    )
+
+    prepared = backend.inspect(
+        selection,
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.BLOCKED
+    assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert prepared.installed_version == "0.16.0a1"
+    assert prepared.target == target
+    assert prepared.help_url.endswith("installation/#troubleshooting")
+    assert "Try again cannot resolve" in prepared.reason
+    assert "stale entry" in prepared.technical_details
+    assert "before starting this new installation" in prepared.plain_summary
+    assert engine.prepared_plans == []
+    assert (target / ".vipp-installer" / "ownership.json").read_bytes() == manifest
+
+
+def test_registration_conflict_during_prepare_routes_to_setup_help(tmp_path):
+    from napari_vipp.installer.engine import RegistrationConflictError
+
+    class ConflictingEngine(_RecoveryEngine):
+        def prepare(self, *args, **kwargs):
+            raise RegistrationConflictError("The Windows entry was preserved.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"test Python")
+    backend = WindowsInstallerBackend(
+        engine=ConflictingEngine(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a4"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.BLOCKED
+    assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert "Windows entry was preserved" in prepared.technical_details
+    assert not prepared.target.exists()
+
+
 def test_missing_python_is_a_guided_non_mutating_screen(tmp_path):
     engine = _Engine()
     backend = WindowsInstallerBackend(

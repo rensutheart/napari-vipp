@@ -141,7 +141,9 @@ def test_cancelled_reproduction_choice_keeps_current_tab(
 
 def test_busy_drop_uses_existing_open_guard(widget, qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(
-        widget, "_workflow_tab_switch_block_reason", lambda: "the source load finishes"
+        widget,
+        "_workflow_tab_switch_block_reason",
+        lambda **_kwargs: "the source load finishes",
     )
     _send_drop(widget, tmp_path / "workflow.json")
     qtbot.waitUntil(lambda: "source load finishes" in widget.status_label.text())

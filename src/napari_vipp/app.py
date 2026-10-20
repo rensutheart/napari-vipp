@@ -121,13 +121,14 @@ def run_application(
 
     reporter.progress("loading_vipp")
     from napari_vipp._widget import VippWidget
+    from napari_vipp.ui.plugin_dock import VIPP_DOCK_NAME
 
     reporter.progress("building_interface")
     widget = _construct_vipp_widget(VippWidget, viewer, profile)
     dock = viewer.window.add_dock_widget(
         widget,
         area="bottom",
-        name="VIPP Workflow",
+        name=VIPP_DOCK_NAME,
     )
     if desktop:
         from qtpy.QtWidgets import QApplication

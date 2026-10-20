@@ -68,15 +68,38 @@ napari / npe2
 node obstacles. Endpoint geometry is part of the route cache key and remains
 protected during the cheap pointer-tracking route; graph-wide obstacle routing
 runs on release. Rounded routes are collision-tested as drawn, including cards
-outside the original port corridor. A capped rectilinear search is used only
-when the ordinary candidates are blocked. Overlapping cards can make a clear
+outside the original port corridor. Peer candidates are ordered by length and
+bend cost before collision checks. Duplicate control polygons are skipped.
+Once a shifted peer route is clear, `_straighten_wire_port_approaches` tries
+one port-aligned prefix per end. It replaces only the shifted S connector,
+short horizontal stub and next corner, preserving the rest of the chosen path.
+The whole candidate must remain card- and peer-clear and improve the existing
+42-pixel-per-turn preference. A blocked end retains its original connector.
+This refinement does not generate another catalogue or start visibility search.
+An excessive clear peer detour adding more than 160 pixels to its card-only
+route compares at most four further departure/arrival offsets, with eight
+candidates per offset, before keeping the best clear score;
+nearby candidates still return immediately. A capped rectilinear search is used when
+ordinary candidates are blocked; forward wires with a clear route more than
+80 pixels beyond the endpoint cards' vertical envelope also try a smaller
+1,024-visit search, accepting only a lower length-plus-bend score. Short clear
+routes and backward candidate loops retain their cheap routing policy.
+Overlapping cards can make a clear
 route impossible; endpoint protection takes priority over other intersections.
 All of this is presentation-only: routing does not change topology or execution.
+The interactive widget enables `set_background_wire_routing(True)`: a short timer
+combines requests, workers receive numerical snapshots, and cancelled or stale
+results never touch the current scene. Pointer movement increments the snapshot
+revision once per group move. Temporary endpoint-card routes keep the ports
+connected while final routing completes. Standalone renderers use synchronous
+routes; interactive checks can wait for `wire_routing_pending` to become false.
 
 `test_graph_wire_routing.py` covers backward/multi-port connections, movement,
 card growth and detours. `scripts/check_wire_routing_layouts.py --output-dir PATH`
-renders six actual Qt layouts before, during and after a drag; optional
+renders eight actual Qt layouts before, during and after a drag; optional
 `--baseline-ref REF` renders an earlier implementation without changing files.
+`scripts/benchmark_wire_routing.py` records routing, snapshot and background
+request times plus an event-loop heartbeat for actual saved workflows.
 
 ## Rescale Output Direction
 
