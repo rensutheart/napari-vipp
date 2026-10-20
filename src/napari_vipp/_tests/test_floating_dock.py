@@ -379,7 +379,10 @@ class _FakeFunction:
 
 
 @pytest.mark.parametrize("pointer_size", [4, 8])
-def test_win32_bindings_are_pointer_safe(monkeypatch, pointer_size):
+@pytest.mark.parametrize("last_error_helpers_missing", [False, True])
+def test_win32_bindings_are_pointer_safe(
+    monkeypatch, pointer_size, last_error_helpers_missing
+):
     user32 = SimpleNamespace(
         IsWindow=_FakeFunction(1),
         GetWindow=_FakeFunction(0x123456789AB if pointer_size == 8 else 0x12345),
@@ -395,6 +398,20 @@ def test_win32_bindings_are_pointer_safe(monkeypatch, pointer_size):
     )
     monkeypatch.setattr(
         floating_dock.ctypes, "WinDLL", lambda *_args, **_kwargs: user32, raising=False
+    )
+    if last_error_helpers_missing:
+        # Reproduce non-Windows ctypes even when these tests run on Windows.
+        monkeypatch.delattr(floating_dock.ctypes, "set_last_error", raising=False)
+        monkeypatch.delattr(floating_dock.ctypes, "get_last_error", raising=False)
+    last_error_resets = []
+    monkeypatch.setattr(
+        floating_dock.ctypes,
+        "set_last_error",
+        last_error_resets.append,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        floating_dock.ctypes, "get_last_error", lambda: 0, raising=False
     )
     native_sizeof = ctypes.sizeof
     monkeypatch.setattr(
@@ -413,6 +430,7 @@ def test_win32_bindings_are_pointer_safe(monkeypatch, pointer_size):
     assert user32.GetWindow.restype is ctypes.c_void_p
     assert api.owner(0x123456789AB) == user32.GetWindow.result
     assert user32.GetWindow.calls == [(0x123456789AB, floating_dock._GW_OWNER)]
+    assert last_error_resets == [0]
     for name in ("IsWindow", "IsWindowVisible", "IsIconic", "IsZoomed"):
         function = getattr(user32, name)
         assert function.argtypes == [ctypes.c_void_p]

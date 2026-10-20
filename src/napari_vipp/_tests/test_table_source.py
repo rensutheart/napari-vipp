@@ -29,6 +29,7 @@ from napari_vipp.core.workflow import (
     deserialize_workflow,
     load_workflow,
     save_workflow,
+    save_workflow_document,
     serialize_workflow,
 )
 
@@ -197,22 +198,66 @@ def test_finish_rejects_dataset_changed_during_downstream_work(dataset):
         pipeline.run(None, node_finished_callback=changed)
 
 
-def test_workflow_reference_only_and_relative_reopen(dataset, tmp_path):
-    path, digest, _ = dataset
-    pipeline, source, _ = _pipeline(path.name, digest)
+@pytest.mark.parametrize("live_relative", [False, True])
+def test_workflow_reference_only_and_relative_reopen(
+    dataset, tmp_path, monkeypatch, live_relative,
+):
+    path, digest, table = dataset
+    if live_relative:
+        # A live relative binding must already point at the real dataset from
+        # its working folder; Save must not reinterpret it beside the target.
+        monkeypatch.chdir(path.parent)
+    pipeline, source, _ = _pipeline(path.name if live_relative else path, digest)
+    before = serialize_workflow(pipeline)
     saved = tmp_path / "results-workflow.json"
     save_workflow(saved, pipeline)
+    assert serialize_workflow(pipeline) == before
     raw = json.loads(saved.read_text())
     params = raw["nodes"][0]["params"]
     assert params == {"dataset_path": path.name, "dataset_sha256": digest}
     restored = load_workflow(saved)
     assert restored["nodes"][0].params["dataset_path"] == str(path.resolve())
+    assert load_table_source(
+        restored["nodes"][0].params["dataset_path"], digest
+    ).data == table
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
     params["_vipp_table"] = {"rows": [["private data"]]}
     with pytest.raises(ValueError, match="embedded measurements"):
         deserialize_workflow(raw)
     pipeline.nodes[source].params["_vipp_table"] = [["private data"]]
     with pytest.raises(ValueError, match="embedded measurements"):
         serialize_workflow(pipeline)
+
+
+def test_raw_document_reference_save_as_uses_original_workflow_folder(
+    dataset, tmp_path, monkeypatch,
+):
+    path, digest, table = dataset
+    pipeline, _, _ = _pipeline(path.name, digest)
+    document = serialize_workflow(pipeline)
+    before = json.loads(json.dumps(document))
+    unrelated = tmp_path / "unrelated-working-folder"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    original = path.with_name("raw-workflow.json")
+    save_workflow_document(original, document)
+    target = tmp_path / "nested" / "saved-as.json"
+    target.parent.mkdir()
+    save_workflow_document(target, document, source_path=original)
+
+    assert json.loads(original.read_text())["nodes"][0]["params"] == {
+        "dataset_path": path.name, "dataset_sha256": digest,
+    }
+    assert json.loads(target.read_text())["nodes"][0]["params"] == {
+        "dataset_path": f"../{path.name}", "dataset_sha256": digest,
+    }
+    restored = load_workflow(target)
+    assert restored["nodes"][0].params["dataset_path"] == str(path.resolve())
+    assert load_table_source(
+        restored["nodes"][0].params["dataset_path"], digest
+    ).data == table
+    assert document == before
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
 
 
 def test_keep_cached_is_a_typed_supported_workflow_preference(dataset):
