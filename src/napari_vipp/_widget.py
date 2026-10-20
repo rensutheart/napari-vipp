@@ -724,6 +724,7 @@ from napari_vipp.ui.plots import (
 from napari_vipp.ui.plots import (
     _qcolor_from_channel_color as _qcolor_from_channel_color,
 )
+from napari_vipp.ui.plugin_dock import install_plugin_dock_restorer
 from napari_vipp.ui.presentation_settings import (
     THUMBNAIL_RESOLUTION_CHOICES,
     THUMBNAIL_STATISTICS_POLICY_CHOICES,
@@ -2207,6 +2208,7 @@ class VippWidget(QWidget):
             self._refresh_source_preview_for_current_dims
         )
         self._dock_chrome_configured = False
+        self._plugin_dock_restorer = None
         self._dock_window_behavior_configured = False
         self._floating_dock_configuration_warning = ""
         self._docked_size_constraints: tuple[_WidgetSizeConstraintState, ...] = ()
@@ -2888,6 +2890,7 @@ class VippWidget(QWidget):
         self.palette = self.palette_panel.palette
         self.palette_search = self.palette_panel.search_edit
         self.graph_view = PipelineGraphView()
+        self.graph_view.set_background_wire_routing(True)
         self.graph_view.set_connection_insert_validator(
             self._connection_insert_preview_state
         )
@@ -4785,7 +4788,15 @@ class VippWidget(QWidget):
         if self._closing or not isalive(self):
             return
         dock = self._dock_widget()
-        if dock is None or self._dock_chrome_configured:
+        if dock is None:
+            return
+        if self._plugin_dock_restorer is None:
+            window = self._dock_main_window(dock)
+            if window is not None:
+                self._plugin_dock_restorer = install_plugin_dock_restorer(
+                    self, dock, window, self._lifecycle
+                )
+        if self._dock_chrome_configured:
             return
         try:
             if not self._dock_window_behavior_configured:
@@ -7032,6 +7043,12 @@ class VippWidget(QWidget):
         self.graph_view.node_insert_requested.connect(self._insert_node_on_connection)
         self.graph_view.connection_insert_requested.connect(
             self._insert_node_from_connection_menu
+        )
+        self.graph_view.connection_tunnel_requested.connect(
+            self._replace_connection_with_tunnel
+        )
+        self.graph_view.tunnel_wires_requested.connect(
+            self._replace_output_tunnel_with_wires
         )
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_selection_changed.connect(
@@ -11769,6 +11786,68 @@ class VippWidget(QWidget):
         self._refresh_node_name_surfaces()
         return True
 
+    def _restore_tunnel_history_snapshot(
+        self,
+        current: WorkflowHistorySnapshot,
+        target: WorkflowHistorySnapshot,
+    ) -> bool:
+        """Restore wire/tunnel presentation while retaining computed results."""
+        current_workflow = current.workflow
+        target_workflow = target.workflow
+        current_graph = current_workflow.graph
+        target_graph = target_workflow.graph
+        if (
+            current_graph.nodes != target_graph.nodes
+            or current_workflow.positions != target_workflow.positions
+            or current_workflow.notes != target_workflow.notes
+            or current_workflow.metadata != target_workflow.metadata
+            or current_workflow.compute_request != target_workflow.compute_request
+        ):
+            return False
+        for attribute in (
+            "preview_disabled_node_ids",
+            "active_pinned_node_id",
+            "compute_mode",
+            "compute_fallback_policy",
+            "compute_node_preferences",
+            "compute_optimizer_locked_node_ids",
+            "source_channel_displays",
+        ):
+            if getattr(current, attribute) != getattr(target, attribute):
+                return False
+
+        def endpoints(graph):
+            return sorted(
+                (
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                )
+                for connection in graph.connections
+            )
+
+        if endpoints(current_graph) != endpoints(target_graph):
+            return False
+        if (
+            current_graph.connections == target_graph.connections
+            and current_graph.output_tunnels == target_graph.output_tunnels
+        ):
+            return False
+        with self._history.suspend_recording():
+            self.pipeline.connections = list(target_graph.connections)
+            self.pipeline.output_tunnels = {
+                tunnel.name.casefold(): tunnel for tunnel in target_graph.output_tunnels
+            }
+            self._sync_wire_tunnel_presentation(
+                {
+                    node_id
+                    for connection in target_graph.connections
+                    for node_id in (connection.source_id, connection.target_id)
+                }
+            )
+        return True
+
     def _restore_history_snapshot(
         self,
         snapshot: WorkflowHistorySnapshot,
@@ -11784,6 +11863,10 @@ class VippWidget(QWidget):
         ):
             return
         if current_snapshot is not None and self._restore_canvas_history_snapshot(
+            current_snapshot, snapshot
+        ):
+            return
+        if current_snapshot is not None and self._restore_tunnel_history_snapshot(
             current_snapshot, snapshot
         ):
             return
@@ -21315,6 +21398,13 @@ class VippWidget(QWidget):
                 self._show_tunnel_manager()
             return
 
+        subscribers = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.tunnel_name == tunnel.name
+        )
+        replace_action = menu.addAction("Replace with wires")
+        menu.addSeparator()
         reveal_action = menu.addAction(f"Reveal tunnel '{tunnel.name}'")
         focus_action = menu.addAction("Focus source")
         manage_action = menu.addAction("Manage tunnels...")
@@ -21322,7 +21412,14 @@ class VippWidget(QWidget):
         rename_action = menu.addAction(f"Rename tunnel '{tunnel.name}'...")
         remove_action = menu.addAction(f"Remove tunnel '{tunnel.name}'")
         action = menu.exec(global_pos)
-        if action == reveal_action:
+        if action == replace_action:
+            self._replace_output_tunnel_with_wires(
+                tunnel.name,
+                tunnel.source_id,
+                tunnel.source_port,
+                expected_connections=subscribers,
+            )
+        elif action == reveal_action:
             self._reveal_output_tunnel(tunnel.name)
         elif action == focus_action:
             self._focus_tunnel_source(tunnel.name)
@@ -21346,7 +21443,10 @@ class VippWidget(QWidget):
         reveal_action = None
         rename_action = None
         manage_action = None
+        replace_action = None
         if current is not None:
+            replace_action = menu.addAction("Replace with wire")
+            menu.addSeparator()
             reveal_action = menu.addAction(f"Reveal tunnel '{current.tunnel_name}'")
             rename_action = menu.addAction(f"Rename tunnel '{current.tunnel_name}'...")
             manage_action = menu.addAction("Manage tunnels...")
@@ -21370,7 +21470,11 @@ class VippWidget(QWidget):
             clear_action = menu.addAction(f"Clear tunnel '{current.tunnel_name}'")
 
         action = menu.exec(global_pos)
-        if reveal_action is not None and action == reveal_action:
+        if replace_action is not None and action == replace_action:
+            self._replace_input_tunnel_with_wire(
+                node_id, port_index, expected_connection=current
+            )
+        elif reveal_action is not None and action == reveal_action:
             self._reveal_output_tunnel(current.tunnel_name)
         elif rename_action is not None and action == rename_action:
             self._rename_output_tunnel(current.tunnel_name)
@@ -21384,6 +21488,255 @@ class VippWidget(QWidget):
             )
         elif clear_action is not None and action == clear_action:
             self._clear_input_tunnel(node_id, port_index)
+
+    def _sync_wire_tunnel_presentation(self, affected_node_ids: set[str]) -> None:
+        """Reconcile visible edges and badges without replacing runtime nodes."""
+        direct_connections = {
+            (
+                connection.source_id,
+                connection.target_id,
+                connection.target_port,
+                connection.source_port,
+            )
+            for connection in self.pipeline.connections
+            if not connection.tunnel_name
+        }
+        visible_connections = set()
+        for item in tuple(self.graph_view._connections):
+            key = (
+                item.source_id,
+                item.target_id,
+                item.target_port,
+                item.source_port,
+            )
+            if key not in direct_connections:
+                self.graph_view.delete_connection_item(item, notify=False)
+            else:
+                visible_connections.add(key)
+        for connection in self.pipeline.connections:
+            key = (
+                connection.source_id,
+                connection.target_id,
+                connection.target_port,
+                connection.source_port,
+            )
+            if not connection.tunnel_name and key not in visible_connections:
+                self.graph_view.add_connection(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                )
+        self._sync_port_tunnels()
+        self._refresh_split_channel_display_surfaces(affected_node_ids)
+        if self._selected_node_id in affected_node_ids:
+            self._refresh_selected_parameter_controls()
+        for node_id in affected_node_ids:
+            self._refresh_selected_connected_inputs(changed_node_id=node_id)
+
+    def _replace_input_tunnel_with_wire(
+        self,
+        node_id: str,
+        port_index: int,
+        *,
+        expected_connection: GraphConnection | None = None,
+    ) -> bool:
+        connection = self.pipeline.tunnel_connection_for_input(node_id, port_index)
+        if connection is None or (
+            expected_connection is not None and connection != expected_connection
+        ):
+            self.status_label.setText("That input tunnel is no longer available.")
+            return False
+        if not self._replace_tunnel_connections_with_wires((connection,)):
+            return False
+        self.status_label.setText(
+            f"Replaced input tunnel '{connection.tunnel_name}' with a wire."
+        )
+        return True
+
+    def _replace_output_tunnel_with_wires(
+        self,
+        name: str,
+        source_id: str | None = None,
+        source_port: int | None = None,
+        *,
+        expected_connections: tuple[GraphConnection, ...] | None = None,
+    ) -> bool:
+        tunnel = self.pipeline.output_tunnel(name)
+        if (
+            tunnel is None
+            or (source_id is not None and tunnel.source_id != source_id)
+            or (source_port is not None and tunnel.source_port != source_port)
+        ):
+            self.status_label.setText("That output tunnel is no longer available.")
+            return False
+        connections = tuple(
+            connection
+            for connection in self.pipeline.connections
+            if connection.tunnel_name == tunnel.name
+        )
+        if expected_connections is not None and connections != expected_connections:
+            self.status_label.setText(
+                "That output tunnel changed while its menu was open."
+            )
+            return False
+        if not self._replace_tunnel_connections_with_wires(
+            connections, remove_tunnel=tunnel
+        ):
+            return False
+        count = len(connections)
+        noun = "wire" if count == 1 else "wires"
+        self.status_label.setText(
+            f"Replaced output tunnel '{tunnel.name}' with {count} {noun}."
+        )
+        return True
+
+    def _replace_tunnel_connections_with_wires(
+        self,
+        connections: tuple[GraphConnection, ...],
+        *,
+        remove_tunnel: OutputTunnel | None = None,
+    ) -> bool:
+        """Validate a presentation conversion and record it as one atomic edit."""
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        original_connections = list(self.pipeline.connections)
+        original_tunnels = dict(self.pipeline.output_tunnels)
+        replacements = {}
+        try:
+            for connection in connections:
+                tunnel = self.pipeline.output_tunnel(connection.tunnel_name)
+                if (
+                    connection not in self.pipeline.connections
+                    or tunnel is None
+                    or (tunnel.source_id, tunnel.source_port)
+                    != (connection.source_id, connection.source_port)
+                ):
+                    raise ValueError("That tunnel connection is no longer available.")
+                result = self.pipeline.connect(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    connection.source_port,
+                )
+                if not result.success:
+                    raise ValueError(result.message)
+                replacements[connection] = replace(connection, tunnel_name="")
+                if result.connection != replacements[connection] or result.removed != (
+                    connection,
+                ):
+                    raise ValueError(
+                        "That tunnel connection changed during replacement."
+                    )
+            # Keep the same ordered computational edges; only their presentation
+            # changes. Pipeline.connect validates each exact port before this.
+            self.pipeline.connections = [
+                replacements.get(connection, connection)
+                for connection in original_connections
+            ]
+            if remove_tunnel is not None:
+                if self.pipeline.output_tunnel(remove_tunnel.name) != remove_tunnel:
+                    raise ValueError("That output tunnel is no longer available.")
+                if self.pipeline.remove_output_tunnel(remove_tunnel.name):
+                    raise ValueError("That output tunnel changed during replacement.")
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self.status_label.setText(str(exc))
+            return False
+
+        affected_node_ids = {
+            node_id
+            for connection in connections
+            for node_id in (connection.source_id, connection.target_id)
+        }
+        if remove_tunnel is not None:
+            affected_node_ids.add(remove_tunnel.source_id)
+        try:
+            self._sync_wire_tunnel_presentation(affected_node_ids)
+            if remove_tunnel is not None:
+                self.graph_view.clear_tunnel_highlight(sticky=True)
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self._sync_wire_tunnel_presentation(affected_node_ids)
+            self.status_label.setText(
+                f"Replace with wire failed and was rolled back: {exc}"
+            )
+            return False
+        self._push_undo_if_changed(before)
+        return True
+
+    def _replace_connection_with_tunnel(self, connection_key) -> bool:
+        """Replace one exact visible wire with a named tunnel as one edit."""
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+        except (TypeError, ValueError):
+            self.status_label.setText("That wire is no longer available.")
+            return False
+        original = GraphConnection(source_id, target_id, target_port, source_port)
+        if original not in self.pipeline.connections:
+            self.status_label.setText("That wire is no longer available.")
+            return False
+
+        tunnel = self.pipeline.output_tunnel_for_port(source_id, source_port)
+        name = (
+            tunnel.name
+            if tunnel is not None
+            else self._prompt_tunnel_name(
+                "Replace Wire with Tunnel",
+                self._suggest_tunnel_name(source_id, source_port),
+            )
+        )
+        if not name:
+            self.status_label.setText("Replace with tunnel canceled.")
+            return False
+        # A naming dialog runs an event loop. Do not replace a newer input
+        # connection if the original wire changed while it was open.
+        if original not in self.pipeline.connections:
+            self.status_label.setText("That wire is no longer available.")
+            return False
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        original_connections = list(self.pipeline.connections)
+        original_tunnels = dict(self.pipeline.output_tunnels)
+        try:
+            tunnel = self.pipeline.output_tunnel_for_port(source_id, source_port)
+            if tunnel is None:
+                tunnel = self.pipeline.add_output_tunnel(name, source_id, source_port)
+            result = self.pipeline.connect_to_tunnel(
+                tunnel.name, target_id, target_port
+            )
+            if not result.success:
+                raise ValueError(result.message)
+        except Exception as exc:
+            self.pipeline.connections = original_connections
+            self.pipeline.output_tunnels = original_tunnels
+            self.status_label.setText(str(exc))
+            return False
+
+        try:
+            self._apply_connection_result_to_graph(result)
+            if self._selected_node_id in {source_id, target_id}:
+                self._refresh_selected_parameter_controls()
+            self._refresh_selected_connected_inputs(changed_node_id=target_id)
+            self._highlight_output_tunnel(tunnel.name)
+        except Exception as exc:
+            self._restore_history_snapshot(
+                before,
+                current_snapshot=self._current_history_snapshot(),
+                schedule_run=False,
+            )
+            self.status_label.setText(
+                f"Replace with tunnel failed and was rolled back: {exc}"
+            )
+            return False
+        self._push_undo_if_changed(before)
+        self.status_label.setText(f"Replaced wire with tunnel '{tunnel.name}'.")
+        return True
 
     def _create_output_tunnel(self, node_id: str, port_index: int) -> None:
         default = self._suggest_tunnel_name(node_id, port_index)

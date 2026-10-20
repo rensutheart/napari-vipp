@@ -10,6 +10,31 @@
   Automatic recovery still requires the exact saved old/new registration evidence;
   matching only a folder or installation ID does not authorize overwriting it.
 
+- Straighten clear wire approaches independently at each end. Keep a necessary
+  detour around a card at one end without adding the same wiggle at the other;
+  validate the simpler approach against cards and distinct output lanes.
+
+- Avoid unnecessary wire staircases when a clear straight departure and a turn
+  near the destination have the same travel distance. Keep card clearance and
+  separate lanes for different outputs when selecting the simpler route.
+
+- Prefer nearby clear wire lanes before distant perimeter routes. Forward
+  connections with excessive vertical detours can use a bounded local search
+  for a shorter route through gaps, while retaining card clearance and distinct
+  output lanes.
+
+- Calculate graph wire layouts in cancellable background work, with quick
+  temporary routes and combined updates so complex connections do not freeze
+  editing. Restore a single input tunnel with **Replace with wire**, or all
+  subscribers of an output tunnel with **Replace with wires**. These edits and
+  their undo/redo retain connection ports and calculated results.
+
+- Give graph wires from different output ports separate routing lanes so
+  connections remain traceable when they converge and separate. Branches from
+  the same output can share a natural trunk. Right-click near
+  a wire at any zoom and choose **Replace with tunnel...** to convert that
+  connection in one undoable edit, reusing its output tunnel when available.
+
 ## 0.16.0a4 - 2026-10-09
 
 - Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr
@@ -97,9 +122,12 @@
   redocking. Handle plain Qt title-bar notifications without assuming mouse
   event attributes exist.
 - Allow detached VIPP and napari to minimize and restore independently on
-  Windows, with separate taskbar windows. Keep the same workflow session and
-  napari viewer; redocking and napari's ownership of the plugin lifetime remain
-  intact. Native Linux/macOS window-manager behaviour is not yet qualified.
+  Windows, with explicit taskbar registration for the detached editor. Reopen
+  a minimized VIPP from napari's Plugins menu to restore the same workflow and
+  previous maximized state. Register standalone and development launchers under
+  the plugin's dock name so reopening cannot create a second editor. Redocking
+  and napari's ownership of the plugin lifetime remain intact. Native
+  Linux/macOS window-manager behaviour is not yet qualified.
 
 ## 0.16.0a3 - 2026-10-05
 

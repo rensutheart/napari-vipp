@@ -59,6 +59,45 @@ measurement parity and table-combination requirements are tracked in
 
 ## Current Shape
 
+Graph wire routing reserves earlier rendered paths from different source output
+ports in stable connection order. Positive-length collinear runs from different
+outputs are rejected; branches of the same output retain natural routes and may
+share a trunk. Isolated crossings remain permitted. Visible
+tunnel labels also reserve clearance, and label changes invalidate their routes.
+The cheap orthogonal catalogue includes both departure-side and arrival-side
+vertical turns. A clear late turn can replace an equal-Manhattan-length
+staircase without increasing search budgets; the existing turn cost keeps
+extra rounded corners from winning solely by cutting corner distance.
+After selecting a clear shifted route, at most one straight port approach is
+checked per end. A shifted cubic and its next turn can join directly onto the
+same vertical segment if the whole replacement remains card- and peer-clear and
+improves the length-plus-turn preference. The opposite end and middle detour
+remain identical unless their own independent check succeeds. This does not
+generate another route catalogue or expand visibility-search budgets.
+Peer lane candidates prefer shorter control polygons with fewer turns before
+checking clearance, skipping duplicate control polygons. An excessive clear peer
+detour adding more than 160 pixels beyond its card-only route compares at most
+four further nearby offsets with eight candidates each before retaining its
+best clear score. Clear forward routes
+extending more than 80 pixels beyond
+the endpoint cards' vertical envelope can try a 1,024-visit local visibility
+improvement; only a lower length-plus-bend score replaces the candidate. Blocked
+routes keep their existing 12,000-visit fallback. This bounded heuristic does not
+promise a globally shortest route.
+The workflow editor coalesces routing requests and computes complete paths on
+owned numerical geometry snapshots in a background worker. No worker accesses
+scene items, cards, or the pipeline. One running job and one replacement request
+bound work; edits cancel obsolete searches, and generation plus geometry revision
+checks reject stale results. The GUI draws bounded endpoint-card previews while
+the final peer/card-clear routes are pending. Standalone graph renderers retain
+synchronous routing for deterministic diagnostics.
+Node movement and connection addition/removal invalidate peer routes. During drag,
+background peer routing and endpoint-card protection apply without scanning
+scene-wide card obstacles; release restores scene-wide obstacle routing. If an
+overlapping card buries a required port, that unavoidable obstacle is omitted
+while other card clearance and wire separation remain active. These paths and
+the wire-to-tunnel presentation change do not alter computational endpoints.
+
 `napari-vipp` is a napari `npe2` plugin that embeds a node-graph image
 processing workflow inside a dock widget. The graph is the main work surface:
 users add processing nodes, wire outputs to inputs, tune parameters in the
@@ -1635,11 +1674,32 @@ unqualified.
 Window-state flags survive a floating-window flag rebuild.
 
 `ui/floating_dock.py:make_floating_dock_independent()` clears and verifies the
-Windows native owner of the floating dock so VIPP and napari have independent
-minimize/restore and taskbar behaviour. It does not remove the dock's Qt object
-parent, replace the viewer, or start another process. Redocking restores normal
-dock ownership and sizing; closing napari still owns plugin teardown. Keep this
-behaviour plugin-local; do not patch napari internals.
+Windows native owner of the floating dock and sets `WS_EX_APPWINDOW` while
+clearing `WS_EX_TOOLWINDOW`. Repair must inspect taskbar styles even when the
+native owner is already zero. A visible window uses the Windows hide/style/show
+sequence to refresh Shell registration, retaining its minimized/maximized
+state without activation. Unchanged native settings cause no frame or visibility
+changes. See Microsoft's [taskbar contract](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#managing-taskbar-buttons).
+This does not remove the dock's Qt object parent, replace the viewer, or start
+another process. Redocking restores normal dock ownership and sizing; closing
+napari still owns plugin teardown.
+
+Standalone and development launchers register their dock with
+`ui/plugin_dock.py:VIPP_DOCK_NAME`, matching napari's plugin registry key.
+Changing the window title does not change that key. Napari's normal Plugins
+action reuses the registered dock but toggles visibility, including for a
+minimized floating window. The plugin-local restorer observes only the owning
+main window's Plugins menu. It captures a minimized floating dock on menu open
+and restores that same dock after the VIPP command runs, clearing only the
+minimized state bit. Other actions, canceled menus, normal visible-window
+toggles, redocking, and close/shutdown do not restore a window. A weak latest-menu
+token invalidates captures from other viewers. The active Qt window's parent
+chain must reach the owning main window both when the shared plugin action
+triggers and when the queued restore runs, including if another viewer has no
+VIPP instance yet. Lifecycle-owned connections and generation checks prevent
+stale recovery. No pipeline,
+workflow, or cache replacement occurs. Keep this behaviour plugin-local; do
+not patch napari internals.
 
 ## Input, Output, Persistence, And Export
 

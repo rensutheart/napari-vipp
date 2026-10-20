@@ -25,10 +25,11 @@ def main():
     import napari
 
     from napari_vipp._widget import VippWidget
+    from napari_vipp.ui.plugin_dock import VIPP_DOCK_NAME
 
     viewer = napari.Viewer(title="VIPP — statistics-paper reproduction")
     widget = VippWidget(viewer)
-    viewer.window.add_dock_widget(widget, area="bottom", name="VIPP Workflow")
+    viewer.window.add_dock_widget(widget, area="bottom", name=VIPP_DOCK_NAME)
     widget.load_workflow_file(args.workflow, prefer_image_source=True)
     if args.calculate:
         widget._calculate_all_nodes()
