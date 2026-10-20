@@ -54,6 +54,20 @@ from napari_vipp.installer.python_discovery import (
     discover_python_candidates,
 )
 
+_SETUP_HELP_URL = (
+    "https://rensutheart.github.io/vipp-mkdocs/stable/"
+    "getting-started/installation/#troubleshooting"
+)
+
+
+class _SetupCheckBlocked(RuntimeError):
+    """Retain the exact root when prior-transaction recovery needs attention."""
+
+    def __init__(self, root: Path, details: str):
+        self.root = root
+        super().__init__(details)
+
+
 _ERROR_FRIENDLY_TEXT = {
     "host_platform_unsupported": (
         "This setup program currently supports 64-bit Windows computers."
@@ -133,6 +147,53 @@ class WindowsInstallerBackend:
         self._local_app_data = _known_local_app_data(self._services)
 
     def inspect(
+        self,
+        selection: InstallerSelection,
+        *,
+        progress: Callable[[ProgressUpdate], None],
+        cancellation: threading.Event,
+        repair: bool = False,
+    ) -> PreparedInstall:
+        try:
+            return self._inspect(
+                selection,
+                progress=progress,
+                cancellation=cancellation,
+                repair=repair,
+            )
+        except _SetupCheckBlocked as exc:
+            ownership = inspect_ownership(exc.root)
+            record = (
+                ownership.record if ownership.state is OwnershipState.VALID else None
+            )
+            release = self._release or bundled_release_spec()
+            return PreparedInstall(
+                kind=TargetKind.BLOCKED,
+                target=exc.root,
+                release_version=release.version,
+                installed_version=record.version if record is not None else None,
+                track=(
+                    record.track
+                    if record is not None
+                    else _explicit_track(selection.track)
+                ),
+                plain_summary=(
+                    "Setup stopped before starting this new installation. An "
+                    "earlier setup record or Windows installation registration "
+                    "needs attention."
+                ),
+                technical_details=str(exc),
+                reason=(
+                    "Try again cannot resolve a conflicting installation record. "
+                    "Save the Advanced details and any available setup log, then "
+                    "contact support. Do not delete VIPP folders, edit the Windows "
+                    "entry or run an older uninstaller to bypass this check."
+                ),
+                blocked_action=BlockedAction.OPEN_SETUP_HELP,
+                help_url=_SETUP_HELP_URL,
+            )
+
+    def _inspect(
         self,
         selection: InstallerSelection,
         *,
@@ -346,12 +407,22 @@ class WindowsInstallerBackend:
             )
         )
         token = _engine_cancellation_token(cancellation)
-        transaction = self._selected_engine().prepare(
-            plan,
-            progress=lambda event: progress(_progress_update(event)),
-            cancellation=token,
-            repair=repair,
+        from napari_vipp.installer.engine import (
+            RecoveryError,
+            RegistrationConflictError,
         )
+
+        try:
+            transaction = self._selected_engine().prepare(
+                plan,
+                progress=lambda event: progress(_progress_update(event)),
+                cancellation=token,
+                repair=repair,
+            )
+        except (RecoveryError, RegistrationConflictError) as exc:
+            raise _SetupCheckBlocked(
+                plan.discovery.filesystem.target, str(exc)
+            ) from exc
         self._check_cancelled(cancellation)
         prepared = _prepared_for_transaction(
             transaction,
@@ -592,9 +663,9 @@ class WindowsInstallerBackend:
         result = recover(root)
         if getattr(result, "completed", True) is False:
             errors = "; ".join(getattr(result, "errors", ()))
-            raise RuntimeError(
-                "An interrupted VIPP setup needs manual cleanup before setup "
-                f"can continue. {errors}"
+            raise _SetupCheckBlocked(
+                root,
+                "An interrupted VIPP setup could not be recovered safely. " + errors,
             )
 
     def _recommended_plan(

@@ -2088,6 +2088,391 @@ def test_cpu_and_cuda_cached_setup_and_registry_entries_do_not_collide(tmp_path)
     assert CUDA13_REGISTRY_KEY.casefold() in registry.values
 
 
+@pytest.fixture
+def _registered_setup_install(tmp_path):
+    target = tmp_path / "managed"
+    shortcut_root = tmp_path / "Desktop"
+    shortcut_root.mkdir()
+    source = tmp_path / "first-setup.exe"
+    source.write_bytes(b"first owned setup")
+    registry = _MemoryRegistry()
+    engine = _engine_with_setup(tmp_path, _FakeRunner(), source, registry)
+    prepared = engine.prepare(
+        _plan(target, _release(), shortcut_directory=shortcut_root),
+    )
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+    )
+    assert result.succeeded and not result.registration_warning
+    record = inspect_ownership(target).record
+    assert record is not None and record.uninstaller_path is not None
+    return SimpleNamespace(
+        target=target,
+        shortcut_root=shortcut_root,
+        registry=registry,
+        record=record,
+        manifest=target / ".vipp-installer" / "ownership.json",
+    )
+
+
+def _registration_update_engine(tmp_path, registry):
+    source = tmp_path / "second-setup.exe"
+    source.write_bytes(b"second owned setup")
+    runner = _FakeRunner(report=_report().replace("0.13.0a7", "0.13.0a8"))
+    engine = _engine_with_setup(
+        tmp_path,
+        runner,
+        source,
+        registry,
+        run_id="23456789-2345-4345-9345-23456789abcd",
+    )
+    return engine, runner
+
+
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+def test_new_setup_rejects_foreign_registration_before_resolution(tmp_path, track):
+    target = tmp_path / "managed"
+    source = tmp_path / "setup.exe"
+    source.write_bytes(b"new setup")
+    registry = _MemoryRegistry()
+    key = uninstall_module.registry_key_for_track(track).casefold()
+    foreign = {
+        "DisplayName": "Another installation",
+        "VippManagedRoot": str(tmp_path / "other"),
+        "VippInstallationId": str(uuid.uuid4()),
+        "VippManifestSha256": "e" * 64,
+        "VippUninstallerSha256": "f" * 64,
+    }
+    registry.values[key] = dict(foreign)
+    runner = _FakeRunner()
+    engine = _engine_with_setup(tmp_path, runner, source, registry)
+    plan = _plan(target, _release())
+    if track is ComputeTrack.CUDA13:
+        plan = replace(plan, request=replace(plan.request, track=track))
+
+    with pytest.raises(engine_module.RegistrationConflictError):
+        engine.prepare(plan)
+
+    assert not runner.calls
+    assert not target.exists()
+    assert registry.values[key] == foreign
+    assert not (tmp_path / "installer-state" / "transactions").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "stale_manifest",
+        "stale_uninstaller",
+        "foreign_root",
+        "foreign_id",
+        "display_name",
+        "publisher",
+        "uninstall_command",
+        "extra_value",
+        "missing_value",
+    ],
+)
+def test_owned_setup_rejects_changed_registration_without_any_writes(
+    tmp_path,
+    monkeypatch,
+    _registered_setup_install,
+    mutation,
+):
+    installed = _registered_setup_install
+    registry = installed.registry
+    values = registry.values[CPU_REGISTRY_KEY.casefold()]
+    changes = {
+        "stale_manifest": ("VippManifestSha256", "e" * 64),
+        "stale_uninstaller": ("VippUninstallerSha256", "f" * 64),
+        "foreign_root": ("VippManagedRoot", str(tmp_path / "other")),
+        "foreign_id": ("VippInstallationId", str(uuid.uuid4())),
+        "display_name": ("DisplayName", "Unreviewed display name"),
+        "publisher": ("Publisher", "Another publisher"),
+        "uninstall_command": ("UninstallString", "another-uninstaller.exe"),
+        "extra_value": ("UnreviewedValue", "preserve me"),
+    }
+    if mutation == "missing_value":
+        values.pop("Publisher")
+    else:
+        name, value = changes[mutation]
+        values[name] = value
+    original_registry = dict(values)
+    original_manifest = installed.manifest.read_bytes()
+    original_setup = installed.record.uninstaller_path.read_bytes()
+    original_environments = tuple(managed_environments_root(installed.target).iterdir())
+    engine, runner = _registration_update_engine(tmp_path, registry)
+
+    def unexpected_write(*_args, **_kwargs):
+        pytest.fail("registration inspection must not mutate the registry")
+
+    monkeypatch.setattr(registry, "write_values", unexpected_write)
+    monkeypatch.setattr(registry, "delete_key", unexpected_write)
+    with pytest.raises(engine_module.RegistrationConflictError):
+        engine.prepare(_plan(installed.target, _release("0.13.0a8")))
+
+    assert not runner.calls
+    assert installed.manifest.read_bytes() == original_manifest
+    assert installed.record.uninstaller_path.read_bytes() == original_setup
+    assert tuple(managed_environments_root(installed.target).iterdir()) == (
+        original_environments
+    )
+    assert registry.values[CPU_REGISTRY_KEY.casefold()] == original_registry
+    assert not tuple((tmp_path / "installer-state" / "transactions").glob("*.json"))
+
+
+@pytest.mark.parametrize("setup_state", ["missing", "changed"])
+def test_owned_setup_does_not_discard_invalid_prior_uninstaller_authority(
+    tmp_path,
+    _registered_setup_install,
+    setup_state,
+):
+    installed = _registered_setup_install
+    prior_setup = installed.record.uninstaller_path
+    if setup_state == "missing":
+        prior_setup.unlink()
+    else:
+        prior_setup.write_bytes(b"not the owned executable")
+    original_manifest = installed.manifest.read_bytes()
+    original_registry = dict(installed.registry.values[CPU_REGISTRY_KEY.casefold()])
+    engine, runner = _registration_update_engine(tmp_path, installed.registry)
+
+    with pytest.raises(engine_module.RegistrationConflictError):
+        engine.prepare(_plan(installed.target, _release("0.13.0a8")))
+
+    assert not runner.calls
+    assert installed.manifest.read_bytes() == original_manifest
+    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()] == original_registry
+    assert not tuple((tmp_path / "installer-state" / "transactions").glob("*.json"))
+
+
+def test_owned_setup_requires_registry_access_before_resolution(
+    tmp_path,
+    _registered_setup_install,
+):
+    installed = _registered_setup_install
+    original_manifest = installed.manifest.read_bytes()
+    original_registry = dict(installed.registry.values[CPU_REGISTRY_KEY.casefold()])
+    engine, runner = _registration_update_engine(tmp_path, installed.registry)
+    engine._registry_backend = None
+
+    with pytest.raises(engine_module.RegistrationConflictError):
+        engine.prepare(_plan(installed.target, _release("0.13.0a8")))
+
+    assert not runner.calls
+    assert installed.manifest.read_bytes() == original_manifest
+    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()] == original_registry
+
+
+@pytest.mark.parametrize("registration_state", ["exact", "absent"])
+def test_owned_setup_accepts_exact_or_absent_registration(
+    tmp_path,
+    _registered_setup_install,
+    registration_state,
+):
+    installed = _registered_setup_install
+    if registration_state == "absent":
+        installed.registry.values.clear()
+    engine, _runner = _registration_update_engine(tmp_path, installed.registry)
+    prepared = engine.prepare(_plan(installed.target, _release("0.13.0a8")))
+
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.succeeded and not result.registration_warning
+    current = inspect_ownership(installed.target)
+    assert current.record is not None and current.record.version == "0.13.0a8"
+    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()][
+        "VippManifestSha256"
+    ] == current.manifest_sha256
+
+
+@pytest.mark.parametrize("change_at", ["after_review", "before_ownership_commit"])
+def test_registration_race_rolls_back_and_preserves_old_owned_installation(
+    tmp_path,
+    _registered_setup_install,
+    change_at,
+):
+    installed = _registered_setup_install
+    engine, runner = _registration_update_engine(tmp_path, installed.registry)
+    prepared = engine.prepare(
+        _plan(
+            installed.target,
+            _release("0.13.0a8"),
+            shortcut_directory=installed.shortcut_root,
+        ),
+    )
+    original_manifest = installed.manifest.read_bytes()
+    original_setup = installed.record.uninstaller_path.read_bytes()
+    original_shortcuts = {
+        shortcut.path: shortcut.path.read_bytes()
+        for shortcut in installed.record.shortcuts
+    }
+    foreign = dict(installed.registry.values[CPU_REGISTRY_KEY.casefold()])
+    foreign["VippInstallationId"] = str(uuid.uuid4())
+    foreign["VippManagedRoot"] = str(tmp_path / "other")
+    if change_at == "after_review":
+        installed.registry.values[CPU_REGISTRY_KEY.casefold()] = dict(foreign)
+    changed_before_commit = False
+
+    def progress(event):
+        nonlocal changed_before_commit
+        if (
+            change_at == "before_ownership_commit"
+            and event.stage is ProgressStage.COMMITTING
+        ):
+            changed_before_commit = True
+            installed.registry.values[CPU_REGISTRY_KEY.casefold()] = dict(foreign)
+
+    runner.calls.clear()
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=progress,
+    )
+
+    assert result.status is InstallStatus.FAILED
+    assert "RegistrationConflictError" in result.technical_error
+    assert result.rollback.completed
+    if change_at == "after_review":
+        assert not runner.calls
+    else:
+        assert changed_before_commit
+        assert any("--requirement" in call for call in runner.calls)
+    assert installed.manifest.read_bytes() == original_manifest
+    assert installed.record.environment_root.is_dir()
+    assert installed.record.uninstaller_path.read_bytes() == original_setup
+    assert all(path.read_bytes() == data for path, data in original_shortcuts.items())
+    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()] == foreign
+    assert prepared.persistent_setup_path is not None
+    assert not prepared.persistent_setup_path.exists()
+    assert tuple(managed_environments_root(installed.target).iterdir()) == (
+        installed.record.environment_root,
+    )
+    assert not tuple((tmp_path / "installer-state" / "transactions").glob("*.json"))
+
+
+def test_recovery_journal_appearing_after_review_is_preserved(
+    tmp_path,
+    _registered_setup_install,
+):
+    installed = _registered_setup_install
+    engine, runner = _registration_update_engine(tmp_path, installed.registry)
+    prepared = engine.prepare(_plan(installed.target, _release("0.13.0a8")))
+    journal = engine_module._transaction_journal_path(
+        tmp_path / "installer-state",
+        installed.target,
+    )
+    journal_payload = b'{"earlier_recovery_evidence": "must be preserved"}\n'
+    journal.write_bytes(journal_payload)
+    manifest_payload = installed.manifest.read_bytes()
+    registered = dict(installed.registry.values[CPU_REGISTRY_KEY.casefold()])
+    runner.calls.clear()
+
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.status is InstallStatus.FAILED
+    assert "RecoveryError" in result.technical_error
+    assert not runner.calls
+    assert journal.read_bytes() == journal_payload
+    assert installed.manifest.read_bytes() == manifest_payload
+    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()] == registered
+
+
+@pytest.mark.parametrize("track", [ComputeTrack.CPU, ComputeTrack.CUDA13])
+def test_two_generation_stale_registration_recovery_preserves_unproven_entry(
+    tmp_path,
+    monkeypatch,
+    track,
+):
+    target = tmp_path / "managed"
+    registry = _MemoryRegistry()
+    registry_key = uninstall_module.registry_key_for_track(track).casefold()
+
+    def plan_for_version(version):
+        return _plan(target, _release(version), track=track)
+
+    first_source = tmp_path / "setup-a4.exe"
+    first_source.write_bytes(b"owned 0.15.0a4 setup")
+    first_engine = _engine_with_setup(
+        tmp_path,
+        _FakeRunner(report=_report().replace("0.13.0a7", "0.15.0a4")),
+        first_source,
+        registry,
+    )
+    first = first_engine.prepare(plan_for_version("0.15.0a4"))
+    assert first_engine.apply(
+        first,
+        first_engine.authorize(first, confirmed=True),
+    ).succeeded
+    first_registered = dict(registry.values[registry_key])
+    registry.fail_writes = True
+    second_source = tmp_path / "setup-a5.exe"
+    second_source.write_bytes(b"owned 0.15.0a5 setup")
+    second_engine = _engine_with_setup(
+        tmp_path,
+        _FakeRunner(report=_report().replace("0.13.0a7", "0.15.0a5")),
+        second_source,
+        registry,
+        run_id="34567890-3456-4456-9456-34567890abcd",
+    )
+    second = second_engine.prepare(plan_for_version("0.15.0a5"))
+    second_result = second_engine.apply(
+        second,
+        second_engine.authorize(second, confirmed=True),
+    )
+    assert second_result.succeeded and second_result.registration_warning
+    # Reproduce legacy lost recovery evidence only inside this temporary fixture.
+    # The new installer must never authorize the older key from root/id alone.
+    journal = next((tmp_path / "installer-state" / "transactions").glob("*.json"))
+    journal.unlink()
+    registry.fail_writes = False
+    third_source = tmp_path / "setup-a1.exe"
+    third_source.write_bytes(b"owned 0.16.0a1 setup")
+    third_engine = _engine_with_setup(
+        tmp_path,
+        _FakeRunner(report=_report().replace("0.13.0a7", "0.16.0a1")),
+        third_source,
+        registry,
+        run_id="45678901-4567-4567-9567-45678901abcd",
+    )
+
+    def legacy_prior_plan(_plan, inspection):
+        return uninstall_module.registry_plan_from_record(
+            inspection.record,
+            inspect_ownership(target).manifest_sha256,
+        )
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(third_engine, "_inspect_registration", legacy_prior_plan)
+        third = third_engine.prepare(plan_for_version("0.16.0a1"))
+        third_result = third_engine.apply(
+            third,
+            third_engine.authorize(third, confirmed=True),
+        )
+    assert third_result.succeeded and third_result.registration_warning
+    assert registry.values[registry_key] == first_registered
+    journal_bytes = journal.read_bytes()
+    document = json.loads(journal_bytes)
+    assert dict(document["previous_registry"]["values"])["DisplayVersion"] == (
+        "0.15.0a5"
+    )
+    manifest = target / ".vipp-installer" / "ownership.json"
+    manifest_bytes = manifest.read_bytes()
+    current = inspect_ownership(target).record
+    assert current is not None and current.version == "0.16.0a1"
+
+    recovered = third_engine.recover_interrupted(target)
+
+    assert not recovered.completed
+    assert any("different installation" in error for error in recovered.errors)
+    assert registry.values[registry_key] == first_registered
+    assert manifest.read_bytes() == manifest_bytes
+    assert journal.read_bytes() == journal_bytes
+    assert current.environment_root.is_dir()
+    assert current.uninstaller_path is not None and current.uninstaller_path.is_file()
+
+
 def test_repair_updates_cached_setup_and_registry_then_retires_old_copy(tmp_path):
     target = tmp_path / "managed"
     registry = _MemoryRegistry()

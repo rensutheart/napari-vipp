@@ -105,6 +105,10 @@ class PreparationError(InstallerEngineError):
     """The selected plan could not safely reach package review."""
 
 
+class RegistrationConflictError(PreparationError):
+    """Windows installation registration cannot safely authorize this upgrade."""
+
+
 class ResolutionError(PreparationError):
     """pip did not produce one complete, hash-bound candidate set."""
 
@@ -1067,6 +1071,7 @@ class ManagedInstallerEngine:
         if blocking:
             rendered = "; ".join(issue.message for issue in blocking)
             raise PreparationError(f"The installation plan is blocked: {rendered}")
+        self._inspect_registration(plan, inspection)
         if self._require_embedded_wheel and plan.release.wheel_path is None:
             raise PreparationError(
                 "This signed installer does not contain its exact VIPP release wheel."
@@ -1291,19 +1296,7 @@ class ManagedInstallerEngine:
         retained_retired: tuple[OwnedEnvironment, ...] = ()
         old_record = prepared.target_inspection.record
         old_registry_plan = None
-        if old_record is not None and old_record.registry_key:
-            try:
-                from napari_vipp.installer.uninstall import (
-                    registry_plan_from_record,
-                )
-
-                old_inspection = inspect_ownership(prepared.target)
-                old_registry_plan = registry_plan_from_record(
-                    old_record,
-                    old_inspection.manifest_sha256,
-                )
-            except Exception:
-                old_registry_plan = None
+        journal_created = False
         try:
             with lock, log:
                 log.write("apply_started", resolution_id=prepared.resolution_id)
@@ -1321,6 +1314,12 @@ class ManagedInstallerEngine:
                     raise StalePreparedTransaction(
                         "The installation folder changed after it was reviewed."
                     )
+                if journal_path.exists() or _path_has_reparse_component(journal_path):
+                    raise RecoveryError(
+                        "An earlier setup recovery record appeared after review. "
+                        "It was preserved; check this installation again."
+                    )
+                old_registry_plan = self._inspect_registration(prepared.plan, current)
                 try:
                     actual_wheel = _release_wheel_digest(
                         prepared.plan.release,
@@ -1361,6 +1360,7 @@ class ManagedInstallerEngine:
                     setup_mutation=None,
                     previous_registry_plan=old_registry_plan,
                 )
+                journal_created = True
                 pip_temp = candidate / ".installer-tmp"
                 pip_temp.mkdir()
                 child_environment = _pip_environment(temp_directory=pip_temp)
@@ -1610,6 +1610,10 @@ class ManagedInstallerEngine:
                     created_at=created_at,
                     updated_at=now,
                 )
+                # Windows registration can change while packages are downloaded.
+                # Reject that conflict while the old ownership is still live and
+                # the candidate, shortcuts and cached setup can be rolled back.
+                self._inspect_registration(prepared.plan, current)
                 record_path = write_ownership_record(prepared.target, record)
                 committed = True
                 post_commit_warnings = _complete_committed_shortcuts(
@@ -1772,7 +1776,7 @@ class ManagedInstallerEngine:
                 committed=committed,
                 progress=progress,
             )
-            if rollback.completed:
+            if rollback.completed and journal_created:
                 try:
                     journal_path.unlink()
                 except OSError:
@@ -1813,7 +1817,7 @@ class ManagedInstallerEngine:
                 committed=committed,
                 progress=progress,
             )
-            if rollback.completed:
+            if rollback.completed and journal_created:
                 try:
                     journal_path.unlink()
                 except OSError:
@@ -1845,6 +1849,59 @@ class ManagedInstallerEngine:
                 pass
             _emit(progress, ProgressStage.FAILED, result.message, 6, 6)
             return result
+
+    def _inspect_registration(
+        self,
+        plan: InstallPlan,
+        inspection: ManagedTargetInspection,
+    ) -> _RegistryPlanLike | None:
+        """Verify the prior registry authority before resolution or commitment."""
+
+        record = inspection.record
+        if self._setup_source is None and not (record and record.registry_key):
+            return None
+        if self._registry_backend is None:
+            raise RegistrationConflictError(
+                "Windows installation registration could not be checked. "
+                "Registry integration is unavailable; the installation was preserved."
+            )
+        try:
+            from napari_vipp.installer.uninstall import (
+                registry_plan_from_record,
+                validate_registration_target,
+            )
+
+            previous_plan = None
+            if record is not None and record.registry_key:
+                ownership = inspect_ownership(inspection.target)
+                if (
+                    ownership.record != record
+                    or ownership.state is not OwnershipState.VALID
+                ):
+                    raise StalePreparedTransaction(
+                        "The ownership record changed after it was reviewed."
+                    )
+                previous_plan = registry_plan_from_record(
+                    record, ownership.manifest_sha256
+                )
+                if self._setup_source is None:
+                    raise RegistrationConflictError(
+                        "This setup cannot retain the installation's persistent "
+                        "uninstaller. Use the complete Windows release installer."
+                    )
+            validate_registration_target(
+                self._registry_backend,
+                track=plan.request.track,
+                previous_plan=previous_plan,
+            )
+            return previous_plan
+        except (StalePreparedTransaction, RegistrationConflictError):
+            raise
+        except Exception as exc:
+            raise RegistrationConflictError(
+                "Windows installation registration needs attention before setup "
+                f"can continue: {_redact_text(str(exc))}"
+            ) from exc
 
     def _stage_persistent_setup(
         self,
@@ -4945,6 +5002,7 @@ __all__ = [
     "PackageDisposition",
     "PackageReviewChange",
     "PreparationError",
+    "RegistrationConflictError",
     "PreparedShortcut",
     "PreparedTransaction",
     "ProgressStage",

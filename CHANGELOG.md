@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Check Windows Apps & Features ownership before package review, before starting
+  a managed install, and immediately before committing an upgrade. Preserve stale,
+  modified or foreign entries instead of creating another partially registered
+  upgrade. Unsafe interrupted-setup recovery now offers **Get setup help** with
+  diagnostic guidance instead of a generic failure and ineffective retry loop.
+  Automatic recovery still requires the exact saved old/new registration evidence;
+  matching only a folder or installation ID does not authorize overwriting it.
+
 ## 0.16.0a4 - 2026-10-09
 
 - Restore OME-Zarr 0.4/0.5 image and analysis-dataset exports with ome-zarr

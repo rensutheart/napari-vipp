@@ -215,6 +215,29 @@ def test_ready_and_success_primary_actions_are_unambiguous():
     assert success._controller.calls == ["open"]
 
 
+def test_setup_help_opens_troubleshooting_and_close_does_not_retry(monkeypatch):
+    opened = []
+    monkeypatch.setattr("napari_vipp.installer.gui.webbrowser.open", opened.append)
+    url = "https://example.invalid/installation/#troubleshooting"
+    window = _window(
+        _state(
+            InstallerScreen.BLOCKED,
+            kind=TargetKind.BLOCKED,
+            blocked_action=BlockedAction.OPEN_SETUP_HELP,
+            help_url=url,
+        )
+    )
+    closed = []
+    window._close_requested = lambda: closed.append(True)
+
+    window._primary_requested()
+    window._secondary_requested()
+
+    assert opened == [url]
+    assert closed == [True]
+    assert window._controller.calls == []
+
+
 def test_foreign_canonical_target_retries_without_exposing_custom_location():
     window = _window(_state(InstallerScreen.BLOCKED, kind=TargetKind.FOREIGN))
 
