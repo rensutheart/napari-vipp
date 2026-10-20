@@ -197,6 +197,12 @@ class _MinimumHeightConstraint(QObject):
             self._layout.activate()
             parent = self.parent()
             height = max(self._layout.totalMinimumSize().height(), 0)
+            if parent.width() > 0 and self._layout.hasHeightForWidth():
+                # Maximum-size-policy sections otherwise cap wrapped content at
+                # its width-independent size hint, even when Qt knows its HFW.
+                height = max(
+                    height, self._layout.totalHeightForWidth(parent.width()),
+                )
             if parent.minimumHeight() != height:
                 parent.setMinimumHeight(height)
                 parent.updateGeometry()
