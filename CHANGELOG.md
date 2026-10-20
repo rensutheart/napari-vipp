@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep queued thumbnail work intact when Results Workspace checks whether a
+  workflow can be switched. When a tab action discards obsolete preview work,
+  clear its progress while preserving other tasks' progress. This
+  fixes a stuck "Calculating thumbnail contrast..." indicator and missing
+  previews without changing scientific calculations or cached results.
+
 - Check Windows Apps & Features ownership before package review, before starting
   a managed install, and immediately before committing an upgrade. Preserve stale,
   modified or foreign entries instead of creating another partially registered
