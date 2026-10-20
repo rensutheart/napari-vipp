@@ -256,7 +256,14 @@ def test_numeric_measurement_scope_wraps_completely_in_a_narrow_inspector(qtbot,
         panel.setStyleSheet(
             get_stylesheet("dark") + f"\nQWidget {{ font-size: {font_size}pt; }}"
         )
-        qtbot.wait(20)
+        # Font/layout changes reach this control through posted requests and
+        # its coalesced zero timer. Wait for the complete geometry contract,
+        # not a wall-clock snapshot that may precede the final layout turn.
+        def requested_geometry_ready(expected_font_size=font_size):
+            assert label.font().pointSizeF() == expected_font_size
+            _assert_compact_measurement_scope(panel)
+
+        qtbot.waitUntil(requested_geometry_ready, timeout=3000)
         _assert_compact_measurement_scope(panel)
         assert "Select: eligible numeric measurements" in label.text()
         assert "Deselect: all selected measurements" in label.text()
