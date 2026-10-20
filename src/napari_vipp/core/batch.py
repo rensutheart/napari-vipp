@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -127,6 +128,7 @@ from napari_vipp.core.source_window_planning import plan_exact_source_crop_windo
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.transforms import is_transform_data, save_transform_output
 from napari_vipp.core.workflow import deserialize_workflow
+from napari_vipp.core.workflow_paths import relative_local_path, resolve_local_path
 
 if TYPE_CHECKING:
     from napari_vipp.core.compute_registry import ComputeRegistry
@@ -1319,18 +1321,78 @@ def load_batch_config(path: str | Path) -> BatchConfig:
 
 def save_batch_config(path: str | Path, config: BatchConfig) -> Path:
     target = Path(str(path).strip()).expanduser()
-    document = config.to_dict()
-    if (
-        config.base_dir is not None
-        and target.parent.resolve() != config.base_dir.resolve()
-    ):
-        document["workflow"]["file"] = str(config.resolve_path(config.workflow_file))
-        document["output_dir"] = str(config.resolve_path(config.output_dir))
-        for source_document, source in zip(
-            document["sources"], config.sources, strict=True
-        ):
-            source_document["input_dir"] = str(config.resolve_path(source.input_dir))
-    return atomic_write_json(target, document)
+    return atomic_write_json(target, batch_config_document_for_path(config, target))
+
+
+def transform_batch_config_paths(
+    document: dict[str, object],
+    *,
+    base_dir: str | Path,
+    relative: bool = False,
+    source_base_dir: str | Path | None = None,
+) -> dict[str, object]:
+    """Rebase only executable bindings, preserving revisions and historical evidence.
+
+    ``base_dir`` is the destination config/workflow directory. On Save As,
+    ``source_base_dir`` identifies the original directory of relative bindings.
+    Parameter override keys deliberately address content and selectors, so their
+    identity and values survive relocation without rewriting any scientific data.
+    """
+    result = deepcopy(document)
+
+    def transform(value: object) -> object:
+        if not isinstance(value, str) or not value.strip():
+            return value
+        if relative:
+            return relative_local_path(
+                value, base_dir, source_base_dir=source_base_dir
+            )
+        return resolve_local_path(value, base_dir)
+
+    workflow = result.get("workflow")
+    if isinstance(workflow, dict) and "file" in workflow:
+        workflow["file"] = transform(workflow["file"])
+    if "output_dir" in result:
+        result["output_dir"] = transform(result["output_dir"])
+    for source in result.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        if "input_dir" in source:
+            source["input_dir"] = transform(source["input_dir"])
+        for item in source.get("source_items", []):
+            if not isinstance(item, dict):
+                continue
+            container = item.get("container")
+            if isinstance(container, dict) and "uri" in container:
+                container["uri"] = transform(container["uri"])
+    return result
+
+
+def batch_config_document_for_path(
+    config: BatchConfig,
+    target_path: str | Path,
+    *,
+    workflow_document: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Serialize relative bindings for a saved config or validated attachment.
+
+    A caller supplying ``workflow_document`` must already have validated the
+    attachment against its original graph. The supplied graph is its persisted
+    representation, whose hash and new self-reference are recorded here.
+    """
+    target = Path(target_path).expanduser().resolve()
+    document = transform_batch_config_paths(
+        config.to_dict(),
+        base_dir=target.parent,
+        relative=True,
+        source_base_dir=config.base_dir or target.parent,
+    )
+    if workflow_document is not None:
+        document["workflow"] = {
+            "file": target.name,
+            "sha256": scientific_workflow_hash(workflow_document),
+        }
+    return document
 
 
 def save_batch_manifest(path: str | Path, manifest: BatchManifest) -> Path:
@@ -1615,7 +1677,9 @@ def build_batch_plan(
                     ),
                 ),
             )
-        _verify_configured_source_items(source, source_items)
+        _verify_configured_source_items(
+            source, source_items, base_dir=config.base_dir
+        )
         source_lists[source.node_id] = source_items
         counts[source.title] = len(source_items)
     return _plan_batch_inventory(
@@ -2328,7 +2392,9 @@ def run_batch(
         workflow_path=workflow_path,
         allow_missing_fixed_sources=config.reproduction is not None,
     )
-    profile_workflow, pipeline = _effective_batch_pipeline(workflow, config)
+    profile_workflow, pipeline = _effective_batch_pipeline(
+        workflow, config, workflow_path=workflow_path
+    )
     _validate_compute_request_node_ids(
         pipeline,
         effective_request,
@@ -2409,7 +2475,9 @@ def run_batch(
     }
     item_pipelines: dict[int, PrototypePipeline] = {}
     for index, document in item_workflows.items():
-        restored_item = deserialize_workflow(document)
+        restored_item = _deserialize_batch_workflow(
+            document, config, workflow_path=workflow_path
+        )
         item_pipeline = PrototypePipeline()
         item_pipeline.restore_graph(
             restored_item["nodes"],
@@ -2693,7 +2761,11 @@ def run_batch(
                 execution_result = execute_pipeline_request(
                     PipelineRunRequest(
                         run_id=item_plan.index,
-                        workflow=item_workflows[item_plan.index],
+                        workflow=_batch_runtime_workflow(
+                            item_workflows[item_plan.index],
+                            config,
+                            workflow_path=workflow_path,
+                        ),
                         input_data=None,
                         input_metadata=None,
                         input_name="",
@@ -3407,7 +3479,9 @@ def preflight_batch(
         workflow_path=workflow_path,
         allow_missing_fixed_sources=config.reproduction is not None,
     )
-    _effective_workflow, pipeline = _effective_batch_pipeline(workflow, config)
+    _effective_workflow, pipeline = _effective_batch_pipeline(
+        workflow, config, workflow_path=workflow_path
+    )
     if config.reproduction is not None:
         plan = _build_reproduction_batch_plan(
             workflow,
@@ -3537,7 +3611,9 @@ def _validated_batch_pipeline(
         raise ValueError(
             "Batch config workflow hash does not match the selected workflow."
         )
-    restored = deserialize_workflow(workflow)
+    restored = _deserialize_batch_workflow(
+        workflow, config, workflow_path=workflow_path
+    )
     pipeline = PrototypePipeline()
     # The graph and the durable batch request are validated independently.  A
     # run-scoped override may change execution intent without mutating either
@@ -3566,6 +3642,7 @@ def _validated_batch_pipeline(
     _effective_workflow, effective_pipeline = _effective_batch_pipeline(
         workflow,
         config,
+        workflow_path=workflow_path,
     )
     _validate_effective_batch_output_contract(effective_pipeline, config)
     return pipeline, fixed_source_paths
@@ -3574,6 +3651,8 @@ def _validated_batch_pipeline(
 def _effective_batch_pipeline(
     workflow: object,
     config: BatchConfig,
+    *,
+    workflow_path: str | Path | None = None,
 ) -> tuple[dict[str, object], PrototypePipeline]:
     """Resolve one detached whole-batch graph without editing authored intent."""
 
@@ -3581,7 +3660,9 @@ def _effective_batch_pipeline(
         workflow,
         config.node_execution_overrides,
     )
-    restored = deserialize_workflow(effective_workflow)
+    restored = _deserialize_batch_workflow(
+        effective_workflow, config, workflow_path=workflow_path
+    )
     pipeline = PrototypePipeline()
     pipeline.restore_graph(
         restored["nodes"],
@@ -3590,6 +3671,31 @@ def _effective_batch_pipeline(
         atomic_bypass_profile=bool(config.node_execution_overrides),
     )
     return effective_workflow, pipeline
+
+
+def _deserialize_batch_workflow(
+    workflow: object,
+    config: BatchConfig,
+    *,
+    workflow_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Resolve runtime locators without changing the recorded scientific graph."""
+    return deserialize_workflow(
+        _batch_runtime_workflow(workflow, config, workflow_path=workflow_path)
+    )
+
+
+def _batch_runtime_workflow(
+    workflow: object,
+    config: BatchConfig,
+    *,
+    workflow_path: str | Path | None = None,
+) -> dict[str, Any]:
+    from napari_vipp.core.workflow_paths import transform_workflow_paths
+
+    return transform_workflow_paths(
+        workflow, _fixed_source_base_dir(config, workflow_path)
+    )
 
 
 def _validate_effective_batch_output_contract(
@@ -5279,11 +5385,25 @@ def _resolved_batch_source_item(
 def _verify_configured_source_items(
     source: BatchSourceConfig,
     items: list[_BatchSourceItem],
+    *,
+    base_dir: Path | None = None,
 ) -> None:
     if not source.source_items:
         return
     observed = tuple(item.source_item for item in items if item.source_item is not None)
-    expected_digests = {item.digest for item in source.source_items}
+    # A URI is a locator, not a change to the recorded content or selector.
+    # Normalize both relative and absolute authored locators before comparing
+    # the otherwise exact SourceItem records captured from the current files.
+    expected_digests = {
+        replace(
+            item,
+            container=replace(
+                item.container,
+                uri=resolve_local_path(item.container.uri, base_dir or Path.cwd()),
+            ),
+        ).digest
+        for item in source.source_items
+    }
     observed_digests = {item.digest for item in observed}
     if expected_digests != observed_digests:
         raise ValueError(
@@ -5643,6 +5763,7 @@ __all__ = [
     "atomic_write_json",
     "atomic_write_text",
     "batch_config_hash",
+    "batch_config_document_for_path",
     "apply_batch_item_file_policies",
     "batch_item_file_policy_key",
     "bind_batch_plan_source_items",
@@ -5661,5 +5782,6 @@ __all__ = [
     "save_batch_manifest",
     "scientific_workflow_document",
     "scientific_workflow_hash",
+    "transform_batch_config_paths",
     "validate_batch_config",
 ]

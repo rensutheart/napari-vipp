@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Save local workflow inputs, table datasets, Save Image destinations and batch
+  bindings with paths relative to their workflow/configuration file where
+  possible. Resolve them independently of the launch directory and rebase them
+  during Save As while preserving source revisions and dataset checksums.
+  Cross-drive paths remain absolute; data and environments are not embedded.
+- Keep queued thumbnail work intact when Results Workspace checks whether a
+  workflow can be switched. When a tab action discards obsolete preview work,
+  clear its progress while preserving other tasks' progress. This
+  fixes a stuck "Calculating thumbnail contrast..." indicator and missing
+  previews without changing scientific calculations or cached results.
 - Add a separate CPU **ImageJ Gaussian Blur** for scalar uint8, uint16 and
   finite float32 YX planes, with sigma 0–8.5 pixels. Independent ImageJ 1.54p
   references cover the direct convolution and rounding behavior. Existing

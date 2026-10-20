@@ -19633,6 +19633,322 @@ def test_thumbnail_timer_discards_requests_when_exclusive_owner_arrives(
     widget._closing = False
 
 
+def _queue_thumbnail_busy_for_workflow_switch(qtbot):
+    data = np.arange(64, dtype=np.uint16).reshape(8, 8)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: (
+            widget.graph_view.node_has_thumbnail("input")
+            and widget._active_thumbnail_contrast_run_id is None
+        ),
+        timeout=5_000,
+    )
+    widget.preview_mode_combo.setCurrentText("Off")
+    widget._clear_thumbnail_contrast_limit_state()
+    request = widget._thumbnail_contrast_limit_request(
+        "input",
+        data,
+        widget.pipeline.output_states["input"],
+        "Percentile",
+        "Stack",
+        "image",
+    )
+    assert request is not None
+    widget._queue_thumbnail_contrast_limit_request(request)
+    widget._set_node_thumbnail_statistics_presentation(
+        "input", ThumbnailStatsBadgeKind.PENDING
+    )
+    widget._show_thumbnail_contrast_busy(1, data.size)
+    widget.pipeline_busy_label.setText("Calculating thumbnail contrast...")
+    assert request.key in widget._queued_thumbnail_contrast_limit_requests
+    assert request.key in widget._thumbnail_contrast_identity_refs
+    return widget, request
+
+
+def test_workflow_switch_query_retains_queued_thumbnail_until_dispatch(qtbot):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    scientific_output = widget.pipeline.outputs["input"]
+    scientific_values = scientific_output.copy()
+
+    assert widget._workflow_tab_switch_block_reason() == ""
+
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert request.key in widget._queued_thumbnail_contrast_limit_requests
+    assert widget._pending_thumbnail_contrast_limit_keys == set()
+    assert widget._thumbnail_contrast_busy_visible
+    assert not widget.pipeline_busy_label.isHidden()
+    assert request.key in widget._thumbnail_contrast_identity_refs
+    assert widget._thumbnail_statistics_presentations["input"].kind is (
+        ThumbnailStatsBadgeKind.PENDING
+    )
+    assert widget.pipeline.outputs["input"] is scientific_output
+    np.testing.assert_array_equal(scientific_output, scientific_values)
+
+    # Repeated readiness checks must not cancel the queued presentation work.
+    assert widget._workflow_tab_switch_block_reason() == ""
+    widget._start_thumbnail_contrast_limit_run()
+    QApplication.processEvents()
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert request.key in widget._thumbnail_contrast_limit_cache
+    assert not widget._thumbnail_contrast_busy_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+
+
+def test_blocked_workflow_switch_query_retains_queued_thumbnail(qtbot):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    widget._active_input_histogram_run_id = 821
+    try:
+        assert widget._workflow_tab_switch_block_reason() == (
+            "the histogram calculation finishes"
+        )
+        assert widget._active_input_histogram_run_id == 821
+        assert request.key in widget._queued_thumbnail_contrast_limit_requests
+        assert widget._thumbnail_contrast_busy_visible
+        assert not widget.pipeline_busy_label.isHidden()
+        assert request.key in widget._thumbnail_contrast_identity_refs
+        widget._start_thumbnail_contrast_limit_run()
+        assert request.key in widget._thumbnail_contrast_limit_cache
+        assert widget.pipeline_busy_label.isHidden()
+        assert widget.pipeline_busy_bar.isHidden()
+    finally:
+        widget._active_input_histogram_run_id = None
+
+
+def test_actual_workflow_switch_discards_unstarted_thumbnail_feedback(qtbot):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    previous_session = widget._workflow_tabs.current
+    scientific_output = widget.pipeline.outputs["input"]
+
+    widget._new_workflow()
+
+    assert widget._workflow_tabs.current is not previous_session
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert widget._queued_thumbnail_contrast_limit_requests == {}
+    assert widget._pending_thumbnail_contrast_limit_keys == set()
+    assert not widget._thumbnail_contrast_busy_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert request.key not in previous_session.runtime_cache[
+        "_thumbnail_contrast_identity_refs"
+    ]
+    assert previous_session.pipeline.outputs["input"] is scientific_output
+    widget._start_thumbnail_contrast_limit_run()
+    QApplication.processEvents()
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert widget.pipeline_busy_label.isHidden()
+
+
+def test_explicit_workflow_switch_check_discards_queued_thumbnail_feedback(qtbot):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+
+    assert widget._workflow_tab_switch_block_reason(
+        discard_queued_thumbnails=True
+    ) == ""
+
+    assert widget._queued_thumbnail_contrast_limit_requests == {}
+    assert widget._pending_thumbnail_contrast_limit_keys == set()
+    assert request.key not in widget._thumbnail_contrast_identity_refs
+    assert "input" not in widget._thumbnail_statistics_presentations
+    assert not widget._thumbnail_contrast_busy_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_cancel_button.isHidden()
+    widget._start_thumbnail_contrast_limit_run()
+    QApplication.processEvents()
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert widget.pipeline_busy_label.isHidden()
+
+
+def test_open_results_workspace_preserves_thumbnail_dispatch_after_pipeline(qtbot):
+    from napari_vipp._tests.test_ui_inspector_widget_integration import (
+        _publish_table_output,
+    )
+
+    widget, _request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    widget._discard_pending_thumbnail_contrast_limit_requests()
+    source = widget.pipeline.add_node("table_source")
+    widget.graph_view.add_node(
+        source, widget.graph_view.suggest_append_position("input")
+    )
+    widget._sync_node_input_ports(source.id)
+    widget._sync_node_output_ports(source.id)
+    _publish_table_output(widget, source.id)
+    dialog = widget._results_workspace.open_node(source.id)
+    assert dialog is not None
+    with (
+        QSignalBlocker(widget.preview_mode_combo),
+        QSignalBlocker(widget.thumbnail_scope_combo),
+        QSignalBlocker(widget.thumbnail_contrast_combo),
+    ):
+        widget.preview_mode_combo.setCurrentText("Slice")
+        widget.thumbnail_scope_combo.setCurrentText("Stack")
+        widget.thumbnail_contrast_combo.setCurrentText("Percentile")
+
+    widget._finish_pipeline_update(None, "input volume")
+
+    queued_input_requests = [
+        item
+        for item in widget._queued_thumbnail_contrast_limit_requests.values()
+        if item.node_id == "input"
+    ]
+    assert len(queued_input_requests) == 1
+    request = queued_input_requests[0]
+    assert widget._thumbnail_contrast_busy_visible
+    assert not widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_label.text() == "Calculating thumbnail contrast..."
+    qtbot.waitUntil(
+        lambda: (
+            request.key in widget._thumbnail_contrast_limit_cache
+            and widget._active_thumbnail_contrast_run_id is None
+        ),
+        timeout=5_000,
+    )
+    assert widget.graph_view.node_has_thumbnail("input")
+    assert not widget._thumbnail_contrast_busy_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+
+
+def test_workflow_switch_query_preserves_active_thumbnail_worker(qtbot, monkeypatch):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    monkeypatch.setattr(
+        widget, "_thumbnail_requests_can_run_inline_on_cpu", lambda *_a, **_k: False
+    )
+    widget._start_thumbnail_contrast_limit_run()
+    run_id = widget._active_thumbnail_contrast_run_id
+    assert run_id is not None
+    assert len(pool.workers) == 1
+    try:
+        assert widget._workflow_tab_switch_block_reason() == (
+            "thumbnail contrast calculation finishes"
+        )
+        assert widget._active_thumbnail_contrast_run_id == run_id
+        assert request.key in widget._pending_thumbnail_contrast_limit_keys
+        assert request.key in widget._thumbnail_contrast_identity_refs
+        assert widget._thumbnail_contrast_busy_visible
+        assert not widget.pipeline_busy_label.isHidden()
+        assert not widget.pipeline_busy_bar.isHidden()
+        assert not widget._active_thumbnail_contrast_cancel_event.is_set()
+    finally:
+        pool.workers[0].run()
+    assert widget._active_thumbnail_contrast_run_id is None
+    assert widget.pipeline_busy_label.isHidden()
+
+
+@pytest.mark.parametrize(
+    ("owner_attribute", "owner_value", "reason", "message"),
+    (
+        (
+            "_active_pipeline_run_id",
+            822,
+            "the graph calculation finishes",
+            "Processing graph",
+        ),
+        (
+            "_active_source_load_id",
+            822,
+            "the source load finishes",
+            "Loading image source...",
+        ),
+        (
+            "_pipeline_run_pending",
+            True,
+            "the graph calculation finishes",
+            "Graph calculation queued...",
+        ),
+        (
+            "_source_load_pending",
+            True,
+            "the source load finishes",
+            "Image source load queued...",
+        ),
+        (
+            "_auto_contrast_busy_visible",
+            True,
+            "auto contrast finishes",
+            "Calculating Scale and Offset...",
+        ),
+        (
+            "_source_preview_status_run_id",
+            822,
+            "",
+            "Previewing source...",
+        ),
+        (
+            "_workflow_tab_loading_visible",
+            True,
+            "",
+            "Switching workflow: Other",
+        ),
+    ),
+)
+def test_thumbnail_discard_cleanup_preserves_other_busy_owner(
+    qtbot, owner_attribute, owner_value, reason, message
+):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    setattr(widget, owner_attribute, owner_value)
+    if owner_attribute == "_auto_contrast_busy_visible":
+        widget._active_auto_contrast_run_id = 822
+    widget._set_pipeline_busy(True, None, cancelable=True)
+    widget.pipeline_busy_label.setText(message)
+    try:
+        assert widget._workflow_tab_switch_block_reason() == reason
+        widget._discard_pending_thumbnail_contrast_limit_requests()
+        assert getattr(widget, owner_attribute) == owner_value
+        assert widget._queued_thumbnail_contrast_limit_requests == {}
+        assert not widget._thumbnail_contrast_busy_visible
+        assert not widget.pipeline_busy_label.isHidden()
+        assert not widget.pipeline_busy_bar.isHidden()
+        assert not widget.pipeline_cancel_button.isHidden()
+        assert widget.pipeline_busy_label.text() == message
+        assert request.key not in widget._thumbnail_contrast_identity_refs
+        assert "input" not in widget._thumbnail_statistics_presentations
+    finally:
+        setattr(
+            widget, owner_attribute, False if isinstance(owner_value, bool) else None
+        )
+        widget._active_auto_contrast_run_id = None
+        widget._set_pipeline_busy(False)
+
+
+@pytest.mark.parametrize(
+    "owner_attribute", ("_active_source_load_id", "_auto_contrast_busy_visible")
+)
+def test_thumbnail_completion_preserves_other_busy_owner(qtbot, owner_attribute):
+    widget, request = _queue_thumbnail_busy_for_workflow_switch(qtbot)
+    widget._queued_thumbnail_contrast_limit_requests.clear()
+    widget._pending_thumbnail_contrast_limit_keys.add(request.key)
+    widget._active_thumbnail_contrast_run_id = 823
+    owner_value = True if owner_attribute == "_auto_contrast_busy_visible" else 824
+    setattr(widget, owner_attribute, owner_value)
+    widget._set_pipeline_busy(True, None, cancelable=True)
+    widget.pipeline_busy_label.setText("Another operation is running...")
+    try:
+        widget._on_thumbnail_contrast_limit_finished(
+            ThumbnailContrastLimitResult(
+                823, frozenset((request.key,)), {}, cancelled=True
+            )
+        )
+
+        assert widget._active_thumbnail_contrast_run_id is None
+        assert widget._pending_thumbnail_contrast_limit_keys == set()
+        assert not widget._thumbnail_contrast_busy_visible
+        assert getattr(widget, owner_attribute) == owner_value
+        assert not widget.pipeline_busy_label.isHidden()
+        assert not widget.pipeline_busy_bar.isHidden()
+        assert not widget.pipeline_cancel_button.isHidden()
+        assert widget.pipeline_busy_label.text() == "Another operation is running..."
+    finally:
+        setattr(
+            widget, owner_attribute, False if isinstance(owner_value, bool) else None
+        )
+        widget._set_pipeline_busy(False)
+
+
 def test_active_thumbnail_statistics_clearly_block_timing_actions(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
     qtbot.addWidget(widget)
@@ -30624,7 +30940,7 @@ def test_blocked_workflow_tab_switch_restores_selection_without_loading_feedback
     monkeypatch.setattr(
         widget,
         "_workflow_tab_switch_block_reason",
-        lambda: "the test operation finishes",
+        lambda **_kwargs: "the test operation finishes",
     )
     monkeypatch.setattr(widget, "_set_workflow_tab_loading", record_loading)
     busy_label_hidden_before = widget.pipeline_busy_label.isHidden()
