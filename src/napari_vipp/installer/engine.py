@@ -974,6 +974,7 @@ class ManagedInstallerEngine:
         target: str | Path,
         *,
         shortcut_roots: Sequence[str | Path] = (),
+        expected_wheel_sha256: str = "",
     ) -> RollbackReport:
         """Recover one durable pre-commit journal, if present."""
 
@@ -985,10 +986,18 @@ class ManagedInstallerEngine:
         for root in allowed_shortcut_roots:
             _assert_direct_path(root, "shortcut recovery root")
         journal = _transaction_journal_path(state_root, managed_root)
+        if expected_wheel_sha256:
+            validate_build_target_identity(
+                managed_root, expected_wheel_sha256, state_root=state_root
+            )
         if not journal.is_file():
             return RollbackReport(False, True)
         recovery_id = str(uuid.uuid4())
         with _TargetLock(state_root, managed_root, recovery_id):
+            if expected_wheel_sha256:
+                validate_build_target_identity(
+                    managed_root, expected_wheel_sha256, state_root=state_root
+                )
             return _recover_transaction_journal(
                 journal,
                 managed_root=managed_root,
@@ -1011,6 +1020,7 @@ class ManagedInstallerEngine:
         filesystem = plan.discovery.filesystem
         recovery = self.recover_interrupted(
             filesystem.target,
+            expected_wheel_sha256=plan.request.managed_build_sha256,
             shortcut_roots=tuple(
                 root
                 for root in (
@@ -1123,6 +1133,15 @@ class ManagedInstallerEngine:
             managed_root=inspection.target,
         )
         wheel_digest = _release_wheel_digest(plan.release, cancellation)
+        if wheel_digest:
+            from napari_vipp.installer.wheel_cache import cache_release_wheel
+
+            cache_root = self._known_folder_probe("local_app_data")
+            if cache_root is not None:
+                cache_release_wheel(
+                    replace(plan.release, wheel_sha256=wheel_digest),
+                    Path(cache_root),
+                )
         _emit(
             progress,
             ProgressStage.RESOLVING,
@@ -2160,6 +2179,13 @@ class ManagedInstallerEngine:
         if plan.request.mode is not InstallMode.MANAGED:
             raise PreparationError(
                 "This transactional slice supports managed environments only."
+            )
+        if plan.request.managed_build_sha256 and (
+            plan.release.wheel_path is None
+            or plan.release.wheel_sha256 != plan.request.managed_build_sha256
+        ):
+            raise PreparationError(
+                "The separate GPU environment must be bound to its exact VIPP wheel."
             )
 
     def _run(
@@ -3317,6 +3343,48 @@ def _transaction_journal_path(state_root: Path, target: Path) -> Path:
     return state_root / "transactions" / f"{digest}.json"
 
 
+def validate_build_target_identity(
+    target: Path, wheel_sha256: str, *, state_root: Path
+) -> None:
+    """Refuse shortened-name collisions before touching an existing build.
+
+    The name is only a locator. Neither a valid ownership record nor a pending
+    transaction for a different complete wheel hash authorizes its reuse.
+    """
+    if not _HEX_DIGEST.fullmatch(wheel_sha256):
+        raise PreparationError("The GPU build's complete wheel SHA-256 is invalid.")
+    _assert_direct_path(target, "GPU build location")
+    ownership = inspect_ownership(target)
+    if ownership.state is OwnershipState.VALID and ownership.record is not None:
+        packages = [
+            package for package in ownership.record.packages
+            if package.normalized_name == "napari-vipp"
+        ]
+        if len(packages) != 1 or packages[0].sha256 != wheel_sha256:
+            raise PreparationError(
+                "Another VIPP build occupies this GPU location. Its full wheel "
+                "identity differs; automatic setup left it unchanged."
+            )
+    journal = _transaction_journal_path(state_root, target)
+    if journal.exists() or journal.is_symlink():
+        try:
+            _assert_direct_path(journal, "GPU transaction journal")
+            document = json.loads(journal.read_text(encoding="utf-8"))
+            if (
+                not isinstance(document, dict)
+                or document.get("schema") != "napari-vipp-install-transaction"
+                or document.get("schema_version") != 1
+                or document.get("wheel_sha256") != wheel_sha256
+                or not _same_path(Path(document.get("managed_root", "")), target)
+            ):
+                raise ValueError("different or missing full wheel identity")
+        except (OSError, ValueError, TypeError, InstallerEngineError) as exc:
+            raise PreparationError(
+                "An unfinished GPU setup at this location has a different or "
+                "unverifiable full wheel identity. It was left unchanged."
+            ) from exc
+
+
 def _default_shortcut_roots(
     known_folder_probe: Callable[[str], Path | None],
 ) -> tuple[Path, ...]:
@@ -3434,6 +3502,7 @@ def _write_transaction_journal(
                 else None
             ),
             "managed_root": str(prepared.target),
+            "wheel_sha256": prepared.plan.request.managed_build_sha256 or None,
             "target_preexisting": prepared.target_inspection.target_preexisting,
             "run_directory": str(run_directory),
             "candidate": str(candidate),

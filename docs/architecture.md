@@ -1597,6 +1597,26 @@ changes, such as Combine Channels colour identity, also call
 `_update_thumbnails()` immediately because they affect display but not numeric
 array values.
 
+### In-app GPU setup
+
+GPU diagnostics and installation are separate actions. The Compute setup dialog
+only starts installation after an explicit review/confirmation through the
+existing transactional installer controller. Installation runs in the background;
+it must not change workflow compute policies or block switching workflow tabs.
+
+The Windows CUDA 13 route binds the installed VIPP wheel's SHA256 to a separate
+managed root derived from the Windows LocalAppData Known Folder. This preserves
+both the running CPU environment and installations of other VIPP builds. The
+installer still enforces ownership, package hashes, cancellation/rollback and
+post-install GPU validation. It never substitutes a public package that merely
+has the same version number as a local unreleased build.
+
+The setup dialog retains ownership of its worker until installation or rollback
+finishes, and vetoes normal application closure while that work is active.
+Successful setup can open a new GPU-enabled window; it does not implicitly close
+the original session, transfer unsaved workflows, or claim that its original
+CPU-only interpreter has acquired GPU support.
+
 ### Platform Runtime And Responsive Layout Boundaries
 
 The cache-status RAM provider is selected explicitly before any
@@ -1717,9 +1737,15 @@ Workflow persistence:
   enabled.
 - Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
   tables, environment provenance, benchmark evidence, or YAML.
-- Image Source paths and layer names are serialized as literal parameters;
-  resolved file sources additionally carry canonical SourceItem evidence. Input
-  files are not embedded and paths are not rebased for portable sharing.
+- In-memory graph serialization retains authored parameters. The file-persistence
+  boundary stores local Image Source, Table Source and Save Image paths relative
+  to the saved workflow when the filesystem permits it; attached batch paths use
+  that same base. File loading resolves these bindings against the document's
+  directory, independently of the process working directory. Save As rebases
+  locations without changing selected source revisions, selectors or dataset
+  checksums. Cross-drive/share paths remain absolute. Layer names, historical
+  provenance and embedded measurement-dataset records are not path-rewritten;
+  input bytes and environments are not embedded. This is unreleased behavior.
 - The loader requires the workflow type, accepts schema versions 3, 4, 5, and 6, and
   rejects unknown operations, malformed records, duplicate node ids, invalid
   positions, and dangling or multiply occupied connections. It also rejects

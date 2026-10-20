@@ -250,7 +250,9 @@ def test_blocked_tab_switch_keeps_owner_and_does_not_route_edits_to_target(
     dialog = widget._results_workspace.open_node(first.source.id)
     before = [_analysis_state(case.session) for case in (first, second)]
     monkeypatch.setattr(
-        widget, "_workflow_tab_switch_block_reason", lambda: "calculation finishes"
+        widget,
+        "_workflow_tab_switch_block_reason",
+        lambda **_kwargs: "calculation finishes",
     )
     _browse(dialog, second.session)
     assert widget._workflow_tabs.current is first.session

@@ -278,7 +278,7 @@ def test_macos_uses_honest_apple_gpu_not_enabled_wording_without_cuda_setup():
     assert not presentation.actionable
 
 
-def test_missing_runtime_offers_copy_only_command_then_explicit_verify():
+def test_missing_runtime_offers_guided_setup_and_keeps_command_for_advanced_use():
     command = (
         'python -m pip install "napari-vipp[gpu-cuda13]"; '
         "vipp-compute-doctor --track cuda13"
@@ -294,7 +294,12 @@ def test_missing_runtime_offers_copy_only_command_then_explicit_verify():
 
     assert presentation.state is ComputeSetupState.UNAVAILABLE
     assert presentation.actionable
-    copy_action, verify_action, export_action = presentation.actions
+    setup_action, copy_action, verify_action, export_action = presentation.actions
+    assert setup_action.kind is ComputeSetupActionKind.SETUP_GPU
+    assert setup_action.label == "Set up GPU…"
+    assert setup_action.command == ""
+    assert setup_action.track == "cuda13"
+    assert not setup_action.automatic
     assert copy_action.kind is ComputeSetupActionKind.COPY_COMMAND
     assert copy_action.command == command
     assert not copy_action.automatic
@@ -319,10 +324,32 @@ def test_multiline_repair_command_is_hidden_instead_of_made_copyable():
     assert presentation.tone is ComputeSetupTone.ERROR
     assert presentation.actionable
     assert [action.kind for action in presentation.actions] == [
+        ComputeSetupActionKind.SETUP_GPU,
         ComputeSetupActionKind.VERIFY,
         ComputeSetupActionKind.EXPORT_SUPPORT,
     ]
     assert "hidden" in presentation.details[-1]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_guided_setup_is_not_offered_outside_windows(platform):
+    presentation = present_compute_setup(
+        _report(status=DoctorStatus.UNAVAILABLE, platform=platform)
+    )
+    assert not any(
+        action.kind is ComputeSetupActionKind.SETUP_GPU
+        for action in presentation.actions
+    )
+
+
+def test_guided_setup_not_offered_for_unsupported_python():
+    presentation = present_compute_setup(
+        _report(status=DoctorStatus.UNSUPPORTED, reason_code="python_unsupported")
+    )
+    assert not any(
+        action.kind is ComputeSetupActionKind.SETUP_GPU
+        for action in presentation.actions
+    )
 
 
 @pytest.mark.parametrize(
