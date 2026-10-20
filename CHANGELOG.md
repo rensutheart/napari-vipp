@@ -61,6 +61,9 @@
   the same output can share a natural trunk. Right-click near
   a wire at any zoom and choose **Replace with tunnel...** to convert that
   connection in one undoable edit, reusing its output tunnel when available.
+- Protect image exports from overwriting a file or OME-Zarr store created by
+  another process while an export is being written. Failed no-overwrite saves
+  leave existing outputs intact and do not publish incomplete files.
 
 ## 0.16.0a4 - 2026-10-09
 
