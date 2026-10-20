@@ -106,6 +106,44 @@ def test_reserved_guidance_growth_commits_sibling_geometry_in_current_turn(
     assert section.geometry().bottom() < following.geometry().top()
 
 
+def test_portable_guidance_layout_event_commits_sibling_geometry(qtbot, monkeypatch):
+    from qtpy.QtCore import QEvent, Qt
+    from qtpy.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+    from napari_vipp.ui import inspector
+
+    monkeypatch.setattr(
+        inspector, "_independent_layout_constraints_available", lambda _layout: False,
+    )
+    owner = QWidget()
+    outer = QVBoxLayout(owner)
+    outer.setAlignment(Qt.AlignTop)
+    outer.setSpacing(7)
+    section = inspector.InspectorSection("Registration guidance")
+    content = QVBoxLayout(section.content_widget)
+    note = QLabel("Physical-grid registration guidance")
+    note.setFixedHeight(30)
+    content.addWidget(note)
+    following = QLabel("Registration results")
+    following.setFixedHeight(40)
+    outer.addWidget(section)
+    outer.addWidget(following)
+    for layout in (content, section.layout(), outer):
+        inspector.constrain_layout_minimum_height(layout)
+    qtbot.addWidget(owner)
+    owner.resize(340, 600)
+    owner.show()
+    qtbot.waitUntil(lambda: following.y() > section.y())
+
+    # A late wrapped-height change reaches the portable constraint through its
+    # normal LayoutRequest filter, not an explicit synchronous widget helper.
+    note.setFixedHeight(180)
+    QApplication.sendEvent(section.content_widget, QEvent(QEvent.LayoutRequest))
+    assert note.geometry().bottom() < section.content_widget.height()
+    assert section.content_widget.geometry().bottom() < section.height()
+    assert section.geometry().bottom() < following.geometry().top()
+
+
 def _publish(widget, node):
     transform = _transform()
     diagnostics = TableData(("time", "overlap"), ((0, 0.95),),

@@ -4,6 +4,8 @@
 
 ## 0.16.0a5 - 2026-10-20
 
+- Keep registration inspector sections from overlapping when help text grows
+  in a narrow panel.
 - Keep bounded local autosave working copies of named and unnamed workflow
   tabs. Offer interrupted sessions as new unsaved recovered tabs without
   overwriting the originals or calculating automatically. Preserve resolved

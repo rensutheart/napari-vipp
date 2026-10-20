@@ -19,6 +19,7 @@ VIPP 0.16.0a5 focuses on keeping workflows safe, moving projects between folders
 
 ## Graph and preview improvements
 
+- Keep registration inspector sections from overlapping when help text grows in a narrow panel.
 - Wires from distinct output ports use separate lanes. Bounded background routing prefers clear local paths and avoids unnecessary staircases while retaining card clearance; complex routing is cancellable rather than blocking editing.
 - Convert wires to named tunnels, a tunnel input back to a wire, or all subscribers back to wires as one undoable edit, preserving connections and calculated results.
 - Reopen a minimized floating VIPP window from the original napari Plugins menu. Native Linux/macOS window-manager parity is not inferred from Windows checks.

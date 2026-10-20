@@ -186,6 +186,7 @@ class _MinimumHeightConstraint(QObject):
     def _sync_height(self) -> None:
         if self._syncing:
             return
+        height_changed = False
         self._syncing = True
         try:
             self._layout.activate()
@@ -194,8 +195,14 @@ class _MinimumHeightConstraint(QObject):
             if parent.minimumHeight() != height:
                 parent.setMinimumHeight(height)
                 parent.updateGeometry()
+                height_changed = True
         finally:
             self._syncing = False
+        if height_changed:
+            # A LayoutRequest can grow this widget after its enclosing layout
+            # already positioned the following row. Commit that pending height
+            # bottom-up, just as an explicit reserved-height update does.
+            sync_layout_ancestor_geometry(parent)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if event.type() in {QEvent.LayoutRequest, QEvent.Resize, QEvent.Show}:
