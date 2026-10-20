@@ -31450,6 +31450,41 @@ def test_deferred_pipeline_refresh_remains_owned_by_origin_workflow_tab(
     assert not origin.runtime_cache["_collection_batch_graph_refresh_pending"]
 
 
+def test_terminal_close_waits_for_gpu_setup_without_touching_workflows(
+    qtbot, monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    calls = []
+
+    class Setup:
+        gpu_setup_running = True
+
+        def show(self):
+            calls.append("show")
+
+        def raise_(self):
+            calls.append("raise")
+
+    widget._compute_setup_dialog = Setup()
+    monkeypatch.setattr(
+        widget, "_confirm_close_dirty_workflow_tabs",
+        lambda: pytest.fail("GPU setup must finish before workflow close prompts"),
+    )
+    current = widget._workflow_tabs.current
+    event = QCloseEvent()
+
+    widget.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert not widget._closing
+    assert widget._workflow_tabs.current is current
+    assert "GPU setup is still running" in widget.status_label.text()
+    assert calls == ["show", "raise"]
+    widget._compute_setup_dialog = None
+    monkeypatch.setattr(widget, "_confirm_close_dirty_workflow_tabs", lambda: True)
+
+
 def test_terminal_close_checks_active_batch_before_dirty_tabs(
     qtbot,
     monkeypatch,

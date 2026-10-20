@@ -3898,6 +3898,17 @@ class VippWidget(QWidget):
         if self._closing:
             super().closeEvent(event)
             return
+        setup = self._compute_setup_dialog
+        if setup is not None and getattr(setup, "gpu_setup_running", False):
+            self._set_status(
+                "GPU setup is still running. Finish it, or cancel it in Compute "
+                "setup and wait for cancellation to finish before closing VIPP.",
+                severity=MessageSeverity.INFO,
+            )
+            setup.show()
+            setup.raise_()
+            event.ignore()
+            return
         if (
             self._collection_batch_running
             or self._pending_collection_batch_start is not None

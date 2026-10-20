@@ -1636,6 +1636,26 @@ changes, such as Combine Channels colour identity, also call
 `_update_thumbnails()` immediately because they affect display but not numeric
 array values.
 
+### In-app GPU setup
+
+GPU diagnostics and installation are separate actions. The Compute setup dialog
+only starts installation after an explicit review/confirmation through the
+existing transactional installer controller. Installation runs in the background;
+it must not change workflow compute policies or block switching workflow tabs.
+
+The Windows CUDA 13 route binds the installed VIPP wheel's SHA256 to a separate
+managed root derived from the Windows LocalAppData Known Folder. This preserves
+both the running CPU environment and installations of other VIPP builds. The
+installer still enforces ownership, package hashes, cancellation/rollback and
+post-install GPU validation. It never substitutes a public package that merely
+has the same version number as a local unreleased build.
+
+The setup dialog retains ownership of its worker until installation or rollback
+finishes, and vetoes normal application closure while that work is active.
+Successful setup can open a new GPU-enabled window; it does not implicitly close
+the original session, transfer unsaved workflows, or claim that its original
+CPU-only interpreter has acquired GPU support.
+
 ### Platform Runtime And Responsive Layout Boundaries
 
 The cache-status RAM provider is selected explicitly before any

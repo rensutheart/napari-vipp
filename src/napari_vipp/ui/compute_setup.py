@@ -40,11 +40,12 @@ class ComputeSetupTone(StrEnum):
 
 
 class ComputeSetupActionKind(StrEnum):
-    """Actions a controller may implement without granting install authority."""
+    """Explicit actions; setup opens a review before granting install authority."""
 
     VERIFY = "verify"
     COPY_COMMAND = "copy_command"
     EXPORT_SUPPORT = "export_support"
+    SETUP_GPU = "setup_gpu"
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,6 +371,24 @@ def present_compute_setup(
     details.extend(report.details)
 
     actions: list[ComputeSetupAction] = []
+    guided_setup = report.platform == "win32" and report.status in {
+        DoctorStatus.UNAVAILABLE,
+        DoctorStatus.DEGRADED,
+        DoctorStatus.MISCONFIGURED,
+    }
+    if guided_setup:
+        actions.append(
+            ComputeSetupAction(
+                action_id="open_gpu_setup",
+                kind=ComputeSetupActionKind.SETUP_GPU,
+                label=(
+                    "Set up GPU…"
+                    if report.status is DoctorStatus.UNAVAILABLE
+                    else "Repair GPU setup…"
+                ),
+                track="cuda13",
+            )
+        )
     repair_command = str(report.repair_command).strip()
     if repair_command:
         if _is_safe_single_line_command(repair_command):
@@ -412,9 +431,14 @@ def present_compute_setup(
         reason_code=report.reason_code,
         track=report.track,
         next_step=(
-            f"Next step: {report.guidance.title}. {report.guidance.summary}"
-            if report.guidance is not None
-            else ""
+            "Use GPU setup below to install and verify the GPU components in "
+            "a separate VIPP installation. Your current work can stay open."
+            if guided_setup
+            else (
+                f"Next step: {report.guidance.title}. {report.guidance.summary}"
+                if report.guidance is not None
+                else ""
+            )
         ),
         check_rows=_completed_check_rows(report),
         details=tuple(details),
