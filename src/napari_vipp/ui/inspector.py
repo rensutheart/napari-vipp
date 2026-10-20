@@ -172,14 +172,16 @@ def sync_layout_ancestor_geometry(widget: QWidget) -> None:
 
 
 class _MinimumHeightConstraint(QObject):
-    """Qt < 6.10 equivalent of a vertical-only minimum layout constraint."""
+    """Commit vertical-only layout changes and their ancestor geometry."""
 
-    def __init__(self, layout: QLayout) -> None:
+    def __init__(self, layout: QLayout, *, native: bool = False) -> None:
         parent = layout.parentWidget()
         super().__init__(parent)
         self._layout = layout
         self._syncing = False
-        layout.setSizeConstraint(QLayout.SetNoConstraint)
+        self._reserved_height = parent.minimumHeight()
+        if not native:
+            layout.setSizeConstraint(QLayout.SetNoConstraint)
         parent.installEventFilter(self)
         self._sync_height()
 
@@ -195,7 +197,10 @@ class _MinimumHeightConstraint(QObject):
             if parent.minimumHeight() != height:
                 parent.setMinimumHeight(height)
                 parent.updateGeometry()
-                height_changed = True
+            # Native Qt can change the minimum before delivering Resize. Track
+            # the previous reservation rather than only our own setter calls.
+            height_changed = self._reserved_height != height
+            self._reserved_height = height
         finally:
             self._syncing = False
         if height_changed:
@@ -223,10 +228,12 @@ def constrain_layout_minimum_height(layout: QLayout) -> None:
     layout._vipp_minimum_height_state = (
         layout.sizeConstraint(), parent.minimumSize(),
     )
-    if _independent_layout_constraints_available(layout):
+    native = _independent_layout_constraints_available(layout)
+    if native:
         layout.setSizeConstraints(QLayout.SetNoConstraint, QLayout.SetMinimumSize)
-    else:
-        parent._vipp_minimum_height_constraint = _MinimumHeightConstraint(layout)
+    parent._vipp_minimum_height_constraint = _MinimumHeightConstraint(
+        layout, native=native,
+    )
 
 
 def release_layout_minimum_height(layout: QLayout) -> None:

@@ -106,15 +106,17 @@ def test_reserved_guidance_growth_commits_sibling_geometry_in_current_turn(
     assert section.geometry().bottom() < following.geometry().top()
 
 
-def test_portable_guidance_layout_event_commits_sibling_geometry(qtbot, monkeypatch):
+@pytest.mark.parametrize(
+    "registration_layout_compat", ("native", "portable"), indirect=True,
+)
+def test_guidance_layout_event_commits_sibling_geometry(
+    qtbot, monkeypatch, registration_layout_compat,
+):
     from qtpy.QtCore import QEvent, Qt
     from qtpy.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
     from napari_vipp.ui import inspector
 
-    monkeypatch.setattr(
-        inspector, "_independent_layout_constraints_available", lambda _layout: False,
-    )
     owner = QWidget()
     outer = QVBoxLayout(owner)
     outer.setAlignment(Qt.AlignTop)
@@ -135,13 +137,37 @@ def test_portable_guidance_layout_event_commits_sibling_geometry(qtbot, monkeypa
     owner.show()
     qtbot.waitUntil(lambda: following.y() > section.y())
 
-    # A late wrapped-height change reaches the portable constraint through its
+    # A late wrapped-height change reaches the constraint through its
     # normal LayoutRequest filter, not an explicit synchronous widget helper.
     note.setFixedHeight(180)
     QApplication.sendEvent(section.content_widget, QEvent(QEvent.LayoutRequest))
     assert note.geometry().bottom() < section.content_widget.height()
     assert section.content_widget.geometry().bottom() < section.height()
     assert section.geometry().bottom() < following.geometry().top()
+
+    note.setFixedHeight(30)
+    QApplication.sendEvent(section.content_widget, QEvent(QEvent.LayoutRequest))
+    assert section.height() < 180
+    assert section.geometry().bottom() < following.geometry().top()
+    # Stable reservations must not keep invalidating/reposting their ancestors.
+    calls = []
+    original = inspector.sync_layout_ancestor_geometry
+
+    def record_sync(widget):
+        calls.append(widget)
+        original(widget)
+
+    monkeypatch.setattr(inspector, "sync_layout_ancestor_geometry", record_sync)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert not calls
+
+    for layout in (content, section.layout(), outer):
+        constraint, minimum_size = layout._vipp_minimum_height_state
+        inspector.release_layout_minimum_height(layout)
+        assert not hasattr(layout.parentWidget(), "_vipp_minimum_height_constraint")
+        assert layout.sizeConstraint() == constraint
+        assert layout.parentWidget().minimumSize() == minimum_size
 
 
 def _publish(widget, node):
