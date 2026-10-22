@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Protocol
@@ -43,6 +45,50 @@ class _ConsoleReporter:
 
     def close(self) -> None:
         return
+
+
+class _TimingReporter:
+    """Retain monotonic stage durations in the existing child diagnostic log."""
+
+    def __init__(self, reporter: StartupReporter) -> None:
+        self._reporter = reporter
+        self._started = time.perf_counter()
+        self._previous_at = self._started
+        self._previous_stage: str | None = None
+        self._cpu_started = time.process_time()
+
+    def _record(self, stage: str) -> None:
+        now = time.perf_counter()
+        record = {
+            "stage": stage,
+            "elapsed_seconds": round(now - self._started, 6),
+            "process_cpu_seconds": round(time.process_time() - self._cpu_started, 6),
+            "previous_stage": self._previous_stage,
+            "previous_stage_seconds": round(now - self._previous_at, 6),
+        }
+        if sys.stderr is not None:
+            print(
+                f"VIPP startup timing: {json.dumps(record, separators=(',', ':'))}",
+                file=sys.stderr,
+                flush=True,
+            )
+        self._previous_stage = stage
+        self._previous_at = now
+
+    def progress(self, stage: str, message: str | None = None) -> None:
+        self._record(stage)
+        self._reporter.progress(stage, message)
+
+    def ready(self, message: str = "VIPP is ready") -> None:
+        self._record("ready")
+        self._reporter.ready(message)
+
+    def failure(self, message: str, *, error: str = "") -> None:
+        self._record("failure")
+        self._reporter.failure(message, error=error)
+
+    def close(self) -> None:
+        self._reporter.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,6 +202,10 @@ def run_application(
     reporter.ready("VIPP is ready")
     reporter.close()
 
+    from napari_vipp.ui.reader_warmup import schedule_reader_warmup
+
+    schedule_reader_warmup()
+
     if smoke_exit_after_ready:
         # Installer CI uses a real Cocoa event loop and then asks it to stop
         # normally.  This catches native Qt teardown failures without adding a
@@ -173,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     profile = LaunchProfile.parse(args.profile)
     try:
-        reporter = _make_reporter(args)
+        reporter = _TimingReporter(_make_reporter(args))
     except Exception as exc:
         if sys.stderr is not None:
             print(f"VIPP startup channel error: {exc}", file=sys.stderr)

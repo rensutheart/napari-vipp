@@ -20,7 +20,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -31,6 +30,12 @@ from typing import Protocol
 from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import url2pathname
 
+from napari_vipp.installer.file_ops import (
+    ATOMIC_REPLACE_RETRY_DELAYS as _ATOMIC_REPLACE_RETRY_DELAYS,
+)
+from napari_vipp.installer.file_ops import (
+    retry_windows_file_operation as _retry_windows_file_operation,
+)
 from napari_vipp.installer.models import (
     ComputeTrack,
     InstallMode,
@@ -72,8 +77,9 @@ _CPU_RESOLUTION_TEMP_MIN_FREE_BYTES = 1024**3
 _CUDA_RESOLUTION_TEMP_MIN_FREE_BYTES = 5 * 1024**3
 _MAX_RUN_DIRECTORIES = 25
 _MAX_STALE_LOCKS = 10
-_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32, 33})
-_ATOMIC_REPLACE_RETRY_DELAYS = (0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.0, 1.0)
+# Desktop shortcut readers can outlive a journal writer's short retry window.
+# Wait at most another 27 seconds rather than discard an accepted environment.
+_SHORTCUT_FILE_RETRY_DELAYS = (*_ATOMIC_REPLACE_RETRY_DELAYS, 2.0, 5.0, 10.0, 10.0)
 _MAX_CONSOLE_RECORD_CHARS = 16_384
 _SHORTCUT_SCRIPT = r"""param(
     [Parameter(Mandatory=$true)][string]$Destination,
@@ -2111,10 +2117,10 @@ class ManagedInstallerEngine:
                         )
                     backup = None
                 temporary = shortcut.destination.parent / (
-                    f".{shortcut.destination.stem}.{run_id}.tmp.lnk"
+                    f".{shortcut.destination.stem}.{run_id}.tmp"
                 )
                 try:
-                    temporary.unlink()
+                    _unlink_with_retry(temporary)
                 except FileNotFoundError:
                     pass
                 active_temporary = temporary
@@ -2143,6 +2149,10 @@ class ManagedInstallerEngine:
                     raise InstallerEngineError(
                         f"The VIPP shortcut icon is missing: {icon}"
                     )
+                # Render the .lnk privately so Desktop/Start Menu consumers do
+                # not encounter it before publication. The final staging file
+                # stays on the destination volume for an atomic replacement.
+                rendered = backup_directory / f"new-{index}.lnk"
                 self._run_checked(
                     (
                         "powershell.exe",
@@ -2154,7 +2164,7 @@ class ManagedInstallerEngine:
                         "-File",
                         str(script),
                         "-Destination",
-                        str(temporary),
+                        str(rendered),
                         "-Target",
                         str(target),
                         "-WorkingDirectory",
@@ -2167,10 +2177,14 @@ class ManagedInstallerEngine:
                     log=log,
                     cancellation=cancellation,
                 )
-                if not temporary.is_file() or temporary.is_symlink():
+                if not rendered.is_file() or rendered.is_symlink():
                     raise InstallerEngineError(
-                        f"Windows did not create the expected shortcut: {temporary}"
+                        f"Windows did not create the expected shortcut: {rendered}"
                     )
+                with rendered.open("rb") as source, temporary.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+                    output.flush()
+                    os.fsync(output.fileno())
                 mutations.append(
                     _ShortcutMutation(
                         prepared=shortcut,
@@ -2183,7 +2197,7 @@ class ManagedInstallerEngine:
         except Exception:
             if active_temporary is not None:
                 try:
-                    active_temporary.unlink()
+                    _unlink_with_retry(active_temporary)
                 except FileNotFoundError:
                     pass
             _rollback_shortcuts(tuple(mutations))
@@ -3051,7 +3065,7 @@ def _commit_persistent_setup(mutation: _SetupMutation) -> None:
         raise StalePreparedTransaction(
             "The staged persistent setup program changed before publication."
         )
-    os.replace(mutation.temporary, mutation.destination)
+    _replace_with_retry(mutation.temporary, mutation.destination)
     mutation.committed = True
 
 
@@ -3101,7 +3115,7 @@ def _commit_shortcuts(mutations: tuple[_ShortcutMutation, ...]) -> None:
                 raise StalePreparedTransaction(
                     "The shortcut removal staging path is no longer empty."
                 )
-            os.replace(destination, mutation.temporary)
+            _replace_shortcut_with_retry(destination, mutation.temporary)
             mutation.committed = True
             continue
         if (
@@ -3112,7 +3126,7 @@ def _commit_shortcuts(mutations: tuple[_ShortcutMutation, ...]) -> None:
             raise StalePreparedTransaction(
                 "A staged VIPP shortcut changed before it could be published."
             )
-        os.replace(mutation.temporary, mutation.prepared.destination)
+        _replace_shortcut_with_retry(mutation.temporary, mutation.prepared.destination)
         mutation.committed = True
 
 
@@ -3159,7 +3173,7 @@ def _complete_committed_shortcuts(
                     try:
                         mutation.temporary.lstat()
                     except FileNotFoundError:
-                        os.replace(destination, mutation.temporary)
+                        _replace_shortcut_with_retry(destination, mutation.temporary)
                     else:
                         raise OSError(
                             "both the old shortcut and its staged removal exist"
@@ -3175,7 +3189,7 @@ def _complete_committed_shortcuts(
                     != mutation.prepared.prior_sha256
                 ):
                     raise OSError("the staged removed shortcut changed")
-                mutation.temporary.unlink()
+                _unlink_with_retry(mutation.temporary)
                 continue
             if (
                 authority is None
@@ -3198,7 +3212,7 @@ def _complete_committed_shortcuts(
                 and not mutation.temporary.is_symlink()
                 and _sha256_file(mutation.temporary, None) == mutation.new_sha256
             ):
-                os.replace(mutation.temporary, destination)
+                _replace_shortcut_with_retry(mutation.temporary, destination)
                 continue
             raise OSError("neither the committed nor staged shortcut is intact")
         except (InstallerEngineError, OSError) as exc:
@@ -3234,15 +3248,15 @@ def _rollback_shortcuts(
                         raise OSError(
                             "the removed shortcut bytes changed before restoration"
                         )
-                    os.replace(mutation.temporary, destination)
+                    _replace_shortcut_with_retry(mutation.temporary, destination)
                 elif mutation.backup is not None:
-                    os.replace(mutation.backup, destination)
+                    _replace_shortcut_with_retry(mutation.backup, destination)
                 elif (
                     destination.is_file()
                     and not destination.is_symlink()
                     and _sha256_file(destination, None) == mutation.new_sha256
                 ):
-                    destination.unlink()
+                    _unlink_with_retry(destination)
                     removed.append(destination)
                 else:
                     raise OSError("the new shortcut changed before it could be removed")
@@ -3261,13 +3275,15 @@ def _rollback_shortcuts(
                         try:
                             destination.lstat()
                         except FileNotFoundError:
-                            os.replace(mutation.temporary, destination)
+                            _replace_shortcut_with_retry(
+                                mutation.temporary, destination,
+                            )
                         else:
                             raise OSError(
                                 "both the removed shortcut and its destination exist"
                             )
                     else:
-                        mutation.temporary.unlink()
+                        _unlink_with_retry(mutation.temporary)
                         removed.append(mutation.temporary)
                 else:
                     raise OSError("the staged shortcut changed unexpectedly")
@@ -3705,7 +3721,7 @@ def _recover_transaction_journal(
                     and _sha256_file(setup_mutation.temporary, None)
                     == setup_mutation.new_sha256
                 ):
-                    os.replace(
+                    _replace_with_retry(
                         setup_mutation.temporary,
                         setup_mutation.destination,
                     )
@@ -4453,18 +4469,19 @@ def _atomic_text(path: Path, text: str) -> None:
 def _replace_with_retry(source: Path, destination: Path) -> None:
     """Bound transient Windows scanner/share locks around an atomic replace."""
 
-    for attempt in range(len(_ATOMIC_REPLACE_RETRY_DELAYS) + 1):
-        try:
-            os.replace(source, destination)
-            return
-        except OSError as exc:
-            transient = os.name == "nt" and (
-                getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
-                or exc.errno in {13, 16}
-            )
-            if not transient or attempt == len(_ATOMIC_REPLACE_RETRY_DELAYS):
-                raise
-            time.sleep(_ATOMIC_REPLACE_RETRY_DELAYS[attempt])
+    _retry_windows_file_operation(lambda: os.replace(source, destination))
+
+
+def _unlink_with_retry(path: Path) -> None:
+    """Allow a briefly open staged shortcut to be cleaned up safely."""
+
+    _retry_windows_file_operation(path.unlink, delays=_SHORTCUT_FILE_RETRY_DELAYS)
+
+
+def _replace_shortcut_with_retry(source: Path, destination: Path) -> None:
+    _retry_windows_file_operation(
+        lambda: os.replace(source, destination), delays=_SHORTCUT_FILE_RETRY_DELAYS,
+    )
 
 
 def _validate_resolution_temp_capacity(

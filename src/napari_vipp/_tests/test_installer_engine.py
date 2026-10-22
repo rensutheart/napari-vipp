@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import uuid
 from dataclasses import replace
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from napari_vipp.installer import engine as engine_module
+from napari_vipp.installer import file_ops as file_ops_module
 from napari_vipp.installer import uninstall as uninstall_module
 from napari_vipp.installer.engine import (
     AuthorizationError,
@@ -816,6 +818,12 @@ def test_shortcuts_are_branded_staged_after_acceptance_and_atomically_owned(
     )
     assert powershell_index > acceptance_index
     shortcut_call = calls[powershell_index]
+    # A .lnk is rendered privately; the same-volume publication file has a
+    # neutral suffix rather than appearing as another Desktop shortcut.
+    assert Path(shortcut_call[shortcut_call.index("-Destination") + 1]).parent == (
+        result.log_path.parent / "shortcut-backups"
+    )
+    assert not tuple(desktop.glob("*.tmp*"))
     assert Path(shortcut_call[shortcut_call.index("-WorkingDirectory") + 1]) == (
         tmp_path / "Documents"
     )
@@ -840,6 +848,41 @@ def test_shortcuts_are_branded_staged_after_acceptance_and_atomically_owned(
             assert icon.name == "vipp-mark.ico"
     assert '$shortcut.Arguments = "--desktop"' in engine_module._SHORTCUT_SCRIPT
     assert '$shortcut.IconLocation = "$IconPath,0"' in engine_module._SHORTCUT_SCRIPT
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows shortcut rendering")
+def test_native_shortcut_is_rendered_privately_before_atomic_publication(tmp_path):
+    class NativeShortcutRunner(_FakeRunner):
+        def run(self, argv, *, cancellation=None, env=None, cwd=None):
+            if str(argv[0]).casefold() != "powershell.exe":
+                return super().run(argv, cancellation=cancellation, env=env, cwd=cwd)
+            self.calls.append(tuple(str(value) for value in argv))
+            completed = subprocess.run(
+                argv, cwd=cwd, env=env, capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=30, check=False,
+            )
+            return CommandResult(
+                completed.returncode, completed.stdout, completed.stderr,
+            )
+
+    desktop = tmp_path / "Desktop with spaces"
+    desktop.mkdir()
+    runner = NativeShortcutRunner()
+    engine = _engine(tmp_path, runner)
+    prepared = engine.prepare(
+        _plan(tmp_path / "managed", _release(), shortcut_directory=desktop)
+    )
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.succeeded, result.technical_error
+    contents = (desktop / "VIPP.lnk").read_bytes()
+    # Native Shell Link header, rather than the simulated runner's plain text.
+    assert contents[:4] == b"\x4c\x00\x00\x00"
+    render = next(call for call in runner.calls if call[0] == "powershell.exe")
+    rendered = Path(render[render.index("-Destination") + 1])
+    assert rendered.is_relative_to(result.log_path.parent)
+    assert rendered.read_bytes() == contents
+    assert tuple(path.name for path in desktop.iterdir()) == ("VIPP.lnk",)
 
 
 def test_foreign_shortcut_is_never_overwritten(tmp_path):
@@ -1889,13 +1932,177 @@ def test_atomic_journal_replace_retries_transient_windows_scanner_lock(
 
     monkeypatch.setattr(engine_module.os, "name", "nt")
     monkeypatch.setattr(engine_module.os, "replace", transient_then_replace)
-    monkeypatch.setattr(engine_module.time, "sleep", delays.append)
+    monkeypatch.setattr(file_ops_module.time, "sleep", delays.append)
 
     engine_module._replace_with_retry(source, destination)
 
     assert destination.read_text(encoding="utf-8") == "durable journal"
     assert len(attempts) == 4
     assert delays == list(engine_module._ATOMIC_REPLACE_RETRY_DELAYS[:3])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
+def test_ownership_publication_retries_windows_lock_and_keeps_previous_bytes(
+    tmp_path, monkeypatch,
+):
+    target = tmp_path / "managed"
+    old = _record(target)
+    updated = replace(old, updated_at=datetime.now(UTC).isoformat())
+    previous_bytes = inspect_ownership(target).path.read_bytes()
+    original = engine_module.os.replace
+    attempts = []
+
+    def briefly_locked(source, destination):
+        if Path(destination).name == "ownership.json":
+            attempts.append(source)
+            if len(attempts) <= 3:
+                assert Path(destination).read_bytes() == previous_bytes
+                error = PermissionError(13, "ownership record briefly open")
+                error.winerror = 32
+                raise error
+        return original(source, destination)
+
+    monkeypatch.setattr(engine_module.os, "replace", briefly_locked)
+    monkeypatch.setattr(file_ops_module.time, "sleep", lambda _seconds: None)
+    write_ownership_record(target, updated)
+
+    assert len(attempts) == 4
+    assert inspect_ownership(target).record == updated
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
+@pytest.mark.parametrize("winerror", [5, 32, 33])
+@pytest.mark.parametrize("updating", [False, True])
+def test_shortcut_publication_retries_brief_windows_lock(
+    tmp_path, monkeypatch, winerror, updating,
+):
+    target = tmp_path / "managed"
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    shortcut = desktop / "VIPP.lnk"
+    if updating:
+        shortcut.write_bytes(b"previous owned shortcut")
+        _record(target, shortcut=shortcut)
+    engine = _engine(tmp_path, _FakeRunner())
+    prepared = engine.prepare(_plan(target, _release(), shortcut_directory=desktop))
+    original = engine_module.os.replace
+    attempts = []
+
+    def briefly_locked(source, destination):
+        if Path(source).name.endswith(".tmp") and Path(destination) == shortcut:
+            attempts.append(source)
+            if len(attempts) <= 3:
+                error = PermissionError(13, "shortcut briefly open", str(source))
+                error.winerror = winerror
+                raise error
+        return original(source, destination)
+
+    monkeypatch.setattr(engine_module.os, "replace", briefly_locked)
+    monkeypatch.setattr(file_ops_module.time, "sleep", lambda _seconds: None)
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.succeeded
+    assert len(attempts) == 4
+    current = inspect_ownership(target).record
+    assert current is not None
+    assert current.shortcuts[0].sha256 == (
+        hashlib.sha256(shortcut.read_bytes()).hexdigest()
+    )
+    assert current.shortcuts[0].target == result.launcher_path
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_shortcut_rollback_retries_brief_windows_lock(
+    tmp_path, monkeypatch, after_commit,
+):
+    target = tmp_path / "managed"
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    shortcut = desktop / "VIPP.lnk"
+    old_bytes = b"previous owned shortcut"
+    shortcut.write_bytes(old_bytes)
+    old = _record(target, shortcut=shortcut)
+    engine = _engine(tmp_path, _FakeRunner())
+    prepared = engine.prepare(_plan(target, _release(), shortcut_directory=desktop))
+    original_journal = engine_module._write_transaction_journal
+    original_replace = engine_module.os.replace
+    original_unlink = Path.unlink
+    attempts = []
+
+    def fail_after_staging(*args, **kwargs):
+        phase = "shortcuts_committed" if after_commit else "shortcuts_staged"
+        if kwargs["phase"] == phase:
+            raise OSError("simulated failure before activation")
+        return original_journal(*args, **kwargs)
+
+    def check_lock(path):
+        attempts.append(path)
+        if len(attempts) <= 3:
+            error = PermissionError(13, "shortcut briefly open", str(path))
+            error.winerror = 32
+            raise error
+
+    def restore_backup(source, destination):
+        if Path(source).parent.name == "shortcut-backups":
+            check_lock(source)
+        return original_replace(source, destination)
+
+    def remove_staged(path, *args, **kwargs):
+        if path.name.endswith(".tmp") and path.exists():
+            check_lock(path)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "_write_transaction_journal", fail_after_staging)
+    monkeypatch.setattr(engine_module.os, "replace", restore_backup)
+    monkeypatch.setattr(Path, "unlink", remove_staged)
+    monkeypatch.setattr(file_ops_module.time, "sleep", lambda _seconds: None)
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.status is InstallStatus.FAILED
+    assert result.rollback.completed
+    assert len(attempts) == 4
+    assert shortcut.read_bytes() == old_bytes
+    assert inspect_ownership(target).record == old
+    assert not tuple(desktop.glob("*.tmp*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
+@pytest.mark.parametrize("error_number", [13, 22])
+def test_shortcut_permanent_lock_or_other_error_keeps_previous_install(
+    tmp_path, monkeypatch, error_number,
+):
+    target = tmp_path / "managed"
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    shortcut = desktop / "VIPP.lnk"
+    old_bytes = b"previous owned shortcut"
+    shortcut.write_bytes(old_bytes)
+    old = _record(target, shortcut=shortcut)
+    engine = _engine(tmp_path, _FakeRunner())
+    prepared = engine.prepare(_plan(target, _release(), shortcut_directory=desktop))
+    original = engine_module.os.replace
+    attempts = []
+
+    def cannot_publish(source, destination):
+        if Path(source).name.endswith(".tmp") and Path(destination) == shortcut:
+            attempts.append(source)
+            error = OSError(error_number, "cannot publish shortcut", str(source))
+            if error_number == 13:
+                error.winerror = 32
+            raise error
+        return original(source, destination)
+
+    monkeypatch.setattr(engine_module.os, "replace", cannot_publish)
+    monkeypatch.setattr(file_ops_module.time, "sleep", lambda _seconds: None)
+    result = engine.apply(prepared, engine.authorize(prepared, confirmed=True))
+
+    assert result.status is InstallStatus.FAILED
+    assert result.rollback.completed
+    expected = len(engine_module._SHORTCUT_FILE_RETRY_DELAYS) + 1
+    assert len(attempts) == (expected if error_number == 13 else 1)
+    assert shortcut.read_bytes() == old_bytes
+    assert inspect_ownership(target).record == old
 
 
 def test_resolution_temp_reserve_is_track_aware_on_low_system_drive(

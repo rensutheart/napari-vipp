@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.16.0a6 - 2026-10-22
+
+- Paint the startup splash before launching the main application, and create
+  the application process off the UI thread so a slow Windows launch cannot
+  freeze the first paint, elapsed timer, or minimize/hide controls. On Windows,
+  draw the initial branding and live clock without waiting for system-font
+  discovery; prepare local fonts in the background while stage text remains visible.
+  Use scalable ordinary lettering for the live version, stage and elapsed
+  timer, with slightly larger grey text and sharper branding. The early and
+  full splash show the same startup information. Keep the status line in
+  Inter Medium vector lettering throughout startup, without a font change
+  when system fonts finish preparing.
+  Avoid an unnecessary version-metadata read while parsing ordinary launch arguments.
+
+- Retry brief Windows sharing locks while publishing, recovering or rolling
+  back installer shortcuts, so a temporarily open desktop shortcut does not
+  immediately discard an otherwise accepted installation. Render links in the
+  private setup directory before staging their bytes with a neutral extension;
+  explain a persistent shortcut lock in the main setup view. Apply bounded
+  atomic-write retries to ownership records, retained VIPP wheels and cached
+  setup programs as well.
+
+- Move OME-Zarr and OME-XML dependency loading out of initial startup,
+  reducing interface imports without changing image interpretation or analysis.
+  After the standalone interface or napari plugin panel is ready, warm those
+  dependencies on one background thread so file selection can reuse them.
+  Early TIFF selections use a worker while the XML library is warming.
+  Retain elapsed, CPU and per-stage startup timings in the diagnostic log, and
+  add a developer tool for comparing installed and source startup.
+
 ## 0.16.0a5 - 2026-10-20
 
 - Keep registration inspector sections from overlapping when help text grows

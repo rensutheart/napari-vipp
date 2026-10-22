@@ -1806,7 +1806,7 @@ def stage_persistent_uninstaller(
             raise UninstallPreparationError(
                 "The persistent uninstaller copy failed its integrity check."
             )
-        os.replace(temporary, destination_path)
+        _replace_file_with_retry(temporary, destination_path)
         return PersistentUninstaller(destination_path, digest)
     finally:
         try:

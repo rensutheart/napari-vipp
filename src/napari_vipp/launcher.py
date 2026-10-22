@@ -13,6 +13,8 @@ import subprocess
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from queue import Empty, SimpleQueue
+from threading import Thread
 from typing import Any
 
 from napari_vipp.startup import (
@@ -32,6 +34,14 @@ def installed_version() -> str:
         return version("napari-vipp")
     except PackageNotFoundError:
         return "development"
+
+
+class _InstalledVersionAction(argparse.Action):
+    """Read distribution metadata only for an explicit version request."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        print(f"VIPP {installed_version()}")
+        parser.exit()
 
 
 def build_child_command(
@@ -90,8 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--version",
-        action="version",
-        version=f"VIPP {installed_version()}",
+        action=_InstalledVersionAction,
+        nargs=0,
+        help="Show the installed version and exit.",
     )
     return parser
 
@@ -127,6 +138,8 @@ class LauncherController:
         self.reader = StatusReader(channel.path, channel.token)
         self.machine = StartupStateMachine(timeout_seconds=timeout_seconds)
         self.process: subprocess.Popen[bytes] | None = None
+        self._spawn_results: SimpleQueue = SimpleQueue()
+        self._spawn_thread: Thread | None = None
         self._finishing = False
         self._cleaned = False
 
@@ -139,14 +152,31 @@ class LauncherController:
         self.application.aboutToQuit.connect(self._cleanup)
 
     def start(self) -> None:
-        """Spawn the application child with no shell or inherited input."""
-        command = build_child_command(
-            executable=self.executable,
-            profile=self.profile,
-            channel=self.channel,
-            desktop=self.desktop,
+        """Keep the painted splash responsive while Windows creates the child."""
+        if self._spawn_thread is not None or self._cleaned:
+            return
+        self._spawn_thread = Thread(
+            target=self._spawn_child, name="vipp-application-launch", daemon=False
         )
+        self.timer.start()
+        self._render()
         try:
+            self._spawn_thread.start()
+        except RuntimeError as exc:
+            self.machine.protocol_failed(exc)
+            self._render()
+
+    def _spawn_child(self) -> None:
+        """Perform startup file I/O and process creation without touching Qt."""
+        process = None
+        error = None
+        try:
+            command = build_child_command(
+                executable=self.executable,
+                profile=self.profile,
+                channel=self.channel,
+                desktop=self.desktop,
+            )
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as log_stream:
                 log_stream.write(
@@ -156,7 +186,9 @@ class LauncherController:
                     f"Python: {os.fspath(self.executable)}\n\n"
                 )
                 log_stream.flush()
-                self.process = self.process_factory(
+                if self._cleaned:
+                    return
+                process = self.process_factory(
                     command,
                     stdin=subprocess.DEVNULL,
                     stdout=log_stream,
@@ -165,16 +197,27 @@ class LauncherController:
                     shell=False,
                 )
         except BaseException as exc:
-            self.machine.protocol_failed(exc)
-            self._render()
-            return
-        self.timer.start()
-        self._render()
+            error = exc
+        finally:
+            self._spawn_results.put((process, error))
+            if self._cleaned and process is None:
+                self.channel.cleanup()
 
     def poll(self) -> None:
         """Apply new child records and update elapsed/terminal state."""
         if self._finishing:
             return
+        if self.process is None and self._spawn_thread is not None:
+            try:
+                self.process, error = self._spawn_results.get_nowait()
+            except Empty:
+                self.machine.check_timeout()
+                self._render()
+                return
+            if error is not None:
+                self.machine.protocol_failed(error)
+                self._render()
+                return
         try:
             for event in self.reader.read_new():
                 self.machine.accept(event)
@@ -243,6 +286,12 @@ class LauncherController:
         if self._cleaned:
             return
         self._cleaned = True
+        if self._spawn_thread is not None and self._spawn_thread.is_alive():
+            # Process creation cannot be interrupted safely. If the launcher is
+            # externally closed mid-spawn, retain the private channel for the
+            # child rather than making its reporter fail on a removed path.
+            # A worker that never creates a child removes the channel itself.
+            return
         self.channel.cleanup()
 
 
@@ -275,6 +324,7 @@ def run_splash(
             profile=profile,
             version=installed_version(),
             log_path=log_path,
+            defer_font_loading=sys.platform == "win32" and existing_application is None,
         )
         if desktop and existing_application is None:
             from napari_vipp.ui.desktop_branding import apply_desktop_branding
@@ -293,14 +343,21 @@ def run_splash(
         )
         # Keep a strong reference for the full event-loop lifetime.
         application._vipp_launcher_controller = controller
+        # A zero-delay timer can run before Qt delivers its first paint event.
+        # Start only after painting, then keep even a slow CreateProcess off
+        # the GUI thread so elapsed time and minimize/hide remain responsive.
+        splash.first_painted.connect(controller.start)
         splash.show()
-        QTimer.singleShot(0, controller.start)
     except BaseException:
         channel.cleanup()
         raise
     if existing_application is not None:
         return 0
-    return int(application.exec_())
+    result = int(application.exec_())
+    # The splash is already closed here. Keep the QGuiApplication alive while
+    # a font scan finishes; no running UI waits for this worker.
+    splash.finish_font_worker()
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

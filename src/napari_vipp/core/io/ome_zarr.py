@@ -14,18 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import zarr
-from dask.callbacks import Callback as DaskCallback
-from ome_zarr.format import FormatV04, FormatV05
-from ome_zarr.io import parse_url
-from ome_zarr.reader import Label, Reader
-from ome_zarr.writer import add_metadata
-from ome_zarr.writer import (
-    write_image as write_ome_zarr_image,
-)
-from ome_zarr.writer import (
-    write_labels as write_ome_zarr_labels,
-)
 
 from napari_vipp.core.io.detection_state import (
     TEMPLATE_STATE_KEY,
@@ -434,6 +422,11 @@ def write_ome_zarr(
     image_state: ImageState | dict[str, Any] | None = None,
 ) -> Path:
     """Write one local OME-Zarr image using version 0.4 or 0.5."""
+    import zarr
+    from ome_zarr.format import FormatV04, FormatV05
+    from ome_zarr.writer import add_metadata
+    from ome_zarr.writer import write_image as write_ome_zarr_image
+
     state = _coerce_state(image_state)
     detection = template_state_payload(state, data)
     arr, axes = _canonical_payload(data, state)
@@ -509,6 +502,8 @@ def write_ome_zarr_analysis_dataset(
     image_state: ImageState | dict[str, Any] | None = None,
 ) -> Path:
     """Write a reference image plus label outputs as one OME-Zarr store."""
+    from ome_zarr.writer import write_labels as write_ome_zarr_labels
+
     if not labels:
         raise ValueError("At least one label image is required.")
     state = _coerce_state(image_state)
@@ -619,6 +614,8 @@ def _ensure_ome_zarr_label_metadata(
 
 
 def _ome_zarr_label_metadata_present(path: Path, label_name: str, fmt) -> bool:
+    import zarr
+
     try:
         root = zarr.open_group(
             str(path),
@@ -648,6 +645,9 @@ def _write_ome_zarr_label_metadata(
     label_metadata: dict[str, Any],
     fmt,
 ) -> None:
+    import zarr
+    from ome_zarr.writer import add_metadata
+
     root = zarr.open_group(
         str(path),
         mode="a",
@@ -729,6 +729,8 @@ def _require_exact_window_format(version: object) -> None:
 
 
 def _declared_ome_zarr_version(path: Path) -> str:
+    import zarr
+
     try:
         attrs = zarr.open_group(str(path), mode="r").attrs.asdict()
     except Exception as exc:
@@ -1376,6 +1378,8 @@ def _compute_preview(lazy_preview, control: SourcePreviewControl) -> np.ndarray:
         control.check_active()
         return result
 
+    from dask.callbacks import Callback as DaskCallback
+
     def check_active(*_args: Any, **_kwargs: Any) -> None:
         control.check_active()
 
@@ -1396,6 +1400,8 @@ def _compute_exact_window(
         control.check_active()
 
     if hasattr(lazy_window, "compute"):
+        from dask.callbacks import Callback as DaskCallback
+
         with DaskCallback(pretask=check_active, posttask=check_active):
             computed = lazy_window.compute()
     else:
@@ -1564,6 +1570,9 @@ def _preview_level_message(level: int, level_count: int) -> str:
 
 
 def _readable_nodes(path: Path):
+    from ome_zarr.io import parse_url
+    from ome_zarr.reader import Reader
+
     location = parse_url(path, fmt=_detect_format(path))
     if location is None:
         raise FileNotFoundError(f"OME-Zarr source not found: {path}")
@@ -1580,6 +1589,8 @@ def _series_info(
     path: Path,
     declared_version: str | None,
 ) -> ImageSeriesInfo:
+    from ome_zarr.reader import Label
+
     data = node.data[0]
     axis_names = tuple(
         str(axis.get("name", "?")).strip() for axis in node.metadata.get("axes", ())
@@ -1746,10 +1757,15 @@ def _canonical_payload(
 
 
 def _format(version: str):
+    from ome_zarr.format import FormatV04, FormatV05
+
     return FormatV05() if version == "0.5" else FormatV04()
 
 
 def _detect_format(path: Path):
+    import zarr
+    from ome_zarr.format import FormatV05
+
     try:
         attrs = zarr.open_group(str(path), mode="r").attrs.asdict()
     except Exception:

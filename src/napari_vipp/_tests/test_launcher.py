@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +71,84 @@ def test_console_reporter_renders_default_milestone_messages(capsys):
     reporter = app._ConsoleReporter()
     reporter.progress("loading_napari")
     assert "Loading napari and its plugins" in capsys.readouterr().err
+
+
+def test_argument_parsing_reads_version_only_for_explicit_request(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(
+        launcher, "installed_version", lambda: calls.append(True) or "1.2.3"
+    )
+    parser = launcher.build_parser()
+    parser.parse_args([])
+    assert calls == []
+    with pytest.raises(SystemExit) as exited:
+        parser.parse_args(["--version"])
+    assert exited.value.code == 0
+    assert calls == [True]
+    assert capsys.readouterr().out == "VIPP 1.2.3\n"
+
+
+def test_timing_reporter_retains_stage_durations_and_forwards_protocol(
+    monkeypatch, capsys
+):
+    wall_clock = iter((10.0, 10.25, 15.25, 15.5))
+    cpu_clock = iter((2.0, 2.1, 3.1, 3.125))
+    monkeypatch.setattr(app.time, "perf_counter", lambda: next(wall_clock))
+    monkeypatch.setattr(app.time, "process_time", lambda: next(cpu_clock))
+    calls = []
+    delegate = SimpleNamespace(
+        progress=lambda *args: calls.append(("progress", args)),
+        ready=lambda *args: calls.append(("ready", args)),
+        failure=lambda *args, **kwargs: calls.append(("failure", args, kwargs)),
+        close=lambda: calls.append(("close",)),
+    )
+    reporter = app._TimingReporter(delegate)
+    reporter.progress("loading_napari", "Loading")
+    reporter.ready("Ready")
+    reporter.failure("Failed", error="details")
+    reporter.close()
+    records = [
+        json.loads(line.removeprefix("VIPP startup timing: "))
+        for line in capsys.readouterr().err.splitlines()
+    ]
+    assert records == [
+        {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.25,
+            "process_cpu_seconds": 0.1,
+            "previous_stage": None,
+            "previous_stage_seconds": 0.25,
+        },
+        {
+            "stage": "ready",
+            "elapsed_seconds": 5.25,
+            "process_cpu_seconds": 1.1,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 5.0,
+        },
+        {
+            "stage": "failure",
+            "elapsed_seconds": 5.5,
+            "process_cpu_seconds": 1.125,
+            "previous_stage": "ready",
+            "previous_stage_seconds": 0.25,
+        },
+    ]
+    assert calls == [
+        ("progress", ("loading_napari", "Loading")),
+        ("ready", ("Ready",)),
+        ("failure", ("Failed",), {"error": "details"}),
+        ("close",),
+    ]
+
+
+def test_timing_reporter_supports_pythonw_without_stderr(monkeypatch):
+    monkeypatch.setattr(app.sys, "stderr", None)
+    reporter = app._TimingReporter(app._ConsoleReporter())
+    reporter.progress("loading_napari")
+    reporter.ready()
+    reporter.failure("Failed")
+    reporter.close()
 
 
 def test_launcher_boundary_reports_startup_window_failure(monkeypatch, capsys):
@@ -166,11 +246,15 @@ def test_desktop_flag_reaches_child_and_no_splash_launch(
 def test_application_brands_only_explicit_desktop_launch(qtbot, monkeypatch, desktop):
     import napari
 
-    from napari_vipp.ui import desktop_branding
+    from napari_vipp.ui import desktop_branding, reader_warmup
 
     viewer_calls = []
     branding_calls = []
     dock_calls = []
+    launch_events = []
+    monkeypatch.setattr(
+        reader_warmup, "schedule_reader_warmup", lambda: launch_events.append("warmup")
+    )
     dock_window = object()
 
     def add_dock_widget(widget, **kwargs):
@@ -199,8 +283,12 @@ def test_application_brands_only_explicit_desktop_launch(qtbot, monkeypatch, des
         "apply_desktop_branding",
         lambda application, window: branding_calls.append(window),
     )
+    reporter = app._ConsoleReporter()
+    monkeypatch.setattr(
+        reporter, "ready", lambda _message: launch_events.append("ready")
+    )
     assert (
-        app.run_application(LaunchProfile.CPU, app._ConsoleReporter(), desktop=desktop)
+        app.run_application(LaunchProfile.CPU, reporter, desktop=desktop)
         == 0
     )
     assert viewer_calls == [{"title": "VIPP", "show": False}]
@@ -213,6 +301,7 @@ def test_application_brands_only_explicit_desktop_launch(qtbot, monkeypatch, des
         "name": "VIPP Workflow (napari-vipp)",
     }
     assert branding_calls == (["identity", dock_window] if desktop else [])
+    assert launch_events == ["ready", "warmup"]
 
 
 class _FakeNode:
@@ -419,6 +508,114 @@ def _controller(
     return controller, application, splash, timer, channel
 
 
+def _finish_spawn(controller):
+    """Wait only in tests, then deliver the worker result on the caller thread."""
+    controller._spawn_thread.join(timeout=5)
+    assert not controller._spawn_thread.is_alive()
+    controller.poll()
+
+
+def test_splash_paints_and_keeps_polling_during_blocked_process_creation(
+    qtbot, tmp_path
+):
+    from qtpy.QtCore import QTimer
+
+    from napari_vipp.ui.startup_splash import StartupSplash
+
+    channel = StartupChannel.create(parent=tmp_path)
+    splash = StartupSplash(
+        profile="auto", version="test", log_path=tmp_path / "startup.log"
+    )
+    qtbot.addWidget(splash)
+    timer = QTimer()
+    entered = threading.Event()
+    release = threading.Event()
+    spawn_observations = []
+    main_thread = threading.get_ident()
+    scheduled = []
+
+    def slow_spawn(*_args, **_kwargs):
+        spawn_observations.append((splash._paint_reported, threading.get_ident()))
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test did not release process creation")
+        with StatusEmitter(channel.path, channel.token) as emitter:
+            emitter.ready()
+        return _FakeProcess()
+
+    controller = LauncherController(
+        application=_FakeApplication(),
+        splash=splash,
+        timer=timer,
+        profile=LaunchProfile.AUTO,
+        channel=channel,
+        log_path=tmp_path / "startup.log",
+        timeout_seconds=30,
+        process_factory=slow_spawn,
+        schedule=lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    splash.first_painted.connect(controller.start)
+    heartbeat = QTimer()
+    ticks = []
+    heartbeat.timeout.connect(lambda: ticks.append(True))
+    heartbeat.start(20)
+    try:
+        assert not entered.is_set()
+        splash.show()
+        qtbot.waitUntil(entered.is_set, timeout=3000)
+        assert spawn_observations == [(True, controller._spawn_thread.ident)]
+        assert controller._spawn_thread.ident != main_thread
+        ticks.clear()
+        qtbot.waitUntil(lambda: len(ticks) >= 4, timeout=1000)
+        controller.machine.started_at -= 20
+        qtbot.waitUntil(lambda: splash.elapsed_label.text() == "Elapsed 0:20")
+        assert controller.machine.snapshot.phase is StartupPhase.STARTING
+        splash.hide_requested.emit()
+        assert not splash.isVisible()
+        release.set()
+        qtbot.waitUntil(lambda: bool(scheduled), timeout=3000)
+        assert controller.machine.snapshot.phase is StartupPhase.READY
+        assert controller.process.terminate_called is False
+    finally:
+        release.set()
+        if controller._spawn_thread is not None:
+            controller._spawn_thread.join(timeout=5)
+        heartbeat.stop()
+        timer.stop()
+        controller._cleanup()
+        splash.permit_close()
+
+
+def test_quit_during_launch_preparation_skips_spawn_and_cleans_channel(
+    tmp_path, monkeypatch
+):
+    entered = threading.Event()
+    release = threading.Event()
+    spawned = []
+
+    def delayed_version():
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test did not release preparation")
+        return "test"
+
+    monkeypatch.setattr(launcher, "installed_version", delayed_version)
+    controller, _application, _splash, _timer, channel = _controller(
+        tmp_path, process_factory=lambda *_a, **_k: spawned.append(True)
+    )
+    try:
+        controller.start()
+        controller.start()
+        assert entered.wait(3)
+        controller._cleanup()
+        assert channel.directory.exists()
+    finally:
+        release.set()
+        controller._spawn_thread.join(timeout=5)
+    assert spawned == []
+    assert not channel.directory.exists()
+
+
 def test_controller_closes_splash_after_authenticated_ready_without_killing_child(
     tmp_path,
     monkeypatch,
@@ -446,6 +643,7 @@ def test_controller_closes_splash_after_authenticated_ready_without_killing_chil
         schedule=lambda delay, callback: scheduled.append((delay, callback)),
     )
     controller.start()
+    _finish_spawn(controller)
     controller.poll()
 
     assert controller.machine.snapshot.phase is StartupPhase.READY
@@ -469,6 +667,7 @@ def test_controller_surfaces_child_spawn_failure(tmp_path):
         schedule=lambda *_args: None,
     )
     controller.start()
+    _finish_spawn(controller)
 
     assert controller.machine.snapshot.phase is StartupPhase.FAILED
     assert "process creation failure" in controller.machine.snapshot.error
@@ -494,6 +693,7 @@ def test_controller_surfaces_log_directory_failure_before_spawning(tmp_path):
         schedule=lambda *_args: None,
     )
     controller.start()
+    _finish_spawn(controller)
 
     assert controller.machine.snapshot.phase is StartupPhase.FAILED
     assert "FileExistsError" in controller.machine.snapshot.error
@@ -548,6 +748,7 @@ def test_controller_timeout_can_hide_while_child_keeps_running(tmp_path):
         schedule=lambda *_args: None,
     )
     controller.start()
+    _finish_spawn(controller)
     controller.machine.deadline = 0
     controller.poll()
     assert controller.machine.snapshot.phase is StartupPhase.TIMED_OUT
@@ -569,6 +770,7 @@ def test_controller_reshows_diagnostics_when_child_exits_after_hide(tmp_path):
         schedule=lambda *_args: None,
     )
     controller.start()
+    _finish_spawn(controller)
     controller.hide()
     controller.poll()
     assert controller.machine.snapshot.phase is StartupPhase.FAILED

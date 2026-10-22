@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import zipfile
 from dataclasses import replace
@@ -17,6 +18,7 @@ from napari_vipp._tests.test_installer_windows_backend import (
     _write_owned_cuda_installation,
 )
 from napari_vipp.installer import discovery as discovery_module
+from napari_vipp.installer import file_ops
 from napari_vipp.installer.discovery import discover_installation
 from napari_vipp.installer.engine import (
     ManagedInstallerEngine,
@@ -142,6 +144,32 @@ def test_retained_wheel_survives_bundle_removal_or_rebuild(tmp_path, missing):
     assert resolved.wheel_path.is_relative_to(
         tmp_path / "VIPP" / "installer" / "wheels"
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
+def test_retained_wheel_publication_retries_a_brief_windows_lock(tmp_path, monkeypatch):
+    release, _record, _distribution = _wheel(tmp_path)
+    expected = wheel_cache_path(tmp_path, release.wheel_sha256, release.wheel_path.name)
+    original = os.replace
+    attempts = []
+
+    def briefly_locked(source, destination):
+        if destination == expected:
+            attempts.append(source)
+            if len(attempts) <= 3:
+                error = PermissionError(13, "retained wheel briefly open")
+                error.winerror = 32
+                raise error
+        return original(source, destination)
+
+    monkeypatch.setattr(os, "replace", briefly_locked)
+    monkeypatch.setattr(file_ops.time, "sleep", lambda _seconds: None)
+    cached = cache_release_wheel(release, tmp_path)
+
+    assert len(attempts) == 4
+    assert cached.wheel_path.read_bytes() == release.wheel_path.read_bytes()
+    assert cache_release_wheel(release, tmp_path) == cached
+    assert len(attempts) == 4
 
 
 def test_bad_existing_cache_is_preserved_and_rejected(tmp_path):

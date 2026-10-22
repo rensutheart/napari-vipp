@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QApplication, QWidget
 
 from napari_vipp import _startup_widget
 from napari_vipp._startup_widget import StartupState, VippStartupWidget
+from napari_vipp.ui import reader_warmup
+
+
+@pytest.fixture(autouse=True)
+def _isolate_reader_warmup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        reader_warmup, "schedule_reader_warmup", lambda: calls.append(True)
+    )
+    return calls
 
 
 class _FakeVippWidget(QWidget):
@@ -62,6 +73,7 @@ def _reset_fake_widget() -> None:
 def test_startup_host_preloads_off_thread_and_builds_widget_on_gui_thread(
     qtbot,
     monkeypatch,
+    _isolate_reader_warmup,
 ):
     _reset_fake_widget()
     gui_thread_id = threading.get_ident()
@@ -98,6 +110,7 @@ def test_startup_host_preloads_off_thread_and_builds_widget_on_gui_thread(
     assert _FakeVippWidget.splash_visible_during_initial_run == [True]
     assert isinstance(host.real_widget, _FakeVippWidget)
     assert QApplication.instance().thread() == host.thread()
+    assert _isolate_reader_warmup == [True]
 
 
 def test_startup_host_exposes_error_and_can_retry(qtbot, monkeypatch):

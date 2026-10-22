@@ -353,6 +353,10 @@ class VippStartupWidget(QWidget):
         self._stack.setCurrentWidget(widget)
         self._set_state(StartupState.READY)
 
+        from napari_vipp.ui.reader_warmup import schedule_reader_warmup
+
+        schedule_reader_warmup()
+
     def _set_state(self, state: StartupState) -> None:
         if state is self._state:
             return

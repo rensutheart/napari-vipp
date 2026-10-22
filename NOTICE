@@ -1,6 +1,14 @@
 napari-vipp is distributed under the BSD 3-Clause License.
 Copyright (c) 2026, Rensu P. Theart.
 
+VIPP Splash Lettering contains separately prepared glyph-outline subsets of
+DejaVu Sans regular (early labels) and Inter Medium (the status line). Their
+copyright, permission and disclaimer notices are included in
+src/napari_vipp/assets/branding/LICENSE-DejaVu.txt and LICENSE-Inter.txt, and in
+the installed package's assets/branding directory. Inter-derived outlines
+remain under the SIL Open Font License 1.1. Neither subset requires installing
+a font or changing the system font configuration.
+
 The qualified CPU median-filter implementation and rigid/affine registration
 call SimpleITK, distributed separately under the Apache License 2.0. SimpleITK
 is copyright NumFOCUS and wraps the Insight Toolkit (ITK). Its dependency

@@ -1,12 +1,139 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 from qtpy.QtCore import QEvent, QPoint, QPointF, Qt
-from qtpy.QtGui import QMouseEvent, QPalette
-from qtpy.QtWidgets import QApplication, QLabel
+from qtpy.QtGui import QColor, QImage, QMouseEvent, QPainter, QPalette, QRegion
+from qtpy.QtWidgets import QApplication, QLabel, QLCDNumber, QWidget
 
 from napari_vipp.startup import LaunchProfile, StartupPhase, StartupSnapshot
 from napari_vipp.ui.startup_splash import StartupSplash
+
+
+def test_first_frame_clock_and_minimize_work_while_fonts_are_pending(
+    qtbot, tmp_path, monkeypatch
+):
+    from napari_vipp.ui import startup_splash
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(done, cancelled):
+        entered.set()
+        release.wait(5)
+        done.set()
+
+    monkeypatch.setattr(startup_splash, "_prepare_font_database", prepare)
+    splash = StartupSplash(
+        profile="auto",
+        version="test",
+        log_path=tmp_path / "startup.log",
+        defer_font_loading=True,
+    )
+    qtbot.addWidget(splash)
+    try:
+        assert not splash._ui_ready
+        assert not splash.findChildren(QLCDNumber)
+        assert splash._bootstrap_version.text() == "VIPP test"
+        assert splash._bootstrap_stage.text() == "Step 0 of 6"
+        splash.show()
+        qtbot.waitUntil(entered.is_set)
+        assert splash._paint_reported
+        before = splash._bootstrap_clock.grab().toImage()
+        splash.update_elapsed(21)
+        after = splash._bootstrap_clock.grab().toImage()
+        assert before != after
+        assert splash._bootstrap_clock.accessibleDescription() == "Elapsed 0:21"
+        splash.update_snapshot(_snapshot(StartupPhase.STARTING))
+        assert splash._bootstrap_status.text() == "Test status"
+        assert splash._bootstrap_stage.text() == "Step 2 of 6"
+        splash.update_snapshot(_snapshot(StartupPhase.FAILED, error="test failure"))
+        qtbot.mouseClick(splash, Qt.LeftButton, pos=QPoint(615, 24))
+        assert splash.isMinimized()
+        splash.showNormal()
+        release.set()
+        qtbot.waitUntil(lambda: splash._ui_ready)
+        assert splash.elapsed_label.text() == "Elapsed 0:21"
+        assert splash.version_label.text() == "VIPP test"
+        assert splash.version_label.font().pixelSize() == 12
+        assert splash.elapsed_label.font().pixelSize() == 11
+        assert splash.stage_label.font().pixelSize() == 11
+        assert splash.detail_label.text() == "test failure"
+        assert splash.close_button.isVisibleTo(splash)
+    finally:
+        release.set()
+        splash.finish_font_worker()
+        splash.permit_close()
+
+
+@pytest.mark.parametrize("missing_asset", ["frame", "lettering"])
+def test_missing_first_frame_asset_uses_the_ordinary_splash(
+    qtbot, tmp_path, monkeypatch, missing_asset
+):
+    from napari_vipp.ui import startup_splash
+
+    if missing_asset == "frame":
+        monkeypatch.setattr(startup_splash, "_first_frame_pixmap", lambda: None)
+    else:
+        monkeypatch.setattr(startup_splash.PreparedTypeface, "load", lambda: None)
+    splash = StartupSplash(
+        profile="auto",
+        version="test",
+        log_path=tmp_path / "startup.log",
+        defer_font_loading=True,
+    )
+    qtbot.addWidget(splash)
+    assert splash._ui_ready
+    assert splash.elapsed_label.text() == "Elapsed 0:00"
+    assert splash._font_worker is None
+
+
+@pytest.mark.parametrize("scale", [1, 1.25, 1.5, 2])
+@pytest.mark.parametrize(
+    "phase", [StartupPhase.STARTING, StartupPhase.READY, StartupPhase.FAILED]
+)
+def test_status_lettering_does_not_change_when_fonts_finish(
+    qtbot, tmp_path, monkeypatch, scale, phase
+):
+    from napari_vipp.ui import startup_splash
+
+    release = threading.Event()
+
+    def prepare(done, cancelled):
+        release.wait(5)
+        done.set()
+
+    monkeypatch.setattr(startup_splash, "_prepare_font_database", prepare)
+    splash = StartupSplash(
+        profile="auto",
+        version="test",
+        log_path=tmp_path / "log",
+        defer_font_loading=True,
+    )
+    qtbot.addWidget(splash)
+
+    def render(label):
+        label.setFixedSize(556, 40)
+        image = QImage(round(556 * scale), round(40 * scale), QImage.Format_RGBA8888)
+        image.setDevicePixelRatio(scale)
+        image.fill(QColor("#08151F"))
+        painter = QPainter(image)
+        label.render(painter, QPoint(), QRegion(), QWidget.DrawChildren)
+        painter.end()
+        return image
+
+    try:
+        splash.show()
+        splash.update_snapshot(_snapshot(phase))
+        before = render(splash._bootstrap_status)
+        release.set()
+        qtbot.waitUntil(lambda: splash._ui_ready)
+        assert render(splash.status_label) == before
+    finally:
+        release.set()
+        splash.finish_font_worker()
+        splash.permit_close()
 
 
 def _snapshot(phase: StartupPhase, *, error: str = "") -> StartupSnapshot:
@@ -54,8 +181,26 @@ def test_default_splash_has_one_vipp_identity_without_automatic_badge(qtbot, tmp
     assert splash.profile_description.isHidden()
     assert not any(
         "automatic" in label.text().casefold()
-        for label in splash.findChildren(QLabel) if label.isVisibleTo(splash)
+        for label in splash.findChildren(QLabel)
+        if label.isVisibleTo(splash)
     )
+
+
+def test_first_paint_signal_runs_once_across_repaints_and_reshow(qtbot, tmp_path):
+    splash = StartupSplash(
+        profile="auto", version="test", log_path=tmp_path / "startup.log"
+    )
+    qtbot.addWidget(splash)
+    paints = []
+    splash.first_painted.connect(lambda: paints.append(True))
+    assert paints == []
+    splash.show()
+    qtbot.waitUntil(lambda: paints == [True])
+    splash.repaint()
+    splash.hide()
+    splash.show()
+    QApplication.processEvents()
+    assert paints == [True]
 
 
 @pytest.mark.parametrize("profile", tuple(LaunchProfile))

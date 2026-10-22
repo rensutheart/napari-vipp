@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from napari_vipp.installer.file_ops import replace_with_retry, unlink_with_retry
 from napari_vipp.installer.models import ComputeTrack, ManagedOwnershipSnapshot
 
 OWNERSHIP_SCHEMA = "napari-vipp-managed-installation"
@@ -345,12 +346,9 @@ def write_ownership_record(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        replace_with_retry(temporary, target)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        unlink_with_retry(temporary, missing_ok=True)
     return target
 
 
