@@ -16139,6 +16139,20 @@ def test_reorder_axes_moves_spatial_semantics_with_pixels_downstream(qtbot):
     widget.pipeline.set_param(crop.id, "right", 4)
     widget.run_pipeline()
 
+    # Adaptive/background execution can return with the previous cached arrays.
+    # Check spatial semantics only after this requested graph is published.
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(reorder.id) is not None
+            and widget.pipeline.outputs[reorder.id].shape == (3, 96, 12, 128)
+            and widget.pipeline.outputs.get(crop.id) is not None
+            and widget.pipeline.outputs[crop.id].shape == (3, 93, 12, 121)
+        ),
+        timeout=30_000,
+    )
+
     reorder_state = widget.pipeline.output_states[reorder.id]
     crop_state = widget.pipeline.output_states[crop.id]
 
