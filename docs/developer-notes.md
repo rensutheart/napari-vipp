@@ -335,6 +335,16 @@ for the exact owning modules and limitations.
 
 ### Add Or Change A Source
 
+- Defer third-party reader imports to the functions that use them. The workflow
+  interface imports `core/io/` and the Qt source-preview adapter during startup;
+  neither import may initialize ome-types, ome-zarr, Dask or Zarr. Preserve
+  `test_io_lazy_imports.py` alongside reader round-trip/metadata checks.
+  Supported GUI launches separately schedule required OME dependencies after
+  readiness through `ui/reader_warmup.py` and the standard-library-only
+  `core/reader_warmup.py`. Keep that list explicit and Qt-free; do not add plugin
+  discovery, source inspection, optional JVM readers or accelerator probing.
+  Test thread ownership, concurrent file requests, failure retry and shutdown
+  cancellation in `test_reader_warmup.py` when changing this boundary.
 - Reuse `core/io/` for format normalization and `ImageDataset` construction.
 - Local files and directory stores must pass through exact identity capture and
   post-materialization verification. Preserve reader-built `ImageState` when

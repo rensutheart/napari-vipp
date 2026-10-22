@@ -9,6 +9,7 @@ import stat
 from dataclasses import replace
 from pathlib import Path
 
+from napari_vipp.installer.file_ops import replace_with_retry, unlink_with_retry
 from napari_vipp.installer.models import ReleaseSpec
 
 
@@ -63,9 +64,9 @@ def cache_release_wheel(release: ReleaseSpec, local_app_data: Path) -> ReleaseSp
                 "The original VIPP wheel changed before it was retained."
             )
         _assert_direct_path(target)
-        os.replace(temporary, target)
+        replace_with_retry(temporary, target)
     finally:
-        temporary.unlink(missing_ok=True)
+        unlink_with_retry(temporary, missing_ok=True)
     return replace(release, wheel_path=target)
 
 

@@ -14,6 +14,14 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
+Approved release, 2026-10-22: publish the focused **0.16.0a6 performance alpha**
+with responsive startup feedback, prepared splash lettering, post-interface
+reader-library warming and bounded Windows installer file-lock retries.
+Scientific algorithms, source interpretation, schemas and dependency pins stay
+unchanged. Follow the [release plan](release-0.16.0a6-plan.md) and carry forward
+only qualification whose inputs are unchanged; do not promise a fixed launch
+time or a controlled cross-computer speedup.
+
 Approved continuation, 2026-09-29: implement previous-frame registration,
 time-aware detection and basic one-to-one object/spot tracking with read-only
 trajectory review. Work is isolated on `feat/time-series-tracking`; local

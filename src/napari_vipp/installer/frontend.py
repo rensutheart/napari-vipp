@@ -1045,6 +1045,17 @@ def _plain_check_failure(exc: Exception) -> tuple[str, str]:
 
 
 def _plain_apply_failure(exc: Exception) -> tuple[str, str]:
+    text = str(exc).lower()
+    if ("[winerror 32]" in text or "[winerror 33]" in text) and (
+        ".lnk" in text or "shortcut" in text
+    ):
+        return (
+            "Windows kept the VIPP shortcut open",
+            "Setup could not finish replacing or cleaning up the VIPP shortcut. "
+            "Close VIPP and any open shortcut properties window, wait briefly, "
+            "then choose Try again. Any previous active VIPP remains in place. "
+            "Advanced details lists the affected files and any incomplete cleanup.",
+        )
     headline, message = _plain_check_failure(exc)
     if headline != "VIPP setup could not finish checking":
         return headline, message

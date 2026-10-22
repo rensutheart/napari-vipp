@@ -20,12 +20,16 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 - [Floating VIPP recovery on Windows](validation/floating-dock-windows-2026-10-09.md):
   native taskbar registration, plugin reuse and minimized-window recovery.
+- [Windows startup investigation](benchmarks/windows-startup-2026-10-21.md):
+  installed-launch profiles, deferred reader imports, paired measurements and
+  remaining cold-start evidence.
 
 - [ImageJ Gaussian compatibility](validation/imagej-gaussian-compatibility.md):
   bounded independent bytecode references and tissue mask reproduction evidence.
 
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
+- [0.16.0a6 performance release plan](release-0.16.0a6-plan.md)
 - [0.16.0a5 non-AI release plan](release-0.16.0a5-plan.md)
 - [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)
 - [Release qualification baseline](release-qualification-baseline.md)

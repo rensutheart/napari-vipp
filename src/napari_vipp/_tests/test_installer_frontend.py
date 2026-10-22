@@ -783,6 +783,40 @@ def test_common_preparation_failures_have_plain_next_steps(
     assert technical_error in controller.state.technical_details
 
 
+@pytest.mark.parametrize("winerror", [32, 33])
+def test_shortcut_lock_has_actionable_message_and_retry_requires_review(
+    tmp_path, winerror,
+):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    technical = (
+        f"PermissionError: [WinError {winerror}] file in use: "
+        "'.VIPP.staged.tmp' -> 'VIPP.lnk'; rollback incomplete"
+    )
+    backend.apply_error = RuntimeError(technical)
+    controller = InstallerController(
+        backend, lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    workers.pop(0)()
+
+    assert controller.state.screen is InstallerScreen.FAILED
+    assert controller.state.headline == "Windows kept the VIPP shortcut open"
+    assert "Close VIPP" in controller.state.message
+    assert "incomplete cleanup" in controller.state.message
+    assert "WinError" not in controller.state.message
+    assert technical in controller.state.technical_details
+    backend.apply_error = None
+    controller.retry()
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.READY
+    assert controller.state.primary_label == "Update VIPP"
+    assert len(backend.apply_calls) == 1
+
+
 def test_transient_package_timeout_during_apply_has_plain_retry_guidance(tmp_path):
     workers = []
     backend = _Backend(_prepared(TargetKind.NEW, tmp_path))

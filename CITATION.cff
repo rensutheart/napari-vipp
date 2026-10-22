@@ -6,6 +6,6 @@ authors:
     given-names: "Rensu P."
 repository-code: "https://github.com/rensutheart/napari-vipp"
 url: "https://github.com/rensutheart/napari-vipp"
-version: "0.16.0a5"
-date-released: "2026-10-20"
+version: "0.16.0a6"
+date-released: "2026-10-22"
 license: "BSD-3-Clause"

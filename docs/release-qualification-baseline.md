@@ -1,6 +1,60 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-10-20
+Last reviewed: 2026-10-22
+
+## 0.16.0a6 qualification declaration
+
+This iterative alpha covers the union from public `v0.16.0a5` at
+`57248e0d8a7cc7c81fb0533fa8b705d4ddb370f7`: responsive first-paint splash,
+prepared vector lettering, post-interface reader warming, startup diagnostics,
+and bounded Windows installer file-lock retries. The
+[release plan](release-0.16.0a6-plan.md) and
+[Windows investigation](benchmarks/windows-startup-2026-10-21.md) retain the
+changed behavior, evidence and measurement limits. This declaration names
+requirements and existing evidence; it does not claim publication or CI success.
+
+```yaml
+tier: alpha
+previous_public_tag: v0.16.0a5
+changed:
+  core_ui: true
+  source_reader_import_lifecycle: true
+  windows_installer_runtime: true
+  packaging_release: true
+  documentation: true
+  workflow_schema_provenance: false
+  cpu_scientific: false
+  gpu_scientific_shared_execution: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+carried_forward:
+  scientific_algorithms_catalogue_and_gpu_admission: v0.16.0a5
+  workflow_schema_source_interpretation_and_shared_execution: v0.16.0a5
+  runtime_build_pins_and_supported_python: v0.16.0a5
+  unchanged_macos_installer_engine: v0.16.0a5
+```
+
+- Require focused startup/launcher, reader warm-up and early-TIFF regression
+  tests, first paint with delayed process/font work, matching status lettering
+  at 100/125/150/200% scale, and a normal real application launch/shutdown.
+  Windows timing evidence is host/cache specific and does not qualify all
+  monitors or guarantee instant first-file loading.
+- Require installer retry, ownership, rollback, retained-wheel and frontend
+  tests plus the affected installed repair/shortcut scenario. Existing recorded
+  field evidence covers that development-build scenario; synthetic locks cover
+  transient and persistent failure paths. Neither proves a complete fresh-user
+  installer lifecycle. Preserve active/shared environments and original files.
+- Require successful candidate and exact final-main CI, including the complete
+  supported-platform suite and clean distribution installs. Packaging changed:
+  retain the independently matching wheel/canonical-source pair from exact-main
+  CI, and verify prepared splash assets and both font licences in the archives.
+- Require exact-tag artifact/version/signature-state/checksum checks for the
+  selected unsigned alpha Windows x86_64 and separate macOS arm64/x86_64
+  installers. Carry unchanged scientific, schema, dependency and macOS lifecycle
+  evidence from a5. macOS stays CPU-only and unnotarized.
+- Publish identical qualified Python bytes to GitHub/PyPI, then deploy and
+  verify the numbered/default manual. Stop on failed required gates; never
+  move a published tag or turn overlapping trace durations into a speed claim.
 
 ## 0.16.0a5 qualification declaration
 

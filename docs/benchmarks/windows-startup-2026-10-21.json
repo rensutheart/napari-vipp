@@ -1,0 +1,1874 @@
+{
+  "date": "2026-10-21",
+  "baseline_commit": "9f75a171cc8875e8d3084bb7e5b4655fb476fbaa",
+  "conditions": {
+    "cold_start_reproduced": false,
+    "cache_reset": false,
+    "hardware": {
+      "cpu": "Intel Core i7-13700H",
+      "ram_bytes": 34029125632,
+      "disk": "SK hynix BC901 1 TB NVMe",
+      "gpu": "NVIDIA GeForce RTX 4050 Laptop GPU, 6141 MiB",
+      "power_scheme": "Balanced"
+    },
+    "installed": {
+      "vipp": "0.16.0a2",
+      "napari": "0.9.1",
+      "numpy": "2.5.1",
+      "scipy": "1.18.0",
+      "scikit_image": "0.26.0",
+      "cupy_cuda13x": "14.1.1",
+      "PyQt6": "6.11.0"
+    },
+    "gpu_cache_observation": {
+      "new_cupy_kernel_cache_files_on_measurement_date": 0,
+      "latest_cache_write_date": "2026-10-06",
+      "limitations": "Observed the default user cache directory only; not a complete CUDA driver/JIT trace."
+    },
+    "desktop_comparison": {
+      "reported_ready_seconds": 30,
+      "vipp_version_matches_this_install": false,
+      "desktop_version": "not supplied",
+      "controlled_hardware_comparison": false
+    }
+  },
+  "paired_interface_imports": [
+    {
+      "variant": "before",
+      "seconds": 8.008525599987479,
+      "cpu": 7.140625,
+      "module_count": 2580,
+      "ome_types": true,
+      "ome_zarr": true
+    },
+    {
+      "variant": "after",
+      "seconds": 3.7115994000050705,
+      "cpu": 3.203125,
+      "module_count": 1287,
+      "ome_types": false,
+      "ome_zarr": false
+    },
+    {
+      "variant": "after",
+      "seconds": 3.731638600002043,
+      "cpu": 3.4375,
+      "module_count": 1287,
+      "ome_types": false,
+      "ome_zarr": false
+    },
+    {
+      "variant": "before",
+      "seconds": 7.6281789999920875,
+      "cpu": 7.0625,
+      "module_count": 2580,
+      "ome_types": true,
+      "ome_zarr": true
+    },
+    {
+      "variant": "before",
+      "seconds": 7.002564099995652,
+      "cpu": 6.5,
+      "module_count": 2580,
+      "ome_types": true,
+      "ome_zarr": true
+    },
+    {
+      "variant": "after",
+      "seconds": 3.8304895000183024,
+      "cpu": 3.671875,
+      "module_count": 1287,
+      "ome_types": false,
+      "ome_zarr": false
+    },
+    {
+      "variant": "after",
+      "seconds": 3.3665248999895994,
+      "cpu": 2.921875,
+      "module_count": 1287,
+      "ome_types": false,
+      "ome_zarr": false
+    },
+    {
+      "variant": "before",
+      "seconds": 7.62541589999455,
+      "cpu": 7.078125,
+      "module_count": 2580,
+      "ome_types": true,
+      "ome_zarr": true
+    }
+  ],
+  "launches": {
+    "installed-auto-1": {
+      "instrumentation": "importtime",
+      "events": [
+        {
+          "kind": "progress",
+          "stage": "python_script_started",
+          "elapsed": 0.04843019999680109,
+          "cpu": 0.046875,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_napari",
+          "elapsed": 0.35425189998932183,
+          "cpu": 0.328125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "creating_viewer",
+          "elapsed": 0.6441928999847732,
+          "cpu": 0.5625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_vipp",
+          "elapsed": 16.49012549998588,
+          "cpu": 13.84375,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "building_interface",
+          "elapsed": 33.48788919998333,
+          "cpu": 29.21875,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "preparing_workflow",
+          "elapsed": 35.45575120000285,
+          "cpu": 31.015625,
+          "message": ""
+        },
+        {
+          "kind": "ready",
+          "stage": "ready",
+          "elapsed": 48.63337919997866,
+          "cpu": 42.609375,
+          "message": "VIPP is ready"
+        },
+        {
+          "kind": "exit",
+          "stage": "process_exit",
+          "elapsed": 49.827295900002355,
+          "cpu": 43.140625,
+          "message": ""
+        }
+      ]
+    },
+    "installed-auto-profile": {
+      "instrumentation": "cProfile",
+      "events": [
+        {
+          "kind": "progress",
+          "stage": "python_script_started",
+          "elapsed": 0.026426700002048165,
+          "cpu": 0.015625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_napari",
+          "elapsed": 0.48133140002028085,
+          "cpu": 0.453125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "creating_viewer",
+          "elapsed": 1.263855400000466,
+          "cpu": 1.234375,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_vipp",
+          "elapsed": 17.053917700017337,
+          "cpu": 15.484375,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "building_interface",
+          "elapsed": 30.37171610002406,
+          "cpu": 28.03125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "preparing_workflow",
+          "elapsed": 32.10218790001818,
+          "cpu": 29.5,
+          "message": ""
+        },
+        {
+          "kind": "ready",
+          "stage": "ready",
+          "elapsed": 39.34023010000237,
+          "cpu": 36.390625,
+          "message": "VIPP is ready"
+        },
+        {
+          "kind": "exit",
+          "stage": "process_exit",
+          "elapsed": 41.05100180002046,
+          "cpu": 37.8125,
+          "message": ""
+        }
+      ]
+    },
+    "installed-cpu": {
+      "instrumentation": "stage timings only",
+      "events": [
+        {
+          "kind": "progress",
+          "stage": "python_script_started",
+          "elapsed": 0.019227899989346042,
+          "cpu": 0.03125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_napari",
+          "elapsed": 0.21691230000578798,
+          "cpu": 0.21875,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "creating_viewer",
+          "elapsed": 0.45232929999474436,
+          "cpu": 0.46875,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_vipp",
+          "elapsed": 6.76770209998358,
+          "cpu": 6.0,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "building_interface",
+          "elapsed": 13.738310799992178,
+          "cpu": 12.578125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "preparing_workflow",
+          "elapsed": 14.7283133000019,
+          "cpu": 13.578125,
+          "message": ""
+        },
+        {
+          "kind": "ready",
+          "stage": "ready",
+          "elapsed": 19.894728099985514,
+          "cpu": 18.296875,
+          "message": "VIPP is ready"
+        },
+        {
+          "kind": "exit",
+          "stage": "process_exit",
+          "elapsed": 20.768138399987947,
+          "cpu": 18.671875,
+          "message": ""
+        }
+      ]
+    },
+    "installed-auto-2": {
+      "instrumentation": "stage timings only",
+      "events": [
+        {
+          "kind": "progress",
+          "stage": "python_script_started",
+          "elapsed": 0.04782509998767637,
+          "cpu": 0.03125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_napari",
+          "elapsed": 0.4726057999941986,
+          "cpu": 0.40625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "creating_viewer",
+          "elapsed": 1.1107792999828234,
+          "cpu": 1.015625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_vipp",
+          "elapsed": 20.23547879999387,
+          "cpu": 16.6875,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "building_interface",
+          "elapsed": 30.73761929999455,
+          "cpu": 26.78125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "preparing_workflow",
+          "elapsed": 32.097818399983225,
+          "cpu": 28.03125,
+          "message": ""
+        },
+        {
+          "kind": "ready",
+          "stage": "ready",
+          "elapsed": 42.12130839997553,
+          "cpu": 37.234375,
+          "message": "VIPP is ready"
+        },
+        {
+          "kind": "exit",
+          "stage": "process_exit",
+          "elapsed": 43.01301549997879,
+          "cpu": 38.15625,
+          "message": ""
+        }
+      ]
+    },
+    "source-before": {
+      "instrumentation": "importtime",
+      "events": [
+        {
+          "kind": "progress",
+          "stage": "python_script_started",
+          "elapsed": 0.02063139999518171,
+          "cpu": 0.015625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_napari",
+          "elapsed": 0.22027280001202598,
+          "cpu": 0.203125,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "creating_viewer",
+          "elapsed": 0.4275082999956794,
+          "cpu": 0.390625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_vipp",
+          "elapsed": 7.1918482999899425,
+          "cpu": 6.15625,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "building_interface",
+          "elapsed": 15.599099399987608,
+          "cpu": 13.75,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "preparing_workflow",
+          "elapsed": 16.792751000000862,
+          "cpu": 14.953125,
+          "message": ""
+        },
+        {
+          "kind": "ready",
+          "stage": "ready",
+          "elapsed": 25.23525420000078,
+          "cpu": 22.875,
+          "message": "VIPP is ready"
+        },
+        {
+          "kind": "exit",
+          "stage": "process_exit",
+          "elapsed": 26.166807500005234,
+          "cpu": 23.734375,
+          "message": ""
+        }
+      ],
+      "importtime_module_records": 3867
+    },
+    "source-after": {
+      "instrumentation": "importtime",
+      "events": [
+        {
+          "kind": "progress",
+          "stage": "python_script_started",
+          "elapsed": 0.012465000007068738,
+          "cpu": 0.0,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_napari",
+          "elapsed": 0.12026160000823438,
+          "cpu": 0.09375,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "creating_viewer",
+          "elapsed": 0.25292100000660866,
+          "cpu": 0.234375,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "loading_vipp",
+          "elapsed": 5.406574399996316,
+          "cpu": 4.84375,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "building_interface",
+          "elapsed": 9.151599100005114,
+          "cpu": 8.171875,
+          "message": ""
+        },
+        {
+          "kind": "progress",
+          "stage": "preparing_workflow",
+          "elapsed": 9.818053599999985,
+          "cpu": 8.796875,
+          "message": ""
+        },
+        {
+          "kind": "ready",
+          "stage": "ready",
+          "elapsed": 18.121488500008127,
+          "cpu": 16.5625,
+          "message": "VIPP is ready"
+        },
+        {
+          "kind": "exit",
+          "stage": "process_exit",
+          "elapsed": 19.049857200006954,
+          "cpu": 17.21875,
+          "message": ""
+        }
+      ],
+      "importtime_module_records": 3035
+    }
+  },
+  "tool_smoke": {
+    "returncode": 0,
+    "ready": true,
+    "stage_clock": "child monotonic clock",
+    "total_process_seconds": 20.942971200012835,
+    "ready_elapsed_seconds": 18.913305,
+    "concurrent_work": "full CPU pytest suite; tool validation only, not a benchmark"
+  },
+  "validation": {
+    "focused_tests_passed": 131,
+    "full_suite": {
+      "passed": 12891,
+      "skipped": 474,
+      "failed": 1,
+      "seconds": 3300.91,
+      "failure": "test_widget.py::test_source_refresh_blocks_batch_until_representative_is_recalculated",
+      "failure_detail": "Final batch completion exceeded the 15000 ms wait; isolated rerun passed. Cause not established."
+    },
+    "isolated_failure_rerun": {
+      "passed": 1,
+      "seconds": 19.44
+    },
+    "test_napari_version": "0.9.2",
+    "test_cupy_available": false
+  },
+  "background_warmup_followup": {
+    "measurements": {
+      "real-warmup": {
+        "background_warmup": true,
+        "stages": [
+          {
+            "stage": "loading_napari",
+            "seconds": 1.5900004655122757e-05
+          },
+          {
+            "stage": "creating_viewer",
+            "seconds": 0.28817799998796545
+          },
+          {
+            "stage": "loading_vipp",
+            "seconds": 15.241327199997613
+          },
+          {
+            "stage": "building_interface",
+            "seconds": 21.185465899994597
+          },
+          {
+            "stage": "preparing_workflow",
+            "seconds": 21.956341500015697
+          }
+        ],
+        "ready_seconds": 42.06076779999421,
+        "ome_types_loaded_at_ready": false,
+        "ome_zarr_loaded_at_ready": false,
+        "warmup_results": [
+          {
+            "module": "ome_types",
+            "seconds": 3.6010384999972302,
+            "error": ""
+          },
+          {
+            "module": "ome_zarr.reader",
+            "seconds": 5.7555388000037055,
+            "error": ""
+          },
+          {
+            "module": "ome_zarr.writer",
+            "seconds": 0.006056899990653619,
+            "error": ""
+          }
+        ],
+        "post_ready_before_read_seconds": 9.868521800002782,
+        "heartbeat_count": 457,
+        "maximum_heartbeat_gap_seconds": 0.1939837000099942,
+        "first_ome_tiff_read_seconds": 0.06335429998580366,
+        "pixels_match": true,
+        "completed": true
+      },
+      "real-no-warmup": {
+        "background_warmup": false,
+        "stages": [
+          {
+            "stage": "loading_napari",
+            "seconds": 1.3400014722719789e-05
+          },
+          {
+            "stage": "creating_viewer",
+            "seconds": 0.21548740001162514
+          },
+          {
+            "stage": "loading_vipp",
+            "seconds": 6.064150599995628
+          },
+          {
+            "stage": "building_interface",
+            "seconds": 8.545830899995053
+          },
+          {
+            "stage": "preparing_workflow",
+            "seconds": 9.202235100005055
+          }
+        ],
+        "ready_seconds": 13.230957799998578,
+        "ome_types_loaded_at_ready": false,
+        "ome_zarr_loaded_at_ready": false,
+        "post_ready_before_read_seconds": 0.5281119999999646,
+        "heartbeat_count": 24,
+        "maximum_heartbeat_gap_seconds": 0.02064150001388043,
+        "first_ome_tiff_read_seconds": 0.8462525999930222,
+        "pixels_match": true,
+        "completed": true
+      },
+      "real-warmup-repeat": {
+        "background_warmup": true,
+        "stages": [
+          {
+            "stage": "loading_napari",
+            "seconds": 1.550000160932541e-05
+          },
+          {
+            "stage": "creating_viewer",
+            "seconds": 0.20007290001376532
+          },
+          {
+            "stage": "loading_vipp",
+            "seconds": 4.942036799999187
+          },
+          {
+            "stage": "building_interface",
+            "seconds": 7.33321270000306
+          },
+          {
+            "stage": "preparing_workflow",
+            "seconds": 7.95800870002131
+          }
+        ],
+        "ready_seconds": 12.825063800002681,
+        "ome_types_loaded_at_ready": false,
+        "ome_zarr_loaded_at_ready": false,
+        "warmup_results": [
+          {
+            "module": "ome_types",
+            "seconds": 0.8654189999797381,
+            "error": ""
+          },
+          {
+            "module": "ome_zarr.reader",
+            "seconds": 1.5975070999993477,
+            "error": ""
+          },
+          {
+            "module": "ome_zarr.writer",
+            "seconds": 0.0015962000179570168,
+            "error": ""
+          }
+        ],
+        "post_ready_before_read_seconds": 2.993939700012561,
+        "heartbeat_count": 140,
+        "maximum_heartbeat_gap_seconds": 0.11818849999690428,
+        "first_ome_tiff_read_seconds": 0.02693260001251474,
+        "pixels_match": true,
+        "completed": true
+      }
+    },
+    "method": "Native GUI, same installed interpreter and current source, uncontrolled warm OS caches; 8x8 uint16 OME-TIFF, no randomized repeats; max heartbeat gap is an observation, not a latency bound.",
+    "validation": {
+      "coverage": {
+        "files": 446,
+        "collected": 13373,
+        "process_shards": 3,
+        "partition": "test_widget.py alone; remaining sorted test files split alternately"
+      },
+      "shards": [
+        {
+          "passed": 1004,
+          "failed": 1,
+          "skipped": 0,
+          "seconds": 2803.34
+        },
+        {
+          "passed": 5649,
+          "failed": 0,
+          "skipped": 138,
+          "seconds": 2031.27
+        },
+        {
+          "passed": 6243,
+          "failed": 2,
+          "skipped": 336,
+          "seconds": 2194.71
+        }
+      ],
+      "totals": {
+        "passed": 12896,
+        "failed": 3,
+        "skipped": 474
+      },
+      "full_suite_green": false,
+      "failures": [
+        {
+          "test": "test_widget.py::test_batch_parameter_override_preview_uses_detached_item_workflow",
+          "kind": "10000 ms Qt preview timeout",
+          "isolated_rerun": "passed, 19.36 s including setup"
+        },
+        {
+          "test": "test_ui_inspector_sigma_filter_presentation.py::test_registration_help_restores_ordinary_form_before_queued_resize[False/True]",
+          "kind": "label hint 106 px < natural width 138 px",
+          "current_isolated": "2 failed",
+          "original_product_control_initial": "2 passed",
+          "original_product_control_repeat": "2 failed",
+          "eager_io_control": "2 failed",
+          "cause": "baseline variability/layout issue also observed without startup changes; exact cause not established"
+        }
+      ],
+      "warmup_lifecycle_subset": {
+        "passed": 39,
+        "seconds": 15.09
+      },
+      "native_close_during_warmup": "exit 0; current import allowed to finish, queued imports cancelled",
+      "other_checks": "manifest, lint excluding untracked scratch trees, package build, manual content/routing, strict MkDocs and responsive light/dark inspection passed"
+    }
+  },
+  "latest_installed_build": {
+    "upstream_commit": "57248e0d8a7cc7c81fb0533fa8b705d4ddb370f7",
+    "version": "0.16.0a5",
+    "local_unreleased_changes": "post-ready reader warming, startup timing, installer file-lock resilience",
+    "manual_commit": "c7f4579",
+    "artifact_kind": "unsigned local development Windows installer, not a published release",
+    "wheel_sha256": "6a5e4a9c55e9a3f3f7e2a72eda50909907e1ce0d9f89b56faf667b0c1b1406e8",
+    "setup_sha256": "820226f63985db66d9262ac7603097add9973af30d43779629d97ad3f04c3ab0",
+    "installation": {
+      "run_id": "76c4a3d7-31bf-4ab9-beb6-303fa9924cc5",
+      "status": "succeeded",
+      "message": "VIPP is ready.",
+      "operation": "update",
+      "completed_local_approximate": "2026-10-21T16:07:43+02:00",
+      "registration_warning": "",
+      "technical_error": "",
+      "rollback_attempted": false,
+      "retirement_cleanup_completed": true,
+      "runtime_source_files_verified_against_wheel": 297,
+      "owned_wheel_hash_verified": true,
+      "desktop_shortcut_target_verified": true,
+      "prior_failed_transaction_recovered": true,
+      "remaining_setup_recovery_journals": 0
+    },
+    "method": {
+      "launch": "External stdlib observer calls os.startfile on actual Desktop VIPP.lnk; installed vipp-app.exe --desktop",
+      "readiness": "Existing retained ready log event; external 50 ms polling",
+      "splash_end": "Wait for splash launcher process exit; proxy for disappearance, not frame/video timing",
+      "profile_flags_or_source_injection": false,
+      "smoke_exit": false,
+      "reboot_or_cache_control": false,
+      "other_desktop_apps": "left open",
+      "requested_compute_mode": "Auto for all runs",
+      "sample": "VIPP synthetic volume, default input/Gaussian/Otsu workflow",
+      "actual_worker_summaries": {
+        "first_after_installation": "Auto \u00b7 1 GPU \u00b7 1 CPU",
+        "repeat_normal_workflow": "Auto \u00b7 2 CPU"
+      },
+      "limitations": "Not controlled cold/warm or CPU/GPU comparison; no same-version before/after baseline. Both normal workflow runs were visually verified. Final app left open."
+    },
+    "measurements": [
+      {
+        "started_utc": "2026-10-21T16:14:09.314572+02:00",
+        "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+        "poll_interval_seconds": 0.05,
+        "cold_after_reboot": false,
+        "ac_line_status": "online",
+        "battery_percent": 100,
+        "log_observed_seconds": 12.510206100007053,
+        "shortcut_to_ready_seconds": 141.66260400001192,
+        "stages": [
+          {
+            "stage": "starting_python",
+            "elapsed_seconds": 4e-06,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": null,
+            "previous_stage_seconds": 4e-06
+          },
+          {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.005865,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": "starting_python",
+            "previous_stage_seconds": 0.005861
+          },
+          {
+            "stage": "creating_viewer",
+            "elapsed_seconds": 3.6815,
+            "process_cpu_seconds": 0.375,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 3.675636
+          },
+          {
+            "stage": "loading_vipp",
+            "elapsed_seconds": 64.823697,
+            "process_cpu_seconds": 7.296875,
+            "previous_stage": "creating_viewer",
+            "previous_stage_seconds": 61.142197
+          },
+          {
+            "stage": "building_interface",
+            "elapsed_seconds": 105.264049,
+            "process_cpu_seconds": 11.5,
+            "previous_stage": "loading_vipp",
+            "previous_stage_seconds": 40.440353
+          },
+          {
+            "stage": "preparing_workflow",
+            "elapsed_seconds": 106.261136,
+            "process_cpu_seconds": 12.125,
+            "previous_stage": "building_interface",
+            "previous_stage_seconds": 0.997086
+          },
+          {
+            "stage": "ready",
+            "elapsed_seconds": 128.858527,
+            "process_cpu_seconds": 18.109375,
+            "previous_stage": "preparing_workflow",
+            "previous_stage_seconds": 22.597391
+          }
+        ],
+        "shortcut_to_splash_process_exit_seconds": 142.15884550000192,
+        "observer_finished_seconds": 142.16073130001314,
+        "label": "first_after_installation",
+        "normal_initial_workflow": true,
+        "raw_observer_record": "installed-shortcut-first-a5.json",
+        "startup_log_filename": "startup-20261021-161417-auto-59956-8b5ead78.log",
+        "stage_durations_seconds": {
+          "starting_python": 0.005861,
+          "loading_napari": 3.675636,
+          "creating_viewer": 61.142197,
+          "loading_vipp": 40.440353,
+          "building_interface": 0.997086,
+          "preparing_workflow": 22.597391
+        },
+        "approximate_shortcut_to_child_timing_origin_seconds": 12.804077000011915
+      },
+      {
+        "started_utc": "2026-10-21T16:19:45.999209+02:00",
+        "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+        "poll_interval_seconds": 0.05,
+        "cold_after_reboot": false,
+        "ac_line_status": "online",
+        "battery_percent": 100,
+        "log_observed_seconds": 1.0412354999862146,
+        "shortcut_to_ready_seconds": 9.618765399995027,
+        "stages": [
+          {
+            "stage": "starting_python",
+            "elapsed_seconds": 5e-06,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": null,
+            "previous_stage_seconds": 5e-06
+          },
+          {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.002573,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": "starting_python",
+            "previous_stage_seconds": 0.002568
+          },
+          {
+            "stage": "creating_viewer",
+            "elapsed_seconds": 0.164601,
+            "process_cpu_seconds": 0.171875,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 0.162028
+          },
+          {
+            "stage": "loading_vipp",
+            "elapsed_seconds": 3.724265,
+            "process_cpu_seconds": 3.40625,
+            "previous_stage": "creating_viewer",
+            "previous_stage_seconds": 3.559663
+          },
+          {
+            "stage": "building_interface",
+            "elapsed_seconds": 5.693781,
+            "process_cpu_seconds": 5.3125,
+            "previous_stage": "loading_vipp",
+            "previous_stage_seconds": 1.969516
+          },
+          {
+            "stage": "preparing_workflow",
+            "elapsed_seconds": 6.351869,
+            "process_cpu_seconds": 5.96875,
+            "previous_stage": "building_interface",
+            "previous_stage_seconds": 0.658088
+          },
+          {
+            "stage": "ready",
+            "elapsed_seconds": 8.322608,
+            "process_cpu_seconds": 7.875,
+            "previous_stage": "preparing_workflow",
+            "previous_stage_seconds": 1.970739
+          }
+        ],
+        "shortcut_to_splash_process_exit_seconds": 10.067156400007661,
+        "observer_finished_seconds": 10.06807629999821,
+        "label": "intermediate_recovery_prompt",
+        "normal_initial_workflow": false,
+        "raw_observer_record": "installed-shortcut-repeat-a5.json",
+        "startup_log_filename": "startup-20261021-161946-auto-66884-1e9eb0c4.log",
+        "stage_durations_seconds": {
+          "starting_python": 0.002568,
+          "loading_napari": 0.162028,
+          "creating_viewer": 3.559663,
+          "loading_vipp": 1.969516,
+          "building_interface": 0.658088,
+          "preparing_workflow": 1.970739
+        },
+        "approximate_shortcut_to_child_timing_origin_seconds": 1.2961573999950264,
+        "qualification": "Recovery of our preceding synthetic test workflow was offered; normal initial calculation was paused. Not a full-startup comparison."
+      },
+      {
+        "started_utc": "2026-10-21T16:26:52.829604+02:00",
+        "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+        "poll_interval_seconds": 0.05,
+        "cold_after_reboot": false,
+        "ac_line_status": "online",
+        "battery_percent": 100,
+        "log_observed_seconds": 21.44418009999208,
+        "shortcut_to_ready_seconds": 158.24473019997822,
+        "stages": [
+          {
+            "stage": "starting_python",
+            "elapsed_seconds": 4e-06,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": null,
+            "previous_stage_seconds": 4e-06
+          },
+          {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.00181,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": "starting_python",
+            "previous_stage_seconds": 0.001806
+          },
+          {
+            "stage": "creating_viewer",
+            "elapsed_seconds": 3.593065,
+            "process_cpu_seconds": 0.28125,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 3.591255
+          },
+          {
+            "stage": "loading_vipp",
+            "elapsed_seconds": 64.357273,
+            "process_cpu_seconds": 6.578125,
+            "previous_stage": "creating_viewer",
+            "previous_stage_seconds": 60.764207
+          },
+          {
+            "stage": "building_interface",
+            "elapsed_seconds": 105.486576,
+            "process_cpu_seconds": 10.203125,
+            "previous_stage": "loading_vipp",
+            "previous_stage_seconds": 41.129304
+          },
+          {
+            "stage": "preparing_workflow",
+            "elapsed_seconds": 106.43683,
+            "process_cpu_seconds": 10.890625,
+            "previous_stage": "building_interface",
+            "previous_stage_seconds": 0.950254
+          },
+          {
+            "stage": "ready",
+            "elapsed_seconds": 136.549974,
+            "process_cpu_seconds": 18.609375,
+            "previous_stage": "preparing_workflow",
+            "previous_stage_seconds": 30.113144
+          }
+        ],
+        "shortcut_to_splash_process_exit_seconds": 158.79885029999423,
+        "observer_finished_seconds": 158.80054569998174,
+        "label": "repeat_normal_workflow",
+        "normal_initial_workflow": true,
+        "raw_observer_record": "installed-shortcut-repeat-matched-a5.json",
+        "startup_log_filename": "startup-20261021-162709-auto-46872-2a9e56fd.log",
+        "stage_durations_seconds": {
+          "starting_python": 0.001806,
+          "loading_napari": 3.591255,
+          "creating_viewer": 60.764207,
+          "loading_vipp": 41.129304,
+          "building_interface": 0.950254,
+          "preparing_workflow": 30.113144
+        },
+        "approximate_shortcut_to_child_timing_origin_seconds": 21.69475619997823
+      }
+    ],
+    "recovery_observation": {
+      "symptom": "Recovery offered the synthetic test workflow after normal napari Close; cause not established",
+      "test_sessions_preserved": 2,
+      "backup_subdirectory": "tmp/startup-investigation-20261021/test-recovery-backup-a5",
+      "inventory_includes_hashes": true,
+      "user_workflows_moved_or_deleted": false,
+      "reason": "Keep test-owned recovery copies from pausing normal initial calculation on final measured repeat"
+    },
+    "validation": {
+      "focused_startup_readers_installer": {
+        "passed": 446,
+        "skipped": 2
+      },
+      "expanded_installer_overlaps_focused": {
+        "passed": 356,
+        "skipped": 2
+      },
+      "widget_sources": {
+        "passed": 19
+      },
+      "previously_problematic_cases_latest_source": {
+        "passed": 4
+      },
+      "native_lock_retry_and_shortcut_rendering": "passed",
+      "lint_manifest_package_build": "passed",
+      "manual_contracts": 22,
+      "manual_routes": 50,
+      "strict_manual_build": "passed",
+      "latest_full_suite_run": false
+    },
+    "conclusion": "Deferred reader warming did not resolve installed multi-minute startup. Viewer creation and VIPP imports consume about 102 seconds before workflow calculation; process CPU is much lower than elapsed time. Host-level wait cause remains unproven.",
+    "hardware_wait_followup": {
+      "hardware": {
+        "disk_model": "NVMe BC901 NVMe SK hynix 1024GB",
+        "disk_status": "OK",
+        "disk_status_limitation": "Coarse Windows DiskDrive status, not full SMART validation",
+        "c_free_bytes": 65948893184,
+        "cpu": "Intel Core i7-13700H",
+        "cpu_cores": 14,
+        "cpu_logical_processors": 20
+      },
+      "storage_read_probe": {
+        "method": "Read-only CreateFileW, FILE_FLAG_NO_BUFFERING and SEQUENTIAL_SCAN, aligned VirtualAlloc buffer; existing installed DLL; one pass, no writes",
+        "bytes_read": 134217728,
+        "open_seconds": 0.0004751000087708235,
+        "read_seconds": 0.04516490001697093,
+        "read_mib_per_second": 2834.0591909182435,
+        "chunk_seconds": [
+          0.004530200007138774,
+          0.0029519000090658665,
+          0.0023056999780237675,
+          0.002290100004756823,
+          0.002287000010255724,
+          0.0024539000005461276,
+          0.00229199999012053,
+          0.0023615999962203205,
+          0.002858299994841218,
+          0.006822099996497855,
+          0.0022170000011101365,
+          0.002237799984868616,
+          0.002332500007469207,
+          0.0024044000019785017,
+          0.0024093000101856887,
+          0.002411100023891777
+        ],
+        "limitation": "Limited sequential-read observation, not a full SSD health/latency benchmark or a trace of the slow launch; drive/controller caches not cleared."
+      },
+      "hidden_import_profile": {
+        "events": [
+          {
+            "stage": "before_napari",
+            "elapsed": 2.8400012524798512e-05,
+            "cpu": 0.0
+          },
+          {
+            "stage": "before_viewer",
+            "elapsed": 0.2834449000074528,
+            "cpu": 0.265625
+          },
+          {
+            "stage": "before_vipp_widget_import",
+            "elapsed": 13.355579800001578,
+            "cpu": 11.703125
+          },
+          {
+            "stage": "imports_complete",
+            "elapsed": 24.443514000013238,
+            "cpu": 21.921875
+          }
+        ],
+        "operation_aggregates": {
+          "import_path_stat": {
+            "calls": 9453,
+            "seconds": 5.3182649000082165,
+            "cpu_seconds": 4.765625
+          },
+          "directory_list": {
+            "calls": 286,
+            "seconds": 0.22791299998061731,
+            "cpu_seconds": 0.234375
+          },
+          "loader_get_data": {
+            "calls": 2361,
+            "seconds": 3.9739955001568887,
+            "cpu_seconds": 4.171875
+          },
+          "extension_create": {
+            "calls": 161,
+            "seconds": 0.9120759000943508,
+            "cpu_seconds": 0.828125
+          }
+        },
+        "module_count": 2666,
+        "qualification": "Installed interpreter, hidden viewer, no workflow/recovery; cProfile and per-operation overhead included; uncontrolled caches; operation durations can nest",
+        "evidence_subdirectory": "installed-import-waits-a5-1"
+      },
+      "full_child_profile": {
+        "child_ready_seconds": 38.688811,
+        "process_cpu_at_ready_seconds": 35.375,
+        "session_fsync_calls": 15,
+        "session_fsync_seconds": 0.021238000044832006,
+        "exit_code": 0,
+        "qualification": "Full normal synthetic workflow with cProfile, installed status channel, isolated recovery/timing history and smoke exit; uncontrolled caches; not ordinary startup benchmark",
+        "evidence_subdirectory": "exact-app-child-profile-a5-1"
+      },
+      "traced_shortcut": {
+        "measurement": {
+          "started_utc": "2026-10-21T16:51:25.39683+02:00",
+          "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+          "poll_interval_seconds": 0.05,
+          "cold_after_reboot": false,
+          "ac_line_status": "online",
+          "battery_percent": 97,
+          "log_observed_seconds": 1.234491600014735,
+          "shortcut_to_ready_seconds": 15.762954200006789,
+          "stages": [
+            {
+              "stage": "starting_python",
+              "elapsed_seconds": 5e-06,
+              "process_cpu_seconds": 0.0,
+              "previous_stage": null,
+              "previous_stage_seconds": 5e-06
+            },
+            {
+              "stage": "loading_napari",
+              "elapsed_seconds": 0.002374,
+              "process_cpu_seconds": 0.0,
+              "previous_stage": "starting_python",
+              "previous_stage_seconds": 0.002369
+            },
+            {
+              "stage": "creating_viewer",
+              "elapsed_seconds": 0.191372,
+              "process_cpu_seconds": 0.15625,
+              "previous_stage": "loading_napari",
+              "previous_stage_seconds": 0.188998
+            },
+            {
+              "stage": "loading_vipp",
+              "elapsed_seconds": 5.619499,
+              "process_cpu_seconds": 5.296875,
+              "previous_stage": "creating_viewer",
+              "previous_stage_seconds": 5.428127
+            },
+            {
+              "stage": "building_interface",
+              "elapsed_seconds": 8.171101,
+              "process_cpu_seconds": 7.84375,
+              "previous_stage": "loading_vipp",
+              "previous_stage_seconds": 2.551602
+            },
+            {
+              "stage": "preparing_workflow",
+              "elapsed_seconds": 8.926629,
+              "process_cpu_seconds": 8.5625,
+              "previous_stage": "building_interface",
+              "previous_stage_seconds": 0.755528
+            },
+            {
+              "stage": "ready",
+              "elapsed_seconds": 14.188207,
+              "process_cpu_seconds": 13.265625,
+              "previous_stage": "preparing_workflow",
+              "previous_stage_seconds": 5.261577
+            }
+          ],
+          "shortcut_to_splash_process_exit_seconds": 16.265068000007886,
+          "observer_finished_seconds": 16.266343099996448,
+          "startup_log_filename": "startup-20261021-165126-auto-66276-627bea4f.log"
+        },
+        "qualification": "Actual Desktop shortcut with diagnostic-only PYTHONPATH hook, safe Python-thread main-stack sampler, per-import timings, isolated recovery/history, and smoke exit; same installed modules and normal initial workflow; uncontrolled caches",
+        "evidence_subdirectory": "shortcut-wait-trace-a5-2",
+        "session_import_path_stats": 11853,
+        "session_loader_reads": 2915
+      },
+      "excluded_attempt": {
+        "evidence_subdirectory": "shortcut-wait-trace-a5-1",
+        "reason": "Native faulthandler-watchdog diagnostic terminated with 0xC0000005 before ready; failure-splash duration is not startup time",
+        "product_regression_established": false
+      },
+      "system_trace_attempt": {
+        "tool": "Windows Performance Recorder",
+        "profiles": [
+          "FileIO",
+          "Minifilter"
+        ],
+        "error_code": "0xc5585011",
+        "message": "Failed to enable the policy to profile system performance.",
+        "subsequent_status": "WPR is not recording",
+        "security_or_profiling_policy_changes": false
+      },
+      "interpretation": {
+        "proven": "Same installed package tree, CPU and drive can complete normal startup work far faster; slow child elapsed time substantially exceeds process CPU time; sequential read throughput is high in the bounded probe",
+        "leading_target": "Variable waits during many small module/file accesses, including cache and filesystem/security-filter effects",
+        "unresolved": "No system-level attribution captured during a slow launch; exact component and cross-machine version-controlled cause are unknown",
+        "package_layout": "Extracted Python environment with bytecode caches; no installer unpack on each startup; many small files amplify per-file overhead",
+        "hardware_purchase_justified_by_evidence": false
+      },
+      "cleanup": "Diagnostic processes closed; original VIPP session left running; installed files and shortcut unchanged"
+    }
+  },
+  "slow_launch_system_trace": {
+    "start_utc": "2026-10-21T21:12:56.084621+02:00",
+    "duration_seconds": 213.0686605,
+    "lost_events": 1496739,
+    "cold_after_reboot": false,
+    "launcher_birth_trace_seconds": 16.085224,
+    "child_birth_trace_seconds": 34.227032,
+    "child_ready_seconds": 141.513904,
+    "child_cpu_seconds_at_ready": 35.28125,
+    "python_wdfilter_cumulative_delay_seconds": 129.272477,
+    "defender_scan_report": {
+      "raw_scan_count": 3906,
+      "excluded_pre_birth_records": 1,
+      "excluded_records": [
+        {
+          "file": "site-packages/zarr/__pycache__/errors.cpython-312.pyc",
+          "pid": 66420,
+          "seconds": 204.5474373
+        }
+      ],
+      "valid": {
+        "count": 3905,
+        "cumulative_scan_seconds": 153.6639999,
+        "median_scan_seconds": 0.0321533,
+        "reasons": {
+          "OnOpen": 3578,
+          "OnClose": 327
+        },
+        "largest": [
+          {
+            "file": "site-packages/scipy/sparse/linalg/_dsolve/_superlu.cp312-win_amd64.pyd",
+            "seconds": 1.074105,
+            "started_trace_seconds": 131.6393171
+          },
+          {
+            "file": "site-packages/cupy/cuda/thrust.cp312-win_amd64.pyd",
+            "seconds": 0.8755608,
+            "started_trace_seconds": 193.7930382
+          },
+          {
+            "file": "site-packages/scipy/optimize/_highspy/_core.cp312-win_amd64.pyd",
+            "seconds": 0.7441976,
+            "started_trace_seconds": 137.7854919
+          },
+          {
+            "file": "site-packages/scipy/optimize/_slsqplib.cp312-win_amd64.pyd",
+            "seconds": 0.6867881,
+            "started_trace_seconds": 135.9953873
+          },
+          {
+            "file": "histogram.svg",
+            "seconds": 0.6269372,
+            "started_trace_seconds": 82.8177849
+          },
+          {
+            "file": "long_left_arrow_50.svg",
+            "seconds": 0.6156351,
+            "started_trace_seconds": 82.8371925
+          },
+          {
+            "file": "long_right_arrow_50.svg",
+            "seconds": 0.6116202,
+            "started_trace_seconds": 82.8391589
+          },
+          {
+            "file": "long_right_arrow.svg",
+            "seconds": 0.6060802,
+            "started_trace_seconds": 82.8391896
+          },
+          {
+            "file": "logo_silhouette.svg",
+            "seconds": 0.6003773,
+            "started_trace_seconds": 82.8354628
+          },
+          {
+            "file": "minus_50.svg",
+            "seconds": 0.5924802,
+            "started_trace_seconds": 82.8401558
+          },
+          {
+            "file": "move_back.svg",
+            "seconds": 0.5510366,
+            "started_trace_seconds": 82.8546997
+          },
+          {
+            "file": "move_back_50.svg",
+            "seconds": 0.5385832,
+            "started_trace_seconds": 82.84866
+          }
+        ]
+      },
+      "launcher_before_child": {
+        "count": 460,
+        "cumulative_scan_seconds": 13.1264829,
+        "median_scan_seconds": 0.03196095,
+        "reasons": {
+          "OnOpen": 459,
+          "OnClose": 1
+        },
+        "largest": [
+          {
+            "file": "SU-RALEWAY-EXTRABOLD.TTF",
+            "seconds": 0.0806949,
+            "started_trace_seconds": 30.1623111
+          },
+          {
+            "file": "SU-RALEWAY-BOLDITALIC.TTF",
+            "seconds": 0.0773059,
+            "started_trace_seconds": 30.0782522
+          },
+          {
+            "file": "SU-RALEWAY-BLACK.TTF",
+            "seconds": 0.0748977,
+            "started_trace_seconds": 30.3176709
+          },
+          {
+            "file": "CASCADIACODE.TTF",
+            "seconds": 0.0735778,
+            "started_trace_seconds": 30.5079662
+          },
+          {
+            "file": "SU-RALEWAY-REGULAR.TTF",
+            "seconds": 0.0724862,
+            "started_trace_seconds": 29.7288442
+          },
+          {
+            "file": "SU-RALEWAY-THINITALIC.TTF",
+            "seconds": 0.0688895,
+            "started_trace_seconds": 29.4733519
+          },
+          {
+            "file": "SU-RALEWAY-EXTRABOLDITALIC.TTF",
+            "seconds": 0.0630657,
+            "started_trace_seconds": 30.2475753
+          },
+          {
+            "file": "CASKAYDIACOVENERDFONTMONO-BOLDITALIC.TTF",
+            "seconds": 0.0603258,
+            "started_trace_seconds": 33.0736412
+          },
+          {
+            "file": "SU-RALEWAY-BLACKITALIC.TTF",
+            "seconds": 0.0596359,
+            "started_trace_seconds": 30.3995978
+          },
+          {
+            "file": "CASKAYDIACOVENERDFONTMONO-BOLD.TTF",
+            "seconds": 0.0572407,
+            "started_trace_seconds": 33.0012211
+          },
+          {
+            "file": "CASCADIACODEITALIC.TTF",
+            "seconds": 0.056225,
+            "started_trace_seconds": 30.5903526
+          },
+          {
+            "file": "CASKAYDIACOVENERDFONT-BOLD.TTF",
+            "seconds": 0.0549769,
+            "started_trace_seconds": 32.3875504
+          }
+        ]
+      },
+      "main_child": {
+        "count": 3440,
+        "cumulative_scan_seconds": 140.4680302,
+        "median_scan_seconds": 0.03217225,
+        "reasons": {
+          "OnOpen": 3114,
+          "OnClose": 326
+        },
+        "largest": [
+          {
+            "file": "site-packages/scipy/sparse/linalg/_dsolve/_superlu.cp312-win_amd64.pyd",
+            "seconds": 1.074105,
+            "started_trace_seconds": 131.6393171
+          },
+          {
+            "file": "site-packages/cupy/cuda/thrust.cp312-win_amd64.pyd",
+            "seconds": 0.8755608,
+            "started_trace_seconds": 193.7930382
+          },
+          {
+            "file": "site-packages/scipy/optimize/_highspy/_core.cp312-win_amd64.pyd",
+            "seconds": 0.7441976,
+            "started_trace_seconds": 137.7854919
+          },
+          {
+            "file": "site-packages/scipy/optimize/_slsqplib.cp312-win_amd64.pyd",
+            "seconds": 0.6867881,
+            "started_trace_seconds": 135.9953873
+          },
+          {
+            "file": "histogram.svg",
+            "seconds": 0.6269372,
+            "started_trace_seconds": 82.8177849
+          },
+          {
+            "file": "long_left_arrow_50.svg",
+            "seconds": 0.6156351,
+            "started_trace_seconds": 82.8371925
+          },
+          {
+            "file": "long_right_arrow_50.svg",
+            "seconds": 0.6116202,
+            "started_trace_seconds": 82.8391589
+          },
+          {
+            "file": "long_right_arrow.svg",
+            "seconds": 0.6060802,
+            "started_trace_seconds": 82.8391896
+          },
+          {
+            "file": "logo_silhouette.svg",
+            "seconds": 0.6003773,
+            "started_trace_seconds": 82.8354628
+          },
+          {
+            "file": "minus_50.svg",
+            "seconds": 0.5924802,
+            "started_trace_seconds": 82.8401558
+          },
+          {
+            "file": "move_back.svg",
+            "seconds": 0.5510366,
+            "started_trace_seconds": 82.8546997
+          },
+          {
+            "file": "move_back_50.svg",
+            "seconds": 0.5385832,
+            "started_trace_seconds": 82.84866
+          }
+        ]
+      },
+      "main_child_before_ready": {
+        "count": 2848,
+        "cumulative_scan_seconds": 120.7490395,
+        "median_scan_seconds": 0.033610749999999995,
+        "reasons": {
+          "OnOpen": 2525,
+          "OnClose": 323
+        },
+        "largest": [
+          {
+            "file": "site-packages/scipy/sparse/linalg/_dsolve/_superlu.cp312-win_amd64.pyd",
+            "seconds": 1.074105,
+            "started_trace_seconds": 131.6393171
+          },
+          {
+            "file": "site-packages/scipy/optimize/_highspy/_core.cp312-win_amd64.pyd",
+            "seconds": 0.7441976,
+            "started_trace_seconds": 137.7854919
+          },
+          {
+            "file": "site-packages/scipy/optimize/_slsqplib.cp312-win_amd64.pyd",
+            "seconds": 0.6867881,
+            "started_trace_seconds": 135.9953873
+          },
+          {
+            "file": "histogram.svg",
+            "seconds": 0.6269372,
+            "started_trace_seconds": 82.8177849
+          },
+          {
+            "file": "long_left_arrow_50.svg",
+            "seconds": 0.6156351,
+            "started_trace_seconds": 82.8371925
+          },
+          {
+            "file": "long_right_arrow_50.svg",
+            "seconds": 0.6116202,
+            "started_trace_seconds": 82.8391589
+          },
+          {
+            "file": "long_right_arrow.svg",
+            "seconds": 0.6060802,
+            "started_trace_seconds": 82.8391896
+          },
+          {
+            "file": "logo_silhouette.svg",
+            "seconds": 0.6003773,
+            "started_trace_seconds": 82.8354628
+          },
+          {
+            "file": "minus_50.svg",
+            "seconds": 0.5924802,
+            "started_trace_seconds": 82.8401558
+          },
+          {
+            "file": "move_back.svg",
+            "seconds": 0.5510366,
+            "started_trace_seconds": 82.8546997
+          },
+          {
+            "file": "move_back_50.svg",
+            "seconds": 0.5385832,
+            "started_trace_seconds": 82.84866
+          },
+          {
+            "file": "minus.svg",
+            "seconds": 0.5212035,
+            "started_trace_seconds": 82.8481102
+          }
+        ]
+      },
+      "main_child_before_ready_scan_interval_union_seconds": 85.7167064,
+      "limitation": "Lost, duplicate and unmatched events were reported; omit pre-birth scan records. Scan durations can overlap. These totals are not an exact critical-path delay or complete accounting."
+    },
+    "launcher_fonts_before_child": {
+      "count": 316,
+      "cumulative_scan_seconds": 11.370705
+    },
+    "interpretation": "Defender scanning is a substantial contributor during this reproduced slow launch. Aggregates overlap and events are lost; no exact critical-path saving or controlled cross-machine comparison is established.",
+    "security_settings_changed": false
+  },
+  "first_frame_followup": {
+    "qualification": "Native Windows installed dependencies with current source and a diagnostic four-second process-creation delay. Uncontrolled warm caches; not an installed-shortcut or post-reboot acceptance measurement.",
+    "measurement": {
+      "source_root": "src",
+      "imposed_spawn_delay_seconds": 4,
+      "first_paint_seconds": 1.617037000018172,
+      "timer_at_first_paint": "Elapsed 0:00",
+      "io_before_first_paint": {
+        "read_operations": 1026,
+        "write_operations": 3,
+        "other_operations": 9571,
+        "read_bytes": 2054781,
+        "write_bytes": 41,
+        "other_bytes": 173542
+      },
+      "exit_code": 0,
+      "session_seconds": 6.085197300009895,
+      "heartbeat_count": 219,
+      "phases": [
+        {
+          "stage": "splash_build_begin",
+          "seconds": 0.9545075999922119
+        },
+        {
+          "stage": "splash_build_end",
+          "seconds": 1.1564234000106808
+        },
+        {
+          "stage": "show_begin",
+          "seconds": 1.2102248000155669
+        },
+        {
+          "stage": "first_paint",
+          "seconds": 1.6170420999987982
+        },
+        {
+          "stage": "show_end",
+          "seconds": 1.6346420000190847
+        }
+      ],
+      "maximum_heartbeat_gap_seconds": 0.42606589998467825
+    },
+    "focused_test_count": 64,
+    "intermediate_repair": {
+      "run_id": "dabe9f58-0b7b-40bd-a089-671431b0a099",
+      "outcome": "Cancelled normally so the complete font-first-frame fix can replace the intermediate process-thread-only artifact. Original installation and running VIPP preserved."
+    },
+    "build": {
+      "runtime_source_count": 298,
+      "runtime_source_mismatches": [],
+      "runtime_module_set_matches": true,
+      "first_frame_asset_matches": true,
+      "wheel_sha256": "fd483db933ff70c9ef5ed7d86cff0fafc990c098867f389f494ada6cfb17837f",
+      "installer_sha256": "2db5e2f22f90007f5ae95a7b066bbd114dadd0769c10ee55cc695c43ff89b6c6"
+    },
+    "install_run_id": "d918a7d6-252e-4fc7-b3fd-9c2b1932f59c",
+    "installation": {
+      "registration_warning": "",
+      "ownership_committed_local": "2026-10-21T23:12:55.883334+02:00",
+      "operation": "repair",
+      "status": "succeeded",
+      "original_user_session_preserved": true,
+      "gpu_check": "CUDA ready on NVIDIA GeForce RTX 4050 Laptop GPU",
+      "installed_file_verification_order": "After first measured launches, to avoid warming installed runtime through verification",
+      "shortcut": "Desktop VIPP.lnk -> new owned environment vipp-app.exe --desktop"
+    },
+    "installed_verification": {
+      "run_id": "d918a7d6-252e-4fc7-b3fd-9c2b1932f59c",
+      "status": "succeeded",
+      "operation": "repair",
+      "wheel_sha256": "fd483db933ff70c9ef5ed7d86cff0fafc990c098867f389f494ada6cfb17837f",
+      "installed_package_file_count": 348,
+      "installed_package_mismatches": [],
+      "dependency_versions": {
+        "cupy-cuda13x": "14.1.1",
+        "napari": "0.9.2",
+        "numpy": "2.5.1",
+        "ome-types": "0.7.0",
+        "ome-zarr": "0.21.0",
+        "PyQt6": "6.11.0",
+        "PyQt6-Qt6": "6.11.2",
+        "scikit-image": "0.26.0",
+        "scipy": "1.18.0"
+      },
+      "registration_warning": "",
+      "retirement_cleanup": {
+        "attempted": true,
+        "completed": true,
+        "errors": [],
+        "retired_environment_version": "0.16.0a2",
+        "original_active_0.16.0a5_environment_preserved": true
+      }
+    },
+    "ordinary_shortcut_measurements": [
+      {
+        "started_utc": "2026-10-21T22:12:16.953204+00:00",
+        "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+        "poll_interval_seconds": 0.05,
+        "cold_after_reboot": false,
+        "ac_line_status": "online",
+        "battery_percent": 100,
+        "log_observed_seconds": 9.012495000002673,
+        "launcher_pid": 37372,
+        "shortcut_to_ready_seconds": 114.11523520000628,
+        "stages": [
+          {
+            "stage": "starting_python",
+            "elapsed_seconds": 4e-06,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": null,
+            "previous_stage_seconds": 4e-06
+          },
+          {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.001733,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": "starting_python",
+            "previous_stage_seconds": 0.001729
+          },
+          {
+            "stage": "creating_viewer",
+            "elapsed_seconds": 3.738104,
+            "process_cpu_seconds": 0.421875,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 3.736371
+          },
+          {
+            "stage": "loading_vipp",
+            "elapsed_seconds": 61.884474,
+            "process_cpu_seconds": 9.015625,
+            "previous_stage": "creating_viewer",
+            "previous_stage_seconds": 58.14637
+          },
+          {
+            "stage": "building_interface",
+            "elapsed_seconds": 101.637236,
+            "process_cpu_seconds": 12.53125,
+            "previous_stage": "loading_vipp",
+            "previous_stage_seconds": 39.752762
+          },
+          {
+            "stage": "preparing_workflow",
+            "elapsed_seconds": 102.620028,
+            "process_cpu_seconds": 13.234375,
+            "previous_stage": "building_interface",
+            "previous_stage_seconds": 0.982793
+          },
+          {
+            "stage": "ready",
+            "elapsed_seconds": 104.714418,
+            "process_cpu_seconds": 15.1875,
+            "previous_stage": "preparing_workflow",
+            "previous_stage_seconds": 2.09439
+          }
+        ],
+        "shortcut_to_splash_process_exit_seconds": 114.59933450000244,
+        "observer_finished_seconds": 114.60124779999023,
+        "shortcut_filename": "VIPP.lnk",
+        "startup_log_filename": "startup-20261022-001225-auto-37372-0e6d5aaa.log",
+        "role": "First after installation",
+        "splash_observation": {
+          "valid": false,
+          "reason": "External UI observer had a scripting error before polling; the later screenshot at elapsed 20 seconds is not splash-onset evidence."
+        }
+      },
+      {
+        "started_utc": "2026-10-21T22:19:36.328372+00:00",
+        "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+        "poll_interval_seconds": 0.05,
+        "cold_after_reboot": false,
+        "ac_line_status": "online",
+        "battery_percent": 100,
+        "log_observed_seconds": 0.9366242999967653,
+        "launcher_pid": 22440,
+        "shortcut_to_ready_seconds": 11.922096499998588,
+        "stages": [
+          {
+            "stage": "starting_python",
+            "elapsed_seconds": 8e-06,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": null,
+            "previous_stage_seconds": 8e-06
+          },
+          {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.002695,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": "starting_python",
+            "previous_stage_seconds": 0.002687
+          },
+          {
+            "stage": "creating_viewer",
+            "elapsed_seconds": 0.260159,
+            "process_cpu_seconds": 0.25,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 0.257464
+          },
+          {
+            "stage": "loading_vipp",
+            "elapsed_seconds": 5.141939,
+            "process_cpu_seconds": 4.65625,
+            "previous_stage": "creating_viewer",
+            "previous_stage_seconds": 4.881781
+          },
+          {
+            "stage": "building_interface",
+            "elapsed_seconds": 7.618152,
+            "process_cpu_seconds": 7.078125,
+            "previous_stage": "loading_vipp",
+            "previous_stage_seconds": 2.476212
+          },
+          {
+            "stage": "preparing_workflow",
+            "elapsed_seconds": 8.35125,
+            "process_cpu_seconds": 7.8125,
+            "previous_stage": "building_interface",
+            "previous_stage_seconds": 0.733099
+          },
+          {
+            "stage": "ready",
+            "elapsed_seconds": 10.635864,
+            "process_cpu_seconds": 10.109375,
+            "previous_stage": "preparing_workflow",
+            "previous_stage_seconds": 2.284614
+          }
+        ],
+        "shortcut_to_splash_process_exit_seconds": 12.418215599987889,
+        "observer_finished_seconds": 12.418805099994643,
+        "shortcut_filename": "VIPP.lnk",
+        "startup_log_filename": "startup-20261022-001937-auto-22440-18614da3.log",
+        "role": "repeat1",
+        "splash_observation": {
+          "first_window_observed_utc": "2026-10-21T22:19:37.457Z",
+          "window_id": 7800150,
+          "poll_interval_ms": 200,
+          "method": "Sky discovers the new startup window; screenshot confirms painted content",
+          "painted_screenshot_completed_utc": "2026-10-21T22:19:37.955Z",
+          "screenshot_filename": "installed-font-fix-repeat1-splash.jpg",
+          "window_first_seen_seconds": 1.128628,
+          "painted_screenshot_by_seconds": 1.626628,
+          "clock_at_screenshot": "0:00",
+          "qualification": "200 ms discovery polling plus API latency; screenshot completion is a conservative visible-by bound, not a video-exact first-pixel timestamp."
+        }
+      },
+      {
+        "started_utc": "2026-10-21T22:25:56.987667+00:00",
+        "method": "os.startfile actual desktop .lnk; observe retained ready log and launcher exit",
+        "poll_interval_seconds": 0.05,
+        "cold_after_reboot": false,
+        "ac_line_status": "online",
+        "battery_percent": 100,
+        "log_observed_seconds": 1.2076716000156011,
+        "launcher_pid": 59900,
+        "shortcut_to_ready_seconds": 12.355470000009518,
+        "stages": [
+          {
+            "stage": "starting_python",
+            "elapsed_seconds": 1.1e-05,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": null,
+            "previous_stage_seconds": 1.1e-05
+          },
+          {
+            "stage": "loading_napari",
+            "elapsed_seconds": 0.002971,
+            "process_cpu_seconds": 0.0,
+            "previous_stage": "starting_python",
+            "previous_stage_seconds": 0.00296
+          },
+          {
+            "stage": "creating_viewer",
+            "elapsed_seconds": 0.217499,
+            "process_cpu_seconds": 0.203125,
+            "previous_stage": "loading_napari",
+            "previous_stage_seconds": 0.214528
+          },
+          {
+            "stage": "loading_vipp",
+            "elapsed_seconds": 5.10685,
+            "process_cpu_seconds": 4.765625,
+            "previous_stage": "creating_viewer",
+            "previous_stage_seconds": 4.889351
+          },
+          {
+            "stage": "building_interface",
+            "elapsed_seconds": 7.726998,
+            "process_cpu_seconds": 7.25,
+            "previous_stage": "loading_vipp",
+            "previous_stage_seconds": 2.620147
+          },
+          {
+            "stage": "preparing_workflow",
+            "elapsed_seconds": 8.438256,
+            "process_cpu_seconds": 7.9375,
+            "previous_stage": "building_interface",
+            "previous_stage_seconds": 0.711259
+          },
+          {
+            "stage": "ready",
+            "elapsed_seconds": 10.796412,
+            "process_cpu_seconds": 10.15625,
+            "previous_stage": "preparing_workflow",
+            "previous_stage_seconds": 2.358156
+          }
+        ],
+        "shortcut_to_splash_process_exit_seconds": 12.8462731000036,
+        "observer_finished_seconds": 12.847732499998529,
+        "shortcut_filename": "VIPP.lnk",
+        "startup_log_filename": "startup-20261022-002557-auto-59900-618a157f.log",
+        "role": "repeat2",
+        "splash_observation": {
+          "first_window_observed_utc": "2026-10-21T22:25:58.131Z",
+          "window_id": 13307882,
+          "poll_interval_ms": 200,
+          "method": "Sky discovers the new startup window; screenshot confirms painted content",
+          "painted_screenshot_completed_utc": "2026-10-21T22:25:58.524Z",
+          "screenshot_filename": "installed-font-fix-repeat2-splash.jpg",
+          "window_first_seen_seconds": 1.143333,
+          "painted_screenshot_by_seconds": 1.536333,
+          "clock_at_screenshot": "0:00",
+          "qualification": "200 ms discovery polling plus API latency; screenshot completion is a conservative visible-by bound, not a video-exact first-pixel timestamp."
+        }
+      }
+    ],
+    "measurement_limits": {
+      "cold_after_reboot": false,
+      "app_instrumentation_overrides": false,
+      "existing_user_session_kept_open": true,
+      "background_installation_and_regression_checks_finished_before_measurement": true,
+      "installed_file_verification_after_measurement": true,
+      "startup_workflow": "Existing interrupted-workflow copies caused the recovery dialog to be offered and automatic sample calculation to be paused. Ready means the interface/recovery dialog, not completed default sample analysis.",
+      "comparison": "Uncontrolled warm file/security caches and differing workflow conditions prevent a controlled before/after or cross-machine speedup claim."
+    },
+    "validation": {
+      "focused_startup_font_and_architecture_tests_passed": 64,
+      "full_run": {
+        "passed": 13779,
+        "skipped": 479,
+        "failed": 28,
+        "seconds": 6055.19
+      },
+      "full_run_failure_causes": {
+        "stale_development_distribution_metadata_0.16.0a3_against_0.16.0a5_source": 27,
+        "deferred_uninstall_test_waited_for_global_mutex_held_by_concurrent_real_installer_and_hit_60_second_test_timeout": 1
+      },
+      "correction": "Refreshed only the development environment's editable package metadata to a5; reran affected files/cases after the real installer closed. Scientific version checks and the shared installer lock were not weakened.",
+      "targeted_rerun": {
+        "passed": 57,
+        "failed": 0,
+        "seconds": 95.23
+      },
+      "all_initial_failures_in_passing_rerun": true,
+      "single_clean_full_rerun_claimed": false,
+      "lint": "src and scripts pass. Whole-directory lint also traversed pre-existing untracked tmp dependency trees and reported their unrelated errors.",
+      "npe2_manifest": "valid",
+      "package_and_development_installer_builds": "passed",
+      "manual": "22 content contracts, 50 application-to-manual routes and strict MkDocs build passed; desktop light/dark and a 600 px narrow dark view reviewed. The preview-server request was blocked by automatic approval review; direct local-file rendering completed the narrow check without a server."
+    },
+    "cleanup": {
+      "benchmark_instances_closed": 2,
+      "latest_benchmark_instance_left_open": true,
+      "original_user_instance_preserved": true,
+      "untouched_benchmark_recovery_copies_preserved": 2,
+      "recovery_backup_subdirectory": "tmp/startup-investigation-20261021/test-recovery-backup-font-fix",
+      "backup_hashes_verified": true,
+      "existing_user_recovery_copies_moved_or_deleted": false
+    }
+  },
+  "current_installed_build": {
+    "version": "0.16.0a5",
+    "development": true,
+    "details": "first_frame_followup",
+    "wheel_sha256": "fd483db933ff70c9ef5ed7d86cff0fafc990c098867f389f494ada6cfb17837f",
+    "status": "succeeded"
+  }
+}

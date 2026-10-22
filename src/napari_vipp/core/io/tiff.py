@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from ome_types import from_xml
 from tifffile import TiffFile, imwrite
 
 from napari_vipp.core.grid import _normalized_unit
@@ -583,6 +582,9 @@ def _parse_ome(xml: str | None):
                     changed = True
         if changed:
             xml = ET.tostring(root, encoding="unicode")
+
+    from ome_types import from_xml
+
     return from_xml(xml, validate=False, warn_on_schema_update=False)
 
 

@@ -20361,6 +20361,13 @@ class VippWidget(QWidget):
         suffix = source_path.suffix.lower()
         if suffix == ".zarr" or suffix in MICROSCOPE_SUFFIXES:
             return True
+        if suffix in {".tif", ".tiff"}:
+            from napari_vipp.ui.reader_warmup import reader_warmup_pending
+
+            # A small OME-TIFF can otherwise inspect XML synchronously and
+            # block Qt on the background import's normal Python module lock.
+            if reader_warmup_pending("ome_types"):
+                return True
         try:
             return source_path.stat().st_size >= ASYNC_SOURCE_FILE_BYTES
         except OSError:
