@@ -29,6 +29,7 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
+- [0.16.0a7 startup, recovery and path-saving patch](release-0.16.0a7-plan.md)
 - [0.16.0a6 performance release plan](release-0.16.0a6-plan.md)
 - [0.16.0a5 non-AI release plan](release-0.16.0a5-plan.md)
 - [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)

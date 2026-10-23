@@ -4,11 +4,17 @@ import pytest
 
 from napari_vipp.ui import workflow_save_settings
 from napari_vipp.ui.workflow_save_settings import (
+    DEFAULT_WORKFLOW_PATH_POLICY,
     DEFAULT_WORKFLOW_SAVE_POLICY,
+    WORKFLOW_PATH_POLICY_CHOICES,
+    WORKFLOW_PATH_POLICY_SETTING,
     WORKFLOW_SAVE_POLICY_CHOICES,
     WORKFLOW_SAVE_POLICY_SETTING,
+    WorkflowPathPolicy,
     WorkflowSavePolicy,
+    load_workflow_path_policy,
     load_workflow_save_policy,
+    save_workflow_path_policy,
     save_workflow_save_policy,
 )
 
@@ -92,3 +98,45 @@ def test_default_workflow_settings_factory_is_plugin_owned_and_injectable(
 
     assert load_workflow_save_policy() is WorkflowSavePolicy.OVERWRITE
     assert calls == [("napari-vipp", "napari-vipp")]
+
+
+def test_workflow_path_policy_choices_default_to_relative():
+    assert DEFAULT_WORKFLOW_PATH_POLICY is WorkflowPathPolicy.RELATIVE
+    assert WORKFLOW_PATH_POLICY_CHOICES == (
+        ("relative", "Relative to workflow file"),
+        ("absolute", "Absolute file locations"),
+    )
+    assert WorkflowPathPolicy.parse("Absolute file locations") is (
+        WorkflowPathPolicy.ABSOLUTE
+    )
+    assert WorkflowPathPolicy.parse("RELATIVE") is WorkflowPathPolicy.RELATIVE
+
+
+@pytest.mark.parametrize("invalid", [None, "", "auto", 123, object(), True])
+def test_workflow_path_policy_load_falls_back_without_writing(invalid):
+    settings = _MemorySettings({WORKFLOW_PATH_POLICY_SETTING: invalid})
+    assert load_workflow_path_policy(settings) is WorkflowPathPolicy.RELATIVE
+    assert settings.values[WORKFLOW_PATH_POLICY_SETTING] is invalid
+    assert settings.sync_calls == 0
+
+
+@pytest.mark.parametrize("policy", list(WorkflowPathPolicy))
+def test_workflow_path_policy_round_trip_does_not_change_overwrite_policy(policy):
+    settings = _MemorySettings({WORKFLOW_SAVE_POLICY_SETTING: "confirm"})
+    saved = save_workflow_path_policy(policy.label, settings)
+    assert saved is policy
+    assert settings.values == {
+        WORKFLOW_SAVE_POLICY_SETTING: "confirm",
+        WORKFLOW_PATH_POLICY_SETTING: policy.value,
+    }
+    assert settings.sync_calls == 1
+    assert load_workflow_path_policy(settings) is policy
+    assert load_workflow_save_policy(settings) is WorkflowSavePolicy.CONFIRM
+
+
+def test_invalid_workflow_path_policy_is_rejected_before_writing():
+    settings = _MemorySettings()
+    with pytest.raises(ValueError, match="Unsupported workflow path policy"):
+        save_workflow_path_policy("auto", settings)
+    assert settings.values == {}
+    assert settings.sync_calls == 0

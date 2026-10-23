@@ -136,8 +136,9 @@ def test_copy_project_and_open_from_unrelated_cwd_preserves_source_evidence(
 
 
 @pytest.mark.parametrize("raw_document", [False, True])
+@pytest.mark.parametrize("relative_paths", [False, True])
 def test_save_as_rebases_without_retargeting_or_mutating_sources(
-    tmp_path, raw_document
+    tmp_path, raw_document, relative_paths
 ):
     pipeline, original, item = _project(tmp_path / "project")
     save_workflow(original, pipeline)
@@ -146,15 +147,19 @@ def test_save_as_rebases_without_retargeting_or_mutating_sources(
     if raw_document:
         document = json.loads(original.read_text())
         before = deepcopy(document)
-        save_workflow_document(target, document, source_path=original)
+        save_workflow_document(
+            target, document, source_path=original, relative_paths=relative_paths
+        )
         assert document == before
     else:
         loaded = _pipeline_from_loaded(load_workflow(original))
         before = serialize_workflow(loaded)
-        save_workflow(target, loaded)
+        save_workflow(target, loaded, relative_paths=relative_paths)
         assert serialize_workflow(loaded) == before
     saved = json.loads(target.read_text())
-    assert saved["nodes"][0]["params"]["file_path"] == "../../data/cells.npy"
+    assert saved["nodes"][0]["params"]["file_path"] == (
+        "../../data/cells.npy" if relative_paths else item.container.uri
+    )
     reopened = load_workflow(target)["nodes"][0]
     assert reopened.params["file_path"] == item.container.uri
     assert SourceItem.from_dict(reopened.params["_vipp_source_item"]) == item
@@ -298,8 +303,9 @@ def test_attached_batch_hash_is_checked_before_rebase_and_updated_after(tmp_path
         save_workflow_document(path.with_name("bad.json"), raw, source_path=path)
 
 
+@pytest.mark.parametrize("relative_paths", [False, True])
 def test_save_live_relative_bindings_keeps_runtime_base_not_destination(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, relative_paths
 ):
     project = tmp_path / "authoring-project"
     pipeline, _original, item = _project(project)
@@ -311,7 +317,7 @@ def test_save_live_relative_bindings_keeps_runtime_base_not_destination(
     monkeypatch.chdir(project)
     target = project / "saved-elsewhere" / "nested" / "analysis.json"
     target.parent.mkdir(parents=True)
-    save_workflow(target, live)
+    save_workflow(target, live, relative_paths=relative_paths)
     restored = load_workflow(target)
     nodes = {node.operation_id: node for node in restored["nodes"]}
     assert Path(nodes["input"].params["file_path"]) == project / "data" / "cells.npy"
@@ -327,3 +333,175 @@ def test_save_live_relative_bindings_keeps_runtime_base_not_destination(
         project / "results" / "mask.tif"
     )
     assert serialize_workflow(live) == before
+
+
+def test_open_relative_then_save_absolute_can_move_only_workflow(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    pipeline, original, item = _project(project)
+    save_workflow(original, pipeline)
+    loaded = _pipeline_from_loaded(load_workflow(original))
+    before = serialize_workflow(loaded)
+    save_workflow(original, loaded, relative_paths=False)
+    raw = json.loads(original.read_text())
+    nodes = {node["operation_id"]: node for node in raw["nodes"]}
+    assert nodes["input"]["params"]["file_path"] == item.container.uri
+    assert nodes["input"]["params"]["_vipp_source_item"] == item.to_dict()
+    assert Path(nodes["table_source"]["params"]["dataset_path"]) == (
+        project / "data" / "measurements.json"
+    )
+    assert Path(nodes["save_output"]["params"]["path"]) == (
+        project / "results" / "mask.tif"
+    )
+    assert serialize_workflow(loaded) == before
+    moved = tmp_path / "workflow-only" / "moved.json"
+    moved.parent.mkdir()
+    shutil.move(original, moved)
+    unrelated = tmp_path / "unrelated-working-folder"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    reopened = _pipeline_from_loaded(load_workflow(moved))
+    assert serialize_workflow(reopened) == before
+    assert Path(reopened.nodes["input"].params["file_path"]).read_bytes() == (
+        b"exact source bytes"
+    )
+
+
+def test_raw_relative_to_absolute_save_uses_original_base_and_round_trips(
+    tmp_path, monkeypatch
+):
+    pipeline, original, item = _project(tmp_path / "project")
+    save_workflow(original, pipeline)
+    document = json.loads(original.read_text())
+    before = deepcopy(document)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    absolute = elsewhere / "absolute.json"
+    save_workflow_document(
+        absolute, document, source_path=original, relative_paths=False
+    )
+    assert document == before
+    raw_absolute = json.loads(absolute.read_text())
+    assert raw_absolute["nodes"][0]["params"]["file_path"] == item.container.uri
+    assert raw_absolute["nodes"][0]["params"]["_vipp_source_item"] == item.to_dict()
+    relative_again = original.parent / "relative-again.json"
+    save_workflow_document(
+        relative_again, raw_absolute, source_path=absolute, relative_paths=True
+    )
+    assert json.loads(relative_again.read_text()) == before
+    assert (
+        _pipeline_from_loaded(load_workflow(relative_again))
+        .nodes["input"]
+        .params["_vipp_source_item"]
+        == item.to_dict()
+    )
+
+
+def test_absolute_save_retains_foreign_drives_shares_and_opaque_uris(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    pipeline.set_param("input", "file_path", "D:/fixed-data/cells.tif")
+    table = pipeline.add_node("table_source")
+    pipeline.set_param(table.id, "dataset_path", "//server/share/measurements.json")
+    pipeline.set_param(table.id, "dataset_sha256", "a" * 64)
+    output = pipeline.add_node("save_output")
+    pipeline.set_param(output.id, "path", "C:/results/mask.tif")
+    target = tmp_path / "absolute.json"
+    save_workflow(target, pipeline, relative_paths=False)
+    params = {
+        node["operation_id"]: node["params"]
+        for node in json.loads(target.read_text())["nodes"]
+    }
+    assert params["input"]["file_path"] == "D:\\fixed-data\\cells.tif"
+    assert params["table_source"]["dataset_path"] == (
+        "\\\\server\\share\\measurements.json"
+    )
+    assert params["save_output"]["path"] == "C:\\results\\mask.tif"
+    uri = "s3://bucket/cells.zarr?revision=exact"
+    pipeline.set_param("input", "file_path", uri)
+    save_workflow(target, pipeline, relative_paths=False)
+    assert json.loads(target.read_text())["nodes"][0]["params"]["file_path"] == uri
+
+
+def test_absolute_attached_batch_save_resolves_old_bindings_and_keeps_evidence(
+    tmp_path,
+):
+    pipeline, original, item = _project(tmp_path / "project")
+    output = pipeline.add_node("batch_output")
+    pipeline.connect("input", output.id)
+    document = serialize_workflow(pipeline)
+    config = BatchConfig(
+        workflow_file=original,
+        workflow_sha256=scientific_workflow_hash(document),
+        output_dir=original.parent.parent / "batch results",
+        sources=(
+            BatchSourceConfig(
+                "input",
+                "Cells",
+                Path(item.container.uri).parent,
+                "*.npy",
+                source_items=(item,),
+            ),
+        ),
+        outputs=(
+            BatchOutputConfig(
+                output.id, "Output", "result", "image", "npy", "", "{stem}"
+            ),
+        ),
+    )
+    document["batch_config"] = config.to_dict()
+    save_workflow_document(original, document)
+    raw_relative = json.loads(original.read_text())
+    before = deepcopy(raw_relative)
+    target = tmp_path / "workflow-only" / "absolute.json"
+    target.parent.mkdir()
+    save_workflow_document(
+        target, raw_relative, source_path=original, relative_paths=False
+    )
+    assert raw_relative == before
+    saved = json.loads(target.read_text())
+    batch = saved["batch_config"]
+    assert batch["workflow"] == {
+        "file": str(target),
+        "sha256": scientific_workflow_hash(saved),
+    }
+    assert batch["output_dir"] == str(config.output_dir)
+    assert batch["sources"][0]["input_dir"] == str(config.sources[0].input_dir)
+    assert batch["sources"][0]["source_items"][0] == item.to_dict()
+    assert batch["outputs"] == raw_relative["batch_config"]["outputs"]
+    moved = target.with_name("moved.json")
+    target.rename(moved)
+    loaded = load_workflow(moved)
+    assert "batch_config_error" not in loaded
+    assert loaded["batch_config"]["workflow"]["file"] == str(moved)
+    assert loaded["batch_config"]["sources"][0]["source_items"][0] == item.to_dict()
+    loaded_pipeline = _pipeline_from_loaded(loaded)
+    assert loaded["batch_config"]["workflow"]["sha256"] == (
+        scientific_workflow_hash(serialize_workflow(loaded_pipeline))
+    )
+    invalid = deepcopy(raw_relative)
+    invalid["nodes"][0]["params"]["file_path"] = "../different.npy"
+    old_bytes = moved.read_bytes()
+    with pytest.raises(ValueError, match="hash does not match"):
+        save_workflow_document(
+            moved, invalid, source_path=original, relative_paths=False
+        )
+    assert moved.read_bytes() == old_bytes
+
+
+@pytest.mark.parametrize("relative_paths", [None, 0, 1, "absolute", "relative"])
+@pytest.mark.parametrize("raw_document", [False, True])
+def test_save_rejects_invalid_path_policy_before_overwrite(
+    tmp_path, relative_paths, raw_document
+):
+    pipeline = PrototypePipeline()
+    target = tmp_path / "existing.json"
+    target.write_bytes(b"original destination bytes")
+    with pytest.raises(ValueError, match="relative_paths must be a boolean"):
+        if raw_document:
+            save_workflow_document(
+                target, serialize_workflow(pipeline), relative_paths=relative_paths
+            )
+        else:
+            save_workflow(target, pipeline, relative_paths=relative_paths)
+    assert target.read_bytes() == b"original destination bytes"

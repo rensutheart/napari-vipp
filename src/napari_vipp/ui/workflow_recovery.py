@@ -1,4 +1,4 @@
-"""Background workflow working copies and explicit, non-executing recovery."""
+"""Workflow working copies and recovery with guarded automatic calculations."""
 
 from __future__ import annotations
 
@@ -229,7 +229,8 @@ class WorkflowRecoveryController(QObject):
         heading = QLabel(
             "VIPP found working copies from an interrupted session. "
             "Recover opens new unsaved tabs; original files stay untouched. "
-            "Nothing is calculated or sent to an assistant."
+            "Automatic previews are rebuilt. Manual steps and file-writing "
+            "nodes stay paused; nothing is sent to an assistant."
         )
         heading.setWordWrap(True)
         layout.addWidget(heading)

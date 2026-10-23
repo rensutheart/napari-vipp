@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.16.0a7 - 2026-10-23
+
+- Add **Settings → Workflow paths** with relative (default) or absolute file
+  locations for the next workflow save, including an attached batch
+  configuration. **Save workflow as…** preserves resolved input/output targets
+  in either mode. Absolute paths allow moving only the workflow JSON while data
+  stays in place; changing the setting does not move data or repair relative
+  paths that were already relocated without their files.
+
+- Load the starter sample even when interrupted workflow copies are available,
+  and let **Calculate all** evaluate an uncalculated automatic-only workflow.
+  Recovered tabs rebuild automatic processing results from verified sources,
+  while manual steps, file-writing nodes and their dependent branches stay
+  paused until explicitly requested. Retain this restriction across asynchronous
+  reads, queued runs and tab changes; do not execute bypass what-if previews
+  through paused steps. When an
+  ordinary workflow opens at an unavailable manual result, show its source
+  without calculating that manual step.
+
 ## 0.16.0a6 - 2026-10-22
 
 - Paint the startup splash before launching the main application, and create

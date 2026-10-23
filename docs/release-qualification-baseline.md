@@ -1,6 +1,66 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-10-22
+Last reviewed: 2026-10-23
+
+## 0.16.0a7 qualification declaration
+
+This iterative alpha covers the union from public `v0.16.0a6` at
+`543b0704b8512054fb306a5a4346a825ab2be0c0`: startup/open-source loading,
+guarded automatic calculation after graph recovery, and selectable relative or
+absolute workflow path persistence. The
+[release plan](release-0.16.0a7-plan.md) records scope and boundaries. This names
+required gates and carried behavior; it is not a completed-publication claim.
+
+```yaml
+tier: alpha
+previous_public_tag: v0.16.0a6
+changed:
+  core_ui: true
+  source_load_and_recovery_orchestration: true
+  workflow_persistence: true
+  documentation: true
+  workflow_schema_numbers: false
+  scientific_kernels_and_image_interpretation: false
+  gpu_providers_and_shared_execution_engine: false
+  windows_installer_runtime: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+  packaging_release: false
+carried_forward:
+  installer_engines_and_runtime_build_pins: v0.16.0a6
+  scientific_kernels_catalogue_and_gpu_admission: v0.16.0a5
+  core_execution_engine_and_source_interpretation: v0.16.0a6
+  graph_working_copy_storage_lock_retention_and_crash_checkpoint: v0.16.0a5
+```
+
+- Require focused source lifecycle/recovery tests, actual Gaussian/Otsu outputs,
+  all cache modes and asynchronous ownership. Manual nodes (including saved
+  Auto Recalculate on), writers, dependent branches and bypass what-if work
+  must not escape recovery restrictions. Explicit per-node Calculate authorizes
+  only that manual step; Calculate all releases the restriction deliberately.
+- Require relative/absolute save/reopen and original-base Save As fixtures,
+  attached Batch hashes and source proofs, old-version compatibility and a
+  representative batch path. Preference changes alone must not write workflow
+  files, rebind sources, calculate nodes or copy/move data. Preserve atomic
+  overwrite refusal. Schema numbers remain 6; serialization behavior changes.
+- Require a manual smoke of the changed recovery and path-setting journeys.
+  Earlier source-only recovery displays and a blocked native click do not
+  prove automatic recovered previews. Do not touch user sessions or installed
+  environments to establish this gate. Unchanged working-copy storage/crash
+  evidence carries narrowly; new recovery calculation does not inherit it.
+- Require successful candidate and exact final-main CI on the normal matrix,
+  clean distribution installs and exact artifact content/version/metadata/hash
+  checks. Retain CI's matching independently built wheel/canonical-source pair;
+  no new package layout, entry point or release workflow is introduced. Exclude
+  assistant, webhook bot and MCP features from source and distributions.
+- Carry unchanged GPU algorithms/admission and installer lifecycle boundaries;
+  do not repeat large catalogues or unrelated repair/uninstall matrices. Audit
+  each selected exact-tag unsigned Windows x86_64 and macOS arm64/x86_64
+  installer, including current input wheel, architecture, unsigned state and
+  checksums. macOS remains CPU-only and unnotarized.
+- Publish original qualified assets, verify identical actual public GitHub and
+  PyPI Python bytes, then deploy and verify numbered/default documentation.
+  Preserve all histories, existing installations and immutable published tags.
 
 ## 0.16.0a6 qualification declaration
 

@@ -794,9 +794,13 @@ from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
 from napari_vipp.ui.workers import PipelineRunWorker as PipelineRunWorker
 from napari_vipp.ui.workflow_drop import WorkflowFileDropHandler
 from napari_vipp.ui.workflow_save_settings import (
+    WORKFLOW_PATH_POLICY_CHOICES,
     WORKFLOW_SAVE_POLICY_CHOICES,
+    WorkflowPathPolicy,
     WorkflowSavePolicy,
+    load_workflow_path_policy,
     load_workflow_save_policy,
+    save_workflow_path_policy,
     save_workflow_save_policy,
 )
 from napari_vipp.ui.workflow_tabs import (
@@ -1968,6 +1972,10 @@ class VippWidget(QWidget):
         "_image_review_settings",
         "_source_inspection_cache",
         "_source_inspection_errors",
+        "_recovery_preview_restricted",
+        "_recovery_preview_pending",
+        "_recovery_preview_manual_node_ids",
+        "_initial_viewer_source_fallback",
         "_source_preview_errors",
         "_source_view_modes",
         "_source_channel_stack_positions",
@@ -2161,6 +2169,10 @@ class VippWidget(QWidget):
             SourceFileSnapshot,
         ] = {}
         self._file_source_path_identities: dict[str, LocalSourceIdentity] = {}
+        self._recovery_preview_restricted = False
+        self._recovery_preview_pending = False
+        self._recovery_preview_manual_node_ids: set[str] = set()
+        self._initial_viewer_source_fallback = False
         self._interactive_collection_source_paths: dict[str, Path] = {}
         self._interactive_collection_source_series_indices: dict[str, int] = {}
         self._interactive_collection_source_refresh_node_ids: set[str] = set()
@@ -2196,6 +2208,7 @@ class VippWidget(QWidget):
         self._active_source_load_worker: SourceFileLoadWorker | None = None
         self._active_source_inspection_worker: SourceInspectionWorker | None = None
         self._source_load_serial = 0
+        self._source_continuation_generation = 0
         self._source_load_pending = False
         self._source_preview_generation = 0
         self._source_preview_status_run_id: int | None = None
@@ -2480,6 +2493,25 @@ class VippWidget(QWidget):
             "Choose whether Save replaces the current workflow immediately, "
             "asks first, or writes a new timestamped version. The first save "
             "of an untitled workflow always asks for a name and location."
+        )
+        self.workflow_path_policy_combo = QComboBox()
+        for policy_id, label in WORKFLOW_PATH_POLICY_CHOICES:
+            self.workflow_path_policy_combo.addItem(label, policy_id)
+        self._workflow_path_policy = load_workflow_path_policy()
+        self.workflow_path_policy_combo.setCurrentIndex(
+            max(
+                self.workflow_path_policy_combo.findData(
+                    self._workflow_path_policy.value
+                ),
+                0,
+            )
+        )
+        self.workflow_path_policy_combo.setToolTip(
+            "Applies on the next Save or Save As, including an attached Batch "
+            "workspace. Relative paths suit moving the workflow and data "
+            "together. Absolute paths suit moving only the workflow while "
+            "data stay in place. Save before moving the file. No data are "
+            "copied or moved; exports and separate batch configs are unchanged."
         )
         for combo in (
             self.preview_mode_combo,
@@ -3652,15 +3684,13 @@ class VippWidget(QWidget):
         """
         if self._initial_pipeline_run_started or self._closing:
             return False
-        if (
-            self._workflow_recovery is not None
-            and self._workflow_recovery.pending_recovery
-        ):
-            self.status_label.setText(
-                "Interrupted workflows are available. Recover a working copy, "
-                "or choose Calculate when ready; startup calculation was paused."
-            )
+        if self._recovery_preview_restricted:
+            # A delayed launcher callback is not consent to run a recovered
+            # graph that the user has already brought to the foreground.
+            self._queue_recovery_preview()
             return False
+        # Recovery candidates are separate, unopened working copies. Their
+        # presence must not suppress this new editor's starter calculation.
         self._initial_pipeline_run_started = True
         self.run_pipeline()
         self._sync_history_actions()
@@ -6288,6 +6318,11 @@ class VippWidget(QWidget):
             "Workflow saving",
             self.workflow_save_policy_combo,
         )
+        self._add_combo_menu(
+            menu,
+            "Workflow paths",
+            self.workflow_path_policy_combo,
+        )
         self._add_checkbox_menu_action(
             menu,
             "Save thumbnail visibility in workflows",
@@ -6979,6 +7014,9 @@ class VippWidget(QWidget):
         )
         self.workflow_save_policy_combo.currentIndexChanged.connect(
             self._on_workflow_save_policy_changed
+        )
+        self.workflow_path_policy_combo.currentIndexChanged.connect(
+            self._on_workflow_path_policy_changed
         )
         self.follow_dims_checkbox.toggled.connect(self._on_follow_dims_toggled)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
@@ -10515,6 +10553,9 @@ class VippWidget(QWidget):
             )
             session.mark_dirty()
             session.runtime_cache.update(self._fresh_workflow_tab_runtime(session))
+            session.runtime_cache["_recovery_preview_restricted"] = True
+            session.runtime_cache["_recovery_preview_pending"] = True
+            session.runtime_cache["_initial_viewer_source_fallback"] = True
             session.runtime_cache["_recovery_original_path"] = tab["path"]
             prepared.append(session)
             if tab["tab_id"] == checkpoint.active_id:
@@ -10548,10 +10589,61 @@ class VippWidget(QWidget):
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText(
             f"Recovered {len(prepared)} workflow(s) from {checkpoint.created_utc}. "
-            "Original files are unchanged. Calculate when ready; "
-            "results were not saved."
+            "Original files are unchanged. Rebuilding automatic previews; "
+            "manual steps and file-writing nodes stay paused."
         )
         return tuple(session.session_id for session in prepared)
+
+    def _recovery_preview_node_ids(self) -> set[str]:
+        """An ancestor-closed automatic graph with no implicit side effects."""
+        scientific = self.pipeline.scientific_node_ids()
+        barriers = (
+            self.pipeline.manual_node_ids() - self._recovery_preview_manual_node_ids
+        )
+        for node_id in scientific:
+            specs = compute_specs_for(self.pipeline.nodes[node_id].operation_id)
+            if not specs or specs[0].side_effect_policy_id not in {
+                "pure-v1", "pure-or-source-v1"
+            }:
+                barriers.add(node_id)
+        return scientific - self.pipeline.descendants_inclusive(barriers)
+
+    def _queue_recovery_preview(self) -> None:
+        if not self._recovery_preview_restricted or not self._recovery_preview_pending:
+            return
+        session_id = self._current_workflow_session_id()
+        pipeline = self.pipeline
+
+        def rebuild():
+            if (
+                self._closing
+                or session_id != self._current_workflow_session_id()
+                or pipeline is not self.pipeline
+                or not self._recovery_preview_restricted
+                or not self._recovery_preview_pending
+            ):
+                return
+            self._recovery_preview_pending = False
+            self.run_pipeline()
+
+        QTimer.singleShot(0, rebuild)
+
+    def _release_recovery_preview_restriction(self) -> None:
+        if not self._recovery_preview_restricted:
+            return
+        self._recovery_preview_restricted = False
+        self._recovery_preview_pending = False
+        self._recovery_preview_manual_node_ids.clear()
+        self._pending_dirty_node_ids.update(
+            set(self.pipeline.nodes) - self.pipeline.completed_node_ids
+        )
+
+    def _recovery_manual_step_paused(self, node_id: str) -> bool:
+        return (
+            self._recovery_preview_restricted
+            and self.pipeline.is_manual_node(node_id)
+            and node_id not in self._recovery_preview_manual_node_ids
+        )
 
     def _store_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
         """Move no state: retain references to this tab's live runtime objects."""
@@ -10648,6 +10740,10 @@ class VippWidget(QWidget):
         return {
             "_source_inspection_cache": {},
             "_source_inspection_errors": {},
+            "_recovery_preview_restricted": False,
+            "_recovery_preview_pending": False,
+            "_recovery_preview_manual_node_ids": set(),
+            "_initial_viewer_source_fallback": False,
             "_source_preview_errors": {},
             "_source_view_modes": {},
             "_source_channel_stack_positions": {},
@@ -11091,6 +11187,7 @@ class VippWidget(QWidget):
             session.runtime_cache.get("_viewer_state"),
         )
         self._present_workflow_tab_editor(session.editor_snapshot)
+        self._queue_recovery_preview()
         restored_workspace_presented = (
             self._consume_workflow_tab_batch_workspace_preview(session)
         )
@@ -15147,7 +15244,13 @@ class VippWidget(QWidget):
                     target,
                     positions,
                 )
-                saved = save_workflow_document(target, document)
+                saved = save_workflow_document(
+                    target,
+                    document,
+                    relative_paths=(
+                        self._workflow_path_policy is WorkflowPathPolicy.RELATIVE
+                    ),
+                )
             else:
                 saved = save_workflow(
                     target,
@@ -15156,6 +15259,9 @@ class VippWidget(QWidget):
                     self._graph_note_documents(),
                     self._workflow_metadata(),
                     self._current_compute_request(),
+                    relative_paths=(
+                        self._workflow_path_policy is WorkflowPathPolicy.RELATIVE
+                    ),
                 )
         except Exception as exc:
             self._set_status(
@@ -15548,6 +15654,7 @@ class VippWidget(QWidget):
             self._set_right_panel_visible(right_panel_visible)
         self._invalidate_pipeline_cache()
         if not reproduction_opened:
+            self._initial_viewer_source_fallback = True
             self.run_pipeline()
         self._push_undo_if_changed(before)
         raw_batch_config = workflow.get("batch_config")
@@ -19868,6 +19975,12 @@ class VippWidget(QWidget):
                 if state == EXECUTION_BLOCKED
             }
         )
+        if self._initial_viewer_source_fallback:
+            # Reserve just the initial source until first-open presentation.
+            # Consuming the flag restores the ordinary Low-memory policy.
+            source_id = self._first_image_source_node_id()
+            if source_id:
+                retained.add(source_id)
         if self._isolated_tuning_node_id in self.pipeline.nodes:
             retained.update(
                 self.pipeline.descendants_inclusive(
@@ -20316,12 +20429,16 @@ class VippWidget(QWidget):
             self._sample_payload_cache = payloads
         return self._sample_payload_cache
 
-    def _uncached_async_file_source_specs(self) -> tuple[SourceFileLoadSpec, ...]:
+    def _uncached_async_file_source_specs(
+        self, *, source_node_ids: set[str] | None = None
+    ) -> tuple[SourceFileLoadSpec, ...]:
         self._prune_file_source_payload_cache()
         specs: list[SourceFileLoadSpec] = []
         seen: set[tuple[object, ...]] = set()
         for node_id, node in self.pipeline.nodes.items():
             if node.operation_id != "input":
+                continue
+            if source_node_ids is not None and node_id not in source_node_ids:
                 continue
             if not self._file_source_should_load_async(node):
                 continue
@@ -23775,6 +23892,11 @@ class VippWidget(QWidget):
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
         if self._workflow_load_selection_in_progress:
             return
+        if (
+            self._recovery_preview_restricted
+            and node_id not in self._recovery_preview_node_ids()
+        ):
+            return
         if self._cache_mode() != CACHE_MODE_SMART:
             return
         if node_id not in self.pipeline.nodes:
@@ -23829,6 +23951,9 @@ class VippWidget(QWidget):
     def _calculate_node(self, node_id: str) -> None:
         if not self.pipeline.is_manual_node(node_id):
             return
+        if self._recovery_preview_restricted:
+            # One explicit manual step is not consent to run unrelated writers.
+            self._recovery_preview_manual_node_ids.add(node_id)
         self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
         self.pipeline.node_execution_messages[node_id] = ""
         self._sync_execution_ui()
@@ -23884,13 +24009,28 @@ class VippWidget(QWidget):
         return True
 
     def _calculate_all_nodes(self) -> None:
+        self._release_recovery_preview_restriction()
         self._commit_crop_draft(schedule_run=False)
         had_isolation = self._isolated_tuning_node_id is not None
         if had_isolation:
             self._apply_isolated_tuning(run=False, announce=False)
         node_ids = self._manual_node_ids_needing_calculation()
         has_dirty_work = bool(self._pending_dirty_node_ids & set(self.pipeline.nodes))
-        if not node_ids and not has_dirty_work:
+        # A restored or initially paused recipe has no dirty edits, but it has
+        # never accepted a source revision either. An explicit Calculate all
+        # must still pass through normal source validation and graph execution.
+        cold_graph = bool(self.pipeline.nodes) and (
+            self._last_pipeline_source_signature is None
+        )
+        if not node_ids and not has_dirty_work and cold_graph and (
+            self._active_pipeline_run_id is not None
+            or self._active_source_load_id is not None
+        ):
+            self.status_label.setText(
+                "The workflow's initial calculation or source load is already running."
+            )
+            return
+        if not node_ids and not has_dirty_work and not cold_graph:
             self.status_label.setText(
                 "Isolated tuning disabled; no nodes need calculation."
                 if had_isolation
@@ -23912,11 +24052,13 @@ class VippWidget(QWidget):
                 "Isolated tuning disabled; applying the latest result and "
                 "calculating downstream nodes..."
             )
-        else:
+        elif node_ids:
             self.status_label.setText(
                 f"Calculating {len(node_ids)} manual node"
                 f"{'' if len(node_ids) == 1 else 's'}..."
             )
+        else:
+            self.status_label.setText("Calculating workflow...")
         self.run_pipeline(manual_node_ids=node_ids)
 
     def _manual_node_ids_needing_calculation(self) -> set[str]:
@@ -24045,7 +24187,10 @@ class VippWidget(QWidget):
         eligible = bool(
             expected_table
             and self.pipeline.is_manual_node(node_id)
-            and not self.pipeline.node_auto_recalculate(node_id)
+            and (
+                not self.pipeline.node_auto_recalculate(node_id)
+                or self._recovery_manual_step_paused(node_id)
+            )
         )
         visible = eligible and state != EXECUTION_READY
         enabled = visible and state not in {EXECUTION_RUNNING, EXECUTION_BLOCKED}
@@ -24174,7 +24319,9 @@ class VippWidget(QWidget):
                 state,
                 manual=manual,
                 message=message,
-                auto_recalculate=auto_recalculate,
+                auto_recalculate=(
+                    auto_recalculate and not self._recovery_manual_step_paused(node_id)
+                ),
             )
 
         self._sync_calculate_all_attention()
@@ -24205,14 +24352,15 @@ class VippWidget(QWidget):
         self.calculate_button.setEnabled(
             state not in {EXECUTION_RUNNING, EXECUTION_BLOCKED}
         )
-        self.calculate_button.setHidden(auto_recalculate)
+        paused = self._recovery_manual_step_paused(node_id)
+        self.calculate_button.setHidden(auto_recalculate and not paused)
         if state == EXECUTION_BLOCKED:
             self.calculate_button.setText("Waiting upstream")
         else:
             self.calculate_button.setText(
                 "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
             )
-        self.header_calculate_button.setVisible(not auto_recalculate)
+        self.header_calculate_button.setVisible(not auto_recalculate or paused)
         self.header_calculate_button.setEnabled(self.calculate_button.isEnabled())
         self.header_calculate_button.setText(self.calculate_button.text())
 
@@ -28002,7 +28150,7 @@ class VippWidget(QWidget):
                 control.finish_source_load(result.generation, cancelled=True)
             self._set_pipeline_busy(False)
             if continue_pending:
-                QTimer.singleShot(0, self._resume_pending_source_work)
+                self._queue_source_work_continuation()
             else:
                 self._set_status(
                     "Image-source inspection cancelled; the previous pinned "
@@ -28020,7 +28168,7 @@ class VippWidget(QWidget):
             self._sync_execution_ui()
             self._set_pipeline_busy(False)
             if continue_pending:
-                QTimer.singleShot(0, self._resume_pending_source_work)
+                self._queue_source_work_continuation()
             else:
                 self._set_status(
                     f"Image source inspection error: {message}",
@@ -28052,12 +28200,27 @@ class VippWidget(QWidget):
         self._refresh_image_source_options()
         self._start_source_preview(node, current_path, resolved.source_item)
         self._sync_current_workflow_tab_state()
-        QTimer.singleShot(0, self.run_pipeline)
+        self._queue_source_work_continuation()
 
     def _resume_pending_source_work(self) -> None:
         self._refresh_image_source_options()
         if self._active_source_load_id is None:
             self.run_pipeline()
+
+    def _queue_source_work_continuation(self) -> None:
+        """Do not let a completed read calculate a different/restored tab."""
+        session_id = self._current_workflow_session_id()
+        generation = self._source_continuation_generation
+        source_generation = self._source_load_serial
+        QTimer.singleShot(
+            0,
+            lambda: self._resume_pending_source_work()
+            if not self._closing
+            and session_id == self._current_workflow_session_id()
+            and generation == self._source_continuation_generation
+            and source_generation == self._source_load_serial
+            else None,
+        )
 
     def _source_preview_layer(self, node_id: str, item_key: str = ""):
         for layer in self.viewer.layers:
@@ -32951,7 +33114,10 @@ class VippWidget(QWidget):
         # rather than calculating an intermediate parameter value immediately.
         if self._debounce_timer.isActive():
             return True
-        QTimer.singleShot(0, self.run_pipeline)
+        if self._recovery_preview_restricted:
+            self._queue_source_work_continuation()
+        else:
+            QTimer.singleShot(0, self.run_pipeline)
         return True
 
     def _thumbnail_statistics_node_summary(self, keys: Iterable[tuple]) -> str:
@@ -35729,7 +35895,13 @@ class VippWidget(QWidget):
     ) -> None:
         if self._closing:
             return
+        self._source_continuation_generation += 1
         self._commit_crop_draft(schedule_run=False)
+        if self._debounce_timer.isActive():
+            # Consume the edit even when this request upgrades an existing
+            # source read instead of immediately starting scientific work.
+            self._debounce_timer.stop()
+            self._finish_debounced_parameter_history_group()
         if self._workflow_recovery is not None:
             # Capture the recipe before synchronous scientific work can occupy
             # the UI. Only detached JSON is sent to the background writer.
@@ -35740,13 +35912,6 @@ class VippWidget(QWidget):
             InteractionLatencyPhase.DEBOUNCE_FINISHED,
             once=True,
         )
-        if self._debounce_timer.isActive():
-            # An explicit calculation consumes the pending parameter-edit run.
-            # Otherwise the timer can fire while the synchronous worker's Qt
-            # event loop is active, discard that completed result as stale, and
-            # return before the queued replacement publishes its output.
-            self._debounce_timer.stop()
-            self._finish_debounced_parameter_history_group()
         if self._compute_runtime_quarantined_reason:
             self._finish_interaction_generation(
                 self._interaction_current_generation(),
@@ -35828,10 +35993,42 @@ class VippWidget(QWidget):
                 severity=MessageSeverity.INFO,
             )
             return
+        recovery_targets = (
+            self._recovery_preview_node_ids()
+            if self._recovery_preview_restricted else None
+        )
+        if recovery_targets is not None:
+            paused_message = (
+                "Paused after recovery. Calculate this manual step, or use "
+                "Calculate all to include manual steps and file-writing nodes."
+            )
+            manual_frontiers = {
+                node_id for node_id in self.pipeline.manual_node_ids()
+                if node_id not in self._recovery_preview_manual_node_ids
+                and self.pipeline.ancestors_inclusive({node_id}) - {node_id}
+                <= recovery_targets
+            }
+            self.pipeline.mark_nodes_blocked(
+                self.pipeline.scientific_node_ids()
+                - recovery_targets - manual_frontiers,
+                message=paused_message,
+            )
+            for node_id in manual_frontiers:
+                self.pipeline.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
+                self.pipeline.node_execution_messages[node_id] = paused_message
+            if not recovery_targets:
+                self._set_status(
+                    "Recovered graph has no automatic steps to rebuild. "
+                    "Manual steps and file-writing nodes remain paused.",
+                    severity=MessageSeverity.INFO,
+                )
+                self._sync_execution_ui()
+                return
         memory_repairs = tuple(
             node
             for node in self.pipeline.nodes.values()
             if node.operation_id == "input"
+            and (recovery_targets is None or node.id in recovery_targets)
             and self._file_source_cache_key(node) not in self._file_source_payload_cache
             and self._source_memory_crop_suggestion(node) is not None
         )
@@ -35858,7 +36055,10 @@ class VippWidget(QWidget):
                 self._pipeline_run_pending = True
                 self._abandon_background_pipeline_run()
             return
-        source_load_specs = self._uncached_async_file_source_specs()
+        source_scope = (
+            {} if recovery_targets is None else {"source_node_ids": recovery_targets}
+        )
+        source_load_specs = self._uncached_async_file_source_specs(**source_scope)
         if source_load_specs:
             self._pending_manual_node_ids.update(manual_node_ids)
             if self._active_pipeline_run_id is not None:
@@ -35883,7 +36083,9 @@ class VippWidget(QWidget):
             self._start_source_file_load(source_load_specs)
             return
         try:
-            source_payloads, source_layers = self._source_payloads_for_pipeline()
+            source_payloads, source_layers = self._source_payloads_for_pipeline(
+                **source_scope
+            )
         except OptionalMicroscopeReaderError as exc:
             self._finish_interaction_generation(
                 self._interaction_current_generation(),
@@ -35936,7 +36138,10 @@ class VippWidget(QWidget):
             self._set_pipeline_busy(False)
             self._invalidate_pipeline_cache()
             self._restore_hidden_input_layers()
-            self.pipeline.run(None)
+            if recovery_targets is None:
+                self.pipeline.run(None)
+            else:
+                self.pipeline.run(None, target_node_ids=recovery_targets)
             self._refresh_selected_parameter_controls()
             self._update_thumbnails()
             self._sync_view_dims_bar()
@@ -36048,6 +36253,12 @@ class VippWidget(QWidget):
                     else target_node_ids
                 ) - blocked
                 manual_node_ids.difference_update(blocked)
+        if recovery_targets is not None:
+            target_node_ids = (
+                recovery_targets if target_node_ids is None
+                else target_node_ids & recovery_targets
+            )
+            manual_node_ids.intersection_update(recovery_targets)
         compute_request = self._current_compute_request()
         if workflow_parameter_overrides or workflow_node_execution_overrides:
             # A per-item workflow is deliberately never installed into the live
@@ -36410,6 +36621,11 @@ class VippWidget(QWidget):
             if pending_plots
             else "Workflow calculations complete."
         )
+        if self._recovery_preview_restricted:
+            message = (
+                "Recovered automatic results rebuilt. Manual steps and "
+                "file-writing nodes remain paused until explicitly calculated."
+            )
         wrapped_sources = textwrap.fill(
             source_label,
             width=76,
@@ -36452,6 +36668,22 @@ class VippWidget(QWidget):
             else:
                 self._refresh_inspection_layer_if_active()
                 self._inspect_selected_node()
+            if self._initial_viewer_source_fallback:
+                self._initial_viewer_source_fallback = False
+                if selected_data is None:
+                    # Preserve the saved inspector/graph selection. The viewer
+                    # identifies the actual source, not an uncalculated manual
+                    # node; manual frontiers remain untouched.
+                    source_id = next(
+                        (
+                            node.id for node in self.pipeline.nodes.values()
+                            if node.operation_id == "input"
+                            and self.pipeline.outputs.get(node.id) is not None
+                        ),
+                        None,
+                    )
+                    if source_id is not None:
+                        self.inspect_node(source_id)
             self._refresh_pinned_layer_if_active()
             self._sync_view_dims_bar()
             self._update_metadata_panel()
@@ -36530,7 +36762,9 @@ class VippWidget(QWidget):
         if self._active_thumbnail_contrast_run_id is not None:
             self._pipeline_run_pending = True
             self._pending_dirty_node_ids.update(
-                spec.node_id for spec in specs if spec.node_id in self.pipeline.nodes
+                spec.node_id
+                for spec in specs
+                if spec.node_id in self.pipeline.nodes
             )
             self._discard_pending_thumbnail_contrast_limit_requests()
             self.pipeline_busy_label.setText(
@@ -36659,7 +36893,7 @@ class VippWidget(QWidget):
                 self.status_label.setText(
                     "Previous source load cancelled; loading the latest source edit."
                 )
-                QTimer.singleShot(0, self._resume_pending_source_work)
+                self._queue_source_work_continuation()
             else:
                 self._set_status(
                     "Image-source loading cancelled; the previous pinned result "
@@ -36684,7 +36918,7 @@ class VippWidget(QWidget):
                 actionable=not continue_pending,
             )
             if continue_pending:
-                QTimer.singleShot(0, self._resume_pending_source_work)
+                self._queue_source_work_continuation()
             else:
                 self._finish_interaction_generation(
                     self._interaction_current_generation(),
@@ -36713,7 +36947,7 @@ class VippWidget(QWidget):
                 actionable=not continue_pending,
             )
             if continue_pending:
-                QTimer.singleShot(0, self._resume_pending_source_work)
+                self._queue_source_work_continuation()
             else:
                 self._finish_interaction_generation(
                     self._interaction_current_generation(),
@@ -36749,7 +36983,7 @@ class VippWidget(QWidget):
         self._set_pipeline_busy(False)
         self._source_load_pending = False
         self._refresh_image_source_options()
-        QTimer.singleShot(0, self.run_pipeline)
+        self._queue_source_work_continuation()
 
     def _should_run_pipeline_in_background(
         self,
@@ -37046,6 +37280,11 @@ class VippWidget(QWidget):
                 str(node.get("id", "")).strip()
             )
         )
+        if self._recovery_preview_restricted:
+            # What-if bypass cards execute the authored (not bypass-spliced)
+            # ancestry. That secondary run must never reach paused manuals or
+            # writers while rebuilding a recovered automatic result.
+            effective_bypass_shadow_node_ids = frozenset()
         for node_id in (
             runnable_node_ids | frozenset(shadow_affected_node_ids)
         ) - effective_bypass_shadow_node_ids:
@@ -38947,6 +39186,20 @@ class VippWidget(QWidget):
         self._workflow_save_policy = save_workflow_save_policy(policy)
         self._set_status(
             f"Workflow saving set to {policy.label.lower()}.",
+            severity=MessageSeverity.INFO,
+        )
+
+    def _on_workflow_path_policy_changed(self, index: int) -> None:
+        raw_policy = self.workflow_path_policy_combo.itemData(int(index))
+        if raw_policy is None:
+            return
+        policy = WorkflowPathPolicy.parse(str(raw_policy))
+        if policy is self._workflow_path_policy:
+            return
+        self._workflow_path_policy = save_workflow_path_policy(policy)
+        self._set_status(
+            f"Workflow paths set to {policy.label.lower()}. Save the workflow "
+            "to apply this choice before moving it. No data files are moved.",
             severity=MessageSeverity.INFO,
         )
 
@@ -45145,11 +45398,7 @@ class VippWidget(QWidget):
         saved_step = self._raw_current_step()
         saved_nsteps = self._viewer_nsteps()
         output_port = int(metadata.get("output_port", 0) or 0)
-        data_kind = self._data_kind(
-            data,
-            metadata.get("node_id"),
-            output_port,
-        )
+        data_kind = self._data_kind(data, metadata.get("node_id"), output_port)
         display_kind = self._display_kind(data_kind, role)
         display_data = self._display_data(
             data,
@@ -45163,9 +45412,7 @@ class VippWidget(QWidget):
             "display_ndim": np.asarray(display_data).ndim,
             "display_shape": tuple(np.asarray(display_data).shape),
             "display_rgb": self._display_rgb(
-                data,
-                metadata.get("node_id"),
-                output_port,
+                data, metadata.get("node_id"), output_port
             ),
         }
         source = self.pipeline.nodes.get(metadata.get("node_id"))
