@@ -46,14 +46,23 @@ def _checkpoint(widget):
     return widget._workflow_recovery.checkpoint_now(required=True)
 
 
-def _wait_updated(widget, qtbot, node_id="threshold"):
+def _wait_updated(widget, qtbot, node_id="threshold", *, thumbnail_node_ids=()):
     qtbot.waitUntil(
         lambda: (
             widget.pipeline.outputs.get(node_id) is not None
             or bool(widget._source_inspection_errors.get("input"))
         )
         and widget._active_source_load_id is None
-        and widget._active_pipeline_run_id is None,
+        and widget._active_pipeline_run_id is None
+        # Exact stack contrast is deferred presentation work. Scientific
+        # completion alone can precede even its zero-turn start callback.
+        and widget._active_thumbnail_contrast_run_id is None
+        and not widget._queued_thumbnail_contrast_limit_requests
+        and not widget._pending_thumbnail_contrast_limit_keys
+        and all(
+            widget.graph_view.node_has_thumbnail(expected_node_id)
+            for expected_node_id in thumbnail_node_ids
+        ),
         timeout=15_000,
     )
     assert not widget._source_inspection_errors.get("input"), (
@@ -98,6 +107,71 @@ def _add_auto_manual_measurement(widget):
     return labels, manual
 
 
+def test_recovery_wait_includes_queued_thumbnail_statistics_before_worker_start(
+    preview_widget, qtbot, monkeypatch, tmp_path
+):
+    widget = preview_widget
+    _labels, manual = _add_auto_manual_measurement(widget)
+    writer, target = _add_armed_writer(widget, tmp_path)
+    widget._build_graph_from_pipeline()
+    original_start = widget._start_thumbnail_contrast_limit_run
+    held_starts, observed_queued_gap = [], []
+    released = False
+
+    def hold_start():
+        held_starts.append(True)
+
+    monkeypatch.setattr(widget, "_start_thumbnail_contrast_limit_run", hold_start)
+    original_wait = qtbot.waitUntil
+
+    def observe_wait(predicate, **kwargs):
+        def observed_predicate():
+            nonlocal released
+            ready = predicate()
+            scientific_ready = (
+                widget.pipeline.outputs.get("threshold") is not None
+                and widget._active_source_load_id is None
+                and widget._active_pipeline_run_id is None
+            )
+            if scientific_ready and not released:
+                # Let the real queued callback reach the gate before checking
+                # the wait predicate. No clock delay or production event pump.
+                if not held_starts:
+                    return False
+                assert widget._active_thumbnail_contrast_run_id is None
+                assert widget._queued_thumbnail_contrast_limit_requests
+                assert not widget._pending_thumbnail_contrast_limit_keys
+                assert all(
+                    not widget.graph_view.node_has_thumbnail(node_id)
+                    for node_id in ("input", "gaussian", "threshold")
+                )
+                observed_queued_gap.append(True)
+                assert not ready, "Scientific completion is not thumbnail readiness"
+                released = True
+                monkeypatch.setattr(
+                    widget, "_start_thumbnail_contrast_limit_run", original_start
+                )
+                # Replay only the presentation callback which actually reached
+                # the gate; normal statistics/render publication remains real.
+                QTimer.singleShot(0, original_start)
+            return ready
+
+        original_wait(observed_predicate, **kwargs)
+
+    monkeypatch.setattr(qtbot, "waitUntil", observe_wait)
+    widget._restore_recovery_workspace(_checkpoint(widget))
+    _wait_updated(widget, qtbot)
+
+    assert held_starts and observed_queued_gap and released
+    assert all(
+        widget.graph_view.node_has_thumbnail(node_id)
+        for node_id in ("input", "gaussian", "threshold")
+    )
+    assert widget._recovery_preview_restricted
+    _assert_unexecuted(widget, {manual.id, writer.id})
+    assert not target.parent.exists()
+
+
 def test_recovered_sample_rebuilds_gaussian_and_otsu_but_never_writes(
     preview_widget, qtbot, tmp_path
 ):
@@ -111,7 +185,9 @@ def test_recovered_sample_rebuilds_gaussian_and_otsu_but_never_writes(
     widget._build_graph_from_pipeline()
 
     widget._restore_recovery_workspace(_checkpoint(widget))
-    _wait_updated(widget, qtbot)
+    _wait_updated(
+        widget, qtbot, thumbnail_node_ids=("input", "gaussian", "threshold")
+    )
 
     np.testing.assert_array_equal(widget.pipeline.outputs["input"], original_sample)
     np.testing.assert_allclose(widget.pipeline.outputs["gaussian"], expected_gaussian)
@@ -437,7 +513,7 @@ def test_recovery_automatic_previews_obey_cache_mode_and_keep_writers_paused(
     widget.cache_mode_combo.setCurrentText(cache_mode)
 
     widget._restore_recovery_workspace(_checkpoint(widget))
-    _wait_updated(widget, qtbot)
+    _wait_updated(widget, qtbot, thumbnail_node_ids=("threshold",))
 
     assert widget.graph_view.node_has_thumbnail("threshold")
     assert widget.viewer.layers["VIPP Inspect"].metadata["node_id"] == "threshold"
