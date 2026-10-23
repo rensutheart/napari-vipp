@@ -334,6 +334,23 @@ older in-flight result cannot repopulate a stale snapshot. The normalized
 reader-built state is preserved and completed against the detached array rather
 than reparsed from lossy display metadata.
 
+Recovered tabs rebuild automatic results through the ordinary verified source
+loader and canonical compute engine. A tab-local restriction removes manual
+frontiers, non-pure side-effect policies and their descendants from execution
+targets. The set is ancestor-closed so a join cannot pull a writer back in.
+Bypass what-if shadow calculations are disabled while restricted because their
+authored ancestry can differ from the exact bypass data flow. Manual frontiers
+remain explicitly actionable without rewriting authored auto-recalculate flags;
+calculating one frontier does not release unrelated writers. Calculate all
+explicitly releases the restriction. Asynchronous reads, queued reruns, tab
+activation and resource handoffs retain the same restriction; continuations are
+session/generation guarded. New results receive ordinary compute provenance,
+not claims that old cached outputs were recovered. Missing/revised inputs and
+inconsistent axis declarations remain errors. Recovery candidates do not
+suppress the separate starter graph. First-open display may temporarily reserve
+one input for a source fallback when the saved manual selection has no result;
+this does not change permanent cache retention.
+
 Live napari sources enter through `LiveLayerSourceAdapter`. An in-memory NumPy
 layer is copied, marked read-only, paired with detached display metadata and a
 revision token, and checked again before a background result is accepted. VIPP
@@ -1798,14 +1815,22 @@ Workflow persistence:
 - Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
   tables, environment provenance, benchmark evidence, or YAML.
 - In-memory graph serialization retains authored parameters. The file-persistence
-  boundary stores local Image Source, Table Source and Save Image paths relative
-  to the saved workflow when the filesystem permits it; attached batch paths use
-  that same base. File loading resolves these bindings against the document's
-  directory, independently of the process working directory. Save As rebases
-  locations without changing selected source revisions, selectors or dataset
-  checksums. Cross-drive/share paths remain absolute. Layer names, historical
-  provenance and embedded measurement-dataset records are not path-rewritten;
-  input bytes and environments are not embedded. This is unreleased behavior.
+  boundary defaults to local Image Source, Table Source and Save Image paths
+  relative to the saved workflow when the filesystem permits it; attached batch
+  paths use that same base. The 0.16.0a7 widget preference
+  `Workflow paths` selects relative or absolute serialization for subsequent
+  Save, Save As and timestamped saves, including attached batch configuration.
+  It is a save preference, not a workflow schema field; programmatic saves
+  retain the relative default. Python export and standalone batch configuration
+  persistence remain independent boundaries. File loading resolves relative
+  bindings against the document's directory, independently of the process
+  working directory. Save As preserves resolved locations in either mode,
+  without changing selected source revisions, selectors or dataset checksums.
+  Switching modes does not reinterpret the current graph's path base or infer
+  the original base of a JSON file already moved outside VIPP. Relative mode
+  retains absolute paths across drives/shares when necessary. Layer names,
+  historical provenance and embedded measurement-dataset records are not
+  path-rewritten; input bytes and environments are not embedded or relocated.
 - The loader requires the workflow type, accepts schema versions 3, 4, 5, and 6, and
   rejects unknown operations, malformed records, duplicate node ids, invalid
   positions, and dangling or multiply occupied connections. It also rejects

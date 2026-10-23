@@ -1,25 +1,24 @@
-# VIPP 0.16.0a6
+# VIPP 0.16.0a7
 
-VIPP 0.16.0a6 is a performance and Windows setup reliability release. It makes startup visible sooner, moves reader-library preparation behind the open interface, and handles brief Windows file locks more reliably.
+VIPP 0.16.0a7 fixes initial and recovered workflow previews and adds a choice of relative or absolute paths when saving workflow JSON. This is an incremental alpha patch; unfinished assistant and MCP features are not included.
 
-## Startup you can see and use
+## Load and recover useful results
 
-- The splash paints before the main application process starts. Its clock and minimize/hide controls remain responsive while Windows starts that process.
-- On Windows, sharp prepared branding and ordinary vector text appear without waiting for system-font discovery. The version, current stage and elapsed time remain visible; the loading message uses Inter Medium throughout startup.
-- OME-XML and OME-Zarr libraries begin warming in the background after the standalone interface or napari plugin panel is ready. Later file selection reuses those imports. A file selected immediately can still wait for its library, and an early TIFF load runs in a worker while XML support is warming.
-- Startup logs retain elapsed, process CPU and per-stage timings to help diagnose slow launches.
+- The welcome sample loads even when interrupted workflow copies are available. **Calculate all** also works for an untouched workflow that has no calculated results yet.
+- **Recover selected** loads verified sources and rebuilds automatic processing results, such as Gaussian Blur and Otsu Threshold. These are fresh calculations, not cached arrays restored from JSON. Missing or changed inputs remain errors rather than being replaced with a sample.
+- Recovered manual steps remain paused even if their saved Auto Recalculate setting is on. File-writing nodes and dependent branches also wait. Per-node **Calculate** authorizes that manual step; **Calculate all** explicitly resumes the normal workflow. Review output destinations before doing so.
+- Opening a workflow at an unavailable manual result shows an available source initially without calculating that manual step. Saved graph selection is preserved.
 
-## More reliable Windows setup
+## Choose how workflow paths are saved
 
-- Setup retries brief Windows sharing locks when publishing or restoring shortcuts, installation records and retained artifacts. Shortcuts are created privately before atomic publication.
-- A persistent shortcut lock produces a clear explanation and retains the existing ownership, transaction and rollback protections. It does not silently overwrite foreign installations or bypass validation.
+Under **Settings → Workflow paths**, choose **Relative to workflow file** (the existing default) to move the workflow and its data together, or **Absolute file locations** to move only the workflow JSON while the data stay in place. The choice applies on the next Save, Save As or timestamped workflow save, including an attached Batch configuration. It does not move or copy data or change separate Python-export and Batch Save config behavior.
 
-## Performance and compatibility limits
+To convert an existing workflow, open it while its sources still resolve, select **Absolute file locations**, and save before moving the JSON. **Save workflow as…** already retains resolved input/output locations in either mode. A file moved alone with broken relative paths must first be reopened from its original location or have its sources relinked; VIPP cannot infer the lost base directory.
 
-Startup still loads napari and scientific dependencies. Windows security scanning and cache state can dominate total launch time; this release does not change security policies or promise a fixed startup duration. The [startup investigation](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a6/docs/benchmarks/windows-startup-2026-10-21.md) distinguishes installed, instrumented, recovery-paused and controlled preview measurements; no verified reboot-cold or same-version cross-computer comparison is claimed.
+## Compatibility and limits
 
-Scientific algorithms, image interpretation, workflow/batch/manifest schema numbers, compute policy, GPU admission and runtime/build dependency pins are unchanged. Reader warming only prepares imports; it does not read your files or calculate a workflow. Closing immediately during an active native import may wait for that import to finish safely.
+Workflow, batch-config and manifest schemas remain **6**. Scientific kernels, image interpretation, compute-provider implementations, dependency pins and installer engines are unchanged. Recovery does not restore source pixels, scientific caches, Undo history, in-flight work or Batch workspace/configuration; save separate Batch configuration as needed. Absolute paths require the same locations to remain accessible on the destination computer.
 
-The [release plan](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a6/docs/release-0.16.0a6-plan.md) and [qualification declaration](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a6/docs/release-qualification-baseline.md) separate changed-domain checks from carried-forward evidence. Desktop installers are explicitly unsigned alpha builds; macOS packages are separate CPU-only arm64/x86_64 artifacts and are also unnotarized. Verify their matching checksums. See the [versioned manual](https://rensutheart.github.io/vipp-mkdocs/0.16.0a6/).
+Desktop installers remain explicitly unsigned alpha builds. macOS packages are separate CPU-only arm64/x86_64 artifacts and are unnotarized; verify the matching checksums. The [release plan](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a7/docs/release-0.16.0a7-plan.md) and [qualification declaration](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a7/docs/release-qualification-baseline.md) distinguish changed-domain checks from carried-forward evidence. See the [versioned manual](https://rensutheart.github.io/vipp-mkdocs/0.16.0a7/).
 
-[Full source comparison: 0.16.0a5 → 0.16.0a6](https://github.com/rensutheart/napari-vipp/compare/v0.16.0a5...v0.16.0a6)
+[Full source comparison: 0.16.0a6 → 0.16.0a7](https://github.com/rensutheart/napari-vipp/compare/v0.16.0a6...v0.16.0a7)

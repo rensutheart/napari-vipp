@@ -1,12 +1,14 @@
-"""Recovery copies never calculate, overwrite originals or confer AI authority."""
+"""Recovery rebuilds safe previews without writing files or granting authority."""
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from napari.components import ViewerModel
 
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.compute import ComputeMode
+from napari_vipp.core.pipeline import EXECUTION_READY
 from napari_vipp.core.workflow import save_workflow
 from napari_vipp.core.workflow_recovery import RecoveryStore
 
@@ -34,6 +36,15 @@ def _edit(widget, threshold=0.63):
     return node
 
 
+def _wait_for_recovery_preview(widget, qtbot):
+    qtbot.waitUntil(
+        lambda: not widget._recovery_preview_pending
+        and widget._active_source_load_id is None
+        and widget._active_pipeline_run_id is None,
+        timeout=15_000,
+    )
+
+
 def test_normal_autosave_keeps_original_file_and_dirty_state(
     recovery_widget, tmp_path, qtbot
 ):
@@ -55,26 +66,51 @@ def test_normal_autosave_keeps_original_file_and_dirty_state(
     assert controller.store.recoverable() == []  # Never recover a live owner.
 
 
-def test_recovered_copy_retains_nodes_positions_and_does_not_calculate(
-    recovery_widget, monkeypatch, tmp_path
+def test_recovered_copy_retains_graph_and_calculates_only_safe_automatic_nodes(
+    recovery_widget, qtbot, tmp_path
 ):
     widget = recovery_widget
     node = _edit(widget)
+    widget.pipeline.nodes["input"].params.update(
+        source_mode="sample", sample_name="VIPP synthetic volume"
+    )
+    manual = widget.pipeline.add_node("intensity_histogram")
+    widget.pipeline.set_node_auto_recalculate(manual.id, True)
+    assert widget.pipeline.connect(node.id, manual.id).success
+    downstream = widget.pipeline.add_node("select_table_columns")
+    assert widget.pipeline.connect(manual.id, downstream.id).success
+    writer = widget.pipeline.add_node("save_output")
+    output_path = tmp_path / "must-not-be-published.npy"
+    writer.params.update(enabled="on", path=str(output_path))
+    assert widget.pipeline.connect(node.id, writer.id).success
+    widget._build_graph_from_pipeline()
+    widget._sync_current_workflow_tab_state()
+    positions = widget.graph_view.node_positions()
     original = save_workflow(tmp_path / "source.json", widget.pipeline)
     widget._workflow_tabs.current.mark_saved(original)
     before = original.read_bytes()
     checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
-    calls = []
-    monkeypatch.setattr(widget, "run_pipeline", lambda **_: calls.append("run"))
     ids = widget._restore_recovery_workspace(checkpoint)
-    assert len(ids) == 1 and calls == []
+    assert len(ids) == 1
+    _wait_for_recovery_preview(widget, qtbot)
     recovered = widget._workflow_tabs.current
     assert recovered.title.startswith("Recovered") and recovered.path is None
     assert recovered.dirty and recovered.session_id == ids[0]
     assert node.id in widget.pipeline.nodes
     assert widget.pipeline.nodes[node.id].params["threshold"] == 0.63
-    assert not widget.pipeline.completed_node_ids
-    assert all(value is None for value in widget.pipeline.outputs.values())
+    assert widget.graph_view.node_positions() == positions
+    source_data = widget._sample_payloads()["VIPP synthetic volume"].data
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], source_data)
+    np.testing.assert_array_equal(widget.pipeline.outputs[node.id], source_data > 0.63)
+    assert widget.pipeline.node_execution_states[node.id] == EXECUTION_READY
+    assert {"input", node.id} <= widget.pipeline.completed_node_ids
+    for paused in (manual.id, downstream.id, writer.id):
+        assert paused not in widget.pipeline.completed_node_ids
+        assert widget.pipeline.outputs.get(paused) is None
+        assert widget.pipeline.node_execution_states[paused] != EXECUTION_READY
+    assert widget.pipeline.nodes[manual.id].params["_vipp_auto_recalculate"] is True
+    assert widget.pipeline.nodes[writer.id].params["enabled"] == "on"
+    assert not output_path.exists()
     assert not recovered.history.can_undo
     assert original.read_bytes() == before
 
@@ -106,7 +142,7 @@ def test_recovery_base_folder_is_not_changed_to_checkpoint_directory(
 
 
 def test_relative_image_binding_survives_changed_working_directory(
-    recovery_widget, tmp_path, monkeypatch
+    recovery_widget, tmp_path, monkeypatch, qtbot
 ):
     widget = recovery_widget
     original = tmp_path / "image-folder"
@@ -118,10 +154,12 @@ def test_relative_image_binding_survives_changed_working_directory(
     checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
     monkeypatch.chdir(tmp_path)
     widget._restore_recovery_workspace(checkpoint)
+    _wait_for_recovery_preview(widget, qtbot)
     assert widget.pipeline.nodes["input"].params["file_path"] == str(
         original / "image.ome.tif"
     )
-    assert not widget.pipeline.completed_node_ids
+    assert not widget.pipeline.completed_node_ids  # The source file does not exist.
+    assert widget._last_pipeline_source_signature is None
 
 
 def test_opened_recovery_not_duplicated_when_bookkeeping_fails(
@@ -186,7 +224,7 @@ def test_folder_change_requires_durable_new_copy(
 
 @pytest.mark.parametrize("legacy_relative_copy", [False, True])
 def test_portable_recipe_recovery_keeps_original_bindings_and_source_proofs(
-    recovery_widget, tmp_path, monkeypatch, legacy_relative_copy
+    recovery_widget, tmp_path, monkeypatch, legacy_relative_copy, qtbot
 ):
     """A new unsaved recovered tab must not use the recovery folder as its base."""
     import hashlib
@@ -227,10 +265,9 @@ def test_portable_recipe_recovery_keeps_original_bindings_and_source_proofs(
         checkpoint = controller.store.checkpoint(tabs, active)
     else:
         checkpoint = controller.checkpoint_now(required=True)
-    calls = []
-    monkeypatch.setattr(widget, "run_pipeline", lambda **_: calls.append("run"))
     ids = widget._restore_recovery_workspace(checkpoint)
-    assert len(ids) == 1 and calls == []
+    assert len(ids) == 1
+    _wait_for_recovery_preview(widget, qtbot)
     params = widget.pipeline.nodes["input"].params
     assert Path(params["file_path"]) == source
     proof = params["_vipp_source_item"]["container"]
@@ -253,7 +290,12 @@ def test_portable_recipe_recovery_keeps_original_bindings_and_source_proofs(
     assert output.params["enabled"] == "off"
     assert widget._workflow_tabs.current.path is None
     assert widget._workflow_tabs.current.dirty
+    # This provenance-only fixture deliberately contains non-NPY marker bytes.
+    # Automatic preview must reject those bytes rather than invent a result.
     assert not widget.pipeline.completed_node_ids
+    assert widget._last_pipeline_source_signature is None
+    assert output.id not in widget.pipeline.completed_node_ids
+    assert widget.pipeline.outputs.get(output.id) is None
     assert saved_path.read_bytes() == before_file
     assert source.read_bytes() == before_source
     assert dataset.read_bytes() == before_dataset
@@ -261,7 +303,7 @@ def test_portable_recipe_recovery_keeps_original_bindings_and_source_proofs(
 
 
 def test_new_relative_recipe_bindings_are_frozen_before_cwd_changes(
-    recovery_widget, tmp_path, monkeypatch
+    recovery_widget, tmp_path, monkeypatch, qtbot
 ):
     widget = recovery_widget
     authored = tmp_path / "authoring-folder"
@@ -279,6 +321,7 @@ def test_new_relative_recipe_bindings_are_frozen_before_cwd_changes(
     checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
     monkeypatch.chdir(tmp_path)
     widget._restore_recovery_workspace(checkpoint)
+    _wait_for_recovery_preview(widget, qtbot)
     assert Path(widget.pipeline.nodes["input"].params["file_path"]) == (
         authored / "input.ome.tif"
     )
@@ -289,4 +332,5 @@ def test_new_relative_recipe_bindings_are_frozen_before_cwd_changes(
     assert Path(widget.pipeline.nodes[output.id].params["path"]) == (
         authored / "results" / "mask.tif"
     )
-    assert not widget.pipeline.completed_node_ids
+    assert not widget.pipeline.completed_node_ids  # No source files were created.
+    assert widget._last_pipeline_source_signature is None

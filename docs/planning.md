@@ -14,7 +14,13 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
-Approved release, 2026-10-22: publish the focused **0.16.0a6 performance alpha**
+Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
+source loading and the relative/absolute workflow-path setting. Keep unfinished
+AI work separate. Follow the [a7 release plan](release-0.16.0a7-plan.md), normal
+exact-main CI and changed-journey checks; use periodic follow-ups rather than
+repeatedly polling long-running builds.
+
+Previous approved release, 2026-10-22: the focused **0.16.0a6 performance alpha**
 with responsive startup feedback, prepared splash lettering, post-interface
 reader-library warming and bounded Windows installer file-lock retries.
 Scientific algorithms, source interpretation, schemas and dependency pins stay

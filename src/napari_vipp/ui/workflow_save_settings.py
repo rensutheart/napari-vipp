@@ -8,6 +8,7 @@ from typing import Protocol
 from qtpy.QtCore import QSettings
 
 WORKFLOW_SAVE_POLICY_SETTING = "workflow/save-policy-v1"
+WORKFLOW_PATH_POLICY_SETTING = "workflow/path-policy-v1"
 
 
 class SettingsStore(Protocol):
@@ -56,9 +57,42 @@ class WorkflowSavePolicy(StrEnum):
             ) from exc
 
 
+class WorkflowPathPolicy(StrEnum):
+    """How local file bindings are written on the next workflow save."""
+
+    RELATIVE = "relative"
+    ABSOLUTE = "absolute"
+
+    @property
+    def label(self) -> str:
+        """Return the Settings-menu label, independent of overwrite policy."""
+        return {
+            self.RELATIVE: "Relative to workflow file",
+            self.ABSOLUTE: "Absolute file locations",
+        }[self]
+
+    @classmethod
+    def parse(cls, value: WorkflowPathPolicy | str) -> WorkflowPathPolicy:
+        """Resolve a canonical id or exact user-facing label."""
+        if isinstance(value, cls):
+            return value
+        normalized = str(value).strip().casefold()
+        for member in cls:
+            if normalized in {member.value, member.label.casefold()}:
+                return member
+        raise ValueError(
+            f"Unsupported workflow path policy {value!r}; expected relative "
+            "or absolute."
+        )
+
+
 DEFAULT_WORKFLOW_SAVE_POLICY = WorkflowSavePolicy.OVERWRITE
 WORKFLOW_SAVE_POLICY_CHOICES = tuple(
     (policy.value, policy.label) for policy in WorkflowSavePolicy
+)
+DEFAULT_WORKFLOW_PATH_POLICY = WorkflowPathPolicy.RELATIVE
+WORKFLOW_PATH_POLICY_CHOICES = tuple(
+    (policy.value, policy.label) for policy in WorkflowPathPolicy
 )
 
 
@@ -94,12 +128,45 @@ def save_workflow_save_policy(
     return policy
 
 
+def load_workflow_path_policy(
+    settings: SettingsStore | None = None,
+) -> WorkflowPathPolicy:
+    """Load the local path preference without changing any workflow file."""
+    store = _settings() if settings is None else settings
+    raw = store.value(
+        WORKFLOW_PATH_POLICY_SETTING,
+        DEFAULT_WORKFLOW_PATH_POLICY.value,
+    )
+    try:
+        return WorkflowPathPolicy.parse(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_WORKFLOW_PATH_POLICY
+
+
+def save_workflow_path_policy(
+    value: WorkflowPathPolicy | str,
+    settings: SettingsStore | None = None,
+) -> WorkflowPathPolicy:
+    """Persist the path choice; apply it only when Save is requested."""
+    policy = WorkflowPathPolicy.parse(value)
+    store = _settings() if settings is None else settings
+    store.setValue(WORKFLOW_PATH_POLICY_SETTING, policy.value)
+    store.sync()
+    return policy
+
+
 __all__ = [
+    "DEFAULT_WORKFLOW_PATH_POLICY",
     "DEFAULT_WORKFLOW_SAVE_POLICY",
+    "WORKFLOW_PATH_POLICY_CHOICES",
+    "WORKFLOW_PATH_POLICY_SETTING",
     "WORKFLOW_SAVE_POLICY_CHOICES",
     "WORKFLOW_SAVE_POLICY_SETTING",
     "SettingsStore",
+    "WorkflowPathPolicy",
     "WorkflowSavePolicy",
+    "load_workflow_path_policy",
     "load_workflow_save_policy",
+    "save_workflow_path_policy",
     "save_workflow_save_policy",
 ]

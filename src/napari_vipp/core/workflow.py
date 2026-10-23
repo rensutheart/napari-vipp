@@ -367,8 +367,17 @@ def save_workflow(
     notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     metadata: dict[str, Any] | None = None,
     compute_request: ComputeRequest | Mapping[str, object] | None = None,
+    *,
+    relative_paths: bool = True,
 ) -> Path:
-    """Write the pipeline graph to ``path`` as a JSON workflow file."""
+    """Write the pipeline graph with relative or absolute local bindings.
+
+    Relative paths are the backwards-compatible default. Absolute paths let
+    the workflow file move independently of source data and output folders.
+    Neither policy copies data or mutates the live graph.
+    """
+    if type(relative_paths) is not bool:
+        raise ValueError("Workflow relative_paths must be a boolean.")
     document = serialize_workflow(
         pipeline,
         positions,
@@ -379,7 +388,7 @@ def save_workflow(
     # A live graph interprets newly authored relative bindings against its
     # working folder. Freeze that meaning before the destination rebases them.
     document = transform_workflow_paths(document, Path.cwd())
-    return save_workflow_document(path, document)
+    return save_workflow_document(path, document, relative_paths=relative_paths)
 
 
 def save_workflow_document(
@@ -387,13 +396,18 @@ def save_workflow_document(
     document: object,
     *,
     source_path: str | Path | None = None,
+    relative_paths: bool = True,
 ) -> Path:
-    """Atomically save local bindings relative to the destination workflow.
+    """Atomically save local bindings using the selected path policy.
 
     Live graphs loaded through :func:`load_workflow` have absolute bindings.
     For a raw document with relative bindings, pass its original workflow
-    ``source_path`` when saving elsewhere. No source data are copied.
+    ``source_path`` when saving elsewhere, with either path policy. Without
+    that original location, relative bindings are based on the destination.
+    No source data are copied and the supplied document is not mutated.
     """
+    if type(relative_paths) is not bool:
+        raise ValueError("Workflow relative_paths must be a boolean.")
     raw_path = str(path).strip()
     if not raw_path:
         raise ValueError("Workflow save path cannot be blank.")
@@ -406,13 +420,16 @@ def save_workflow_document(
         else base_dir
     )
     portable = transform_workflow_paths(
-        canonical, base_dir, relative=True, source_base_dir=source_base_dir
+        canonical,
+        base_dir if relative_paths else source_base_dir,
+        relative=relative_paths,
+        source_base_dir=source_base_dir,
     )
     _transform_attached_batch_paths(
         canonical,
         portable,
         target.absolute(),
-        relative=True,
+        relative=relative_paths,
         source_base_dir=source_base_dir,
     )
     return atomic_write_json(
@@ -502,7 +519,11 @@ def _transform_attached_batch_paths(
         )
     attached = transform_batch_config_paths(
         original["batch_config"],
-        base_dir=workflow_path.parent,
+        base_dir=(
+            workflow_path.parent
+            if relative or source_base_dir is None
+            else source_base_dir
+        ),
         relative=relative,
         source_base_dir=source_base_dir,
     )
