@@ -37,6 +37,7 @@ from napari_vipp.installer.models import (
     IssueSeverity,
     ReleaseSpec,
     ShortcutScope,
+    UpdateStrategy,
     managed_environment_name,
 )
 from napari_vipp.installer.ownership import (
@@ -295,7 +296,13 @@ class WindowsInstallerBackend:
                     "package resolution did not run."
                 ),
             )
-        candidates = self._python_candidates(owned)
+        candidates = self._python_candidates(
+            owned,
+            track=(
+                _explicit_track(selection.track)
+                or (owned.record.track if owned is not None else ComputeTrack.CUDA13)
+            ),
+        )
         progress(
             ProgressUpdate(
                 "python-found",
@@ -410,10 +417,10 @@ class WindowsInstallerBackend:
 
         progress(
             ProgressUpdate(
-                "resolution",
+                "preflight",
                 (
-                    "Reviewing exact packages from PyPI — the first check can "
-                    "take several minutes."
+                    "Reviewing the installation and available update method. "
+                    "Package downloads have not started."
                 ),
                 3,
                 5,
@@ -421,6 +428,7 @@ class WindowsInstallerBackend:
         )
         token = _engine_cancellation_token(cancellation)
         from napari_vipp.installer.engine import (
+            PreparationError,
             RecoveryError,
             RegistrationConflictError,
         )
@@ -431,11 +439,30 @@ class WindowsInstallerBackend:
                 progress=lambda event: progress(_progress_update(event)),
                 cancellation=token,
                 repair=repair,
+                resolve=False,
             )
         except (RecoveryError, RegistrationConflictError) as exc:
             raise _SetupCheckBlocked(
                 plan.discovery.filesystem.target, str(exc)
             ) from exc
+        except PreparationError as exc:
+            if selection.update_strategy is not UpdateStrategy.INCREMENTAL:
+                raise
+            return PreparedInstall(
+                kind=TargetKind.BLOCKED,
+                target=plan.discovery.filesystem.target,
+                release_version=release.version,
+                track=plan.request.track,
+                plain_summary=str(exc),
+                technical_details=_join_details(plan.to_json(), str(exc)),
+                reason=(
+                    "Incremental update was not approved. Choose Automatic or "
+                    "Fresh installation to review another method; nothing has "
+                    "been installed."
+                ),
+                selected_strategy=UpdateStrategy.INCREMENTAL,
+                strategy_reason=str(exc),
+            )
         self._check_cancelled(cancellation)
         prepared = _prepared_for_transaction(
             transaction,
@@ -620,7 +647,12 @@ class WindowsInstallerBackend:
             )
         return self._engine
 
-    def _python_candidates(self, owned) -> tuple[PythonCandidate, ...]:
+    def _python_candidates(
+        self,
+        owned,
+        *,
+        track: ComputeTrack = ComputeTrack.CUDA13,
+    ) -> tuple[PythonCandidate, ...]:
         paths = []
         if self._preferred_python is not None:
             paths.append(("setup option", self._preferred_python))
@@ -634,6 +666,13 @@ class WindowsInstallerBackend:
             if paths
             else ()
         )
+        # Prefer an independently verified supported interpreter from the
+        # installer override or our ownership record. Searching and launching
+        # every Python on the computer is unnecessary when this route already
+        # has a suitable base. Automatic discovery needs CUDA-capable 3.12 here;
+        # a preferred CPU-only 3.13 must not hide an available GPU route.
+        if choose_python(preferred, track) is not None:
+            return preferred
         discovered = self._candidate_finder(environ=self._environ)
         by_path: dict[str, PythonCandidate] = {}
         for candidate in (*preferred, *discovered):
@@ -771,6 +810,7 @@ class WindowsInstallerBackend:
         request = InstallRequest(
             mode=InstallMode.MANAGED,
             managed_build_sha256=self._managed_build_sha256,
+            update_strategy=selection.update_strategy,
             track=track,
             python=candidate.executable,
             install_root=(
@@ -1096,6 +1136,13 @@ def _prepared_for_transaction(
     if kind_value is None:
         kind_value = getattr(getattr(transaction, "operation", None), "value", None)
     kind = _target_kind(kind_value)
+    blocking_reason = str(getattr(transaction, "blocking_reason", "")).strip()
+    if (
+        kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}
+        and blocking_reason
+        and not getattr(transaction, "applicable", True)
+    ):
+        kind = TargetKind.BLOCKED
     installed_version = getattr(inspection, "installed_version", None)
     if installed_version is None:
         installed_version = getattr(inspection, "current_version", None)
@@ -1118,6 +1165,19 @@ def _prepared_for_transaction(
         installed_version=installed_version,
         track=plan.request.track,
     )
+    if blocking_reason:
+        summary = blocking_reason
+    selected_strategy = UpdateStrategy(
+        getattr(transaction, "selected_strategy", UpdateStrategy.FRESH)
+    )
+    strategy_reason = str(getattr(transaction, "strategy_reason", "")).strip()
+    review = getattr(transaction, "review_summary", None)
+    if getattr(transaction, "resolution_complete", False) and review is not None:
+        summary += (
+            f"\n\nPackages: {getattr(review, 'packages_to_install', 0)} new, "
+            f"{getattr(review, 'packages_to_change', 0)} changed, "
+            f"{getattr(review, 'packages_to_remove', 0)} removed."
+        )
     transaction_details = _json_details(transaction)
     return PreparedInstall(
         kind=kind,
@@ -1138,9 +1198,15 @@ def _prepared_for_transaction(
         installed_version=installed_version,
         required_free_bytes=plan.required_free_bytes,
         temporary_free_bytes=default_temporary_free_bytes(plan.request.track),
-        size_estimate=default_install_size_estimate(plan.request.track),
+        size_estimate=(
+            None
+            if selected_strategy is UpdateStrategy.INCREMENTAL
+            else default_install_size_estimate(plan.request.track)
+        ),
         launcher=Path(launcher) if launcher is not None else None,
-        reason=str(getattr(inspection, "reason", "")),
+        reason=blocking_reason or str(getattr(inspection, "reason", "")),
+        selected_strategy=selected_strategy,
+        strategy_reason=strategy_reason,
     )
 
 

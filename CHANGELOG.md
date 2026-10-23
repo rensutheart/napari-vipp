@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Windows setup offers a default-when-safe incremental update and an explicit
+  fresh environment. Incremental app-only updates reuse verified installed
+  dependencies in a staged replacement; both paths retain rollback and use
+  verified cached downloads. Initial local checks no longer wait for a full
+  online dependency resolution. This is unreleased development work.
+
 ## 0.16.0a7 - 2026-10-23
 
 - Add **Settings → Workflow paths** with relative (default) or absolute file

@@ -30,7 +30,7 @@ from napari_vipp.installer.gui import (
     _window_title,
     build_parser,
 )
-from napari_vipp.installer.models import ComputeTrack
+from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
 
 
 class _Controller:
@@ -176,6 +176,97 @@ def test_parser_keeps_recommended_automatic_route_by_default():
     assert args.track == "automatic"
     assert args.install_root is None
     assert args.base_python is None
+    assert args.update_strategy == "auto"
+
+
+@pytest.mark.parametrize("strategy", list(UpdateStrategy))
+def test_parser_accepts_each_explicit_update_method(strategy):
+    assert (
+        build_parser().parse_args(["--update-strategy", strategy.value]).update_strategy
+        == strategy.value
+    )
+
+
+def test_review_displays_requested_method_selected_method_and_fallback_reason():
+    reason = "A dependency changed; a fresh environment is required."
+    state = InstallerViewState(
+        screen=InstallerScreen.READY,
+        headline="An update is ready",
+        message="The old installation stays available until checks pass.",
+        primary_label="Update VIPP",
+        primary_enabled=True,
+        target_kind=TargetKind.UPDATE,
+        selected_strategy=UpdateStrategy.FRESH,
+        strategy_reason=reason,
+    )
+
+    message = _reviewed_message(state, InstallerSelection())
+
+    assert "Update method requested: Automatic" in message
+    assert "Selected method: Fresh installation" in message
+    assert reason in message
+
+
+def test_method_choice_invalidates_then_rechecks_without_applying():
+    window = object.__new__(InstallerWindow)
+    calls = []
+    window._mark_settings_dirty = lambda: calls.append("invalidate")
+    window._check_settings_requested = lambda: calls.append("check")
+
+    window._update_method_changed()
+
+    assert calls == ["invalidate", "check"]
+
+
+def test_update_method_control_is_built_outside_collapsed_advanced_panel(monkeypatch):
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    controller = _Controller()
+    controller.state = _state(InstallerScreen.CHECKING)
+    controller.cancel = lambda: pytest.fail("Construction attempted cancellation")
+    monkeypatch.setattr(
+        gui_module, "InstallerController", lambda *_args, **_kwargs: controller
+    )
+    try:
+        window = InstallerWindow(root, object())
+        root.update_idletasks()
+
+        assert window._strategy_control.winfo_manager() == "pack"
+        assert window._strategy_help_label.winfo_manager() == "pack"
+        assert window._strategy_control.master is not window._advanced
+        assert window._advanced.winfo_manager() == ""
+        assert window._show_advanced.get() is False
+        assert window._update_strategy.get() == "Automatic — reuse compatible packages"
+        assert controller.calls == [("start", InstallerSelection())]
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(
+    ("screen", "expected"),
+    [
+        (InstallerScreen.CHECKING, "readonly"),
+        (InstallerScreen.READY, "readonly"),
+        (InstallerScreen.WORKING, "disabled"),
+        (InstallerScreen.CANCELLING, "disabled"),
+    ],
+)
+def test_update_method_is_available_before_resolution_but_immutable_during_apply(
+    screen, expected
+):
+    window = object.__new__(InstallerWindow)
+    window._track_control = _Widget()
+    window._strategy_control = _Widget()
+    window._desktop_shortcut_control = _Widget()
+    window._check_settings = _Widget()
+
+    window._set_settings_enabled(_state(screen))
+
+    assert window._strategy_control.configured == [{"state": expected}]
 
 
 @pytest.mark.parametrize("development", [False, True])
@@ -344,6 +435,7 @@ def test_use_default_switches_existing_environment_to_fixed_managed_route(
     window._existing_label = _Widget()
     window._install_root = _Value("")
     window._track = _Value("Recommended automatically")
+    window._update_strategy = _Value("Automatic — reuse compatible packages")
     window._desktop_shortcut = _Value(True)
     window._selection = InstallerSelection(existing_python=existing_python)
     window._controller = _Controller()
@@ -395,7 +487,7 @@ def test_plain_activity_history_marks_prior_and_current_steps():
     ]
 
 
-def test_checking_activity_explains_long_package_review_and_elapsed_time():
+def test_checking_activity_explains_light_preflight_and_elapsed_time():
     rendered = _activity_text(
         ["Starting VIPP Setup…", "Checking Windows and Python…"],
         screen=InstallerScreen.CHECKING,
@@ -403,9 +495,9 @@ def test_checking_activity_explains_long_package_review_and_elapsed_time():
     )
 
     assert "✓ Starting VIPP Setup…" in rendered
-    assert "● Checking this computer and reviewing exact packages…" in rendered
-    assert "can take several minutes" in rendered
-    assert "moving bar means setup is still working" in rendered
+    assert "● Checking the installation and available update methods…" in rendered
+    assert "Packages will not be downloaded or installed until you approve" in rendered
+    assert "reviewing exact packages" not in rendered
     assert "Elapsed in this phase: 2m 14s" in rendered
 
 
@@ -856,11 +948,12 @@ def test_responsive_guidance_wrap_leaves_room_for_frame_padding():
     window._message_label = _Label()
     window._status_label = _Label()
     window._activity_label = _Label()
+    window._strategy_help_label = _Label()
     window._content_canvas = _Canvas(bounds=None)
 
     window._content_resized(_Event())
 
-    assert configured == [648, 648, 648, 648]
+    assert configured == [648, 648, 648, 648, 648]
 
 
 def test_short_screen_geometry_remains_inside_scrollable_minimum():
@@ -884,6 +977,7 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     window._controller = _Controller()
     window._selection = InstallerSelection()
     window._track = _Value("NVIDIA GPU acceleration (CUDA 13)")
+    window._update_strategy = _Value("Fresh installation")
     window._install_root = _Value(str(tmp_path / "custom GPU root"))
     window._existing_environment = _Value(False)
     window._existing_python = None
@@ -907,6 +1001,7 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     assert invalidated.track.value == "cuda13"
     assert invalidated.install_root == tmp_path / "custom GPU root"
     assert invalidated.create_desktop_shortcut is False
+    assert invalidated.update_strategy is UpdateStrategy.FRESH
     assert window._primary.configured[-1] == {"state": "disabled"}
     assert window._secondary.configured[-1] == {"state": "disabled"}
     assert not any(call == "confirm" for call in window._controller.calls)

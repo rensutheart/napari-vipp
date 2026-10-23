@@ -25,6 +25,14 @@ class ComputeTrack(StrEnum):
     CUDA13 = "cuda13"
 
 
+class UpdateStrategy(StrEnum):
+    """Reuse verified installed dependencies, or resolve a fresh replacement."""
+
+    AUTO = "auto"
+    INCREMENTAL = "incremental"
+    FRESH = "fresh"
+
+
 def managed_environment_name(track: ComputeTrack, build_sha256: str = "") -> str:
     """Use a short locator; the complete digest remains the artifact identity.
 
@@ -80,9 +88,13 @@ class InstallRequest:
     shortcut_scope: ShortcutScope = ShortcutScope.DESKTOP
     shortcut_directory: Path | None = None
     managed_build_sha256: str = ""
+    update_strategy: UpdateStrategy = UpdateStrategy.AUTO
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", InstallMode(self.mode))
+        object.__setattr__(
+            self, "update_strategy", UpdateStrategy(self.update_strategy)
+        )
         object.__setattr__(self, "track", ComputeTrack(self.track))
         object.__setattr__(self, "shortcut_scope", ShortcutScope(self.shortcut_scope))
         object.__setattr__(self, "python", Path(self.python))
@@ -124,6 +136,7 @@ class InstallRequest:
         }
         if self.managed_build_sha256:
             result["managed_build_sha256"] = self.managed_build_sha256
+        result["update_strategy"] = self.update_strategy.value
         return result
 
 

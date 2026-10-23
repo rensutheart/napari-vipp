@@ -29,6 +29,7 @@ from napari_vipp.installer.models import (
     NvidiaSnapshot,
     ReleaseSpec,
     ShortcutScope,
+    UpdateStrategy,
 )
 from napari_vipp.installer.ownership import (
     OwnedEnvironment,
@@ -55,14 +56,24 @@ def _simulate_windows_host(monkeypatch):
 
 
 class _Engine:
-    def __init__(self, kind="new"):
+    def __init__(
+        self,
+        kind="new",
+        *,
+        selected_strategy=UpdateStrategy.FRESH,
+        strategy_reason="",
+    ):
         self.kind = kind
         self.prepared_plans = []
         self.authorizations = []
         self.applied = []
+        self.resolve_requests = []
+        self.selected_strategy = selected_strategy
+        self.strategy_reason = strategy_reason
 
-    def prepare(self, plan, *, progress, cancellation, repair=False):
+    def prepare(self, plan, *, progress, cancellation, repair=False, resolve=True):
         self.prepared_plans.append((plan, repair))
+        self.resolve_requests.append(resolve)
         progress(
             SimpleNamespace(
                 stage=SimpleNamespace(value="resolve"),
@@ -79,6 +90,8 @@ class _Engine:
                 reason="",
             ),
             operation=SimpleNamespace(value=("repair" if repair else self.kind)),
+            selected_strategy=self.selected_strategy,
+            strategy_reason=self.strategy_reason,
             as_dict=lambda: {"resolution": "reviewed"},
         )
 
@@ -1033,6 +1046,163 @@ def test_automatic_route_falls_back_to_cpu_and_prepares_exact_transaction(
     assert "Automatic selection used CPU" in prepared.technical_details
     assert len(engine.prepared_plans) == 1
     assert engine.prepared_plans[0][0].request.shortcut_scope is ShortcutScope.BOTH
+    assert engine.resolve_requests == [False]
+
+
+@pytest.mark.parametrize("strategy", list(UpdateStrategy))
+def test_light_preflight_binds_method_without_resolving_online(
+    tmp_path, monkeypatch, strategy
+):
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    engine = _Engine()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU, update_strategy=strategy),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.NEW
+    assert engine.resolve_requests == [False]
+    assert engine.prepared_plans[0][0].request.update_strategy is strategy
+    assert engine.authorizations == []
+    assert engine.applied == []
+
+
+def test_incremental_review_exposes_engine_decision_without_full_download_estimate(
+    tmp_path, monkeypatch
+):
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    reason = "Reuse verified dependencies in a separate staged copy."
+    backend = WindowsInstallerBackend(
+        engine=_Engine(
+            "update",
+            selected_strategy=UpdateStrategy.INCREMENTAL,
+            strategy_reason=reason,
+        ),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert prepared.strategy_reason == reason
+    assert prepared.size_estimate is None
+    assert prepared.required_free_bytes == 5 * 1024**3
+    assert prepared.temporary_free_bytes == 1024**3
+
+
+def test_explicit_incremental_unavailability_is_blocked_not_silently_fresh(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer.engine import PreparationError
+
+    class _Unavailable(_Engine):
+        def prepare(self, *args, **kwargs):
+            assert kwargs["resolve"] is False
+            raise PreparationError("A required dependency changed.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    engine = _Unavailable()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(
+            track=TrackChoice.CPU, update_strategy=UpdateStrategy.INCREMENTAL
+        ),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.BLOCKED
+    assert prepared.payload is None
+    assert prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert "dependency changed" in prepared.plain_summary
+    assert "Choose Automatic or Fresh installation" in prepared.reason
+    assert engine.authorizations == []
+    assert engine.applied == []
+
+
+@pytest.mark.parametrize("track", list(ComputeTrack))
+def test_valid_preferred_python_avoids_probing_every_system_interpreter(
+    tmp_path, track
+):
+    python = tmp_path / "Python312" / "python.exe"
+    calls = []
+
+    def finder(**kwargs):
+        calls.append(kwargs)
+        assert kwargs.get("candidate_paths") == (("setup option", python),)
+        return _candidate_finder(python)
+
+    backend = WindowsInstallerBackend(
+        preferred_python=python,
+        services=_services(tmp_path),
+        candidate_finder=finder,
+    )
+
+    candidates = backend._python_candidates(None, track=track)
+
+    assert candidates[0].executable == python
+    assert len(calls) == 1
+
+
+def test_cpu_only_preferred_python_does_not_hide_cuda_compatible_python(tmp_path):
+    python313 = tmp_path / "Python313" / "python.exe"
+    python312 = tmp_path / "Python312" / "python.exe"
+    calls = []
+
+    def finder(**kwargs):
+        calls.append(kwargs)
+        if "candidate_paths" in kwargs:
+            return (PythonCandidate(python313, (3, 13, 0), "preferred"),)
+        return (PythonCandidate(python312, (3, 12, 10), "discovered"),)
+
+    backend = WindowsInstallerBackend(
+        preferred_python=python313,
+        services=_services(tmp_path),
+        candidate_finder=finder,
+    )
+
+    candidates = backend._python_candidates(None, track=ComputeTrack.CUDA13)
+
+    assert {item.executable for item in candidates} == {python313, python312}
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -1437,9 +1607,11 @@ def test_prepare_reports_plain_language_discovery_and_decision_milestones(
     assert "Found 64-bit Python 3.12.10." in messages
     assert any("CPU setup is recommended" in message for message in messages)
     assert any(
-        "Reviewing exact packages from PyPI" in message and "several minutes" in message
+        "Reviewing the installation and available update method" in message
+        and "Package downloads have not started" in message
         for message in messages
     )
+    assert not any("Reviewing exact packages from PyPI" in item for item in messages)
     assert messages[-1] == "Checks finished. Setup recommends installing VIPP."
 
 

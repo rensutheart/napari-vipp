@@ -14,6 +14,12 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
+Approved development, 2026-10-23: [incremental installer](incremental-installer-plan.md)
+with incremental/fresh choice, lightweight initial checks and verified reusable
+downloads (issue 85). Qualify both paths in disposable roots before building a
+local development installer. No release/publication is authorized by this work;
+preserve unfinished AI work and all existing installations during testing.
+
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished
 AI work separate. Follow the [a7 release plan](release-0.16.0a7-plan.md), normal

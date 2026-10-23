@@ -15,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from napari_vipp.installer.models import ComputeTrack
+from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
 
 
 class TargetKind(StrEnum):
@@ -80,9 +80,13 @@ class InstallerSelection:
     install_root: Path | None = None
     existing_python: Path | None = None
     create_desktop_shortcut: bool = True
+    update_strategy: UpdateStrategy = UpdateStrategy.AUTO
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "track", TrackChoice(self.track))
+        object.__setattr__(
+            self, "update_strategy", UpdateStrategy(self.update_strategy)
+        )
         if self.install_root is not None:
             object.__setattr__(self, "install_root", Path(self.install_root))
         if self.existing_python is not None:
@@ -182,9 +186,14 @@ class PreparedInstall:
     ownership_manifest_sha256: str = ""
     owned_uninstaller_path: Path | None = None
     owned_uninstaller_sha256: str = ""
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
+    strategy_reason: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", TargetKind(self.kind))
+        object.__setattr__(
+            self, "selected_strategy", UpdateStrategy(self.selected_strategy)
+        )
         object.__setattr__(self, "target", Path(self.target))
         if self.track is not None:
             object.__setattr__(self, "track", ComputeTrack(self.track))
@@ -304,9 +313,14 @@ class InstallerViewState:
     track: ComputeTrack | None = None
     help_url: str = ""
     blocked_action: BlockedAction = BlockedAction.RETRY
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
+    strategy_reason: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
+        object.__setattr__(
+            self, "selected_strategy", UpdateStrategy(self.selected_strategy)
+        )
         object.__setattr__(self, "blocked_action", BlockedAction(self.blocked_action))
         object.__setattr__(self, "progress_unit", ProgressUnit(self.progress_unit))
         if self.log_path is not None:
@@ -420,6 +434,7 @@ class InstallerController:
             install_root=selection.install_root,
             existing_python=selection.existing_python,
             create_desktop_shortcut=selection.create_desktop_shortcut,
+            update_strategy=selection.update_strategy,
         )
         with self._lock:
             if self._state.screen in {
@@ -446,7 +461,7 @@ class InstallerController:
                     headline="Settings changed",
                     message=(
                         "Select 'Check these settings' to review the new location "
-                        "and computer-use choices before continuing."
+                        "and update-method choices before continuing."
                     ),
                     primary_label="Check settings above",
                     primary_enabled=False,
@@ -486,7 +501,11 @@ class InstallerController:
                 TargetKind.REPAIR: "Repairing",
             }[prepared.kind]
             working_message = (
-                "The GPU components are a large download and can take several "
+                "Staging a new VIPP copy using verified installed dependencies. "
+                "This still needs temporary disk space; the previous installation "
+                "stays available until checks pass."
+                if prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+                else "The GPU components are a large download and can take several "
                 "minutes. The moving bar means setup is still working."
                 if prepared.track is ComputeTrack.CUDA13
                 else "You can keep using this computer while setup finishes."
@@ -508,6 +527,8 @@ class InstallerController:
                     required_free_bytes=prepared.required_free_bytes,
                     temporary_free_bytes=prepared.temporary_free_bytes,
                     size_estimate=prepared.size_estimate,
+                    selected_strategy=prepared.selected_strategy,
+                    strategy_reason=prepared.strategy_reason,
                 )
             )
         self._start_worker(
@@ -719,6 +740,8 @@ class InstallerController:
                         target_kind=prepared.kind,
                         target=prepared.target,
                         track=prepared.track,
+                        selected_strategy=prepared.selected_strategy,
+                        strategy_reason=prepared.strategy_reason,
                     )
                 )
         except InstallationCancelled as exc:
@@ -798,6 +821,10 @@ class InstallerController:
                     target_kind=prepared.kind if prepared else None,
                     target=prepared.target if prepared else None,
                     track=prepared.track if prepared else None,
+                    selected_strategy=(
+                        prepared.selected_strategy if prepared else UpdateStrategy.FRESH
+                    ),
+                    strategy_reason=prepared.strategy_reason if prepared else "",
                 )
             )
 
@@ -841,6 +868,10 @@ class InstallerController:
                     target_kind=selected.kind if selected else None,
                     target=selected.target if selected else None,
                     track=selected.track if selected else None,
+                    selected_strategy=(
+                        selected.selected_strategy if selected else UpdateStrategy.FRESH
+                    ),
+                    strategy_reason=selected.strategy_reason if selected else "",
                 )
             )
 
@@ -858,6 +889,8 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         "help_url": prepared.help_url,
         "required_free_bytes": prepared.required_free_bytes,
         "temporary_free_bytes": prepared.temporary_free_bytes,
+        "selected_strategy": prepared.selected_strategy,
+        "strategy_reason": prepared.strategy_reason,
         "size_estimate": prepared.size_estimate,
     }
     if prepared.kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}:

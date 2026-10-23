@@ -18,6 +18,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Validation and release
 
+- [Incremental Windows installer](incremental-installer-plan.md): unreleased
+  safe dependency reuse, fresh replacement, cache and isolated qualification.
+
 - [Floating VIPP recovery on Windows](validation/floating-dock-windows-2026-10-09.md):
   native taskbar registration, plugin reuse and minimized-window recovery.
 - [Windows startup investigation](benchmarks/windows-startup-2026-10-21.md):

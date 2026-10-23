@@ -20,7 +20,7 @@ from napari_vipp.installer.frontend import (
     TargetKind,
     default_install_size_estimate,
 )
-from napari_vipp.installer.models import ComputeTrack
+from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
 
 
 class _QueuedWorker:
@@ -940,6 +940,8 @@ def test_edit_during_initial_check_cannot_publish_or_apply_old_selection(tmp_pat
     [
         InstallerSelection(track="cpu"),
         InstallerSelection(create_desktop_shortcut=False),
+        InstallerSelection(update_strategy=UpdateStrategy.INCREMENTAL),
+        InstallerSelection(update_strategy=UpdateStrategy.FRESH),
         InstallerSelection(existing_python=Path("C:/selected-venv/Scripts/python.exe")),
     ],
 )
@@ -963,3 +965,62 @@ def test_every_install_relevant_selection_change_revokes_confirmation(
     assert controller.state.primary_enabled is False
     assert backend.apply_calls == []
     assert workers == []
+
+
+def test_incremental_method_is_reviewed_and_preserved_through_working_and_success(
+    tmp_path,
+):
+    workers = []
+    states = []
+    prepared = replace(
+        _prepared(TargetKind.UPDATE, tmp_path),
+        selected_strategy=UpdateStrategy.INCREMENTAL,
+        strategy_reason="Reuse verified packages in a separate staged environment.",
+    )
+    backend = _Backend(prepared)
+    controller = InstallerController(
+        backend,
+        states.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    selection = InstallerSelection(update_strategy=UpdateStrategy.INCREMENTAL)
+
+    controller.start(selection)
+    workers.pop(0)()
+
+    assert backend.inspect_calls == [(selection, False)]
+    assert controller.state.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert controller.state.strategy_reason == prepared.strategy_reason
+    controller.confirm()
+    working = controller.state
+    assert working.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert "Staging a new VIPP copy" in working.message
+    assert "temporary disk space" in working.message
+    workers.pop(0)()
+    assert backend.apply_calls == [(prepared, True)]
+    assert controller.state.screen is InstallerScreen.SUCCESS
+    assert controller.state.selected_strategy is UpdateStrategy.INCREMENTAL
+
+
+def test_editing_method_during_check_cannot_restore_old_confirmation(tmp_path):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    old_worker = workers.pop(0)
+    selection = InstallerSelection(update_strategy=UpdateStrategy.FRESH)
+
+    assert controller.invalidate_selection(selection)
+    old_worker()
+    controller.confirm()
+
+    assert controller.state.screen is InstallerScreen.BLOCKED
+    assert backend.apply_calls == []
+    controller.start(selection)
+    workers.pop(0)()
+    assert backend.inspect_calls[-1][0].update_strategy is UpdateStrategy.FRESH
+    assert controller.state.screen is InstallerScreen.READY

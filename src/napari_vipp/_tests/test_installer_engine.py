@@ -41,6 +41,7 @@ from napari_vipp.installer.models import (
     PythonSnapshot,
     ReleaseSpec,
     ShortcutScope,
+    UpdateStrategy,
     installation_request_fingerprint,
 )
 from napari_vipp.installer.ownership import (
@@ -80,6 +81,15 @@ def _isolate_installer_temporary_directory(monkeypatch, tmp_path):
         "disk_usage",
         lambda _path: SimpleNamespace(total=50 * 1024**3, used=10 * 1024**3,
                                      free=40 * 1024**3),
+    )
+    # These legacy transaction tests use synthetic resolver hashes and a fake
+    # pip runner that cannot produce matching wheel bytes. Preserve their lock
+    # assertions; real cache materialization is tested with exact-byte fake
+    # downloads in test_installer_update_strategies.py instead.
+    monkeypatch.setattr(
+        ManagedInstallerEngine,
+        "_cached_install_requirements",
+        lambda self, packages, lock_path, **kwargs: lock_path,
     )
 
 
@@ -177,6 +187,9 @@ def _plan(
         install_root=target,
         shortcut_scope=scope,
         shortcut_directory=shortcut_directory,
+        # This fixture models the pre-existing fresh transaction route. Tests
+        # of AUTO/INCREMENTAL selection live in the strategy-specific module.
+        update_strategy=UpdateStrategy.FRESH,
     )
     ownership = inspect_ownership(target)
     exists = target.exists()
@@ -532,7 +545,11 @@ def test_prepare_is_non_mutating_and_binds_exact_hashed_resolution(tmp_path):
     assert "--dry-run" in resolution
     assert "--ignore-installed" in resolution
     assert "--report" in resolution
-    assert "--no-cache-dir" in resolution
+    assert "--cache-dir" in resolution
+    assert "--no-cache-dir" not in resolution
+    assert resolution[resolution.index("--cache-dir") + 1] == str(
+        state / "cache" / "pip"
+    )
     assert "--only-binary=:all:" in resolution
 
 
@@ -1327,9 +1344,8 @@ def test_pip_is_isolated_and_apply_uses_candidate_temp(tmp_path, monkeypatch):
     assert install_call[install_call.index("--timeout") + 1] == "120"
     assert install_call[install_call.index("--retries") + 1] == "8"
     assert "--trusted-host" not in install_call
-    assert install_call[install_call.index("--index-url") + 1] == (
-        "https://pypi.org/simple"
-    )
+    assert "--no-index" in install_call
+    assert "--index-url" not in install_call
     assert result.environment_root is not None
     expected_temp = result.environment_root / ".installer-tmp"
     assert Path(runner.environments[install_index]["TEMP"]) == expected_temp

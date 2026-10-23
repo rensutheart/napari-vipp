@@ -29,6 +29,7 @@ from napari_vipp.installer.frontend import (
     TargetKind,
     TrackChoice,
 )
+from napari_vipp.installer.models import UpdateStrategy
 
 _CUDA13_TRACK_LABEL = "NVIDIA GPU acceleration (CUDA 13)"
 _TRACK_LABELS = {
@@ -37,6 +38,12 @@ _TRACK_LABELS = {
     _CUDA13_TRACK_LABEL: TrackChoice.CUDA13,
 }
 _LABEL_FOR_TRACK = {value: key for key, value in _TRACK_LABELS.items()}
+_STRATEGY_LABELS = {
+    "Automatic — reuse compatible packages": UpdateStrategy.AUTO,
+    "Incremental update only": UpdateStrategy.INCREMENTAL,
+    "Fresh installation": UpdateStrategy.FRESH,
+}
+_LABEL_FOR_STRATEGY = {value: key for key, value in _STRATEGY_LABELS.items()}
 VIPP_TAGLINE = "Visual image processing made approachable"
 DEVELOPMENT_BUILD_LABEL = "DEVELOPMENT BUILD — local testing only"
 _HEADER_MIN_WIDTH = 520
@@ -224,11 +231,10 @@ def _activity_text(
         lines.append(f"{marker} {message}")
     if screen is InstallerScreen.CHECKING:
         latest = visible[-1]
-        lines[-1] = "● Checking this computer and reviewing exact packages…"
+        lines[-1] = "● Checking the installation and available update methods…"
         lines.append(f"  Latest activity: {latest}")
         lines.append(
-            "  This can take several minutes; the moving bar means setup is "
-            "still working."
+            "  Packages will not be downloaded or installed until you approve."
         )
     if screen in {
         InstallerScreen.CHECKING,
@@ -275,11 +281,17 @@ def _reviewed_message(
         "Reviewed settings:\n"
         f"Installation location: {location}\n"
         f"Computer use: {track}\n"
+        f"Update method requested: {_LABEL_FOR_STRATEGY[selection.update_strategy]}\n"
         f"Shortcuts: {shortcuts}"
     )
+    method = ""
+    if state.target_kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}:
+        method = f"Selected method: {_LABEL_FOR_STRATEGY[state.selected_strategy]}"
+        if state.strategy_reason:
+            method += f"\n{state.strategy_reason}"
     return "\n\n".join(
         part
-        for part in (state.message.strip(), review, _size_review_text(state))
+        for part in (state.message.strip(), review, method, _size_review_text(state))
         if part
     )
 
@@ -297,6 +309,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--install-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--base-python", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--update-strategy",
+        choices=tuple(item.value for item in UpdateStrategy),
+        default=UpdateStrategy.AUTO.value,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--version",
         action="version",
@@ -347,6 +365,9 @@ class InstallerWindow:
         self._secondary_text = tk.StringVar(value="Close")
         self._show_advanced = tk.BooleanVar(value=False)
         self._track = tk.StringVar(value=_LABEL_FOR_TRACK[self._selection.track])
+        self._update_strategy = tk.StringVar(
+            value=_LABEL_FOR_STRATEGY[self._selection.update_strategy]
+        )
         self._install_root = tk.StringVar(value=str(self._selection.install_root or ""))
         self._desktop_shortcut = tk.BooleanVar(
             value=self._selection.create_desktop_shortcut
@@ -506,6 +527,36 @@ class InstallerWindow:
             justify="left",
         )
         self._message_label.pack(anchor="w", fill="x", pady=(10, 16))
+
+        method_panel = ttk.Frame(outer)
+        method_panel.pack(fill="x", pady=(0, 16))
+        ttk.Label(
+            method_panel,
+            text="Update method",
+            font=("Segoe UI Semibold", 10),
+        ).pack(anchor="w")
+        self._strategy_control = ttk.Combobox(
+            method_panel,
+            textvariable=self._update_strategy,
+            values=tuple(_STRATEGY_LABELS),
+            state="readonly",
+            width=44,
+        )
+        self._strategy_control.pack(anchor="w", fill="x", pady=(4, 5))
+        self._strategy_control.bind(
+            "<<ComboboxSelected>>", lambda _event: self._update_method_changed()
+        )
+        self._strategy_help_label = ttk.Label(
+            method_panel,
+            text=(
+                "Automatic reuses verified installed dependencies when compatible. "
+                "Both methods stage a separate copy before switching versions and "
+                "need temporary disk space. Fresh installation rebuilds all packages."
+            ),
+            wraplength=650,
+            justify="left",
+        )
+        self._strategy_help_label.pack(anchor="w", fill="x")
 
         self._progress = ttk.Progressbar(outer, mode="indeterminate", maximum=100)
         self._progress.pack(fill="x", pady=(0, 9))
@@ -951,6 +1002,8 @@ class InstallerWindow:
                 f"Progress: {progress}",
                 f"Elapsed in this phase: {_format_elapsed(self._elapsed_seconds())}",
                 f"Requested computer use: {_LABEL_FOR_TRACK[self._selection.track]}",
+                "Requested update method: "
+                + _LABEL_FOR_STRATEGY[self._selection.update_strategy],
                 f"Desktop shortcut: {shortcut_request}",
             )
         )
@@ -1114,6 +1167,8 @@ class InstallerWindow:
         self._message_label.configure(wraplength=wrap)
         self._status_label.configure(wraplength=wrap)
         self._activity_label.configure(wraplength=wrap)
+        if hasattr(self, "_strategy_help_label"):
+            self._strategy_help_label.configure(wraplength=wrap)
         if hasattr(self, "_console_hint"):
             self._console_hint.configure(wraplength=wrap)
         self._refresh_scroll_region()
@@ -1257,7 +1312,14 @@ class InstallerWindow:
                 self._existing_python if self._existing_environment.get() else None
             ),
             create_desktop_shortcut=self._desktop_shortcut.get(),
+            update_strategy=_STRATEGY_LABELS[self._update_strategy.get()],
         )
+
+    def _update_method_changed(self) -> None:
+        """Invalidate the old authorization and review the newly visible method."""
+
+        self._mark_settings_dirty()
+        self._check_settings_requested()
 
     def _check_settings_requested(self) -> None:
         if self._controller.busy:
@@ -1300,6 +1362,7 @@ class InstallerWindow:
             InstallerScreen.CANCELLING,
         }
         self._track_control.configure(state="readonly" if mutable else "disabled")
+        self._strategy_control.configure(state="readonly" if mutable else "disabled")
         self._set_enabled(self._desktop_shortcut_control, mutable)
         checkable = mutable and state.screen is not InstallerScreen.CHECKING
         self._set_enabled(self._check_settings, checkable)
@@ -1389,6 +1452,7 @@ def main(
     selection = InstallerSelection(
         track=TrackChoice(args.track),
         install_root=args.install_root,
+        update_strategy=UpdateStrategy(args.update_strategy),
     )
     InstallerWindow(root, selected_backend, initial_selection=selection)
     root.mainloop()

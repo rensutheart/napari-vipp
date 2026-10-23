@@ -42,6 +42,7 @@ from napari_vipp.installer.models import (
     InstallPlan,
     PlannedAction,
     ReleaseSpec,
+    UpdateStrategy,
 )
 from napari_vipp.installer.ownership import (
     OWNERSHIP_DIRECTORY,
@@ -373,6 +374,10 @@ class PreparedTransaction:
     resolution_complete: bool
     applicable: bool
     blocking_reason: str = ""
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
+    strategy_reason: str = ""
+    reuse_plan: object | None = field(default=None, repr=False)
+    deferred_resolution: bool = False
 
     @property
     def action_label(self) -> str:
@@ -409,6 +414,10 @@ class PreparedTransaction:
             ),
             "working_directory": str(self.working_directory),
             "resolution_complete": self.resolution_complete,
+            "selected_strategy": self.selected_strategy.value,
+            "strategy_reason": self.strategy_reason,
+            "reuse_fingerprint": getattr(self.reuse_plan, "fingerprint", ""),
+            "deferred_resolution": self.deferred_resolution,
             "applicable": self.applicable,
             "blocking_reason": self.blocking_reason,
             "action_label": self.action_label,
@@ -780,6 +789,7 @@ def inspect_managed_target(
     *,
     release: ReleaseSpec,
     track: ComputeTrack,
+    exhaustive: bool = True,
 ) -> ManagedTargetInspection:
     """Classify new, update, repair, newer, or foreign managed targets."""
 
@@ -865,7 +875,9 @@ def inspect_managed_target(
             extra=(ownership.manifest_sha256,),
         )
     if _path_has_reparse_component(record.environment_root) or (
-        record.environment_root.is_dir() and _tree_has_reparse(record.environment_root)
+        exhaustive
+        and record.environment_root.is_dir()
+        and _tree_has_reparse(record.environment_root)
     ):
         return _inspection(
             ManagedTargetKind.FOREIGN,
@@ -971,12 +983,15 @@ class ManagedInstallerEngine:
         self._authorizations: dict[str, str] = {}
         self._authorization_lock = threading.Lock()
 
-    def inspect(self, plan: InstallPlan) -> ManagedTargetInspection:
+    def inspect(
+        self, plan: InstallPlan, *, exhaustive: bool = True
+    ) -> ManagedTargetInspection:
         self._validate_managed_plan(plan)
         return inspect_managed_target(
             plan.discovery.filesystem.target,
             release=plan.release,
             track=plan.request.track,
+            exhaustive=exhaustive,
         )
 
     def recover_interrupted(
@@ -1023,6 +1038,7 @@ class ManagedInstallerEngine:
         progress: ProgressCallback | None = None,
         cancellation: object | None = None,
         repair: bool = False,
+        resolve: bool = True,
     ) -> PreparedTransaction:
         """Resolve exact artifacts without changing the managed target."""
 
@@ -1053,7 +1069,7 @@ class ManagedInstallerEngine:
             0,
             3,
         )
-        inspection = self.inspect(plan)
+        inspection = self.inspect(plan, exhaustive=resolve)
         _validate_snapshot_binding(plan, inspection)
         if inspection.kind is ManagedTargetKind.CURRENT and repair:
             inspection = replace(
@@ -1153,39 +1169,109 @@ class ManagedInstallerEngine:
                     replace(plan.release, wheel_sha256=wheel_digest),
                     Path(cache_root),
                 )
+        selected_strategy = UpdateStrategy.FRESH
+        strategy_reason = "A new, independently verified environment will be created."
+        reuse_plan = None
+        requested_strategy = plan.request.update_strategy
+        if requested_strategy is not UpdateStrategy.FRESH:
+            if inspection.kind is ManagedTargetKind.UPDATE and inspection.record:
+                from napari_vipp.installer.incremental import assess_incremental
+
+                reuse_plan = assess_incremental(
+                    inspection.record,
+                    plan.release,
+                    plan.discovery.python,
+                    track=plan.request.track,
+                )
+                strategy_reason = reuse_plan.reason
+                if reuse_plan.eligible:
+                    selected_strategy = UpdateStrategy.INCREMENTAL
+            else:
+                strategy_reason = (
+                    "Incremental update needs a healthy, older managed installation. "
+                    "New installations and repairs use a fresh environment."
+                )
+            if (
+                requested_strategy is UpdateStrategy.INCREMENTAL
+                and selected_strategy is not UpdateStrategy.INCREMENTAL
+            ):
+                raise PreparationError(strategy_reason + " Choose Fresh installation.")
         _emit(
             progress,
             ProgressStage.RESOLVING,
             (
-                "Reviewing exact packages from PyPI — the first check can take "
-                "several minutes."
+                "Reviewing compatible installed dependencies…"
+                if selected_strategy is UpdateStrategy.INCREMENTAL
+                else "Resolving fresh packages from PyPI…"
+                if resolve
+                else "Local checks finished. Package resolution starts after Update."
             ),
             1,
             3,
         )
-        result = self._run(
-            _resolution_argv(plan, index_url=self._index_url),
-            cancellation=cancellation,
-            env=_pip_environment(),
-            output=_console_callback(
-                progress,
-                ProgressStage.RESOLVING,
-                stdout=False,
-            ),
-        )
-        if result.returncode:
-            detail = _redact_text(result.stderr.strip() or result.stdout.strip())
-            raise ResolutionError(
-                "VIPP could not determine the required components. " + detail
+        if selected_strategy is UpdateStrategy.INCREMENTAL:
+            packages = tuple(
+                sorted(
+                    (
+                        *(
+                            ResolvedPackage(
+                                p.name,
+                                p.version,
+                                f"reuse://installed/{p.name}",
+                                p.sha256,
+                            )
+                            for p in reuse_plan.packages
+                        ),
+                        ResolvedPackage(
+                            plan.release.distribution,
+                            plan.release.version,
+                            plan.release.wheel_path.resolve().as_uri(),
+                            wheel_digest,
+                            True,
+                        ),
+                    ),
+                    key=lambda item: item.normalized_name,
+                )
             )
-        packages = _parse_pip_report(
-            result.stdout,
-            release=plan.release,
-            wheel_sha256=wheel_digest,
-            approved_hosts=self._approved_artifact_hosts,
+        elif resolve:
+            _assert_direct_path(installer_state_root / "cache" / "pip", "pip cache")
+            result = self._run(
+                _resolution_argv(
+                    plan,
+                    index_url=self._index_url,
+                    cache_directory=installer_state_root / "cache" / "pip",
+                ),
+                cancellation=cancellation,
+                env=_pip_environment(),
+                output=_console_callback(
+                    progress, ProgressStage.RESOLVING, stdout=False
+                ),
+            )
+            if result.returncode:
+                detail = _redact_text(result.stderr.strip() or result.stdout.strip())
+                raise ResolutionError(
+                    "VIPP could not determine the required components. " + detail
+                )
+            packages = _parse_pip_report(
+                result.stdout,
+                release=plan.release,
+                wheel_sha256=wheel_digest,
+                approved_hosts=self._approved_artifact_hosts,
+            )
+        else:
+            packages = ()
+        changes = _package_changes(packages, inspection) if packages else ()
+        summary = (
+            _review_summary(inspection, changes)
+            if packages
+            else ReviewSummary(
+                headline=inspection.action_label,
+                detail="Fresh package versions are resolved after you confirm.",
+                packages_to_install=0,
+                packages_to_change=0,
+                packages_to_remove=0,
+            )
         )
-        changes = _package_changes(packages, inspection)
-        summary = _review_summary(inspection, changes)
         plan_fingerprint = _plan_fingerprint(plan)
         resolution_id = _resolution_fingerprint(
             plan_fingerprint=plan_fingerprint,
@@ -1198,6 +1284,14 @@ class ManagedInstallerEngine:
             persistent_setup_sha256=persistent_digest,
             persistent_setup_prior_sha256=persistent_prior_digest,
             working_directory=working_directory,
+            selected_strategy=selected_strategy,
+            reuse_fingerprint=(
+                getattr(reuse_plan, "fingerprint", "")
+                if selected_strategy is UpdateStrategy.INCREMENTAL
+                else ""
+            ),
+            deferred_resolution=not resolve
+            and selected_strategy is UpdateStrategy.FRESH,
         )
         prepared = PreparedTransaction(
             plan=plan,
@@ -1214,8 +1308,15 @@ class ManagedInstallerEngine:
             persistent_setup_sha256=persistent_digest,
             persistent_setup_prior_sha256=persistent_prior_digest,
             working_directory=working_directory,
-            resolution_complete=True,
+            resolution_complete=bool(packages),
             applicable=True,
+            selected_strategy=selected_strategy,
+            strategy_reason=strategy_reason,
+            reuse_plan=reuse_plan
+            if selected_strategy is UpdateStrategy.INCREMENTAL
+            else None,
+            deferred_resolution=not resolve
+            and selected_strategy is UpdateStrategy.FRESH,
         )
         _checkpoint(cancellation)
         _emit(
@@ -1237,7 +1338,9 @@ class ManagedInstallerEngine:
 
         if confirmed is not True:
             raise AuthorizationError("Install VIPP was not explicitly confirmed.")
-        if not prepared.applicable or not prepared.resolution_complete:
+        if not prepared.applicable or not (
+            prepared.resolution_complete or prepared.deferred_resolution
+        ):
             raise AuthorizationError(
                 prepared.blocking_reason or "This prepared plan cannot be applied."
             )
@@ -1280,12 +1383,52 @@ class ManagedInstallerEngine:
             persistent_setup_sha256=prepared.persistent_setup_sha256,
             persistent_setup_prior_sha256=(prepared.persistent_setup_prior_sha256),
             working_directory=prepared.working_directory,
+            selected_strategy=prepared.selected_strategy,
+            reuse_fingerprint=getattr(prepared.reuse_plan, "fingerprint", ""),
+            deferred_resolution=prepared.deferred_resolution,
         )
         if rebound_resolution != prepared.resolution_id:
             raise StalePreparedTransaction(
                 "The resolved package set changed after review."
             )
+        if prepared.deferred_resolution:
+            # The user confirmed the fresh route, not a speculative package set.
+            # Resolve before creating/mutating a candidate, and reject stale consent.
+            completed = self.prepare(
+                prepared.plan,
+                progress=progress,
+                cancellation=cancellation,
+                repair=prepared.target_inspection.kind is ManagedTargetKind.REPAIR,
+            )
+            if (
+                completed.selected_strategy is not prepared.selected_strategy
+                or completed.plan_fingerprint != prepared.plan_fingerprint
+                or completed.index_url != prepared.index_url
+                or completed.working_directory != prepared.working_directory
+                or completed.persistent_setup_path != prepared.persistent_setup_path
+                or completed.target_inspection.fingerprint
+                != prepared.target_inspection.fingerprint
+                or completed.wheel_sha256 != prepared.wheel_sha256
+                or completed.shortcuts != prepared.shortcuts
+                or completed.persistent_setup_sha256 != prepared.persistent_setup_sha256
+                or completed.persistent_setup_prior_sha256
+                != prepared.persistent_setup_prior_sha256
+            ):
+                raise StalePreparedTransaction(
+                    "The selected update changed during resolution."
+                )
+            return self.apply(
+                completed,
+                self.authorize(completed, confirmed=True),
+                progress=progress,
+                cancellation=cancellation,
+            )
         for package in prepared.packages:
+            if (
+                prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+                and package.source_url.startswith("reuse://installed/")
+            ):
+                continue
             _validate_artifact_url(
                 package.source_url,
                 package_name=package.name,
@@ -1389,6 +1532,7 @@ class ManagedInstallerEngine:
                 pip_temp = candidate / ".installer-tmp"
                 pip_temp.mkdir()
                 child_environment = _pip_environment(temp_directory=pip_temp)
+                _assert_direct_path(state_root / "cache" / "pip", "pip cache")
                 target_python = candidate / "Scripts" / "python.exe"
                 base_python = (
                     prepared.plan.discovery.python.executable
@@ -1423,8 +1567,79 @@ class ManagedInstallerEngine:
                         log_path=log_path,
                     ),
                 )
+                install_packages = prepared.packages
+                if prepared.selected_strategy is UpdateStrategy.INCREMENTAL:
+                    from napari_vipp.installer.incremental import (
+                        ReuseCancelled,
+                        assess_incremental,
+                        copy_reused_packages,
+                        script_generation_argv,
+                    )
+
+                    refreshed = assess_incremental(
+                        old_record,
+                        prepared.plan.release,
+                        prepared.plan.discovery.python,
+                        track=prepared.plan.request.track,
+                    )
+                    if not refreshed.eligible or refreshed.fingerprint != getattr(
+                        prepared.reuse_plan, "fingerprint", ""
+                    ):
+                        raise StalePreparedTransaction(
+                            "Installed dependency metadata changed after review. "
+                            "Check again or choose Fresh environment."
+                        )
+                    _emit(
+                        progress,
+                        ProgressStage.INSTALLING,
+                        "Reusing verified installed dependencies (no downloads)…",
+                        2,
+                        6,
+                    )
+                    try:
+                        copy_reused_packages(
+                            refreshed,
+                            candidate,
+                            cancellation=cancellation,
+                            progress=lambda count, total: _emit(
+                                progress,
+                                ProgressStage.INSTALLING,
+                                "Copying verified dependencies into the replacement…",
+                                count,
+                                total,
+                            ),
+                        )
+                    except ReuseCancelled as exc:
+                        raise InstallCancelled(str(exc)) from exc
+                    _checkpoint(cancellation)
+                    self._run_checked(
+                        script_generation_argv(refreshed, candidate),
+                        log=log,
+                        cancellation=cancellation,
+                        env=child_environment,
+                        output=_console_callback(
+                            progress, ProgressStage.INSTALLING, log_path=log_path
+                        ),
+                    )
+                    install_packages = tuple(
+                        p
+                        for p in prepared.packages
+                        if not p.source_url.startswith("reuse://installed/")
+                    )
                 lock_path = run_directory / "requirements.lock"
-                _write_lock_file(lock_path, prepared.packages)
+                _write_lock_file(lock_path, install_packages)
+                if prepared.selected_strategy is UpdateStrategy.FRESH:
+                    lock_path = self._cached_install_requirements(
+                        install_packages,
+                        lock_path,
+                        target_python=target_python,
+                        run_directory=run_directory,
+                        state_root=state_root,
+                        log=log,
+                        cancellation=cancellation,
+                        env=child_environment,
+                        progress=progress,
+                    )
                 _emit(
                     progress,
                     ProgressStage.INSTALLING,
@@ -1441,14 +1656,14 @@ class ManagedInstallerEngine:
                         "install",
                         "--disable-pip-version-check",
                         "--no-input",
-                        "--no-cache-dir",
+                        "--cache-dir",
+                        str(state_root / "cache" / "pip"),
                         "--timeout",
                         str(_PIP_NETWORK_TIMEOUT_SECONDS),
                         "--retries",
                         str(_PIP_NETWORK_RETRIES),
                         "--only-binary=:all:",
-                        "--index-url",
-                        prepared.index_url,
+                        "--no-index",
                         "--require-hashes",
                         "--no-deps",
                         "--requirement",
@@ -1874,6 +2089,84 @@ class ManagedInstallerEngine:
                 pass
             _emit(progress, ProgressStage.FAILED, result.message, 6, 6)
             return result
+
+    def _cached_install_requirements(
+        self,
+        packages,
+        lock_path,
+        *,
+        target_python,
+        run_directory,
+        state_root,
+        log,
+        cancellation,
+        env,
+        progress,
+    ) -> Path:
+        """Fetch missing hash-locked wheels, then install only from local files."""
+        from napari_vipp.installer.package_cache import (
+            PackageCacheCancelled,
+            materialize_packages,
+        )
+
+        remote = tuple(p for p in packages if urlsplit(p.source_url).scheme == "https")
+
+        def download(requirements: Path, destination: Path) -> None:
+            self._run_checked(
+                (
+                    str(target_python),
+                    "-m",
+                    "pip",
+                    "--isolated",
+                    "download",
+                    "--disable-pip-version-check",
+                    "--no-input",
+                    "--cache-dir",
+                    str(state_root / "cache" / "pip"),
+                    "--timeout",
+                    str(_PIP_NETWORK_TIMEOUT_SECONDS),
+                    "--retries",
+                    str(_PIP_NETWORK_RETRIES),
+                    "--only-binary=:all:",
+                    "--require-hashes",
+                    "--no-deps",
+                    "--dest",
+                    str(destination),
+                    "--requirement",
+                    str(requirements),
+                ),
+                log=log,
+                cancellation=cancellation,
+                env=env,
+                output=_console_callback(
+                    progress, ProgressStage.INSTALLING, log_path=log.path
+                ),
+            )
+
+        try:
+            paths = materialize_packages(
+                remote,
+                state_root / "cache" / "wheels",
+                run_directory / "downloads",
+                downloader=download,
+                cancellation=cancellation,
+            )
+        except PackageCacheCancelled as exc:
+            raise InstallCancelled(str(exc)) from exc
+        local_by_name = {
+            p.normalized_name: path for p, path in zip(remote, paths, strict=True)
+        }
+        lines = []
+        for package in packages:
+            location = (
+                local_by_name[package.normalized_name].resolve().as_uri()
+                if package.normalized_name in local_by_name
+                else package.source_url
+            )
+            lines.append(f"{package.name} @ {location} --hash=sha256:{package.sha256}")
+        cached_lock = lock_path.with_name("cached-requirements.lock")
+        _atomic_text(cached_lock, "\n".join(lines) + "\n")
+        return cached_lock
 
     def _inspect_registration(
         self,
@@ -2365,6 +2658,7 @@ def _resolution_argv(
     plan: InstallPlan,
     *,
     index_url: str,
+    cache_directory: Path | None = None,
 ) -> tuple[str, ...]:
     base_python = plan.discovery.python.executable or plan.request.python
     return (
@@ -2380,7 +2674,10 @@ def _resolution_argv(
         "--quiet",
         "--disable-pip-version-check",
         "--no-input",
-        "--no-cache-dir",
+        "--cache-dir",
+        str(cache_directory)
+        if cache_directory is not None
+        else str(Path(tempfile.gettempdir()) / "vipp-pip-cache"),
         "--timeout",
         str(_PIP_NETWORK_TIMEOUT_SECONDS),
         "--retries",
@@ -3276,7 +3573,8 @@ def _rollback_shortcuts(
                             destination.lstat()
                         except FileNotFoundError:
                             _replace_shortcut_with_retry(
-                                mutation.temporary, destination,
+                                mutation.temporary,
+                                destination,
                             )
                         else:
                             raise OSError(
@@ -3430,7 +3728,8 @@ def validate_build_target_identity(
     ownership = inspect_ownership(target)
     if ownership.state is OwnershipState.VALID and ownership.record is not None:
         packages = [
-            package for package in ownership.record.packages
+            package
+            for package in ownership.record.packages
             if package.normalized_name == "napari-vipp"
         ]
         if len(packages) != 1 or packages[0].sha256 != wheel_sha256:
@@ -4392,9 +4691,15 @@ def _resolution_fingerprint(
     persistent_setup_sha256: str,
     persistent_setup_prior_sha256: str,
     working_directory: Path,
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH,
+    reuse_fingerprint: str = "",
+    deferred_resolution: bool = False,
 ) -> str:
     return _json_digest(
         {
+            "selected_strategy": selected_strategy.value,
+            "reuse_fingerprint": reuse_fingerprint,
+            "deferred_resolution": deferred_resolution,
             "plan_fingerprint": plan_fingerprint,
             "target_fingerprint": inspection.fingerprint,
             "operation": inspection.kind.value,
@@ -4480,7 +4785,8 @@ def _unlink_with_retry(path: Path) -> None:
 
 def _replace_shortcut_with_retry(source: Path, destination: Path) -> None:
     _retry_windows_file_operation(
-        lambda: os.replace(source, destination), delays=_SHORTCUT_FILE_RETRY_DELAYS,
+        lambda: os.replace(source, destination),
+        delays=_SHORTCUT_FILE_RETRY_DELAYS,
     )
 
 
