@@ -32,6 +32,7 @@ from napari_vipp.installer.frontend import (
     RegistrationRepairReview,
     TargetKind,
     TrackChoice,
+    VippMustBeClosed,
     default_install_size_estimate,
     default_temporary_free_bytes,
 )
@@ -488,6 +489,7 @@ class WindowsInstallerBackend:
         )
         token = _engine_cancellation_token(cancellation)
         from napari_vipp.installer.engine import (
+            InPlaceAppRunning,
             PreparationError,
             RecoveryError,
             RegistrationConflictError,
@@ -509,6 +511,8 @@ class WindowsInstallerBackend:
             raise _SetupCheckBlocked(
                 plan.discovery.filesystem.target, str(exc)
             ) from exc
+        except InPlaceAppRunning as exc:
+            raise VippMustBeClosed(str(exc), details=str(exc)) from exc
         except PreparationError as exc:
             if selection.update_strategy not in {
                 UpdateStrategy.INCREMENTAL,
@@ -656,6 +660,8 @@ class WindowsInstallerBackend:
         engine = self._selected_engine()
         authorization = engine.authorize(transaction, confirmed=confirmed)
         token = _engine_cancellation_token(cancellation)
+        from napari_vipp.installer.engine import InPlaceAppRunning
+
         try:
             result = engine.apply(
                 transaction,
@@ -664,6 +670,8 @@ class WindowsInstallerBackend:
                 cancellation=token,
             )
         except Exception as exc:
+            if isinstance(exc, InPlaceAppRunning):
+                raise VippMustBeClosed(str(exc), details=str(exc)) from exc
             if cancellation.is_set() or _looks_cancelled(exc):
                 raise InstallationCancelled(details=str(exc)) from exc
             raise
@@ -673,6 +681,10 @@ class WindowsInstallerBackend:
         if _result_cancelled(result):
             raise InstallationCancelled(details=_json_details(result))
         if not _result_succeeded(result):
+            if str(getattr(result, "technical_error", "")).startswith(
+                "InPlaceAppRunning:"
+            ):
+                raise VippMustBeClosed(details=_result_error(result))
             raise RuntimeError(_result_error(result))
         if result.launcher_path is None:
             raise RuntimeError("VIPP passed setup but its launcher was not recorded.")
@@ -1315,17 +1327,18 @@ def _prepared_for_transaction(
                 launcher = candidate
         if launcher is None:
             launcher = _launcher_for_plan(plan)
+    selected_strategy = UpdateStrategy(
+        getattr(transaction, "selected_strategy", UpdateStrategy.FRESH)
+    )
     summary = _transaction_summary(
         kind,
         release_version=plan.release.version,
         installed_version=installed_version,
         track=plan.request.track,
+        selected_strategy=selected_strategy,
     )
     if blocking_reason:
         summary = blocking_reason
-    selected_strategy = UpdateStrategy(
-        getattr(transaction, "selected_strategy", UpdateStrategy.FRESH)
-    )
     strategy_reason = str(getattr(transaction, "strategy_reason", "")).strip()
     review = getattr(transaction, "review_summary", None)
     if getattr(transaction, "resolution_complete", False) and review is not None:
@@ -1386,6 +1399,7 @@ def _transaction_summary(
     release_version: str,
     installed_version: str | None,
     track: ComputeTrack,
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH,
 ) -> str:
     compute = (
         "GPU acceleration will be available, with safe CPU fallback."
@@ -1399,6 +1413,12 @@ def _transaction_summary(
             f"left unchanged, and VIPP shortcuts will be added. {compute}"
         )
     if kind is TargetKind.UPDATE:
+        if selected_strategy is UpdateStrategy.IN_PLACE:
+            return (
+                f"VIPP {installed_version or 'an older version'} will be updated to "
+                f"{release_version}. Only required package changes are applied in "
+                "the current environment; compatible installed versions are retained."
+            )
         return (
             f"VIPP {installed_version or 'an older version'} will be updated to "
             f"{release_version}. The working version is kept until checks pass."

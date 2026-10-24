@@ -23,6 +23,7 @@ from napari_vipp.installer.frontend import (
     ProgressUnit,
     TargetKind,
     TrackChoice,
+    VippMustBeClosed,
 )
 from napari_vipp.installer.models import (
     ComputeTrack,
@@ -1338,6 +1339,38 @@ def test_incremental_review_exposes_engine_decision_without_full_download_estima
     assert prepared.temporary_free_bytes == 1024**3
 
 
+def test_in_place_review_uses_changed_package_scope_not_parallel_copy_claim(
+    tmp_path, monkeypatch
+):
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    reason = "The exact installed package state supports the required changes."
+    backend = WindowsInstallerBackend(
+        engine=_Engine(
+            "update", selected_strategy=UpdateStrategy.IN_PLACE, strategy_reason=reason
+        ),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    assert prepared.selected_strategy is UpdateStrategy.IN_PLACE
+    assert prepared.strategy_reason == reason
+    assert "Only required package changes" in prepared.plain_summary
+    assert "current environment" in prepared.plain_summary
+    assert "compatible installed versions are retained" in prepared.plain_summary
+    assert "working version is kept" not in prepared.plain_summary
+    assert prepared.size_estimate is None
+
+
 def test_explicit_incremental_unavailability_is_blocked_not_silently_fresh(
     tmp_path, monkeypatch
 ):
@@ -1690,6 +1723,139 @@ def test_disabling_desktop_shortcut_keeps_start_menu_launcher(
     assert (
         engine.prepared_plans[0][0].request.shortcut_scope is ShortcutScope.START_MENU
     )
+
+
+def test_typed_running_app_inspection_signal_survives_preparation_mapping(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer.engine import InPlaceAppRunning
+
+    class _Running(_Engine):
+        def prepare(self, *args, **kwargs):
+            raise InPlaceAppRunning("An exact runtime user is still active.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    engine = _Running()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    with pytest.raises(VippMustBeClosed, match="exact runtime user") as captured:
+        backend.inspect(
+            InstallerSelection(
+                track=TrackChoice.CPU, update_strategy=UpdateStrategy.IN_PLACE
+            ),
+            progress=lambda _event: None,
+            cancellation=__import__("threading").Event(),
+        )
+    assert "exact runtime user" in captured.value.details
+    assert engine.authorizations == []
+    assert engine.applied == []
+
+
+def test_direct_typed_running_app_apply_error_is_actionable_not_generic(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer.engine import InPlaceAppRunning
+
+    class _Running(_Engine):
+        def apply(self, *args, **kwargs):
+            raise InPlaceAppRunning("Exact app-use lease is active.")
+
+    backend = WindowsInstallerBackend(
+        engine=_Running(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    with pytest.raises(VippMustBeClosed, match="Exact app-use") as captured:
+        backend.apply(
+            SimpleNamespace(kind=TargetKind.UPDATE, payload=SimpleNamespace()),
+            confirmed=True,
+            progress=lambda _event: None,
+            cancellation=__import__("threading").Event(),
+        )
+    assert "Exact app-use lease" in captured.value.details
+
+
+@pytest.mark.parametrize(
+    ("technical", "typed"),
+    [
+        ("InPlaceAppRunning: exact active runtime lease", True),
+        ("RuntimeLeaseError: process identity is unavailable", False),
+        ("Close VIPP if it is running", False),
+        ("InPlaceAppRunningMaybe: unknown identity", False),
+        ("prefix InPlaceAppRunning: not a structured code", False),
+    ],
+)
+def test_failed_apply_result_maps_only_the_exact_running_app_code(
+    tmp_path, monkeypatch, technical, typed
+):
+    class _Failed(_Engine):
+        def apply(self, *args, **kwargs):
+            return SimpleNamespace(
+                status=SimpleNamespace(value="failed"),
+                message="Setup did not finish.",
+                technical_error=technical,
+                as_dict=lambda: {"status": "failed", "technical_error": technical},
+            )
+
+    backend = WindowsInstallerBackend(
+        engine=_Failed(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    with pytest.raises(RuntimeError) as captured:
+        backend.apply(
+            SimpleNamespace(kind=TargetKind.UPDATE, payload=SimpleNamespace()),
+            confirmed=True,
+            progress=lambda _event: None,
+            cancellation=__import__("threading").Event(),
+        )
+    assert isinstance(captured.value, VippMustBeClosed) is typed
+    details = captured.value.details if typed else str(captured.value)
+    assert technical in details
+
+
+def test_committed_success_is_never_reclassified_by_a_running_app_error_string(
+    tmp_path, monkeypatch
+):
+    class _Succeeded(_Engine):
+        def apply(self, *args, **kwargs):
+            return SimpleNamespace(
+                status=SimpleNamespace(value="succeeded"),
+                launcher_path=Path("C:/VIPP/current/Scripts/vipp-app.exe"),
+                technical_error="InPlaceAppRunning: historical warning only",
+                as_dict=lambda: {"status": "succeeded"},
+            )
+
+    backend = WindowsInstallerBackend(
+        engine=_Succeeded(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    outcome = backend.apply(
+        SimpleNamespace(kind=TargetKind.UPDATE, payload=SimpleNamespace()),
+        confirmed=True,
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    assert outcome.launcher.name == "vipp-app.exe"
 
 
 def test_apply_passes_explicit_confirmation_to_engine(tmp_path, monkeypatch):

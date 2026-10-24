@@ -112,12 +112,14 @@ class ReusePlan:
     record: OwnershipRecord | None = field(default=None, repr=False)
     release: ReleaseSpec | None = field(default=None, repr=False)
     python_snapshot: PythonSnapshot | None = field(default=None, repr=False)
+    transaction_kind: str = "replacement"
 
     def as_dict(self) -> dict[str, object]:
         return {
             "eligible": self.eligible,
             "reason": self.reason,
             "fingerprint": self.fingerprint,
+            "transaction_kind": self.transaction_kind,
             "source_environment": str(self.source_environment)
             if self.source_environment
             else None,
@@ -517,6 +519,8 @@ def _assess(
     release: ReleaseSpec,
     python: PythonSnapshot,
     track: ComputeTrack,
+    *,
+    installed_inventory: bool = False,
 ) -> ReusePlan:
     _require(
         track is record.track,
@@ -618,6 +622,37 @@ def _assess(
         },
         "The new VIPP wheel lacks the requested application/compute extras.",
     )
+    if installed_inventory:
+        # In-place resolution needs the complete authenticated installed state,
+        # not the subset already compatible with the incoming requirements.
+        # This is metadata-only: changed payload hashes are checked separately
+        # before exclusion/exchange; unchanged dependencies are never copied.
+        identity = {
+            "ownership": ownership.manifest_sha256,
+            "marker": record.environment_marker_sha256,
+            "pyvenv": hashlib.sha256(config).hexdigest(),
+            "python": python.as_dict(),
+            "wheel": release.wheel_sha256,
+            "packages": [
+                (name, value.version, value.sha256, value.metadata_hashes)
+                for name, value in sorted(packages.items())
+            ],
+        }
+        return ReusePlan(
+            True,
+            "Installed package identities are authenticated "
+            "for changed-package review.",
+            hashlib.sha256(
+                json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            environment,
+            tuple(packages[name] for name in sorted(packages)),
+            track,
+            record,
+            release,
+            python,
+            "package_delta",
+        )
     marker_environment = default_environment()
     marker_environment.update(
         {
@@ -757,6 +792,41 @@ def assess_incremental(
         return ReusePlan(
             False, f"Use a fresh installation: {error}", track=record.track
         )
+
+
+def assess_installed(
+    record: OwnershipRecord | None,
+    release: ReleaseSpec,
+    python_snapshot: PythonSnapshot,
+    *,
+    track: ComputeTrack | None = None,
+) -> ReusePlan:
+    """Authenticate all installed metadata without requiring old requirements.
+
+    Eligibility here does not authorize mutation. Installed-aware resolution,
+    touched-file ownership, startup exclusion and acceptance are separate gates.
+    """
+    if record is None:
+        return ReusePlan(False, "There is no owned installation to update.")
+    try:
+        return _assess(
+            record,
+            release,
+            python_snapshot,
+            ComputeTrack(track or record.track),
+            installed_inventory=True,
+        )
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        RuntimeError,
+        csv.Error,
+        configparser.Error,
+        zipfile.BadZipFile,
+    ) as error:
+        return ReusePlan(False, str(error), track=record.track)
 
 
 def _candidate(plan: ReusePlan, candidate: Path) -> Path:

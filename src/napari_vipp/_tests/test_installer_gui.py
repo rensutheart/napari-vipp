@@ -13,6 +13,7 @@ import pytest
 
 from napari_vipp.installer import gui as gui_module
 from napari_vipp.installer.frontend import (
+    IN_PLACE_CLOSE_WARNING,
     BlockedAction,
     InstallerScreen,
     InstallerSelection,
@@ -483,7 +484,7 @@ def test_method_labels_distinguish_three_write_scopes_without_changing_legacy_va
     labels = gui_module._STRATEGY_LABELS
     assert labels == {
         "Automatic — fastest safe method": UpdateStrategy.AUTO,
-        "In-place update — change VIPP only": UpdateStrategy.IN_PLACE,
+        "In-place update — update changed packages": UpdateStrategy.IN_PLACE,
         "Replacement update — copy existing packages": UpdateStrategy.INCREMENTAL,
         "Fresh installation": UpdateStrategy.FRESH,
     }
@@ -491,10 +492,10 @@ def test_method_labels_distinguish_three_write_scopes_without_changing_legacy_va
     assert gui_module._SELECTED_METHOD_NAMES == gui_module._LABEL_FOR_STRATEGY
 
 
-def test_legacy_app_use_fallback_reason_is_visible_with_exact_selected_method():
+def test_actual_eligibility_fallback_reason_is_visible_with_exact_selected_method():
     reason = (
-        "This older installation needs one Replacement update "
-        "to add the app-use interlock."
+        "An installed package cannot be safely exchanged in place. "
+        "A replacement keeps its current environment unchanged."
     )
     state = replace(
         _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
@@ -514,9 +515,10 @@ def test_in_place_working_copy_never_promises_a_separate_replacement():
         selected_strategy=UpdateStrategy.IN_PLACE,
     )
     message = gui_module._working_message(state)
-    assert "Updating VIPP only in the current environment" in message
-    assert "Existing dependencies stay unchanged" in message
-    assert "Keep VIPP closed until setup finishes" in message
+    assert "Updating changed packages in the current environment" in message
+    assert "Compatible installed versions are retained" in message
+    assert "cached downloads are reused for required changes" in message
+    assert message.count(IN_PLACE_CLOSE_WARNING) == 1
     assert "replacement" not in message
     assert "previous version stays available" not in message
     for strategy in [UpdateStrategy.INCREMENTAL, UpdateStrategy.FRESH]:
@@ -535,9 +537,11 @@ def test_in_place_review_omits_fresh_estimates_but_keeps_enforced_space_threshol
         temporary_free_bytes=256 * 1024**2,
     )
     message = _reviewed_message(state, InstallerSelection())
-    assert "Selected method: In-place update — change VIPP only" in message
+    assert "Selected method: In-place update — update changed packages" in message
     assert state.strategy_reason in message
-    assert "Existing dependencies are not copied or upgraded" in message
+    assert "Compatible installed versions are retained" in message
+    assert "required changes are installed" in message
+    assert message.count(IN_PLACE_CLOSE_WARNING) == 1
     assert "typical Fresh" not in message
     assert "5 GiB" not in message and "7 GiB" not in message
     assert "Required minimum free space (enforced): 512 MiB" in message
@@ -910,10 +914,13 @@ def test_method_help_explains_compatible_versions_and_verified_cache():
     assert (
         "Automatic uses In-place when safe, otherwise Replacement or Fresh" in help_text
     )
-    assert "In-place changes VIPP only" in help_text
-    assert "dependencies must be compatible and VIPP must be closed" in help_text
-    assert "Older installations may need one Replacement update first" in help_text
-    assert "app-use safety check" in help_text
+    assert "In-place updates changed packages in the current environment" in help_text
+    assert "requires VIPP to be closed" in help_text
+    assert "Compatible installed versions are retained" in help_text
+    assert "only required changes are installed" in help_text
+    assert "not every package's newest version" in help_text
+    assert "one Replacement" not in help_text
+    assert "Older installations" not in help_text
     assert (
         "Replacement copies compatible installed packages into a separate environment"
         in help_text
@@ -921,9 +928,105 @@ def test_method_help_explains_compatible_versions_and_verified_cache():
     assert "Fresh resolves all required versions" in help_text
     assert "Verified cached downloads are reused" in help_text
     assert "missing packages are downloaded as needed" in help_text
-    assert "newest" not in gui_module._UPDATE_METHOD_HELP
     assert "no downloads" not in gui_module._UPDATE_METHOD_HELP
     assert gui_module._PHASE_LABELS["installing"] == "Installing required components"
+
+
+@pytest.mark.parametrize("strategy", list(UpdateStrategy))
+def test_close_vipp_warning_is_only_for_the_selected_in_place_method(strategy):
+    ready = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=strategy,
+    )
+    reviewed = _reviewed_message(ready, InstallerSelection())
+    working = gui_module._working_message(
+        replace(ready, screen=InstallerScreen.WORKING)
+    )
+    for text in (reviewed, working):
+        assert (IN_PLACE_CLOSE_WARNING in text) is (strategy is UpdateStrategy.IN_PLACE)
+        assert "change VIPP only" not in text
+        assert "dependencies stay unchanged" not in text
+
+
+@pytest.mark.parametrize("field", ["message", "strategy_reason"])
+def test_ready_warning_is_not_duplicated_if_backend_already_supplied_it(field):
+    ready = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.IN_PLACE,
+        **{field: IN_PLACE_CLOSE_WARNING},
+    )
+    assert (
+        _reviewed_message(ready, InstallerSelection()).count(IN_PLACE_CLOSE_WARNING)
+        == 1
+    )
+
+
+def test_running_vipp_popup_is_once_actionable_and_never_starts_an_update():
+    state = replace(
+        _state(InstallerScreen.FAILED, kind=TargetKind.UPDATE),
+        headline="Close VIPP to continue",
+        message="Save your work and close VIPP yourself, then choose Check again.",
+        primary_label="Check again",
+        selected_strategy=UpdateStrategy.IN_PLACE,
+        close_vipp_required=True,
+    )
+    window = _window(state)
+    callbacks = []
+    notices = []
+    window.root = SimpleNamespace(
+        after_idle=callbacks.append,
+        winfo_exists=lambda: True,
+    )
+
+    def showwarning(title, text, *, parent):
+        assert parent is window.root
+        assert window._repair_dialog_open is True
+        window._primary_requested()  # A queued Return cannot invoke retry/apply.
+        notices.append((title, text))
+
+    window._messagebox = SimpleNamespace(showwarning=showwarning)
+    window._queue_close_vipp_notice(state)
+    window._queue_close_vipp_notice(state)
+    assert len(callbacks) == 1
+    callbacks.pop()()
+    window._queue_close_vipp_notice(state)
+    assert not callbacks
+    assert notices == [("Close VIPP to continue", state.message)]
+    assert window._repair_dialog_open is False
+    assert window._controller.calls == []
+    window._primary_requested()
+    assert window._controller.calls == ["retry"]
+
+
+def test_old_running_vipp_popup_is_not_shown_after_recheck_has_started():
+    state = replace(_state(InstallerScreen.FAILED), close_vipp_required=True)
+    window = _window(state)
+    callbacks = []
+    window.root = SimpleNamespace(
+        after_idle=callbacks.append, winfo_exists=lambda: True
+    )
+    window._messagebox = SimpleNamespace(
+        showwarning=lambda *_args, **_kwargs: pytest.fail("Stale popup was shown")
+    )
+    window._queue_close_vipp_notice(state)
+    window._state = _state(InstallerScreen.CHECKING)
+    window._queue_close_vipp_notice(window._state)
+    callbacks.pop()()
+    assert window._controller.calls == []
+    assert window._close_vipp_notice_scheduled is False
+
+
+def test_plain_failure_prose_does_not_trigger_the_running_vipp_popup():
+    state = replace(
+        _state(InstallerScreen.FAILED),
+        message="Close VIPP if it is running; process identity is unknown.",
+    )
+    window = _window(state)
+    window.root = SimpleNamespace(
+        after_idle=lambda _callback: pytest.fail("Untyped prose scheduled a popup")
+    )
+    window._queue_close_vipp_notice(state)
+    assert window._controller.calls == []
 
 
 def test_update_method_control_is_built_outside_collapsed_advanced_panel(monkeypatch):

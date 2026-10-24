@@ -21,6 +21,8 @@ from functools import lru_cache
 from pathlib import Path
 
 from napari_vipp.installer.frontend import (
+    IN_PLACE_CLOSE_WARNING,
+    IN_PLACE_WORKING_MESSAGE,
     BlockedAction,
     InstallerBackend,
     InstallerController,
@@ -42,7 +44,7 @@ _TRACK_LABELS = {
 _LABEL_FOR_TRACK = {value: key for key, value in _TRACK_LABELS.items()}
 _STRATEGY_LABELS = {
     "Automatic — fastest safe method": UpdateStrategy.AUTO,
-    "In-place update — change VIPP only": UpdateStrategy.IN_PLACE,
+    "In-place update — update changed packages": UpdateStrategy.IN_PLACE,
     "Replacement update — copy existing packages": UpdateStrategy.INCREMENTAL,
     "Fresh installation": UpdateStrategy.FRESH,
 }
@@ -50,9 +52,9 @@ _LABEL_FOR_STRATEGY = {value: key for key, value in _STRATEGY_LABELS.items()}
 _SELECTED_METHOD_NAMES = _LABEL_FOR_STRATEGY
 _UPDATE_METHOD_HELP = (
     "Automatic uses In-place when safe, otherwise Replacement or Fresh. "
-    "In-place changes VIPP only; dependencies must be compatible and VIPP "
-    "must be closed. Older installations may need one Replacement update "
-    "first to add the app-use safety check.\n\n"
+    "In-place updates changed packages in the current environment and requires "
+    "VIPP to be closed. Compatible installed versions are retained; only required "
+    "changes are installed, not every package's newest version.\n\n"
     "Replacement copies compatible installed packages into a separate "
     "environment. Fresh resolves all required versions. Verified cached "
     "downloads are reused; missing packages are downloaded as needed."
@@ -439,8 +441,9 @@ def _size_review_text(state: InstallerViewState) -> str:
     lines = []
     if in_place:
         lines.append(
-            "In-place package scope: VIPP only. Existing dependencies are not "
-            "copied or upgraded."
+            "In-place package scope: update changed packages in the current "
+            "environment. Compatible installed versions are retained; required "
+            "changes are installed using verified cached downloads where available."
         )
     elif estimate is not None:
         lines.extend(
@@ -572,7 +575,17 @@ def _reviewed_message(
             method += f"\n{state.strategy_reason}"
     return "\n\n".join(
         part
-        for part in (state.message.strip(), review, method, _size_review_text(state))
+        for part in (
+            state.message.strip(),
+            IN_PLACE_CLOSE_WARNING
+            if state.selected_strategy is UpdateStrategy.IN_PLACE
+            and IN_PLACE_CLOSE_WARNING not in state.message
+            and IN_PLACE_CLOSE_WARNING not in state.strategy_reason
+            else "",
+            review,
+            method,
+            _size_review_text(state),
+        )
         if part
     )
 
@@ -581,10 +594,7 @@ def _working_message(state: InstallerViewState) -> str:
     """Explain the selected write scope without implying a replacement copy."""
 
     if state.selected_strategy is UpdateStrategy.IN_PLACE:
-        return (
-            "Updating VIPP only in the current environment. Existing "
-            "dependencies stay unchanged. Keep VIPP closed until setup finishes."
-        )
+        return IN_PLACE_WORKING_MESSAGE
     if state.target_kind in {TargetKind.UPDATE, TargetKind.REPAIR}:
         return (
             "The previous version stays available until the replacement passes checks."
@@ -1154,6 +1164,7 @@ class InstallerWindow:
         self._review_controls_visible = True
         self._development_build = _is_development_build()
         self._repair_dialog_open = False
+        self._close_vipp_notice_scheduled = False
 
         self._configure_root()
         self._build_window()
@@ -1845,6 +1856,39 @@ class InstallerWindow:
             }
         ):
             self.root.after_idle(self._focus_primary_if_available)
+        self._queue_close_vipp_notice(state)
+
+    def _queue_close_vipp_notice(self, state: InstallerViewState) -> None:
+        """Show one actionable notice for a typed running-app blocker, not prose."""
+        if not state.close_vipp_required:
+            self._close_vipp_notice_scheduled = False
+            return
+        if getattr(self, "_close_vipp_notice_scheduled", False):
+            return
+        self._close_vipp_notice_scheduled = True
+        self.root.after_idle(lambda: self._show_close_vipp_notice(state))
+
+    def _show_close_vipp_notice(self, expected_state: InstallerViewState) -> None:
+        state = self._state
+        if (
+            state is None
+            or state is not expected_state
+            or not state.close_vipp_required
+            or not self.root.winfo_exists()
+            or getattr(self, "_repair_dialog_open", False)
+        ):
+            return
+        # Reuse the parent modal-action guard: Return/other queued events may
+        # dismiss this notice but must never trigger Install/Open underneath it.
+        self._repair_dialog_open = True
+        try:
+            self._messagebox.showwarning(
+                "Close VIPP to continue",
+                state.message,
+                parent=self.root,
+            )
+        finally:
+            self._repair_dialog_open = False
 
     def _sync_progress_visibility(self, state: InstallerViewState) -> None:
         """Idle review/results are not work and must not display a progress bar."""

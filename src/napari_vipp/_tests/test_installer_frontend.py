@@ -8,6 +8,7 @@ import pytest
 
 from napari_vipp.installer import frontend as frontend_module
 from napari_vipp.installer.frontend import (
+    IN_PLACE_CLOSE_WARNING,
     BlockedAction,
     InstallationCancelled,
     InstallerController,
@@ -20,6 +21,7 @@ from napari_vipp.installer.frontend import (
     ProgressUpdate,
     RegistrationRepairReview,
     TargetKind,
+    VippMustBeClosed,
     default_install_size_estimate,
 )
 from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
@@ -121,6 +123,124 @@ def _prepared(kind: TargetKind, tmp_path: Path) -> PreparedInstall:
         launcher=launcher,
         required_free_bytes=5 * 1024**3,
     )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [UpdateStrategy.IN_PLACE, UpdateStrategy.INCREMENTAL, UpdateStrategy.FRESH],
+)
+def test_working_copy_warns_only_for_in_place_and_explains_package_reuse(
+    tmp_path, strategy
+):
+    workers = []
+    backend = _Backend(
+        replace(_prepared(TargetKind.UPDATE, tmp_path), selected_strategy=strategy)
+    )
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    assert controller.state.screen is InstallerScreen.WORKING
+    assert (IN_PLACE_CLOSE_WARNING in controller.state.message) is (
+        strategy is UpdateStrategy.IN_PLACE
+    )
+    if strategy is UpdateStrategy.IN_PLACE:
+        assert "Updating changed packages" in controller.state.message
+        assert "Compatible installed versions are retained" in controller.state.message
+        assert (
+            "cached downloads are reused for required changes"
+            in controller.state.message
+        )
+        assert "dependencies stay unchanged" not in controller.state.message
+        assert "previous installation stays available" not in controller.state.message
+    assert backend.apply_calls == []
+
+
+def test_typed_running_app_blocker_requires_manual_close_then_new_review(tmp_path):
+    workers = []
+    backend = _Backend(
+        replace(
+            _prepared(TargetKind.UPDATE, tmp_path),
+            selected_strategy=UpdateStrategy.IN_PLACE,
+        )
+    )
+    backend.apply_error = VippMustBeClosed(details="Exact runtime user was detected.")
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    started = controller.state.installation_started_at
+    workers.pop(0)()
+    state = controller.state
+    assert state.screen is InstallerScreen.FAILED
+    assert state.close_vipp_required is True
+    assert state.headline == "Close VIPP to continue"
+    assert state.primary_label == "Check again"
+    assert "Save your work and close VIPP yourself" in state.message
+    assert "not close VIPP for you" in state.message
+    assert "automatically" in state.message
+    assert "Exact runtime user was detected" in state.technical_details
+    assert state.installation_started_at == started and started is not None
+    assert state.installation_finished_at is not None
+    assert controller._prepared is None
+    assert controller._prepared_selection is None
+    controller.confirm()
+    controller.open_vipp()
+    assert len(backend.apply_calls) == 1
+    assert backend.opened == []
+    controller.retry()
+    assert controller.state.screen is InstallerScreen.CHECKING
+    assert controller.state.close_vipp_required is False
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.READY
+    assert len(backend.inspect_calls) == 2
+    assert len(backend.apply_calls) == 1  # Recheck is not a fresh approval.
+
+
+def test_typed_inspection_blocker_does_not_invent_started_installation(tmp_path):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    backend.inspect_error = VippMustBeClosed(details="An exact running user was found.")
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    assert controller.state.close_vipp_required is True
+    assert controller.state.primary_label == "Check again"
+    assert controller.state.installation_started_at is None
+    assert controller.state.installation_finished_at is None
+    assert backend.apply_calls == []
+    assert backend.opened == []
+
+
+def test_unknown_failure_text_is_not_a_positive_running_app_signal(tmp_path):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    backend.inspect_error = RuntimeError(
+        "Close VIPP if it is running; identity unknown."
+    )
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.FAILED
+    assert controller.state.close_vipp_required is False
+    assert controller.state.headline != "Close VIPP to continue"
+    assert backend.apply_calls == []
 
 
 @pytest.mark.parametrize(

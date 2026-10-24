@@ -18,6 +18,13 @@ from typing import Protocol
 
 from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
 
+IN_PLACE_CLOSE_WARNING = "Keep VIPP closed. Do not open it until setup finishes."
+IN_PLACE_WORKING_MESSAGE = (
+    "Updating changed packages in the current environment. Compatible installed "
+    "versions are retained; verified cached downloads are reused for required "
+    "changes. " + IN_PLACE_CLOSE_WARNING
+)
+
 
 class TargetKind(StrEnum):
     """How the requested target relates to a previous VIPP installation."""
@@ -320,6 +327,16 @@ class InstallationCancelled(RuntimeError):
         self.details = details
 
 
+class VippMustBeClosed(RuntimeError):
+    """A positively detected app user prevents the selected in-place update."""
+
+    def __init__(
+        self, message: str = "Close VIPP before continuing.", *, details: str = ""
+    ):
+        super().__init__(message)
+        self.details = details
+
+
 class InstallerBackend(Protocol):
     """Mutation boundary consumed by :class:`InstallerController`."""
 
@@ -388,6 +405,7 @@ class InstallerViewState:
     installation_stage: str = ""
     installation_started_at: float | None = None
     installation_finished_at: float | None = None
+    close_vipp_required: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
@@ -574,8 +592,7 @@ class InstallerController:
                 TargetKind.REPAIR: "Repairing",
             }[prepared.kind]
             working_message = (
-                "Updating VIPP in the current environment. Existing dependencies stay "
-                "unchanged; keep VIPP closed until checks finish."
+                IN_PLACE_WORKING_MESSAGE
                 if prepared.selected_strategy is UpdateStrategy.IN_PLACE
                 else "Staging a new VIPP copy with current compatible "
                 "dependency versions. "
@@ -884,6 +901,8 @@ class InstallerController:
                 self._publish(_view_for_prepared(prepared))
         except InstallationCancelled as exc:
             self._show_cancelled(generation, details=exc.details)
+        except VippMustBeClosed as exc:
+            self._show_vipp_must_be_closed(generation, exc)
         except Exception as exc:
             headline, message = _plain_check_failure(exc)
             self._fail(
@@ -944,6 +963,8 @@ class InstallerController:
                 )
         except InstallationCancelled as exc:
             self._show_cancelled(generation, details=exc.details)
+        except VippMustBeClosed as exc:
+            self._show_vipp_must_be_closed(generation, exc, prepared=prepared)
         except Exception as exc:
             headline, message = _plain_apply_failure(exc)
             self._fail(
@@ -1051,6 +1072,24 @@ class InstallerController:
                 )
             )
 
+    def _show_vipp_must_be_closed(
+        self,
+        generation: int,
+        exc: VippMustBeClosed,
+        *,
+        prepared: PreparedInstall | None = None,
+    ) -> None:
+        self._fail(
+            "Close VIPP to continue",
+            "This in-place update needs VIPP to be closed. Save your work and "
+            "close VIPP yourself, then choose Check again. Setup will not close "
+            "VIPP for you or start the update again automatically.",
+            exc,
+            generation=generation,
+            prepared=prepared,
+            close_vipp_required=True,
+        )
+
     def _fail(
         self,
         headline: str,
@@ -1059,18 +1098,28 @@ class InstallerController:
         *,
         generation: int | None = None,
         prepared: PreparedInstall | None = None,
+        close_vipp_required: bool = False,
     ) -> None:
-        details = "".join(traceback.format_exception(exc)).strip()
+        details = _join_details(
+            "".join(traceback.format_exception(exc)).strip(),
+            exc.details if isinstance(exc, VippMustBeClosed) else "",
+        )
         with self._lock:
             if generation is not None and generation != self._generation:
                 return
             selected = prepared or self._prepared
+            if close_vipp_required:
+                # Checking again must create a fresh plan; it is not permission
+                # to reuse the rejected transaction or retry application.
+                self._prepared = None
+                self._prepared_selection = None
+                self._outcome = None
             self._publish(
                 InstallerViewState(
                     screen=InstallerScreen.FAILED,
                     headline=headline,
                     message=message,
-                    primary_label="Try again",
+                    primary_label="Check again" if close_vipp_required else "Try again",
                     primary_enabled=True,
                     secondary_label="Close",
                     secondary_enabled=True,
@@ -1101,9 +1150,14 @@ class InstallerController:
                     target=selected.target if selected else None,
                     track=selected.track if selected else None,
                     selected_strategy=(
-                        selected.selected_strategy if selected else UpdateStrategy.FRESH
+                        selected.selected_strategy
+                        if selected
+                        else UpdateStrategy.IN_PLACE
+                        if close_vipp_required
+                        else UpdateStrategy.FRESH
                     ),
                     strategy_reason=selected.strategy_reason if selected else "",
+                    close_vipp_required=close_vipp_required,
                 )
             )
 
@@ -1339,6 +1393,9 @@ __all__ = [
     "InstallSizeEstimate",
     "InstallOutcome",
     "InstallationCancelled",
+    "IN_PLACE_CLOSE_WARNING",
+    "IN_PLACE_WORKING_MESSAGE",
+    "VippMustBeClosed",
     "InstallerBackend",
     "InstallerController",
     "InstallerScreen",

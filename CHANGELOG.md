@@ -2,12 +2,16 @@
 
 ## Unreleased
 
-- Distinguish true VIPP-only in-place updates from copied replacements and
-  fresh environments. Prefer in-place automatically only for compatible owned
-  Windows installations with coordinated app-use protection; legacy builds
-  need one replacement first. Keep dependencies and launchers in place, bind
-  a small app-only rollback journal, and block startup until commit or recovery.
-  Dependency/runtime/protocol changes still require a replacement or Fresh.
+- Distinguish changed-package in-place updates from copied replacements and
+  fresh environments. In-place can retain compatible dependency versions and
+  replace only required changed packages, including a safe first upgrade of
+  an older managed installation without a mandatory whole-environment copy.
+  Authenticate ownership, take the prefix offline without copying it, journal
+  only changed files, and install startup exclusion before acceptance. Ask users
+  to close a detected running instance and keep VIPP closed until setup finishes;
+  never force-close it. Ambiguous processes, foreign files, unsupported package
+  layouts and runtime/ABI changes remain explicit Replacement/Fresh blockers.
+  This is unreleased development work, not a published installer qualification.
 
 - Compare installer versions using Python package version ordering, so numeric
   development releases such as dev10 correctly follow dev9; keep genuine

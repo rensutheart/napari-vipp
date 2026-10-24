@@ -14,11 +14,12 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
-Approved 2026-10-24 follow-up adds a distinct true app-only in-place route;
-Automatic prefers it only after a replacement has installed an app-use lease
-protocol. Replacement retains the existing dependency-copy behavior; Fresh
-resolves an independent environment. Require exact app rollback/recovery,
-closed-app exclusion and disposable Windows tests. See
+Approved 2026-10-24 follow-up adds true changed-package in-place updates;
+Automatic may prefer an authenticated older managed installation without a
+mandatory preliminary copy. Require no-copy first-use startup exclusion,
+installed-aware dependency resolution, exact changed-file rollback/recovery,
+closed-app warnings and disposable Windows tests. Replacement retains the
+separate dependency-copy behavior; Fresh resolves an independent environment. See
 [in-place implementation](inplace-installer-plan.md). No public release or
 mutation of current installations is implied by private qualification.
 

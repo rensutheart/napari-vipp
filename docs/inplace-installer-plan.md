@@ -1,5 +1,9 @@
 # App-only in-place installer — private development
 
+Historical dev12 boundary. The approved dev13
+[changed-package follow-up](package-delta-installer-plan.md) supersedes the
+VIPP-only and mandatory first-copy limitations below.
+
 The user requests Fresh, copied Replacement and real in-place updates, plus
 separate removal of inactive duplicate host installations. Build dev12 is
 unreleased. Source and qualification use isolated worktrees and disposable

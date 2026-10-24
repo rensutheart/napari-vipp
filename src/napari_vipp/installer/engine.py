@@ -115,6 +115,10 @@ class PreparationError(InstallerEngineError):
     """The selected plan could not safely reach package review."""
 
 
+class InPlaceAppRunning(PreparationError):
+    """A positively identified user process must close before live maintenance."""
+
+
 class RegistrationConflictError(PreparationError):
     """Windows installation registration cannot safely authorize this upgrade."""
 
@@ -1046,6 +1050,11 @@ class ManagedInstallerEngine:
                 validate_build_target_identity(
                     managed_root, expected_wheel_sha256, state_root=state_root
                 )
+            from napari_vipp.installer.package_delta_execution import recover_if_delta
+
+            delta_recovery = recover_if_delta(self, journal, managed_root)
+            if delta_recovery is not None:
+                return delta_recovery
             from napari_vipp.installer.inplace_execution import recover_if_inplace
 
             inplace_recovery = recover_if_inplace(self, journal, managed_root)
@@ -1238,6 +1247,47 @@ class ManagedInstallerEngine:
                                 + " A replacement keeps the current environment "
                                 "unchanged."
                             )
+                if (
+                    requested_strategy
+                    in {
+                        UpdateStrategy.AUTO,
+                        UpdateStrategy.IN_PLACE,
+                    }
+                    and selected_strategy is not UpdateStrategy.IN_PLACE
+                ):
+                    from napari_vipp.installer.incremental import assess_installed
+                    from napari_vipp.installer.legacy_inplace import assess_first_use
+
+                    installed = assess_installed(
+                        inspection.record,
+                        plan.release,
+                        plan.discovery.python,
+                        track=plan.request.track,
+                    )
+                    if installed.eligible:
+                        exclusion = assess_first_use(inspection.record)
+                        if exclusion.eligible:
+                            reuse_plan = installed
+                            selected_strategy = UpdateStrategy.IN_PLACE
+                            strategy_reason = (
+                                "Update only changed packages in the current "
+                                "environment. Compatible dependencies stay in place. "
+                                "Keep VIPP closed until setup finishes."
+                            )
+                        else:
+                            if (
+                                requested_strategy is UpdateStrategy.IN_PLACE
+                                and exclusion.running
+                            ):
+                                raise InPlaceAppRunning(exclusion.reason)
+                            strategy_reason = exclusion.reason
+                    else:
+                        strategy_reason = (
+                            strategy_reason + " " + installed.reason
+                            if not reuse_plan.eligible
+                            and installed.reason != strategy_reason
+                            else installed.reason
+                        )
             else:
                 strategy_reason = (
                     "Incremental update needs a healthy, older managed installation. "
@@ -1269,7 +1319,58 @@ class ManagedInstallerEngine:
             1,
             3,
         )
-        if selected_strategy in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}:
+        if (
+            selected_strategy is UpdateStrategy.IN_PLACE
+            and getattr(reuse_plan, "transaction_kind", "") == "package_delta"
+        ):
+            compatible = assess_incremental(
+                inspection.record,
+                plan.release,
+                plan.discovery.python,
+                track=plan.request.track,
+            )
+            if compatible.eligible:
+                changes_to_install = (
+                    ResolvedPackage(
+                        plan.release.distribution,
+                        plan.release.version,
+                        plan.release.wheel_path.resolve().as_uri(),
+                        wheel_digest,
+                        True,
+                    ),
+                )
+            elif resolve:
+                # The current interpreter sees its installed distributions.
+                # No --ignore-installed/--target: pip retains compatible versions
+                # and reports only missing or incompatible required packages.
+                result = _resolve_installed_report(
+                    self,
+                    plan,
+                    inspection.record,
+                    index_url=self._index_url,
+                    cache_directory=installer_state_root / "cache" / "pip",
+                    cancellation=cancellation,
+                    progress=progress,
+                )
+                if result.returncode:
+                    raise ResolutionError(
+                        "VIPP could not review the required package changes. "
+                        + _redact_text(result.stderr.strip() or result.stdout.strip())
+                    )
+                changes_to_install = _parse_pip_report(
+                    result.stdout,
+                    release=plan.release,
+                    wheel_sha256=wheel_digest,
+                    approved_hosts=self._approved_artifact_hosts,
+                )
+            else:
+                changes_to_install = None
+            packages = (
+                _merge_installed_resolution(reuse_plan, changes_to_install)
+                if changes_to_install is not None
+                else ()
+            )
+        elif selected_strategy in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}:
             packages = tuple(
                 sorted(
                     (
@@ -1360,7 +1461,8 @@ class ManagedInstallerEngine:
                 else ""
             ),
             deferred_resolution=not resolve
-            and selected_strategy is UpdateStrategy.FRESH,
+            and not packages
+            and selected_strategy in {UpdateStrategy.FRESH, UpdateStrategy.IN_PLACE},
         )
         prepared = PreparedTransaction(
             plan=plan,
@@ -1386,7 +1488,8 @@ class ManagedInstallerEngine:
             in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}
             else None,
             deferred_resolution=not resolve
-            and selected_strategy is UpdateStrategy.FRESH,
+            and not packages
+            and selected_strategy in {UpdateStrategy.FRESH, UpdateStrategy.IN_PLACE},
         )
         _checkpoint(cancellation)
         _emit(
@@ -1462,8 +1565,25 @@ class ManagedInstallerEngine:
                 "The resolved package set changed after review."
             )
         if prepared.deferred_resolution:
-            # The user confirmed the fresh route, not a speculative package set.
-            # Resolve before creating/mutating a candidate, and reject stale consent.
+            # The user confirmed the route, not a speculative package set.
+            # Refuse changed installed metadata BEFORE an installed interpreter
+            # or online resolver is allowed to run under that old consent.
+            if getattr(prepared.reuse_plan, "transaction_kind", "") == "package_delta":
+                from napari_vipp.installer.incremental import assess_installed
+
+                rebound = assess_installed(
+                    prepared.target_inspection.record,
+                    prepared.plan.release,
+                    prepared.plan.discovery.python,
+                    track=prepared.plan.request.track,
+                )
+                if (
+                    not rebound.eligible
+                    or rebound.fingerprint != prepared.reuse_plan.fingerprint
+                ):
+                    raise StalePreparedTransaction(
+                        "Installed package metadata changed after review. Check again."
+                    )
             completed = self.prepare(
                 prepared.plan,
                 progress=progress,
@@ -1483,6 +1603,10 @@ class ManagedInstallerEngine:
                 or completed.persistent_setup_sha256 != prepared.persistent_setup_sha256
                 or completed.persistent_setup_prior_sha256
                 != prepared.persistent_setup_prior_sha256
+                or getattr(completed.reuse_plan, "fingerprint", "")
+                != getattr(prepared.reuse_plan, "fingerprint", "")
+                or getattr(completed.reuse_plan, "transaction_kind", "")
+                != getattr(prepared.reuse_plan, "transaction_kind", "")
             ):
                 raise StalePreparedTransaction(
                     "The selected update changed during resolution."
@@ -1506,6 +1630,12 @@ class ManagedInstallerEngine:
                 approved_hosts=self._approved_artifact_hosts,
             )
         if prepared.selected_strategy is UpdateStrategy.IN_PLACE:
+            if getattr(prepared.reuse_plan, "transaction_kind", "") == "package_delta":
+                from napari_vipp.installer.package_delta_execution import apply_delta
+
+                return apply_delta(
+                    self, prepared, progress=progress, cancellation=cancellation
+                )
             from napari_vipp.installer.inplace_execution import apply_inplace
 
             return apply_inplace(
@@ -2829,16 +2959,18 @@ def _resolution_argv(
     *,
     index_url: str,
     cache_directory: Path | None = None,
+    installed_python: Path | None = None,
 ) -> tuple[str, ...]:
     base_python = plan.discovery.python.executable or plan.request.python
     return (
-        str(base_python),
+        str(installed_python or base_python),
+        *(("-I", "-B") if installed_python is not None else ()),
         "-m",
         "pip",
         "--isolated",
         "install",
         "--dry-run",
-        "--ignore-installed",
+        *(("--ignore-installed",) if installed_python is None else ()),
         "--report",
         "-",
         "--quiet",
@@ -2859,6 +2991,58 @@ def _resolution_argv(
         "only-if-needed",
         plan.release.requirement(plan.request),
     )
+
+
+def _resolve_installed_report(
+    engine, plan, old, *, index_url, cache_directory, cancellation, progress
+):
+    """Read-only installed-aware pip in this prefix, not the frozen DLL search."""
+    from napari_vipp.installer.discovery import default_services
+    from napari_vipp.installer.windows_backend import (
+        _external_program_dll_directory,
+        _vipp_launch_environment,
+    )
+
+    python = old.environment_root / "Scripts/python.exe"
+    environment = _vipp_launch_environment(
+        python, default_services(), _pip_environment()
+    )
+    with _external_program_dll_directory():
+        return engine._run(
+            _resolution_argv(
+                plan,
+                index_url=index_url,
+                cache_directory=cache_directory,
+                installed_python=python,
+            ),
+            cancellation=cancellation,
+            env=environment,
+            output=_console_callback(progress, ProgressStage.RESOLVING, stdout=False),
+        )
+
+
+def _merge_installed_resolution(reuse_plan, changed) -> tuple[ResolvedPackage, ...]:
+    """Keep every authenticated unmodified distribution; replace report deltas.
+
+    pip reports the install set, not the entire target inventory. Never mistake
+    absent report entries for removals or lose their owned wheel identities.
+    """
+    if not reuse_plan.eligible or reuse_plan.record is None:
+        raise ResolutionError("No authenticated installed package inventory.")
+    selected = {package.normalized_name: package for package in changed}
+    if len(selected) != len(changed) or "napari-vipp" not in selected:
+        raise ResolutionError("The delta does not identify one exact VIPP update.")
+    for installed in reuse_plan.record.packages:
+        selected.setdefault(
+            installed.normalized_name,
+            ResolvedPackage(
+                installed.name,
+                installed.version,
+                f"reuse://installed/{installed.normalized_name}",
+                installed.sha256,
+            ),
+        )
+    return tuple(selected[name] for name in sorted(selected))
 
 
 def _parse_pip_report(

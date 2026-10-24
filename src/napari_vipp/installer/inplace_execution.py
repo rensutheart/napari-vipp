@@ -427,7 +427,11 @@ def recover_if_inplace(engine, journal: Path, root: Path):
 
 def apply_inplace(engine, prepared, *, progress=None, cancellation=None):
     """Called only after the ordinary exact-plan one-use authorization checks."""
-    from napari_vipp._runtime_lease import begin_maintenance
+    from napari_vipp._runtime_lease import (
+        RuntimeInUseError,
+        assess_idle,
+        begin_maintenance,
+    )
 
     app.require(os.name == "nt", "In-place updates currently require Windows.")
     state = engine._selected_state_root(prepared.target)
@@ -454,6 +458,9 @@ def apply_inplace(engine, prepared, *, progress=None, cancellation=None):
             )
             old = current.record
             app.require(old is not None, "No owned current environment.")
+            idle = assess_idle(old.environment_root, old.installation_id)
+            if idle.running:
+                raise e.InPlaceAppRunning(idle.reason)
             previous = engine._inspect_registration(prepared.plan, current)
             reuse_plan = assess_incremental(
                 old,
@@ -543,12 +550,15 @@ def apply_inplace(engine, prepared, *, progress=None, cancellation=None):
             document["new_trees"] = new_trees
             e._atomic_json(journal, document)
             e._checkpoint(cancellation)
-            lease = begin_maintenance(
-                old.environment_root,
-                old.installation_id,
-                run_id,
-                transaction_token=document["maintenance_token"],
-            )
+            try:
+                lease = begin_maintenance(
+                    old.environment_root,
+                    old.installation_id,
+                    run_id,
+                    transaction_token=document["maintenance_token"],
+                )
+            except RuntimeInUseError as error:
+                raise e.InPlaceAppRunning(str(error)) from error
             # Recheck after startup exclusion, not just a race-prone process list.
             app.require(
                 app.assess(old, prepared.plan.release, reuse_plan) == scope,

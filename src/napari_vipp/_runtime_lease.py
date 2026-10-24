@@ -41,6 +41,10 @@ class RuntimeLeaseError(RuntimeError):
     """Startup or maintenance cannot establish its exact safety boundary."""
 
 
+class RuntimeInUseError(RuntimeLeaseError):
+    """Kernel-backed runtime lease proves a live process uses this prefix."""
+
+
 @dataclass(frozen=True)
 class Capability:
     eligible: bool
@@ -48,6 +52,7 @@ class Capability:
     fingerprint: str = ""
     hook_sha256: str = ""
     module_sha256: str = ""
+    running: bool = False
 
 
 @dataclass(frozen=True)
@@ -470,6 +475,7 @@ def assess_idle(environment: Path, installation_id: str) -> Capability:
                         False,
                         "Close VIPP and check these settings again "
                         "for an in-place update.",
+                        running=True,
                     )
         return capability
     except (OSError, ValueError, TypeError, KeyError, RuntimeLeaseError) as exc:
@@ -1037,9 +1043,8 @@ def begin_maintenance(
             )
             previous_bytes = None
             token = transaction_token
-        _require(
-            not _leases(state, environment), "Close VIPP before updating it in place."
-        )
+        if _leases(state, environment):
+            raise RuntimeInUseError("Close VIPP before updating it in place.")
         document = {
             "schema": "vipp-runtime-maintenance",
             "schema_version": 1,
