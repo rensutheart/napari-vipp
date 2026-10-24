@@ -23,6 +23,7 @@ from napari_vipp.installer.models import (
     UpdateStrategy,
     installation_request_fingerprint,
 )
+from napari_vipp.installer.ownership import OwnedPackage
 from napari_vipp.installer.package_cache import (
     PackageArtifact,
     PackageCacheError,
@@ -34,7 +35,8 @@ from napari_vipp.installer.package_cache import (
 def _private_planning_services(monkeypatch, tmp_path):
     monkeypatch.setattr(engine_module.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(
-        engine_module.shutil, "disk_usage",
+        engine_module.shutil,
+        "disk_usage",
         lambda _path: SimpleNamespace(
             total=50 * 1024**3, used=10 * 1024**3, free=40 * 1024**3
         ),
@@ -58,7 +60,8 @@ def _fake_apply_cache(engine, monkeypatch):
     # Strategy/consent tests do not pretend a synthetic resolver hash is a
     # downloadable wheel. Exact-byte cache integration has separate tests below.
     monkeypatch.setattr(
-        engine, "_cached_install_requirements",
+        engine,
+        "_cached_install_requirements",
         lambda packages, lock_path, **kwargs: lock_path,
     )
 
@@ -215,12 +218,14 @@ def test_deferred_fresh_cannot_silently_reauthorize_changed_locations(
     values = iter((first, second))
     if changed == "working-directory":
         monkeypatch.setattr(
-            engine_module, "_prepare_working_directory",
+            engine_module,
+            "_prepare_working_directory",
             lambda *_args, **_kwargs: next(values),
         )
     else:
         monkeypatch.setattr(
-            engine_module, "_prepare_persistent_setup",
+            engine_module,
+            "_prepare_persistent_setup",
             lambda *_args, **_kwargs: (next(values), "a" * 64, ""),
         )
     prepared = engine.prepare(_plan(tmp_path / "managed"), resolve=False)
@@ -264,7 +269,8 @@ def test_explicit_incremental_ineligibility_is_not_silently_changed_to_fresh(
     target = tmp_path / "managed"
     old = legacy._record(target)
     monkeypatch.setattr(
-        incremental, "assess_incremental",
+        incremental,
+        "assess_incremental",
         lambda *_args, **_kwargs: SimpleNamespace(
             eligible=False, reason="The Python ABI differs."
         ),
@@ -279,10 +285,73 @@ def test_explicit_incremental_ineligibility_is_not_silently_changed_to_fresh(
     assert old.environment_root.is_dir()
 
 
+def test_auto_retains_eligible_dependency_versions_without_checking_latest(
+    tmp_path, monkeypatch
+):
+    incremental = importlib.import_module("napari_vipp.installer.incremental")
+    target = tmp_path / "managed"
+    legacy._record(target)
+    wheel = tmp_path / "napari_vipp-0.13.0a7-py3-none-any.whl"
+    wheel.write_bytes(b"reviewed bundled VIPP update")
+    release = legacy._release(
+        wheel_path=wheel, wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest()
+    )
+    current = OwnedPackage("example-dependency", "1.0", "d" * 64)
+    monkeypatch.setattr(
+        incremental,
+        "assess_incremental",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            eligible=True,
+            reason="Current versions satisfy this VIPP update.",
+            packages=(current,),
+            fingerprint="e" * 64,
+        ),
+    )
+    runner = legacy._FakeRunner()
+    prepared = legacy._engine(tmp_path, runner).prepare(
+        _plan(target, strategy=UpdateStrategy.AUTO, release=release), resolve=False
+    )
+
+    assert prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+    dependency = next(p for p in prepared.packages if p.name == current.name)
+    assert dependency.version == "1.0"
+    assert dependency.source_url.startswith("reuse://installed/")
+    assert runner.calls == []
+
+
+def test_auto_requires_fresh_resolution_when_new_vipp_needs_changed_dependencies(
+    tmp_path, monkeypatch
+):
+    incremental = importlib.import_module("napari_vipp.installer.incremental")
+    target = tmp_path / "managed"
+    old = legacy._record(target)
+    manifest = target / ".vipp-installer/ownership.json"
+    before = manifest.read_bytes()
+    monkeypatch.setattr(
+        incremental,
+        "assess_incremental",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            eligible=False, reason="This VIPP update needs example-dependency>=2."
+        ),
+    )
+    runner = legacy._FakeRunner()
+    prepared = legacy._engine(tmp_path, runner).prepare(
+        _plan(target, strategy=UpdateStrategy.AUTO), resolve=False
+    )
+
+    assert prepared.selected_strategy is UpdateStrategy.FRESH
+    assert prepared.deferred_resolution
+    assert "example-dependency>=2" in prepared.strategy_reason
+    assert runner.calls == []  # Resolution/downloads still require approval.
+    assert old.environment_root.is_dir()
+    assert manifest.read_bytes() == before
+
+
 def _cache_integration(tmp_path):
     dependency_body = b"exact reviewed dependency wheel"
     dependency = ResolvedPackage(
-        "example-dependency", "2.0",
+        "example-dependency",
+        "2.0",
         "https://files.pythonhosted.org/packages/"
         "example_dependency-2.0-py3-none-any.whl",
         hashlib.sha256(dependency_body).hexdigest(),
@@ -290,8 +359,11 @@ def _cache_integration(tmp_path):
     bundled = tmp_path / "napari_vipp-0.13.0a7-py3-none-any.whl"
     bundled.write_bytes(b"exact bundled VIPP wheel")
     vipp = ResolvedPackage(
-        "napari-vipp", "0.13.0a7", bundled.as_uri(),
-        hashlib.sha256(bundled.read_bytes()).hexdigest(), True,
+        "napari-vipp",
+        "0.13.0a7",
+        bundled.as_uri(),
+        hashlib.sha256(bundled.read_bytes()).hexdigest(),
+        True,
     )
 
     class DownloadRunner(legacy._FakeRunner):
@@ -316,9 +388,15 @@ def _materialize(engine, packages, run, state):
     engine_module._write_lock_file(lock, packages)
     with engine_module._RunLog(run / "install.jsonl", lambda: legacy._NOW) as log:
         result = engine._cached_install_requirements(
-            packages, lock, target_python=run / "python.exe",
-            run_directory=run, state_root=state, log=log, cancellation=None,
-            env={}, progress=None,
+            packages,
+            lock,
+            target_python=run / "python.exe",
+            run_directory=run,
+            state_root=state,
+            log=log,
+            cancellation=None,
+            env={},
+            progress=None,
         )
     return result, lock
 
@@ -332,9 +410,10 @@ def test_engine_cache_materializes_exact_dependency_once_then_reuses_it(tmp_path
     assert "download" in download
     assert "--require-hashes" in download and "--no-deps" in download
     assert "--cache-dir" in download and "--no-cache-dir" not in download
-    assert bundled.as_uri() not in Path(
-        download[download.index("--requirement") + 1]
-    ).read_text()
+    assert (
+        bundled.as_uri()
+        not in Path(download[download.index("--requirement") + 1]).read_text()
+    )
     assert "https://" in original_lock.read_text()
     assert "https://" not in first.read_text()
     assert bundled.as_uri() in first.read_text()
@@ -347,8 +426,10 @@ def test_engine_cache_materializes_exact_dependency_once_then_reuses_it(tmp_path
     cached = package_cache_path(
         state / "cache" / "wheels",
         PackageArtifact(
-            dependency.name, dependency.version,
-            dependency.source_url, dependency.sha256,
+            dependency.name,
+            dependency.version,
+            dependency.source_url,
+            dependency.sha256,
         ),
     )
     assert hashlib.sha256(cached.read_bytes()).hexdigest() == dependency.sha256
@@ -362,8 +443,10 @@ def test_engine_cache_refuses_corruption_without_refetch_or_foreign_overwrite(tm
     cached = package_cache_path(
         state / "cache" / "wheels",
         PackageArtifact(
-            dependency.name, dependency.version,
-            dependency.source_url, dependency.sha256,
+            dependency.name,
+            dependency.version,
+            dependency.source_url,
+            dependency.sha256,
         ),
     )
     cached.write_bytes(b"foreign changed bytes")

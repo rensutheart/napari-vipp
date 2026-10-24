@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Separate Windows setup into focused Review and Installing stages. Hide the
+  update-method controls after approval, keep progress and logs prominent, and
+  clarify that fast updates retain compatible dependency versions while Fresh
+  resolves required versions and reuses verified cached downloads. Selecting a
+  method does not start installation or change the dependency-update policy.
+
 - Open VIPP from Windows setup with the selected installation's own Python/DLL
   search paths rather than the setup caller's Python/Qt overrides or frozen DLL
   directory. This avoids cross-runtime OpenSSL DLL conflicts without changing

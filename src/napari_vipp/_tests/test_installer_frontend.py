@@ -194,6 +194,8 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     assert controller.state.screen is InstallerScreen.WORKING
     assert "large download" in controller.state.message
     assert "several minutes" in controller.state.message
+    assert "can be" in controller.state.message
+    assert "cached" in controller.state.message
 
 
 def test_ready_state_keeps_estimates_separate_from_enforced_space_limits(tmp_path):
@@ -1008,6 +1010,7 @@ def test_incremental_method_is_reviewed_and_preserved_through_working_and_succes
     assert working.selected_strategy is UpdateStrategy.INCREMENTAL
     assert "Staging a new VIPP copy" in working.message
     assert "temporary disk space" in working.message
+    assert "current compatible dependency versions" in working.message
     workers.pop(0)()
     assert backend.apply_calls == [(prepared, True)]
     assert controller.state.screen is InstallerScreen.SUCCESS

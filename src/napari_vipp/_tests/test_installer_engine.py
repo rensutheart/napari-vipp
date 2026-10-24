@@ -79,8 +79,9 @@ def _isolate_installer_temporary_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(
         engine_module.shutil,
         "disk_usage",
-        lambda _path: SimpleNamespace(total=50 * 1024**3, used=10 * 1024**3,
-                                     free=40 * 1024**3),
+        lambda _path: SimpleNamespace(
+            total=50 * 1024**3, used=10 * 1024**3, free=40 * 1024**3
+        ),
     )
     # These legacy transaction tests use synthetic resolver hashes and a fake
     # pip runner that cannot produce matching wheel bytes. Preserve their lock
@@ -178,7 +179,8 @@ def _plan(
     if scope is None:
         scope = (
             ShortcutScope.DESKTOP
-            if shortcut_directory is not None else ShortcutScope.NONE
+            if shortcut_directory is not None
+            else ShortcutScope.NONE
         )
     request = InstallRequest(
         mode=InstallMode.MANAGED,
@@ -201,7 +203,9 @@ def _plan(
                 probe_succeeded=True,
                 driver_api_version=13030,
                 devices=(GpuDeviceSnapshot("Test CUDA GPU", (8, 6)),),
-            ) if track is ComputeTrack.CUDA13 else None
+            )
+            if track is ComputeTrack.CUDA13
+            else None
         ),
         python=PythonSnapshot(
             requested_executable=request.python,
@@ -649,6 +653,9 @@ def test_first_apply_progress_exposes_the_existing_exact_run_log(tmp_path):
     assert first.stage is ProgressStage.PREPARING
     assert first.log_path == result.log_path
     assert existed_when_reported is True
+    assert "Installing VIPP and the resolved required components…" in {
+        update.message for update, _existed in observations
+    }
 
 
 def test_failed_update_preserves_active_environment_and_manifest(tmp_path):
@@ -875,11 +882,19 @@ def test_native_shortcut_is_rendered_privately_before_atomic_publication(tmp_pat
                 return super().run(argv, cancellation=cancellation, env=env, cwd=cwd)
             self.calls.append(tuple(str(value) for value in argv))
             completed = subprocess.run(
-                argv, cwd=cwd, env=env, capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW, timeout=30, check=False,
+                argv,
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=30,
+                check=False,
             )
             return CommandResult(
-                completed.returncode, completed.stdout, completed.stderr,
+                completed.returncode,
+                completed.stdout,
+                completed.stderr,
             )
 
     desktop = tmp_path / "Desktop with spaces"
@@ -1012,7 +1027,9 @@ def test_cuda_upgrade_blocks_and_preserves_modified_owned_legacy_profile(tmp_pat
     with pytest.raises(PreparationError, match="changed and was preserved"):
         engine.prepare(
             _plan(
-                target, _release(), track=ComputeTrack.CUDA13,
+                target,
+                _release(),
+                track=ComputeTrack.CUDA13,
                 shortcut_directory=desktop,
             )
         )
@@ -1033,7 +1050,9 @@ def test_cuda_legacy_shortcut_migration_rolls_back_all_scopes_on_failed_commit(
     engine = _engine(tmp_path, _FakeRunner())
     prepared = engine.prepare(
         _plan(
-            target, _release(), track=ComputeTrack.CUDA13,
+            target,
+            _release(),
+            track=ComputeTrack.CUDA13,
             shortcut_scope=ShortcutScope.BOTH,
         )
     )
@@ -1064,7 +1083,9 @@ def test_other_track_owned_single_launcher_is_never_retargeted(tmp_path):
     with pytest.raises(PreparationError, match="another VIPP installation"):
         engine.prepare(
             _plan(
-                cuda_target, _release(), track=ComputeTrack.CUDA13,
+                cuda_target,
+                _release(),
+                track=ComputeTrack.CUDA13,
                 shortcut_directory=desktop,
             )
         )
@@ -1959,7 +1980,8 @@ def test_atomic_journal_replace_retries_transient_windows_scanner_lock(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
 def test_ownership_publication_retries_windows_lock_and_keeps_previous_bytes(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     target = tmp_path / "managed"
     old = _record(target)
@@ -1990,7 +2012,10 @@ def test_ownership_publication_retries_windows_lock_and_keeps_previous_bytes(
 @pytest.mark.parametrize("winerror", [5, 32, 33])
 @pytest.mark.parametrize("updating", [False, True])
 def test_shortcut_publication_retries_brief_windows_lock(
-    tmp_path, monkeypatch, winerror, updating,
+    tmp_path,
+    monkeypatch,
+    winerror,
+    updating,
 ):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
@@ -2030,7 +2055,9 @@ def test_shortcut_publication_retries_brief_windows_lock(
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
 @pytest.mark.parametrize("after_commit", [False, True])
 def test_shortcut_rollback_retries_brief_windows_lock(
-    tmp_path, monkeypatch, after_commit,
+    tmp_path,
+    monkeypatch,
+    after_commit,
 ):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
@@ -2086,7 +2113,9 @@ def test_shortcut_rollback_retries_brief_windows_lock(
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
 @pytest.mark.parametrize("error_number", [13, 22])
 def test_shortcut_permanent_lock_or_other_error_keeps_previous_install(
-    tmp_path, monkeypatch, error_number,
+    tmp_path,
+    monkeypatch,
+    error_number,
 ):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
@@ -2505,9 +2534,10 @@ def test_owned_setup_accepts_exact_or_absent_registration(
     assert result.succeeded and not result.registration_warning
     current = inspect_ownership(installed.target)
     assert current.record is not None and current.record.version == "0.13.0a8"
-    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()][
-        "VippManifestSha256"
-    ] == current.manifest_sha256
+    assert (
+        installed.registry.values[CPU_REGISTRY_KEY.casefold()]["VippManifestSha256"]
+        == current.manifest_sha256
+    )
 
 
 @pytest.mark.parametrize("change_at", ["after_review", "before_ownership_commit"])

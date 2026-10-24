@@ -1592,7 +1592,8 @@ class ManagedInstallerEngine:
                     _emit(
                         progress,
                         ProgressStage.INSTALLING,
-                        "Reusing verified installed dependencies (no downloads)…",
+                        "Copying verified dependency versions from your current "
+                        "installation…",
                         2,
                         6,
                     )
@@ -1643,7 +1644,11 @@ class ManagedInstallerEngine:
                 _emit(
                     progress,
                     ProgressStage.INSTALLING,
-                    "Installing VIPP and its required components…",
+                    (
+                        "Installing the bundled VIPP update…"
+                        if prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+                        else "Installing VIPP and the resolved required components…"
+                    ),
                     2,
                     6,
                 )

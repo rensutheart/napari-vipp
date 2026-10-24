@@ -304,6 +304,28 @@ class _Widget:
         self.configured.append(kwargs)
 
 
+class _StagePanel(_Widget):
+    def __init__(self, *, visible):
+        super().__init__()
+        self.visible = visible
+        self.packs = []
+        self.grid_calls = 0
+
+    def pack(self, **kwargs):
+        self.visible = True
+        self.packs.append(kwargs)
+
+    def pack_forget(self):
+        self.visible = False
+
+    def grid(self):
+        self.visible = True
+        self.grid_calls += 1
+
+    def grid_remove(self):
+        self.visible = False
+
+
 class _Canvas:
     def __init__(self, bounds=(0, 0, 640, 1200), *, height=600):
         self.bounds = bounds
@@ -377,6 +399,25 @@ def _window(state):
     return window
 
 
+def _staged_window():
+    """Pure renderer fixture: no Tk, worker, filesystem or install actions."""
+
+    window = object.__new__(InstallerWindow)
+    window._controller = _Controller()
+    window._installation_started = False
+    window._review_controls_visible = True
+    window._method_panel = _StagePanel(visible=True)
+    window._advanced_review = _StagePanel(visible=True)
+    window._selected_method_label = _StagePanel(visible=False)
+    window._selected_method = _Value()
+    window._review_stage_label = _Widget()
+    window._install_stage_label = _Widget()
+    window._content_canvas = _Canvas()
+    window._progress = object()
+    window.root = SimpleNamespace(after_idle=lambda callback: callback())
+    return window
+
+
 def test_gui_module_imports_without_loading_tkinter():
     code = (
         "import sys; import napari_vipp.installer.gui; "
@@ -442,6 +483,134 @@ def test_method_choice_invalidates_then_rechecks_without_applying():
     assert calls == ["invalidate", "check"]
 
 
+def test_review_then_installing_hides_choices_without_changing_approval():
+    window = _staged_window()
+    ready = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.INCREMENTAL,
+    )
+
+    window._render_setup_stage(ready)
+
+    assert window._review_stage_label.configured[-1]["text"] == "1  Review (current)"
+    assert window._install_stage_label.configured[-1]["text"] == "2  Installing"
+    assert window._method_panel.visible
+    assert window._advanced_review.visible
+    assert not window._selected_method_label.visible
+    assert window._controller.calls == []
+
+    working = replace(ready, screen=InstallerScreen.WORKING, progress_stage="preparing")
+    window._render_setup_stage(working)
+
+    assert not window._method_panel.visible
+    assert not window._advanced_review.visible
+    assert window._selected_method_label.visible
+    assert window._selected_method.get() == "Selected method: Incremental update"
+    assert window._review_stage_label.configured[-1]["text"] == "1  Review (complete)"
+    assert (
+        window._install_stage_label.configured[-1]["text"] == "2  Installing (current)"
+    )
+    assert window._selected_method_label.packs == [
+        {"fill": "x", "pady": (0, 12), "before": window._progress}
+    ]
+    assert window._content_canvas.moves == [0.0]
+    assert window._controller.calls == []
+
+    # Milestones must not repeatedly repack controls or reset reading position.
+    window._render_setup_stage(replace(working, progress_stage="installing"))
+    assert len(window._selected_method_label.packs) == 1
+    assert window._content_canvas.moves == [0.0]
+    assert window._controller.calls == []
+
+
+@pytest.mark.parametrize(
+    "screen,suffix",
+    [
+        (InstallerScreen.SUCCESS, "complete"),
+        (InstallerScreen.FAILED, "stopped"),
+        (InstallerScreen.CANCELLED, "stopped"),
+    ],
+)
+def test_terminal_install_results_keep_stage_and_diagnostics_not_review_clutter(
+    screen, suffix
+):
+    window = _staged_window()
+    # The UI queue may coalesce a short WORKING state directly into its result.
+    state = replace(
+        _state(screen, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.FRESH,
+    )
+
+    window._render_setup_stage(state)
+
+    assert window._install_stage_label.configured[-1]["text"] == (
+        f"2  Installing ({suffix})"
+    )
+    assert not window._method_panel.visible
+    assert not window._advanced_review.visible
+    assert window._selected_method_label.visible
+    assert window._selected_method.get() == "Selected method: Fresh installation"
+    assert window._controller.calls == []
+
+    # Retry is still a read-only controller check; the next checking render
+    # restores review controls before a separate, explicit install approval.
+    window._render_setup_stage(_state(InstallerScreen.CHECKING))
+    assert window._method_panel.visible
+    assert window._advanced_review.visible
+    assert not window._selected_method_label.visible
+    assert window._method_panel.packs[-1]["before"] is window._progress
+    assert window._controller.calls == []
+
+
+def test_registration_only_work_and_cancelled_checks_do_not_claim_installing():
+    window = _staged_window()
+    registration = replace(
+        _state(InstallerScreen.WORKING, kind=TargetKind.BLOCKED),
+        progress_stage="repairing_registration",
+    )
+
+    window._render_setup_stage(registration)
+
+    assert not window._installation_started
+    assert not window._selected_method_label.visible
+    assert not window._method_panel.visible
+    assert window._review_stage_label.configured[-1]["text"] == "1  Review (current)"
+    assert window._install_stage_label.configured[-1]["text"] == "2  Installing"
+
+    window._render_setup_stage(_state(InstallerScreen.CHECKING))
+    window._render_setup_stage(_state(InstallerScreen.CANCELLING))
+    window._render_setup_stage(_state(InstallerScreen.CANCELLED))
+    assert not window._installation_started
+    assert not window._selected_method_label.visible
+    assert window._controller.calls == []
+
+
+@pytest.mark.parametrize("screen", [InstallerScreen.CURRENT, InstallerScreen.BLOCKED])
+def test_preapproval_current_and_blocked_states_keep_method_choices(screen):
+    window = _staged_window()
+
+    window._render_setup_stage(_state(screen))
+
+    assert window._method_panel.visible
+    assert window._advanced_review.visible
+    assert not window._selected_method_label.visible
+    assert window._controller.calls == []
+
+
+def test_method_help_explains_compatible_versions_and_verified_cache():
+    assert (
+        "keeps compatible installed dependency versions"
+        in gui_module._UPDATE_METHOD_HELP
+    )
+    assert (
+        "requires different versions, it uses Fresh" in gui_module._UPDATE_METHOD_HELP
+    )
+    assert "reuses verified cached downloads" in gui_module._UPDATE_METHOD_HELP
+    assert "downloads missing packages" in gui_module._UPDATE_METHOD_HELP
+    assert "newest" not in gui_module._UPDATE_METHOD_HELP
+    assert gui_module._PHASE_LABELS["installing"] == "Installing required components"
+
+
 def test_update_method_control_is_built_outside_collapsed_advanced_panel(monkeypatch):
     tk = pytest.importorskip("tkinter")
     try:
@@ -477,6 +646,9 @@ def test_update_method_control_is_built_outside_collapsed_advanced_panel(monkeyp
         (InstallerScreen.READY, "readonly"),
         (InstallerScreen.WORKING, "disabled"),
         (InstallerScreen.CANCELLING, "disabled"),
+        (InstallerScreen.SUCCESS, "disabled"),
+        (InstallerScreen.FAILED, "disabled"),
+        (InstallerScreen.CANCELLED, "disabled"),
     ],
 )
 def test_update_method_is_available_before_resolution_but_immutable_during_apply(
@@ -820,7 +992,8 @@ def test_size_review_separates_approximate_estimates_from_enforced_minimums():
     rendered = _size_review_text(state)
 
     assert "Approximate sizes (estimates, not enforced limits)" in rendered
-    assert "Download: 1.5 GiB" in rendered
+    assert "Download (typical Fresh, before cache reuse" in rendered
+    assert "not a measured Incremental transfer): 1.5 GiB" in rendered
     assert "Installed: 5 GiB" in rendered
     assert "Peak temporary working space: 7 GiB" in rendered
     assert "Required minimum free space (enforced): 15 GiB" in rendered
@@ -958,6 +1131,26 @@ def test_advanced_details_keeps_live_setup_log_location_visible(tmp_path):
     assert f"Setup log: {log_path}" in details
     assert "Current activity: Downloading VIPP components…" in details
     assert "Elapsed in this phase: 1m 15s" in details
+
+
+def test_installing_keeps_log_and_diagnostics_but_not_review_size_estimates(tmp_path):
+    window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection()
+    window._status_history = ["Installing required components"]
+    state = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        size_estimate=InstallSizeEstimate(1024**3, 2 * 1024**3, 3 * 1024**3),
+        log_path=tmp_path / "setup.jsonl",
+        technical_details="Retained exact diagnostic evidence",
+    )
+
+    assert "Approximate sizes" in window._rendered_details(state)
+    installing = window._rendered_details(
+        replace(state, screen=InstallerScreen.WORKING)
+    )
+    assert "Approximate sizes" not in installing
+    assert f"Setup log: {state.log_path}" in installing
+    assert "Retained exact diagnostic evidence" in installing
 
 
 def test_open_setup_log_uses_exact_live_log_path(tmp_path, monkeypatch):

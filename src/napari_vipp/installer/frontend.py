@@ -539,14 +539,15 @@ class InstallerController:
                 TargetKind.REPAIR: "Repairing",
             }[prepared.kind]
             working_message = (
-                "Staging a new VIPP copy using verified installed dependencies. "
+                "Staging a new VIPP copy with current compatible dependency versions. "
                 "This still needs temporary disk space; the previous installation "
                 "stays available until checks pass."
                 if prepared.selected_strategy is UpdateStrategy.INCREMENTAL
-                else "The GPU components are a large download and can take several "
-                "minutes. The moving bar means setup is still working."
+                else "Required GPU components can be large downloads. Verified cached "
+                "packages are reused where available; setup can take several minutes."
                 if prepared.track is ComputeTrack.CUDA13
-                else "You can keep using this computer while setup finishes."
+                else "Preparing a separate environment. Verified cached packages are "
+                "reused; missing required packages are downloaded as needed."
             )
             self._publish(
                 InstallerViewState(

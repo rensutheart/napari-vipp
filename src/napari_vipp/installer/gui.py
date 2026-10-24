@@ -46,6 +46,26 @@ _STRATEGY_LABELS = {
     "Fresh installation": UpdateStrategy.FRESH,
 }
 _LABEL_FOR_STRATEGY = {value: key for key, value in _STRATEGY_LABELS.items()}
+_SELECTED_METHOD_NAMES = {
+    UpdateStrategy.AUTO: "Automatic",
+    UpdateStrategy.INCREMENTAL: "Incremental update",
+    UpdateStrategy.FRESH: "Fresh installation",
+}
+_UPDATE_METHOD_HELP = (
+    "Automatic keeps compatible installed dependency versions. If this "
+    "VIPP update requires different versions, it uses Fresh. Fresh "
+    "resolves required versions, reuses verified cached downloads and "
+    "downloads missing packages. Both methods stage a separate copy "
+    "and need temporary disk space."
+)
+_REVIEW_SCREENS = frozenset(
+    {
+        InstallerScreen.CHECKING,
+        InstallerScreen.READY,
+        InstallerScreen.CURRENT,
+        InstallerScreen.BLOCKED,
+    }
+)
 VIPP_TAGLINE = "Visual image processing made approachable"
 DEVELOPMENT_BUILD_LABEL = "DEVELOPMENT BUILD — local testing only"
 _HEADER_MIN_WIDTH = 520
@@ -84,7 +104,7 @@ _PHASE_LABELS = {
     "preparing": "Preparing files",
     "repairing_registration": "Repairing the Windows uninstall entry",
     "creating_environment": "Creating the private environment",
-    "installing": "Downloading and installing dependencies",
+    "installing": "Installing required components",
     "verifying": "Validating the installation",
     "creating_shortcuts": "Creating shortcuts",
     "committing": "Finalizing the installation",
@@ -163,7 +183,8 @@ def _size_review_text(state: InstallerViewState) -> str:
         return ""
     lines = [
         "Approximate sizes (estimates, not enforced limits):",
-        f"Download: {_format_size(estimate.download_bytes)}",
+        "Download (typical Fresh, before cache reuse; not a measured "
+        f"Incremental transfer): {_format_size(estimate.download_bytes)}",
         f"Installed: {_format_size(estimate.installed_bytes)}",
         f"Peak temporary working space: {_format_size(estimate.peak_temporary_bytes)}",
     ]
@@ -358,6 +379,7 @@ class InstallerWindow:
 
         self._headline = tk.StringVar()
         self._message = tk.StringVar()
+        self._selected_method = tk.StringVar()
         self._status = tk.StringVar()
         self._activity = tk.StringVar(
             value=_activity_text(
@@ -389,6 +411,8 @@ class InstallerWindow:
         self._last_activity_at = self._stage_started_at
         self._last_elapsed_second = -1
         self._details_text = ""
+        self._installation_started = False
+        self._review_controls_visible = True
         self._development_build = _is_development_build()
 
         self._configure_root()
@@ -440,6 +464,19 @@ class InstallerWindow:
             padding=(22, 10),
         )
         style.configure("VIPP.TCheckbutton", background="#f4f7fb")
+        style.configure(
+            "VIPP.Stage.TLabel",
+            font=("Segoe UI", 10),
+            foreground="#526576",
+            padding=(10, 6),
+        )
+        style.configure(
+            "VIPP.Stage.Active.TLabel",
+            font=("Segoe UI Semibold", 10),
+            foreground="#102a43",
+            background="#e8f1f7",
+            padding=(10, 6),
+        )
 
         self._header = tk.Frame(self.root, background="#08151F")
         self._header.pack(fill="x")
@@ -516,6 +553,27 @@ class InstallerWindow:
                 padx=10,
                 pady=7,
             ).pack(fill="x", pady=(0, 14))
+        steps = ttk.Frame(outer)
+        steps.pack(fill="x", pady=(0, 16))
+        steps.columnconfigure(0, weight=1)
+        steps.columnconfigure(2, weight=1)
+        self._review_stage_label = ttk.Label(
+            steps,
+            text="1  Review (current)",
+            style="VIPP.Stage.Active.TLabel",
+            anchor="center",
+            wraplength=260,
+        )
+        self._review_stage_label.grid(row=0, column=0, sticky="ew")
+        ttk.Label(steps, text="→", anchor="center").grid(row=0, column=1, padx=8)
+        self._install_stage_label = ttk.Label(
+            steps,
+            text="2  Installing",
+            style="VIPP.Stage.TLabel",
+            anchor="center",
+            wraplength=260,
+        )
+        self._install_stage_label.grid(row=0, column=2, sticky="ew")
         self._headline_label = ttk.Label(
             outer,
             textvariable=self._headline,
@@ -532,7 +590,7 @@ class InstallerWindow:
         )
         self._message_label.pack(anchor="w", fill="x", pady=(10, 16))
 
-        method_panel = ttk.Frame(outer)
+        self._method_panel = method_panel = ttk.Frame(outer)
         method_panel.pack(fill="x", pady=(0, 16))
         ttk.Label(
             method_panel,
@@ -552,15 +610,19 @@ class InstallerWindow:
         )
         self._strategy_help_label = ttk.Label(
             method_panel,
-            text=(
-                "Automatic reuses verified installed dependencies when compatible. "
-                "Both methods stage a separate copy before switching versions and "
-                "need temporary disk space. Fresh installation rebuilds all packages."
-            ),
+            text=_UPDATE_METHOD_HELP,
             wraplength=650,
             justify="left",
         )
         self._strategy_help_label.pack(anchor="w", fill="x")
+
+        self._selected_method_label = ttk.Label(
+            outer,
+            textvariable=self._selected_method,
+            font=("Segoe UI Semibold", 10),
+            wraplength=650,
+            justify="left",
+        )
 
         self._progress = ttk.Progressbar(outer, mode="indeterminate", maximum=100)
         self._progress.pack(fill="x", pady=(0, 9))
@@ -785,13 +847,16 @@ class InstallerWindow:
 
     def _build_advanced(self, parent) -> None:
         ttk = self._ttk
-        ttk.Label(parent, text="Computer use", font=("Segoe UI Semibold", 9)).grid(
+        self._advanced_review = review = ttk.Frame(parent)
+        review.grid(row=0, column=0, columnspan=2, sticky="ew")
+        review.columnconfigure(0, weight=1)
+        ttk.Label(review, text="Computer use", font=("Segoe UI Semibold", 9)).grid(
             row=0,
             column=0,
             sticky="w",
         )
         self._track_control = ttk.Combobox(
-            parent,
+            review,
             textvariable=self._track,
             values=tuple(_TRACK_LABELS),
             state="readonly",
@@ -810,12 +875,12 @@ class InstallerWindow:
         )
 
         ttk.Label(
-            parent,
+            review,
             text="Managed location",
             font=("Segoe UI Semibold", 9),
         ).grid(row=2, column=0, columnspan=2, sticky="w")
         self._install_root_control = ttk.Label(
-            parent,
+            review,
             text=(
                 "Fixed to VIPP's per-account Windows Local App Data folder for "
                 "one-click setup."
@@ -831,7 +896,7 @@ class InstallerWindow:
         )
 
         self._desktop_shortcut_control = ttk.Checkbutton(
-            parent,
+            review,
             text="Create a desktop shortcut",
             variable=self._desktop_shortcut,
             command=self._mark_settings_dirty,
@@ -844,7 +909,7 @@ class InstallerWindow:
         )
 
         self._check_settings = ttk.Button(
-            parent,
+            review,
             text="Check these settings",
             command=self._check_settings_requested,
         )
@@ -853,7 +918,7 @@ class InstallerWindow:
             parent,
             text="Third-party notices",
             command=self._open_third_party_notices,
-        ).grid(row=5, column=1, sticky="e", pady=(8, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
         self._open_log = ttk.Button(
             parent,
@@ -861,17 +926,17 @@ class InstallerWindow:
             command=self._open_setup_log,
             state="disabled",
         )
-        self._open_log.grid(row=6, column=1, sticky="e", pady=(8, 0))
+        self._open_log.grid(row=1, column=1, sticky="e", pady=(8, 0))
 
         ttk.Separator(parent).grid(
-            row=7,
+            row=2,
             column=0,
             columnspan=2,
             sticky="ew",
             pady=(12, 8),
         )
         details_panel = ttk.Frame(parent)
-        details_panel.grid(row=8, column=0, columnspan=2, sticky="nsew")
+        details_panel.grid(row=3, column=0, columnspan=2, sticky="nsew")
         details_panel.columnconfigure(0, weight=1)
         details_panel.rowconfigure(0, weight=1)
         self._details = self._tk.Text(
@@ -896,7 +961,7 @@ class InstallerWindow:
         self._details.configure(state="disabled")
         self._replace_details(self._rendered_details(self._controller.state))
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(8, weight=1)
+        parent.rowconfigure(3, weight=1)
 
     def _poll_states(self) -> None:
         latest = None
@@ -942,6 +1007,7 @@ class InstallerWindow:
         self._set_enabled(self._secondary, state.secondary_enabled)
         self._set_enabled(self._cancel, state.cancel_enabled)
         self._set_settings_enabled(state)
+        self._render_setup_stage(state)
         self._set_enabled(
             self._open_log,
             state.log_path is not None and state.log_path.is_file(),
@@ -979,6 +1045,72 @@ class InstallerWindow:
             }
         ):
             self.root.after_idle(self._primary.focus_set)
+
+    def _render_setup_stage(self, state: InstallerViewState) -> None:
+        """Show review choices only before approval, never as frozen clutter."""
+
+        previous_started = self._installation_started
+        if state.screen in _REVIEW_SCREENS:
+            self._installation_started = False
+        elif (
+            state.screen is InstallerScreen.WORKING
+            and state.progress_stage != "repairing_registration"
+        ) or state.screen is InstallerScreen.SUCCESS:
+            self._installation_started = True
+        elif state.screen in {
+            InstallerScreen.CANCELLING,
+            InstallerScreen.CANCELLED,
+            InstallerScreen.FAILED,
+        } and state.target_kind in {
+            TargetKind.NEW,
+            TargetKind.UPDATE,
+            TargetKind.REPAIR,
+        }:
+            self._installation_started = True
+
+        installing = self._installation_started
+        if installing:
+            suffix = (
+                "complete"
+                if state.screen is InstallerScreen.SUCCESS
+                else "stopped"
+                if state.screen in {InstallerScreen.CANCELLED, InstallerScreen.FAILED}
+                else "current"
+            )
+            self._review_stage_label.configure(
+                text="1  Review (complete)", style="VIPP.Stage.TLabel"
+            )
+            self._install_stage_label.configure(
+                text=f"2  Installing ({suffix})", style="VIPP.Stage.Active.TLabel"
+            )
+            self._selected_method.set(
+                "Selected method: " + _SELECTED_METHOD_NAMES[state.selected_strategy]
+            )
+        else:
+            self._review_stage_label.configure(
+                text="1  Review (current)", style="VIPP.Stage.Active.TLabel"
+            )
+            self._install_stage_label.configure(
+                text="2  Installing", style="VIPP.Stage.TLabel"
+            )
+
+        show_review = state.screen in _REVIEW_SCREENS
+        if show_review != self._review_controls_visible:
+            self._review_controls_visible = show_review
+            if show_review:
+                self._method_panel.pack(fill="x", pady=(0, 16), before=self._progress)
+                self._advanced_review.grid()
+            else:
+                self._method_panel.pack_forget()
+                self._advanced_review.grid_remove()
+        if installing != previous_started:
+            if installing:
+                self._selected_method_label.pack(
+                    fill="x", pady=(0, 12), before=self._progress
+                )
+            else:
+                self._selected_method_label.pack_forget()
+            self.root.after_idle(lambda: self._content_canvas.yview_moveto(0.0))
 
     def _rendered_details(self, state: InstallerViewState) -> str:
         progress = (
@@ -1026,7 +1158,7 @@ class InstallerWindow:
             facts.append(f"Computer use: {label}")
         if state.target_kind is not None:
             facts.append(f"Setup state: {state.target_kind.value}")
-        size_text = _size_review_text(state)
+        size_text = _size_review_text(state) if state.screen in _REVIEW_SCREENS else ""
         if size_text:
             facts.extend(("", size_text))
         facts.append(
@@ -1175,6 +1307,14 @@ class InstallerWindow:
             self._strategy_help_label.configure(wraplength=wrap)
         if hasattr(self, "_console_hint"):
             self._console_hint.configure(wraplength=wrap)
+        if hasattr(self, "_selected_method_label"):
+            self._selected_method_label.configure(wraplength=wrap)
+        for label in (
+            getattr(self, "_review_stage_label", None),
+            getattr(self, "_install_stage_label", None),
+        ):
+            if label is not None:
+                label.configure(wraplength=max(120, (wrap - 32) // 2))
         self._refresh_scroll_region()
 
     def _toggle_advanced_from_key(self) -> None:
@@ -1395,10 +1535,7 @@ class InstallerWindow:
     def _set_settings_enabled(self, state: InstallerViewState) -> None:
         """Keep install settings immutable while files may be changing."""
 
-        mutable = state.screen not in {
-            InstallerScreen.WORKING,
-            InstallerScreen.CANCELLING,
-        }
+        mutable = state.screen in _REVIEW_SCREENS
         self._track_control.configure(state="readonly" if mutable else "disabled")
         self._strategy_control.configure(state="readonly" if mutable else "disabled")
         self._set_enabled(self._desktop_shortcut_control, mutable)
