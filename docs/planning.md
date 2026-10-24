@@ -19,6 +19,8 @@ with incremental/fresh choice, lightweight initial checks and verified reusable
 downloads (issue 85). Qualify both paths in disposable roots before building a
 local development installer. No release/publication is authorized by this work;
 preserve unfinished AI work and all existing installations during testing.
+Include an explicit, backed-up Windows registration repair review for verified
+same-installation stale entries; do not silently bypass update ownership checks.
 
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished

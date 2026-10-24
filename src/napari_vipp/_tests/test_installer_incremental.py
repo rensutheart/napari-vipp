@@ -5,6 +5,7 @@ import csv
 import hashlib
 import importlib
 import json
+import stat
 import sys
 import threading
 import types
@@ -480,6 +481,185 @@ def test_generated_bytecode_is_not_copied(source):
             target / "Lib" / "site-packages" / "dependency-1.2.dist-info" / "RECORD"
         )
     )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "../../share/man/man1/ttx.1",
+        "../../share/jupyter/kernels/python3/kernel.json",
+        "../../include/dependency/header.h",
+    ],
+)
+def test_owned_per_environment_data_files_are_verified_and_copied(source, relative):
+    record, release, python, site = source
+    _distribution(site, "dependency", "1.2", files={relative: b"portable owned data\n"})
+    plan = assess_incremental(record, release, python)
+    assert plan.eligible, plan.reason
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    target_file = target / "Lib" / "site-packages" / relative
+    source_file = site / relative
+    assert (
+        target_file.read_bytes() == source_file.read_bytes() == b"portable owned data\n"
+    )
+    assert target_file.stat().st_ino != source_file.stat().st_ino
+    rows = _record_rows(target / "Lib/site-packages/dependency-1.2.dist-info/RECORD")
+    assert [row for row in rows if row[0] == relative] == [
+        [
+            relative,
+            _digest(b"portable owned data\n"),
+            str(len(b"portable owned data\n")),
+        ]
+    ]
+
+
+def test_legacy_owned_python_script_relocates_only_exact_shebang(source):
+    record, release, python, site = source
+    prefix = str(record.environment_root / "Scripts/python.exe").encode()
+    body = b"\r\nimport sys\r\nprint(sys.prefix)\r\n"
+    content = b"#!" + prefix + b"\r\n" + body
+    _distribution(site, "dependency", "1.2", files={"../../Scripts/jp.py": content})
+    cache = record.environment_root / "Scripts/__pycache__/jp.cpython-312.pyc"
+    cache.parent.mkdir()
+    cache.write_bytes(b"generated")
+    with (site / "dependency-1.2.dist-info/RECORD").open("a") as stream:
+        stream.write("../../Scripts/__pycache__/jp.cpython-312.pyc,,\n")
+    plan = assess_incremental(record, release, python)
+    assert plan.eligible, plan.reason
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    relocated = (target / "Scripts/jp.py").read_bytes()
+    assert (
+        relocated
+        == b"#!" + str(target / "Scripts/python.exe").encode() + b"\r\n" + body
+    )
+    assert (record.environment_root / "Scripts/jp.py").read_bytes() == content
+    assert not (target / "Scripts/__pycache__").exists()
+    rows = _record_rows(target / "Lib/site-packages/dependency-1.2.dist-info/RECORD")
+    assert [row for row in rows if row[0] == "../../Scripts/jp.py"] == [
+        ["../../Scripts/jp.py", _digest(relocated), str(len(relocated))]
+    ]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "../../share/../Scripts/evil.py",
+        "../../include/../../escape.py",
+        "../../../share/asset",
+        "../../Scripts/nested/evil.py",
+        "../../Scripts/__pycache__/../../evil.pyc",
+        "../../Share/case-alias",
+    ],
+)
+def test_environment_data_layout_rejects_escapes_before_bytecode_skip(source, relative):
+    record, release, python, site = source
+    with (site / "dependency-1.2.dist-info/RECORD").open("a") as stream:
+        stream.write(relative + "," + _digest(b"x") + ",1\n")
+    assert not assess_incremental(record, release, python).eligible
+
+
+def test_environment_data_is_hash_verified_and_old_bytes_are_preserved(source):
+    record, release, python, site = source
+    relative = "../../share/man/man1/ttx.1"
+    _distribution(site, "dependency", "1.2", files={relative: b"owned"})
+    plan = assess_incremental(record, release, python)
+    damaged = site / relative
+    damaged.write_bytes(b"bad!!")
+    with pytest.raises(IncrementalReuseError, match="damaged"):
+        copy_reused_packages(plan, _candidate(record))
+    assert damaged.read_bytes() == b"bad!!"
+
+
+def test_shared_environment_asset_case_aliases_are_not_adopted(source):
+    record, release, python, site = source
+    dependency = _distribution(
+        site, "dependency", "1.2", files={"../../share/ASSET": b"same"}
+    )
+    extra = _distribution(
+        site, "extra-dependency", "2.0", files={"../../share/asset": b"same"}
+    )
+    app = next(value for value in record.packages if value.name == "napari-vipp")
+    record = replace(record, packages=(app, dependency, extra))
+    write_ownership_record(record.managed_root, record)
+    release = _wheel(
+        release.wheel_path, requirements=("dependency", "extra-dependency")
+    )
+    plan = assess_incremental(record, release, python)
+    assert not plan.eligible and "overlapping" in plan.reason
+
+
+def test_environment_asset_reparse_parent_is_refused_before_copy(source, monkeypatch):
+    record, release, python, site = source
+    _distribution(site, "dependency", "1.2", files={"../../share/asset": b"owned"})
+    plan = assess_incremental(record, release, python)
+    share = record.environment_root / "share"
+    original = Path.lstat
+
+    def redirected(path, *args, **kwargs):
+        if path == share:
+            return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", redirected)
+    target = _candidate(record)
+    with pytest.raises(IncrementalReuseError, match="redirected"):
+        copy_reused_packages(plan, target)
+    assert not (target / "share").exists()
+
+
+@pytest.mark.parametrize("relative", ["../../share/config.json", "../../Scripts/jp.py"])
+def test_unknown_old_absolute_prefix_content_is_refused_not_rewritten(source, relative):
+    record, release, python, site = source
+    content = b"do not rewrite arbitrary body: " + str(record.environment_root).encode()
+    _distribution(site, "dependency", "1.2", files={relative: content})
+    plan = assess_incremental(record, release, python)
+    assert plan.eligible, plan.reason
+    with pytest.raises(IncrementalReuseError, match="old absolute environment"):
+        copy_reused_packages(plan, _candidate(record))
+    assert (site / relative).read_bytes() == content
+
+
+def test_python_script_companion_is_preserved_but_registered_exe_is_regenerated(source):
+    record, release, python, site = source
+    content = b"# legacy helper, no shebang\nprint('not executed')\n"
+    _distribution(
+        site,
+        "dependency",
+        "1.2",
+        entries="[console_scripts]\nhelper = dependency:main\n",
+        files={
+            "dependency/__init__.py": b"def main(): pass\n",
+            "../../Scripts/helper.py": content,
+            "../../Scripts/helper.exe": b"old-prefix launcher",
+        },
+    )
+    plan = assess_incremental(record, release, python)
+    assert plan.eligible, plan.reason
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    assert (target / "Scripts/helper.py").read_bytes() == content
+    assert not (target / "Scripts/helper.exe").exists()
+    assert (
+        json.loads(script_generation_argv(plan, target)[-1])["packages"][0]["entries"][
+            0
+        ]["name"]
+        == "helper"
+    )
+
+
+def test_new_vipp_wheel_data_directory_cannot_alias_reused_prefix_assets(source):
+    record, release, python, site = source
+    _distribution(site, "dependency", "1.2", files={"../../share/asset": b"owned"})
+    with zipfile.ZipFile(release.wheel_path, "a") as archive:
+        archive.writestr("napari_vipp-1.0a2.data/data/share/asset", "new collision")
+    release = replace(
+        release,
+        wheel_sha256=hashlib.sha256(release.wheel_path.read_bytes()).hexdigest(),
+    )
+    plan = assess_incremental(record, release, python)
+    assert not plan.eligible and "data-directory layout" in plan.reason
 
 
 @pytest.mark.parametrize(

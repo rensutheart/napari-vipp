@@ -12,6 +12,7 @@ import os
 import queue
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import webbrowser
@@ -80,6 +81,7 @@ _PHASE_LABELS = {
     "decision": "Preparing the review",
     "ready": "Ready for approval",
     "preparing": "Preparing files",
+    "repairing_registration": "Repairing the Windows uninstall entry",
     "creating_environment": "Creating the private environment",
     "installing": "Downloading and installing dependencies",
     "verifying": "Validating the installation",
@@ -1190,6 +1192,40 @@ class InstallerWindow:
                 self._open_installed_apps()
             elif state.blocked_action is BlockedAction.RUN_OWNED_UNINSTALLER:
                 self._controller.open_owned_uninstaller()
+            elif state.blocked_action is BlockedAction.REPAIR_REGISTRATION:
+                review = state.registration_repair
+                raw_preview = (
+                    (
+                        review.preview
+                        + f"\n\nBackup before changes: {review.backup_path}\n\n"
+                        "Only this Windows entry will change. No packages, workflows "
+                        "or shortcuts will be installed, updated or removed. Setup "
+                        "will check again afterward; updating still needs approval.\n\n"
+                        "Repair this entry now?"
+                    )
+                    if review is not None
+                    else ""
+                )
+                displayed_preview = "\n".join(
+                    textwrap.fill(
+                        line,
+                        width=90,
+                        break_long_words=True,
+                        break_on_hyphens=False,
+                        replace_whitespace=False,
+                    )
+                    for line in raw_preview.splitlines()
+                )
+                if review is not None and self._messagebox.askyesno(
+                    "Repair VIPP's Windows uninstall entry?",
+                    displayed_preview,
+                    parent=self.root,
+                    default="no",
+                    icon="warning",
+                ):
+                    self._controller.repair_registration(
+                        confirmed=True, fingerprint=review.fingerprint
+                    )
             elif state.blocked_action is BlockedAction.USE_DEFAULT_LOCATION:
                 self._use_default_location()
             elif state.blocked_action is BlockedAction.USE_CPU:
@@ -1404,6 +1440,17 @@ class InstallerWindow:
 
     def _close_requested(self) -> None:
         if self._controller.busy:
+            if (
+                self._state is not None
+                and self._state.progress_stage == "repairing_registration"
+            ):
+                self._messagebox.showinfo(
+                    "Finishing Windows entry repair",
+                    "Wait for the entry backup and repair checks to finish. "
+                    "No package installation is running.",
+                    parent=self.root,
+                )
+                return
             should_cancel = self._messagebox.askyesno(
                 "Cancel VIPP setup?",
                 (

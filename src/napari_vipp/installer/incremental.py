@@ -272,13 +272,28 @@ def _record_files(
             "Duplicate/noncanonical RECORD path.",
         )
         seen.add(name.casefold())
-        script = name.startswith("../../Scripts/") and len(path.parts) == 4
+        external = (
+            len(path.parts) >= 4
+            and path.parts[:2] == ("..", "..")
+            and path.parts[2] in {"Scripts", "share", "include"}
+            and all(part not in {".", ".."} for part in path.parts[2:])
+        )
+        script = external and path.parts[2] == "Scripts"
+        if script:
+            _require(
+                len(path.parts) == 4
+                or (
+                    len(path.parts) == 5
+                    and path.parts[3] == "__pycache__"
+                    and path.suffix == ".pyc"
+                ),
+                "Installed Scripts data has an unsupported nested layout.",
+            )
         _require(
-            script or all(part not in {".", ".."} for part in path.parts),
+            external or all(part not in {".", ".."} for part in path.parts),
             "Installed RECORD escapes site-packages.",
         )
         if any(part == "__pycache__" for part in path.parts) or name.endswith(".pyc"):
-            _require(not script, "Unexpected compiled script entry.")
             continue
         if script:
             stem = path.name.casefold()
@@ -293,11 +308,18 @@ def _record_files(
                 if stem.endswith(suffix):
                     stem = stem[: -len(suffix)]
                     break
-            _require(
-                stem in script_names,
-                "A non-entry-point script requires a fresh installation.",
-            )
-            kind = "script"
+            if path.suffix in {".py", ".pyw"} and not path.name.endswith(
+                ("-script.py", "-script.pyw")
+            ):
+                kind = "raw-script"
+            else:
+                _require(
+                    stem in script_names,
+                    "A non-entry-point executable requires a fresh installation.",
+                )
+                kind = "script"
+        elif external:
+            kind = "prefix-copy"
         else:
             _require(
                 not path.parts[0].endswith((".dist-info", ".egg-info"))
@@ -306,6 +328,11 @@ def _record_files(
             )
             kind = "record" if name == dist_info + "/RECORD" else "copy"
         size = int(size_text) if size_text else None
+        if kind == "raw-script":
+            _require(
+                size is not None and 0 <= size <= _MAX_METADATA,
+                "An oversized Python script requires a fresh installation.",
+            )
         if kind == "record":
             _require(
                 not digest and size is None, "Invalid self-referential RECORD row."
@@ -382,6 +409,10 @@ def _wheel(
                 for name in names
             ),
             "Unsafe VIPP wheel member path.",
+        )
+        _require(
+            not any(PurePosixPath(name).parts[0].endswith(".data") for name in names),
+            "A new VIPP wheel data-directory layout requires fresh installation.",
         )
         found = [name for name in names if name.endswith(".dist-info/METADATA")]
         _require(len(found) == 1, "Ambiguous VIPP wheel metadata.")
@@ -745,16 +776,44 @@ def _candidate(plan: ReusePlan, candidate: Path) -> Path:
     return candidate
 
 
+def _installed_file(site: Path, item: ReuseFile) -> Path:
+    target = Path(os.path.abspath(site.joinpath(*PurePosixPath(item.path).parts)))
+    environment = site.parent.parent
+    _require(
+        target != environment and target.is_relative_to(environment),
+        "An installed file escapes its own environment.",
+    )
+    return target
+
+
 def _source_file(site: Path, item: ReuseFile) -> Path:
-    target = site.joinpath(*PurePosixPath(item.path).parts)
-    if item.kind == "script":
-        target = site.parent.parent / "Scripts" / PurePosixPath(item.path).name
+    target = _installed_file(site, item)
     _direct(target, file=True)
     return target
 
 
+def _prefix_patterns(environment: Path) -> tuple[bytes, ...]:
+    forms = {
+        str(environment),
+        environment.as_posix(),
+        str(environment).replace("\\", "\\\\"),
+    }
+    return tuple(
+        {
+            value.encode(encoding).lower()
+            for value in forms
+            for encoding in ("utf-8", "utf-16-le", "utf-16-be")
+        }
+    )
+
+
 def _verify_and_copy(
-    source: Path, item: ReuseFile, destination: Path | None, cancellation: object | None
+    source: Path,
+    item: ReuseFile,
+    destination: Path | None,
+    cancellation: object | None,
+    *,
+    forbidden_prefix: Path | None = None,
 ) -> int:
     _direct(source, file=True)
     before = source.lstat()
@@ -771,6 +830,11 @@ def _verify_and_copy(
     algorithm, _, expected = item.digest.partition("=")
     digest = hashlib.new(algorithm)
     total = 0
+    patterns = (
+        _prefix_patterns(forbidden_prefix) if forbidden_prefix is not None else ()
+    )
+    keep = max(map(len, patterns), default=1) - 1
+    tail = b""
     with source.open("rb") as stream:
         opened = os.fstat(stream.fileno())
         _require(
@@ -786,6 +850,12 @@ def _verify_and_copy(
                     total <= item.size,
                     f"An owned dependency file grew beyond its RECORD: {item.path}",
                 )
+                scanned = tail + block
+                _require(
+                    not any(value in scanned.lower() for value in patterns),
+                    "An owned data file embeds its old absolute environment.",
+                )
+                tail = scanned[-keep:] if keep else b""
                 digest.update(block)
                 if output is not None:
                     output.write(block)
@@ -805,6 +875,39 @@ def _verify_and_copy(
         f"An owned dependency file changed or is damaged: {item.path}",
     )
     return total
+
+
+def _copy_raw_script(
+    source, item, destination, old_environment, candidate, cancellation
+):
+    _verify_and_copy(source, item, None, cancellation)
+    data = _read(source)
+    algorithm, _, expected = item.digest.partition("=")
+    digest = base64.urlsafe_b64encode(hashlib.new(algorithm, data).digest())
+    _require(
+        digest.rstrip(b"=").decode() == expected and len(data) == item.size,
+        "An owned Python script changed during relocation.",
+    )
+    head, separator, body = data.partition(b"\n")
+    ending = b"\r" if head.endswith(b"\r") else b""
+    first = head.removesuffix(b"\r")
+    old_python = str(old_environment / "Scripts/python.exe").encode("utf-8")
+    new_python = str(candidate / "Scripts/python.exe").encode("utf-8")
+    if first == b"#!" + old_python:
+        data = b"#!" + new_python + ending + separator + body
+    elif first == b'#!"' + old_python + b'"':
+        data = b'#!"' + new_python + b'"' + ending + separator + body
+    _require(
+        not any(value in data.lower() for value in _prefix_patterns(old_environment)),
+        "A Python script embeds an unsupported old absolute environment.",
+    )
+    _checkpoint(cancellation)
+    with destination.open("xb") as stream:
+        stream.write(data)
+    value = (
+        base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+    )
+    return len(data), "sha256=" + value
 
 
 def copy_reused_packages(
@@ -835,7 +938,13 @@ def copy_reused_packages(
         item.size or 0
         for package in plan.packages
         for item in package.files
-        if item.kind == "copy"
+        if item.kind in {"copy", "prefix-copy", "raw-script"}
+    )
+    raw_count = sum(
+        item.kind == "raw-script" for package in plan.packages for item in package.files
+    )
+    declared_bytes += raw_count * max(
+        0, len(str(candidate).encode()) - len(str(plan.source_environment).encode())
     )
     _require(
         declared_bytes + _COPY_FREE_MARGIN <= shutil.disk_usage(candidate).free,
@@ -845,7 +954,7 @@ def copy_reused_packages(
         for item in package.files:
             _source_file(source_site, item)
             if item.kind != "script":
-                destination = target_site.joinpath(*PurePosixPath(item.path).parts)
+                destination = _installed_file(target_site, item)
                 _require(
                     not os.path.lexists(destination),
                     "Candidate contains conflicting dependency files.",
@@ -866,8 +975,8 @@ def copy_reused_packages(
                 continue
             source = _source_file(source_site, item)
             destination = None
-            if item.kind == "copy":
-                destination = target_site.joinpath(*PurePosixPath(item.path).parts)
+            if item.kind in {"copy", "prefix-copy", "raw-script"}:
+                destination = _installed_file(target_site, item)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _direct(destination.parent)
                 if destination.suffix == ".pth":
@@ -884,11 +993,29 @@ def copy_reused_packages(
                             and "\\" not in line,
                             "A dependency .pth escapes the candidate.",
                         )
-                copied_bytes += _verify_and_copy(
-                    source, item, destination, cancellation
-                )
+                if item.kind == "raw-script":
+                    size, digest = _copy_raw_script(
+                        source,
+                        item,
+                        destination,
+                        plan.source_environment,
+                        candidate,
+                        cancellation,
+                    )
+                else:
+                    size = _verify_and_copy(
+                        source,
+                        item,
+                        destination,
+                        cancellation,
+                        forbidden_prefix=plan.source_environment
+                        if item.kind == "prefix-copy"
+                        else None,
+                    )
+                    digest = item.digest
+                copied_bytes += size
                 copied_files += 1
-                rows.append((item.path, item.digest, str(item.size)))
+                rows.append((item.path, digest, str(size)))
             else:
                 _verify_and_copy(source, item, None, cancellation)
             completed += 1

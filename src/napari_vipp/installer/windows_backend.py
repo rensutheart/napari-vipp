@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from napari_vipp.installer.frontend import (
     PreparedInstall,
     ProgressUnit,
     ProgressUpdate,
+    RegistrationRepairReview,
     TargetKind,
     TrackChoice,
     default_install_size_estimate,
@@ -68,6 +70,31 @@ class _SetupCheckBlocked(RuntimeError):
     def __init__(self, root: Path, details: str):
         self.root = root
         super().__init__(details)
+
+
+class _RegistrationCheckBlocked(_SetupCheckBlocked):
+    """A new-plan registry conflict, distinct from unsafe transaction recovery."""
+
+
+def _registration_repair_review(repair: object) -> RegistrationRepairReview:
+    """Build exactly the same confirmed presentation during review and apply."""
+
+    changes = "\n".join(
+        f"{name}: {before!r} → {after!r}" for name, before, after in repair.changes
+    )
+    preview = (
+        f"{repair.summary}\n\n"
+        f"Installation: {repair.managed_root}\n"
+        f"Windows entry version: {repair.registered_version}\n"
+        f"Verified installed version: {repair.installed_version}\n\n"
+        f"Changes:\n{changes}"
+    )
+    return RegistrationRepairReview(
+        fingerprint=repair.fingerprint,
+        preview=preview,
+        backup_path=repair.backup_path,
+        payload=repair,
+    )
 
 
 _ERROR_FRIENDLY_TEXT = {
@@ -136,6 +163,7 @@ class WindowsInstallerBackend:
             discover_python_candidates
         ),
         registry_backend: object | None = None,
+        repair_backend: object | None = None,
         shortcut_scope: ShortcutScope | None = None,
         managed_build_sha256: str = "",
     ) -> None:
@@ -148,6 +176,7 @@ class WindowsInstallerBackend:
         self._environ = dict(os.environ if environ is None else environ)
         self._candidate_finder = candidate_finder
         self._registry_backend = registry_backend
+        self._repair_backend = repair_backend
         self._shortcut_scope = (
             ShortcutScope(shortcut_scope) if shortcut_scope is not None else None
         )
@@ -181,7 +210,7 @@ class WindowsInstallerBackend:
                 ownership.record if ownership.state is OwnershipState.VALID else None
             )
             release = self._release or bundled_release_spec()
-            return PreparedInstall(
+            blocked = PreparedInstall(
                 kind=TargetKind.BLOCKED,
                 target=exc.root,
                 release_version=release.version,
@@ -206,6 +235,9 @@ class WindowsInstallerBackend:
                 blocked_action=BlockedAction.OPEN_SETUP_HELP,
                 help_url=_SETUP_HELP_URL,
             )
+            if isinstance(exc, _RegistrationCheckBlocked):
+                return self._registration_repair_decision(blocked)
+            return blocked
 
     def _inspect(
         self,
@@ -328,8 +360,7 @@ class WindowsInstallerBackend:
             target = (
                 owned.record.managed_root
                 if owned is not None
-                else selection.install_root
-                or self._managed_install_root(track)
+                else selection.install_root or self._managed_install_root(track)
             )
             python_requirement = (
                 "64-bit Python 3.12"
@@ -441,7 +472,11 @@ class WindowsInstallerBackend:
                 repair=repair,
                 resolve=False,
             )
-        except (RecoveryError, RegistrationConflictError) as exc:
+        except RegistrationConflictError as exc:
+            raise _RegistrationCheckBlocked(
+                plan.discovery.filesystem.target, str(exc)
+            ) from exc
+        except RecoveryError as exc:
             raise _SetupCheckBlocked(
                 plan.discovery.filesystem.target, str(exc)
             ) from exc
@@ -478,6 +513,96 @@ class WindowsInstallerBackend:
             )
         )
         return prepared
+
+    def _registration_repair_decision(
+        self, blocked: PreparedInstall
+    ) -> PreparedInstall:
+        """Offer a registry-only action only after an independent safe review."""
+
+        if self._local_app_data is None:
+            return blocked
+        try:
+            from napari_vipp.installer.registration_repair import (
+                prepare_registration_repair,
+            )
+
+            repair = prepare_registration_repair(
+                blocked.target,
+                self._local_app_data,
+                backend=self._repair_backend,
+            )
+            if Path(repair.managed_root) != blocked.target or (
+                blocked.track is not None and repair.track is not blocked.track
+            ):
+                raise RuntimeError("The repair review belongs to another installation.")
+            review = _registration_repair_review(repair)
+        except Exception as exc:
+            return replace(
+                blocked,
+                technical_details=_join_details(
+                    blocked.technical_details,
+                    f"Registration-only repair is unavailable: {exc}",
+                ),
+                reason=(
+                    f"This entry cannot be repaired automatically: {exc} "
+                    "Save Advanced details and contact setup support; do not delete "
+                    "or overwrite the entry manually."
+                ),
+            )
+        return replace(
+            blocked,
+            plain_summary=(
+                f"Windows lists VIPP {repair.registered_version}; this verified "
+                f"installation is {repair.installed_version}. Review a Windows-entry "
+                "repair with an exact backup. No update or removal will start."
+            ),
+            technical_details=_join_details(blocked.technical_details, review.preview),
+            blocked_action=BlockedAction.REPAIR_REGISTRATION,
+            installed_version=repair.installed_version,
+            track=repair.track,
+            reason="Repair registration shows the exact changes before confirmation.",
+            registration_repair=review,
+            help_url="",
+        )
+
+    def repair_registration(
+        self,
+        prepared: PreparedInstall,
+        *,
+        confirmed: bool,
+        progress: Callable[[ProgressUpdate], None],
+    ) -> object:
+        """Apply a separate registration-only authorization, never an update."""
+
+        if (
+            confirmed is not True
+            or prepared.kind is not TargetKind.BLOCKED
+            or prepared.blocked_action is not BlockedAction.REPAIR_REGISTRATION
+            or prepared.registration_repair is None
+        ):
+            raise RuntimeError("Registration repair was not explicitly confirmed.")
+        review = prepared.registration_repair
+        if (
+            _registration_repair_review(review.payload) != review
+            or Path(review.payload.managed_root) != prepared.target
+            or prepared.track is not review.payload.track
+        ):
+            raise RuntimeError("The registration repair review changed.")
+        from napari_vipp.installer.registration_repair import (
+            apply_registration_repair,
+            authorize_registration_repair,
+        )
+
+        authorization = authorize_registration_repair(review.payload, confirmed=True)
+        result = apply_registration_repair(
+            review.payload, authorization, backend=self._repair_backend
+        )
+        if not result.succeeded:
+            raise RuntimeError(result.message)
+        if Path(result.backup_path) != review.backup_path:
+            raise RuntimeError("The registration repair backup location changed.")
+        progress(ProgressUpdate("repairing_registration", result.message, 1, 1))
+        return result
 
     def apply(
         self,
@@ -691,9 +816,7 @@ class WindowsInstallerBackend:
                 if explicit is not None
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
-            roots = [
-                self._managed_install_root(track) for track in tracks
-            ]
+            roots = [self._managed_install_root(track) for track in tracks]
         for root in roots:
             inspection = inspect_ownership(root)
             if inspection.state is OwnershipState.VALID:
@@ -710,9 +833,7 @@ class WindowsInstallerBackend:
                 if explicit is not None
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
-            roots = tuple(
-                self._managed_install_root(track) for track in tracks
-            )
+            roots = tuple(self._managed_install_root(track) for track in tracks)
         for root in roots:
             self._recover_interrupted_root(root)
 

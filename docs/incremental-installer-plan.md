@@ -1,7 +1,8 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev1`; this is not a public release.
+Development build: `0.16.0a8.dev2`; this is not a public release. The earlier
+`dev1` artifact remains retained as incremental/fresh qualification evidence.
 
 ## Routes and consent
 
@@ -37,6 +38,25 @@ SHA-256-addressed verified wheel artifacts. Only misses are downloaded through
 an isolated, hash-locked pip child; installation uses local hash-locked files with
 `--no-index --no-deps`. Existing invalid/foreign cache files are not overwritten.
 Cache retention is not yet an automatic size-bounded eviction policy.
+
+## Explicit registration repair
+
+A stale Windows Apps & Features entry is not permission to overwrite it during
+an ordinary update. Keep the existing update/uninstall ownership guards strict.
+Offer a separate read-only registration repair review only for a completely
+verified, same-installation entry. Bind confirmation to exact typed registry
+values, ownership bytes and cached uninstaller identity; save an exclusive,
+durable backup before writing. Reject unknown fields/types/subkeys, foreign or
+partial identities and stale confirmation. Recheck the installation after a
+successful repair, without automatically updating or opening VIPP. The repair
+does not rebuild packages or change user workflows.
+
+The obsolete cached uninstaller may already have been retired. An exact missing
+path is recorded and displayed as missing, not treated as verified old executable
+bytes. This narrow case can still restore the complete same-installation entry
+to the currently verified ownership/uninstaller after explicit confirmation.
+Present-but-altered or redirected old files remain blocked. A change in that
+old-file state invalidates the review. No old uninstaller is ever executed.
 
 ## Qualification and handoff
 

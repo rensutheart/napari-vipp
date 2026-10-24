@@ -68,6 +68,7 @@ class BlockedAction(StrEnum):
     OPEN_SETUP_HELP = "open_setup_help"
     OPEN_INSTALLED_APPS = "open_installed_apps"
     RUN_OWNED_UNINSTALLER = "run_owned_uninstaller"
+    REPAIR_REGISTRATION = "repair_registration"
     USE_DEFAULT_LOCATION = "use_default_location"
     USE_CPU = "use_cpu"
 
@@ -165,6 +166,29 @@ class ProgressUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistrationRepairReview:
+    """Read-only presentation of a separately authorized registry-only repair."""
+
+    fingerprint: str
+    preview: str
+    backup_path: Path
+    payload: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if len(self.fingerprint) != 64 or any(
+            value not in "0123456789abcdef" for value in self.fingerprint
+        ):
+            raise ValueError("Registration repair needs an exact review fingerprint.")
+        object.__setattr__(self, "backup_path", Path(self.backup_path))
+        if (
+            not self.backup_path.is_absolute()
+            or not self.preview
+            or self.payload is None
+        ):
+            raise ValueError("Registration repair needs a preview and backup location.")
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedInstall:
     """A reviewed executor transaction translated for a nontechnical user."""
 
@@ -188,6 +212,7 @@ class PreparedInstall:
     owned_uninstaller_sha256: str = ""
     selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
     strategy_reason: str = ""
+    registration_repair: RegistrationRepairReview | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", TargetKind(self.kind))
@@ -227,6 +252,10 @@ class PreparedInstall:
             raise ValueError(
                 "The owned-uninstaller action requires a hash-bound fallback."
             )
+        if self.blocked_action is BlockedAction.REPAIR_REGISTRATION and (
+            self.kind is not TargetKind.BLOCKED or self.registration_repair is None
+        ):
+            raise ValueError("Registration repair requires a separate blocked review.")
         if self.kind in {
             TargetKind.NEW,
             TargetKind.UPDATE,
@@ -286,6 +315,14 @@ class InstallerBackend(Protocol):
 
     def open_owned_uninstaller(self, prepared: PreparedInstall) -> None: ...
 
+    def repair_registration(
+        self,
+        prepared: PreparedInstall,
+        *,
+        confirmed: bool,
+        progress: Callable[[ProgressUpdate], None],
+    ) -> object: ...
+
 
 @dataclass(frozen=True, slots=True)
 class InstallerViewState:
@@ -315,6 +352,7 @@ class InstallerViewState:
     blocked_action: BlockedAction = BlockedAction.RETRY
     selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
     strategy_reason: str = ""
+    registration_repair: RegistrationRepairReview | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
@@ -578,6 +616,8 @@ class InstallerController:
         """Request cooperative cancellation; the backend owns safe rollback."""
 
         with self._lock:
+            if self._state.progress_stage == "repairing_registration":
+                return
             if not self.busy or self._state.screen is InstallerScreen.CANCELLING:
                 return
             self._cancellation.set()
@@ -650,6 +690,109 @@ class InstallerController:
                 exc,
             )
 
+    def repair_registration(self, *, confirmed: bool, fingerprint: str) -> None:
+        """Apply only the separately confirmed, currently visible registry review."""
+
+        if confirmed is not True:
+            return
+        with self._lock:
+            prepared = self._prepared
+            review = prepared.registration_repair if prepared is not None else None
+            if (
+                self._state.screen is not InstallerScreen.BLOCKED
+                or prepared is None
+                or prepared.blocked_action is not BlockedAction.REPAIR_REGISTRATION
+                or self._prepared_selection != self._selection
+                or review is None
+                or review.fingerprint != fingerprint
+            ):
+                return
+            selection = self._selection
+            generation = self._begin_operation()
+            self._publish(
+                InstallerViewState(
+                    screen=InstallerScreen.WORKING,
+                    headline="Repairing the Windows entry…",
+                    message=(
+                        "Only this installation's Windows uninstall entry is being "
+                        "repaired. No packages, workflows or shortcuts are changed."
+                    ),
+                    primary_label="Repairing…",
+                    primary_enabled=False,
+                    cancel_enabled=False,
+                    status_message="Saving the verified entry backup before repair…",
+                    progress_stage="repairing_registration",
+                    technical_details=prepared.technical_details,
+                    target=prepared.target,
+                    target_kind=TargetKind.BLOCKED,
+                    track=prepared.track,
+                )
+            )
+        self._start_worker(
+            lambda: self._registration_repair_worker(generation, selection, prepared)
+        )
+
+    def _registration_repair_worker(
+        self,
+        generation: int,
+        selection: InstallerSelection,
+        prepared: PreparedInstall,
+    ) -> None:
+        try:
+            outcome = self._backend.repair_registration(
+                prepared,
+                confirmed=True,
+                progress=lambda update: self._on_progress(generation, update),
+            )
+            with self._lock:
+                if generation != self._generation or selection != self._selection:
+                    return
+                self._prepared = None
+                self._prepared_selection = None
+                self._publish(
+                    InstallerViewState(
+                        screen=InstallerScreen.CHECKING,
+                        headline="Windows entry repaired — checking again…",
+                        message=(
+                            "Setup is reviewing the same selection again. Updating "
+                            "VIPP still needs your separate approval."
+                        ),
+                        primary_label="Please wait",
+                        primary_enabled=False,
+                        cancel_enabled=True,
+                        status_message="Rechecking after registration repair…",
+                        progress_stage="checking",
+                    )
+                )
+            self._inspect_worker(
+                generation,
+                selection,
+                self._cancellation,
+                repair=False,
+                prior_repair_details=(
+                    "Registration-only repair completed.\n"
+                    f"{getattr(outcome, 'message', 'Windows entry repaired.')}\n"
+                    "Entry backup: "
+                    f"{prepared.registration_repair.backup_path}"
+                ),
+            )
+        except Exception as exc:
+            self._fail(
+                "The Windows entry could not be repaired",
+                "No package installation was started. Keep any backup and repair "
+                "records, and read Advanced details before trying again.",
+                exc,
+                generation=generation,
+                prepared=replace(
+                    prepared,
+                    technical_details=_join_details(
+                        prepared.technical_details,
+                        "Registration repair backup location: "
+                        f"{prepared.registration_repair.backup_path}",
+                    ),
+                ),
+            )
+
     def _begin_operation(self) -> int:
         self._generation += 1
         self._cancellation = threading.Event()
@@ -671,6 +814,7 @@ class InstallerController:
         cancellation: threading.Event,
         *,
         repair: bool,
+        prior_repair_details: str = "",
     ) -> None:
         try:
             prepared = self._backend.inspect(
@@ -679,6 +823,13 @@ class InstallerController:
                 cancellation=cancellation,
                 repair=repair,
             )
+            if prior_repair_details:
+                prepared = replace(
+                    prepared,
+                    technical_details=_join_details(
+                        prepared.technical_details, prior_repair_details
+                    ),
+                )
             if cancellation.is_set():
                 raise InstallationCancelled()
             with self._lock:
@@ -891,6 +1042,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         "temporary_free_bytes": prepared.temporary_free_bytes,
         "selected_strategy": prepared.selected_strategy,
         "strategy_reason": prepared.strategy_reason,
+        "registration_repair": prepared.registration_repair,
         "size_estimate": prepared.size_estimate,
     }
     if prepared.kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}:
@@ -972,6 +1124,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         BlockedAction.OPEN_SETUP_HELP: "Get setup help",
         BlockedAction.OPEN_INSTALLED_APPS: "Open Installed apps",
         BlockedAction.RUN_OWNED_UNINSTALLER: "Open VIPP uninstaller",
+        BlockedAction.REPAIR_REGISTRATION: "Repair registration…",
         BlockedAction.USE_DEFAULT_LOCATION: "Use default location",
         BlockedAction.USE_CPU: "Use CPU",
         BlockedAction.RETRY: "Check again",
@@ -1111,6 +1264,7 @@ __all__ = [
     "InstallerSelection",
     "InstallerViewState",
     "PreparedInstall",
+    "RegistrationRepairReview",
     "ProgressUnit",
     "ProgressUpdate",
     "TargetKind",

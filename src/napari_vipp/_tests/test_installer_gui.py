@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,7 @@ from napari_vipp.installer.frontend import (
     InstallerSelection,
     InstallerViewState,
     InstallSizeEstimate,
+    RegistrationRepairReview,
     TargetKind,
 )
 from napari_vipp.installer.gui import (
@@ -46,6 +48,9 @@ class _Controller:
 
     def open_owned_uninstaller(self):
         self.calls.append("open-uninstaller")
+
+    def repair_registration(self, *, confirmed, fingerprint):
+        self.calls.append(("repair-registration", confirmed, fingerprint))
 
     def retry(self):
         self.calls.append("retry")
@@ -386,6 +391,69 @@ def test_owned_uninstaller_action_stays_inside_controller_boundary():
     window._primary_requested()
 
     assert window._controller.calls == ["open-uninstaller"]
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_registration_repair_confirmation_displays_changes_backup_and_scope(
+    tmp_path, accepted
+):
+    review = RegistrationRepairReview(
+        "a" * 64,
+        "DisplayVersion: '0.16.0a3' → '0.16.0a7'",
+        tmp_path / "entry-backup.json",
+        object(),
+    )
+    window = _window(
+        replace(
+            _state(
+                InstallerScreen.BLOCKED,
+                blocked_action=BlockedAction.REPAIR_REGISTRATION,
+            ),
+            registration_repair=review,
+        )
+    )
+    window.root = object()
+    prompts = []
+
+    def askyesno(title, message, *, parent, default, icon):
+        prompts.append((title, message, parent, default, icon))
+        return accepted
+
+    window._messagebox = SimpleNamespace(askyesno=askyesno)
+    window._primary_requested()
+
+    assert len(prompts) == 1
+    assert review.preview in prompts[0][1]
+    unwrapped = prompts[0][1].replace("\n", "")
+    normalized = " ".join(prompts[0][1].split())
+    assert str(review.backup_path) in unwrapped
+    assert "No packages, workflows or shortcuts" in normalized
+    assert "updating still needs approval" in normalized
+    assert prompts[0][3:] == ("no", "warning")
+    assert max(map(len, prompts[0][1].splitlines())) <= 90
+    assert window._controller.calls == (
+        [("repair-registration", True, "a" * 64)] if accepted else []
+    )
+
+
+def test_close_waits_for_registration_commit_instead_of_interrupting_it():
+    window = _window(
+        replace(
+            _state(InstallerScreen.WORKING), progress_stage="repairing_registration"
+        )
+    )
+    window._controller.busy = True
+    window.root = object()
+    messages = []
+    window._messagebox = SimpleNamespace(
+        showinfo=lambda *args, **kwargs: messages.append((args, kwargs)),
+        askyesno=lambda *_args, **_kwargs: pytest.fail(
+            "Asked to interrupt registry write"
+        ),
+    )
+    window._close_requested()
+    assert len(messages) == 1
+    assert window._controller.calls == []
     assert window._installed_apps_calls == 0
 
 

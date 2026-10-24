@@ -7,6 +7,10 @@
   dependencies in a staged replacement; both paths retain rollback and use
   verified cached downloads. Initial local checks no longer wait for a full
   online dependency resolution. This is unreleased development work.
+- Windows setup can separately review and repair a stale registration for a
+  verified installer-owned VIPP installation, with an exact backup and explicit
+  confirmation. Foreign, incomplete or changed Windows entries remain blocked;
+  repairing registration does not automatically install an update.
 
 ## 0.16.0a7 - 2026-10-23
 

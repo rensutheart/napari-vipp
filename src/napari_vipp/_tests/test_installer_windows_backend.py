@@ -304,6 +304,208 @@ def test_registration_conflict_during_prepare_routes_to_setup_help(tmp_path):
     assert not prepared.target.exists()
 
 
+def _repair_conflict_backend(tmp_path, monkeypatch, *, helper_error=None):
+    from napari_vipp.installer import registration_repair
+    from napari_vipp.installer.engine import RegistrationConflictError
+
+    class ConflictingEngine(_RecoveryEngine):
+        def prepare(self, *args, **kwargs):
+            raise RegistrationConflictError("The old Windows entry was preserved.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"test Python")
+    repair_backend = object()
+    engine = ConflictingEngine()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8.dev2"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+        repair_backend=repair_backend,
+    )
+    calls = []
+
+    def prepare(root, local_app_data, *, backend):
+        calls.append((root, local_app_data, backend))
+        if helper_error:
+            raise RuntimeError(helper_error)
+        return SimpleNamespace(
+            fingerprint="a" * 64,
+            managed_root=root,
+            track=ComputeTrack.CPU,
+            registered_version="0.16.0a3",
+            installed_version="0.16.0a7",
+            changes=(("DisplayVersion", "0.16.0a3", "0.16.0a7"),),
+            backup_path=tmp_path / "repair-backup.json",
+            summary="Verified older entry for this installation only.",
+        )
+
+    monkeypatch.setattr(registration_repair, "prepare_registration_repair", prepare)
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    return backend, prepared, engine, repair_backend, calls
+
+
+def test_registration_conflict_offers_separate_readonly_repair_review(
+    tmp_path, monkeypatch
+):
+    backend, prepared, engine, repair_backend, calls = _repair_conflict_backend(
+        tmp_path, monkeypatch
+    )
+    assert prepared.kind is TargetKind.BLOCKED
+    assert prepared.payload is None
+    assert prepared.blocked_action is BlockedAction.REPAIR_REGISTRATION
+    assert prepared.registration_repair.fingerprint == "a" * 64
+    assert "DisplayVersion: '0.16.0a3' → '0.16.0a7'" in (
+        prepared.registration_repair.preview
+    )
+    assert prepared.registration_repair.backup_path == tmp_path / "repair-backup.json"
+    assert calls == [(prepared.target, tmp_path, repair_backend)]
+    assert backend._repair_backend is repair_backend
+    assert engine.authorizations == [] and engine.applied == []
+    assert not prepared.target.exists()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "The entry belongs to another installation.",
+        "The entry is incomplete.",
+        "Unexpected registry values are present.",
+    ],
+)
+def test_unverified_registration_conflict_keeps_actionable_setup_help(
+    tmp_path, monkeypatch, reason
+):
+    _, prepared, engine, _, _ = _repair_conflict_backend(
+        tmp_path, monkeypatch, helper_error=reason
+    )
+    assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert prepared.registration_repair is None
+    assert reason in prepared.reason
+    assert "do not delete or overwrite" in prepared.reason
+    assert engine.applied == []
+
+
+def test_registration_repair_uses_only_separate_typed_helper_backend(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer import registration_repair
+
+    backend, prepared, engine, repair_backend, _ = _repair_conflict_backend(
+        tmp_path, monkeypatch
+    )
+    calls = []
+    token = object()
+
+    def authorize(plan, *, confirmed):
+        calls.append(("authorize", plan, confirmed))
+        return token
+
+    def apply(plan, authorization, *, backend):
+        calls.append(("apply", plan, authorization, backend))
+        return SimpleNamespace(
+            succeeded=True,
+            message="Verified entry repaired; backup retained.",
+            backup_path=plan.backup_path,
+        )
+
+    monkeypatch.setattr(registration_repair, "authorize_registration_repair", authorize)
+    monkeypatch.setattr(registration_repair, "apply_registration_repair", apply)
+    with pytest.raises(RuntimeError, match="explicitly confirmed"):
+        backend.repair_registration(prepared, confirmed=False, progress=lambda _e: None)
+    assert calls == []
+    events = []
+    outcome = backend.repair_registration(
+        prepared, confirmed=True, progress=events.append
+    )
+    assert outcome.succeeded
+    assert calls == [
+        ("authorize", prepared.registration_repair.payload, True),
+        ("apply", prepared.registration_repair.payload, token, repair_backend),
+    ]
+    assert events[-1].stage == "repairing_registration"
+    assert engine.authorizations == [] and engine.applied == []
+
+
+@pytest.mark.parametrize("forged", ["preview", "backup", "track", "fingerprint"])
+def test_registration_repair_rejects_misleading_review_before_authorization_or_write(
+    tmp_path, monkeypatch, forged
+):
+    from napari_vipp.installer import registration_repair
+
+    backend, prepared, engine, _, _ = _repair_conflict_backend(tmp_path, monkeypatch)
+    if forged == "track":
+        prepared = replace(prepared, track=ComputeTrack.CUDA13)
+    else:
+        replacements = {
+            "preview": {"preview": "No change, no backup needed."},
+            "backup": {"backup_path": tmp_path / "misleading-backup.json"},
+            "fingerprint": {"fingerprint": "b" * 64},
+        }
+        prepared = replace(
+            prepared,
+            registration_repair=replace(
+                prepared.registration_repair, **replacements[forged]
+            ),
+        )
+    calls = []
+    monkeypatch.setattr(
+        registration_repair,
+        "authorize_registration_repair",
+        lambda *_args, **_kwargs: calls.append("authorize"),
+    )
+    monkeypatch.setattr(
+        registration_repair,
+        "apply_registration_repair",
+        lambda *_args, **_kwargs: calls.append("apply"),
+    )
+
+    with pytest.raises(RuntimeError, match="review changed"):
+        backend.repair_registration(prepared, confirmed=True, progress=lambda _e: None)
+
+    assert calls == []
+    assert engine.authorizations == [] and engine.applied == []
+
+
+def test_recovery_blocker_never_offers_registration_repair(tmp_path, monkeypatch):
+    from napari_vipp.installer import registration_repair
+    from napari_vipp.installer.engine import RecoveryError
+
+    class RecoveryFailure(_RecoveryEngine):
+        def prepare(self, *args, **kwargs):
+            raise RecoveryError("Unresolved transaction snapshot")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"test Python")
+    backend = WindowsInstallerBackend(
+        engine=RecoveryFailure(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8.dev2"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        registration_repair,
+        "prepare_registration_repair",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Recovery must not propose registry repair"
+        ),
+    )
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert prepared.registration_repair is None
+    assert "Unresolved transaction snapshot" in prepared.technical_details
+
+
 def test_missing_python_is_a_guided_non_mutating_screen(tmp_path):
     engine = _Engine()
     backend = WindowsInstallerBackend(
