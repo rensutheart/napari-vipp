@@ -1,7 +1,7 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev10`; this is not a public release. The earlier
+Development build: `0.16.0a8.dev11`; this is not a public release. The earlier
 `dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
@@ -63,6 +63,18 @@ Refresh is explicit. Label bounded recent package stdout/stderr separately from
 the persisted raw JSONL setup event log. No new worker, process, install, repair
 or launch may be triggered by opening, refreshing or closing diagnostics. Keep
 meaningful outcome warnings while removing duplicate generic ready messages.
+
+Use a shared setup visual system across the main page, repair review and
+diagnostic viewer: one proportional font family, body/section roles separated
+by weight rather than arbitrary sizes, a clear page headline, consistent
+neutral surfaces and spacing, and readable state accents. Monospace is reserved
+for diagnostic text. Setup steps is a bold section label with prominent arrows,
+not interactive tabs. Completed read-only review has no idle busy bar.
+
+Managed installation versions must use PEP 440 ordering, including numeric
+development, prerelease, final and post releases. Unrecognized versions must
+not be ordered lexicographically or used to authorize an update or repair.
+Keep genuine downgrade prevention and exact ownership checks unchanged.
 
 ## Implementation boundary
 

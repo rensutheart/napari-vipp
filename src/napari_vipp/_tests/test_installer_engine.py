@@ -528,6 +528,138 @@ def test_classifies_new_update_current_repair_newer_and_foreign(tmp_path):
     assert foreign.can_apply is False
 
 
+@pytest.mark.parametrize(
+    ("installed", "desired", "expected"),
+    [
+        ("0.16.0a8.dev9", "0.16.0a8.dev10", ManagedTargetKind.UPDATE),
+        ("0.16.0a8.dev10", "0.16.0a8.dev9", ManagedTargetKind.NEWER),
+        ("0.16.0a8.dev10", "0.16.0a8.dev11", ManagedTargetKind.UPDATE),
+        ("0.16.0a8.dev11", "0.16.0a8.dev10", ManagedTargetKind.NEWER),
+        ("0.16.0a8.dev10", "0.16.0a8", ManagedTargetKind.UPDATE),
+        ("0.16.0rc9", "0.16.0rc10", ManagedTargetKind.UPDATE),
+        ("0.16.0rc10", "0.16.0", ManagedTargetKind.UPDATE),
+        ("0.16.0", "0.16.0.post1", ManagedTargetKind.UPDATE),
+        ("0.16.0.post1", "0.16.0", ManagedTargetKind.NEWER),
+        ("0.16.0a8.post1", "0.16.0a9", ManagedTargetKind.UPDATE),
+        ("0.16.0", "0.16.0+build.9", ManagedTargetKind.UPDATE),
+        ("0.16.0+build.9", "0.16.0+build.10", ManagedTargetKind.UPDATE),
+        ("1!0.1", "0.16.0", ManagedTargetKind.NEWER),
+        ("0.16", "0.16.0", ManagedTargetKind.CURRENT),
+        ("0.16.0a8.dev010", "0.16.0a8.dev10", ManagedTargetKind.CURRENT),
+    ],
+)
+def test_managed_target_version_order_is_pep440(tmp_path, installed, desired, expected):
+    """Use numeric dev/build ordering, including the actual dev9 to dev10 case."""
+
+    target = tmp_path / "managed"
+    _record(target, version=installed)
+    before = {
+        path.relative_to(target): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+
+    inspection = inspect_managed_target(
+        target,
+        release=_release(desired),
+        track=ComputeTrack.CPU,
+    )
+
+    assert inspection.kind is expected
+    assert inspection.can_apply is (expected is ManagedTargetKind.UPDATE)
+    assert inspection.current_version == installed
+    assert inspection.desired_version == desired
+    assert {
+        path.relative_to(target): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == before
+
+
+@pytest.mark.parametrize(
+    ("installed", "desired"),
+    [
+        ("broken", "0.16.0a8.dev10"),
+        ("0.16.0a8.dev9", "broken"),
+        ("broken", "broken"),
+        ("0.16.0a8.devX", "0.16.0a8.dev10"),
+    ],
+)
+@pytest.mark.parametrize("healthy", [True, False])
+def test_managed_target_invalid_version_order_is_blocked(
+    tmp_path, installed, desired, healthy
+):
+    target = tmp_path / "managed"
+    _record(target, version=installed, healthy=healthy)
+
+    inspection = inspect_managed_target(
+        target,
+        release=_release(desired),
+        track=ComputeTrack.CPU,
+    )
+
+    assert inspection.kind is ManagedTargetKind.FOREIGN
+    assert inspection.can_apply is False
+    assert "cannot safely compare" in inspection.reason
+    assert inspection.current_version == installed
+    assert inspection.desired_version == desired
+
+
+@pytest.mark.parametrize(
+    ("installed", "desired", "expected"),
+    [
+        ("0.16.0a8.dev9", "0.16.0a8.dev10", "upgrade"),
+        ("0.16.0a8.dev10", "0.16.0a8.dev9", "downgrade"),
+        ("0.16", "0.16.0", "keep"),
+    ],
+)
+def test_package_review_version_order_is_pep440(tmp_path, installed, desired, expected):
+    target = tmp_path / "managed"
+    _record(target, version=installed)
+    inspection = inspect_managed_target(
+        target, release=_release(desired), track=ComputeTrack.CPU
+    )
+    resolved = engine_module.ResolvedPackage(
+        "napari-vipp", desired, "https://packages.example/vipp.whl", _VIPP_HASH
+    )
+
+    (change,) = engine_module._package_changes((resolved,), inspection)
+
+    assert change.disposition.value == expected
+
+
+@pytest.mark.parametrize(
+    ("installed", "desired"),
+    [("broken", "0.16.0"), ("0.16.0", "broken"), ("broken", "broken")],
+)
+def test_invalid_version_comparison_has_no_guessed_order(installed, desired):
+    assert engine_module._compare_versions(installed, desired) is None
+
+
+@pytest.mark.parametrize("desired", ["2.0", "broken"])
+def test_package_review_invalid_version_order_is_blocked(tmp_path, desired):
+    target = tmp_path / "managed"
+    record = _record(target)
+    inspection = inspect_managed_target(
+        target, release=_release(), track=ComputeTrack.CPU
+    )
+    inspection = replace(
+        inspection,
+        record=replace(
+            record, packages=(OwnedPackage("example-dependency", "broken"),)
+        ),
+    )
+    resolved = engine_module.ResolvedPackage(
+        "example-dependency",
+        desired,
+        "https://packages.example/dependency.whl",
+        _DEPENDENCY_HASH,
+    )
+
+    with pytest.raises(ResolutionError, match="cannot safely compare"):
+        engine_module._package_changes((resolved,), inspection)
+
+
 def test_prepare_is_non_mutating_and_binds_exact_hashed_resolution(tmp_path):
     target = tmp_path / "VIPP Managed"
     state = tmp_path / "installer-state"

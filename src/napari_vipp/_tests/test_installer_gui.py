@@ -527,12 +527,15 @@ def test_method_panel_precedes_variable_review_summary_and_returns_there_on_retr
 
 
 def test_setup_breadcrumb_has_three_noninteractive_labels_not_tab_cells():
+    created = []
+
     class Frame:
         def __init__(self, master, **kwargs):
             self.master = master
             self.options = kwargs
             self.columns = []
             self.layout = {}
+            created.append(self)
 
         def pack(self, **kwargs):
             self.layout = kwargs
@@ -567,6 +570,156 @@ def test_setup_breadcrumb_has_three_noninteractive_labels_not_tab_cells():
     assert "command" not in window._review_stage_label.options
     assert "command" not in window._install_stage_label.options
     assert "command" not in window._ready_stage_label.options
+    heading = next(
+        item for item in created if item.options.get("text") == "Setup steps"
+    )
+    arrows = [item for item in created if item.options.get("text") == "→"]
+    assert heading.options["style"] == "VIPP.Section.TLabel"
+    assert len(arrows) == 2
+    assert all(item.options["style"] == "VIPP.Arrow.TLabel" for item in arrows)
+    assert all("command" not in item.options for item in arrows)
+
+
+def test_design_header_matches_official_logo_background_without_a_seam():
+    from xml.etree import ElementTree
+
+    asset = (
+        Path(gui_module.__file__).parents[1]
+        / "assets"
+        / "branding"
+        / "vipp-logo-dark.svg"
+    )
+    svg = ElementTree.parse(asset).getroot()
+    background = svg.find("{http://www.w3.org/2000/svg}rect")
+    assert background is not None
+    view_box = svg.attrib["viewBox"].split()
+    assert background.attrib["width"] == view_box[2]
+    assert background.attrib["height"] == view_box[3]
+    assert gui_module._COLORS["header"].lower() == background.attrib["fill"].lower()
+
+
+def test_design_system_uses_shared_point_fonts_and_coherent_surfaces(monkeypatch):
+    configurations = {}
+    mappings = {}
+    fonts = {}
+    themes = []
+
+    class Font:
+        def __init__(self, *, root, name, **options):
+            self.options = options
+            fonts[name] = self
+
+        def configure(self, **options):
+            self.options.update(options)
+
+    class Style:
+        def theme_names(self):
+            return ("vista", "clam")
+
+        def theme_use(self, value):
+            themes.append(value)
+
+        def configure(self, name, **options):
+            configurations[name] = options
+
+        def map(self, name, **options):
+            mappings[name] = options
+
+    root = SimpleNamespace(
+        tk=object(), configure=lambda **_: None, option_add=lambda *_: None
+    )
+    tkinter = SimpleNamespace(
+        font=SimpleNamespace(
+            Font=Font,
+            names=lambda _: tuple(fonts),
+            nametofont=lambda name, **_: fonts[name],
+        ),
+        ttk=SimpleNamespace(Style=lambda _: Style()),
+    )
+    monkeypatch.setitem(sys.modules, "tkinter", tkinter)
+    gui_module._configure_design_system(root)
+    assert themes == ["clam"]  # Unlike Vista, custom primary fills are honoured.
+    normal_roles = [
+        gui_module._FONT_BODY,
+        gui_module._FONT_SECTION,
+        gui_module._FONT_HEADLINE,
+    ]
+    assert {fonts[name].options["family"] for name in normal_roles} == {"Segoe UI"}
+    assert [fonts[name].options["size"] for name in normal_roles] == [10, 10, 20]
+    assert fonts[gui_module._FONT_SECTION].options["weight"] == "bold"
+    assert fonts[gui_module._FONT_CODE].options["family"] == "Consolas"
+    canvas = gui_module._COLORS["canvas"]
+    for name in (
+        "TFrame",
+        "TLabel",
+        "TCheckbutton",
+        "VIPP.Stage.TLabel",
+        "VIPP.Stage.Active.TLabel",
+        "VIPP.Arrow.TLabel",
+    ):
+        assert configurations[name]["background"] == canvas
+    assert configurations["VIPP.Arrow.TLabel"]["font"] == gui_module._FONT_HEADLINE
+    assert (
+        configurations["VIPP.Primary.TButton"]["foreground"]
+        == gui_module._COLORS["surface"]
+    )
+    assert mappings["VIPP.Primary.TButton"]["foreground"][0][0] == "disabled"
+    assert root._vipp_fonts == fonts  # Named fonts must stay alive with this root.
+    gui_module._configure_design_system(root)
+    assert themes == ["clam"]
+
+
+@pytest.mark.parametrize(
+    "screen,kind",
+    [
+        (InstallerScreen.READY, TargetKind.UPDATE),
+        (InstallerScreen.CURRENT, TargetKind.CURRENT),
+        (InstallerScreen.BLOCKED, TargetKind.NEWER),
+        (InstallerScreen.FAILED, TargetKind.UPDATE),
+    ],
+)
+def test_idle_review_and_preflight_results_hide_the_whole_progress_summary(
+    screen, kind
+):
+    window = object.__new__(InstallerWindow)
+    window._progress_visible = True
+    window._progress_panel = _StagePanel(visible=True)
+    window._console_panel = object()
+    stopped = []
+    window._progress = SimpleNamespace(stop=lambda: stopped.append(True))
+    state = _state(screen, kind=kind)
+    window._sync_progress_visibility(state)
+    assert not window._progress_visible
+    assert not window._progress_panel.visible
+    assert stopped == [True]
+    window._sync_progress_visibility(state)
+    assert stopped == [True]  # Stable state does not repeatedly relayout/stop.
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.CHECKING, InstallerScreen.WORKING, InstallerScreen.CANCELLING],
+)
+def test_active_work_restores_progress_before_the_log_without_touching_measurements(
+    screen,
+):
+    window = object.__new__(InstallerWindow)
+    window._progress_visible = False
+    window._progress_panel = _StagePanel(visible=False)
+    window._console_panel = object()
+    window._progress = SimpleNamespace(stop=lambda: pytest.fail("Stopped real work"))
+    window._sync_progress_visibility(_state(screen))
+    assert window._progress_visible
+    assert window._progress_panel.visible
+    assert window._progress_panel.packs[-1]["before"] is window._console_panel
+
+
+def test_preflight_failure_with_update_target_does_not_claim_approved_installation():
+    window = _staged_window()
+    window._render_setup_stage(_state(InstallerScreen.FAILED, kind=TargetKind.UPDATE))
+    assert not window._installation_started
+    assert not window._selected_method_label.visible
+    assert window._install_stage_label.configured[-1]["text"] == "○ Install"
 
 
 def test_review_then_installing_hides_choices_without_changing_approval():
@@ -623,6 +776,8 @@ def test_terminal_install_results_keep_stage_and_diagnostics_not_review_clutter(
     state = replace(
         _state(screen, kind=TargetKind.UPDATE),
         selected_strategy=UpdateStrategy.FRESH,
+        installation_started_at=100.0,
+        installation_finished_at=101.0,
     )
 
     window._render_setup_stage(state)
@@ -2425,7 +2580,11 @@ def test_cancellation_breadcrumb_does_not_claim_already_stopped(screen, phase):
     window = _staged_window()
     window._installation_started = True
     window._render_setup_stage(
-        replace(_state(screen, kind=TargetKind.UPDATE), progress_stage=phase)
+        replace(
+            _state(screen, kind=TargetKind.UPDATE),
+            progress_stage=phase,
+            installation_started_at=100.0,
+        )
     )
     assert window._install_stage_label.configured[-1]["text"] == "● Stopping safely"
     assert window._ready_stage_label.configured[-1]["text"] == "○ Ready"

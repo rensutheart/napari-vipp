@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Compare installer versions using Python package version ordering, so numeric
+  development releases such as dev10 correctly follow dev9; keep genuine
+  downgrade and unrecognized-version protection. Unify setup typography,
+  spacing and surfaces, strengthen the setup-step arrows and remove inactive
+  progress indicators from completed review screens.
+
 - Keep a total installation timer through all stages and safe cleanup, frozen
   on completion. Clarify the noninteractive setup steps and single ordered stage
   list, remove redundant success text, and replace the moving tiny diagnostics

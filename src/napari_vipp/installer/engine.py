@@ -31,6 +31,8 @@ from typing import Protocol
 from urllib.parse import unquote, urlsplit, urlunsplit
 from urllib.request import url2pathname
 
+from packaging.version import InvalidVersion, Version
+
 from napari_vipp.installer.file_ops import (
     ATOMIC_REPLACE_RETRY_DELAYS as _ATOMIC_REPLACE_RETRY_DELAYS,
 )
@@ -891,6 +893,20 @@ def inspect_managed_target(
             extra=(ownership.manifest_sha256, "reparse-environment"),
         )
     comparison = _compare_versions(record.version, release.version)
+    if comparison is None:
+        return _inspection(
+            ManagedTargetKind.FOREIGN,
+            selected,
+            release,
+            record.version,
+            "Setup cannot safely compare the installed VIPP version "
+            f"({record.version!r}) with this installer's version "
+            f"({release.version!r}). Valid package version metadata is required "
+            "before this location can be updated or repaired.",
+            target_preexisting=True,
+            record=record,
+            extra=(ownership.manifest_sha256, "invalid-version"),
+        )
     structural_reason = _structural_health_error(record)
     if comparison < 0:
         kind = ManagedTargetKind.UPDATE
@@ -2954,16 +2970,24 @@ def _package_changes(
             disposition = PackageDisposition.INSTALL
         elif after is None:
             disposition = PackageDisposition.REMOVE
-        elif before.version == after.version:
-            disposition = (
-                PackageDisposition.REINSTALL
-                if inspection.kind is ManagedTargetKind.REPAIR
-                else PackageDisposition.KEEP
-            )
-        elif _compare_versions(before.version, after.version) < 0:
-            disposition = PackageDisposition.UPGRADE
         else:
-            disposition = PackageDisposition.DOWNGRADE
+            comparison = _compare_versions(before.version, after.version)
+            if comparison is None:
+                raise ResolutionError(
+                    "Setup cannot safely compare the installed and resolved "
+                    f"versions of {name!r}; valid package version metadata "
+                    "is required before changes can be reviewed."
+                )
+            if comparison == 0:
+                disposition = (
+                    PackageDisposition.REINSTALL
+                    if inspection.kind is ManagedTargetKind.REPAIR
+                    else PackageDisposition.KEEP
+                )
+            elif comparison < 0:
+                disposition = PackageDisposition.UPGRADE
+            else:
+                disposition = PackageDisposition.DOWNGRADE
         changes.append(
             PackageReviewChange(
                 name=after.name if after is not None else before.name,
@@ -5366,32 +5390,20 @@ def _without_fragment(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
 
 
-def _compare_versions(left: str, right: str) -> int:
-    left_key = _version_key(left)
-    right_key = _version_key(right)
-    if left_key is None or right_key is None:
-        return (left.casefold() > right.casefold()) - (
-            left.casefold() < right.casefold()
-        )
-    return (left_key > right_key) - (left_key < right_key)
+def _compare_versions(left: str, right: str) -> int | None:
+    """Return PEP 440 ordering, or no ordering for unrecognized metadata.
 
+    Lexical fallback is unsafe: for example, ``dev9`` sorts after ``dev10``.
+    Callers must block an incomparable installed/replacement pair, not treat
+    an unknown version as equal, newer, or eligible for replacement.
+    """
 
-def _version_key(value: str) -> tuple[tuple[int, ...], int, int] | None:
-    match = re.fullmatch(
-        r"\s*(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?(?:\.post(\d+))?\s*",
-        value,
-        re.IGNORECASE,
-    )
-    if match is None:
+    try:
+        left_key = Version(left)
+        right_key = Version(right)
+    except InvalidVersion:
         return None
-    release = tuple(int(part) for part in match.group(1).split("."))
-    release = (*release, *(0 for _ in range(max(0, 4 - len(release)))))
-    phase = match.group(2)
-    number = int(match.group(3) or match.group(4) or 0)
-    rank = {"a": -3, "b": -2, "rc": -1, None: 0}[phase.casefold() if phase else None]
-    if match.group(4) is not None:
-        rank = 1
-    return release, rank, number
+    return (left_key > right_key) - (left_key < right_key)
 
 
 def _normalize_name(value: str) -> str:

@@ -37,6 +37,9 @@ semantics and installed environments unchanged during isolated qualification.
 Follow-up UX work adds controller-recorded total elapsed time, a non-tab setup
 breadcrumb and naturally ordered phase list, plus a larger manual-refresh
 diagnostic snapshot so progress updates cannot move the reader's position.
+Current follow-up unifies setup font/color/spacing roles and clear step arrows,
+and fixes numeric development-version ordering without weakening downgrade or
+ownership protection. Qualify privately without changing current installations.
 
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished

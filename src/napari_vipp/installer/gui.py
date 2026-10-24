@@ -68,6 +68,165 @@ _REVIEW_SCREENS = frozenset(
 )
 VIPP_TAGLINE = "Visual image processing made approachable"
 DEVELOPMENT_BUILD_LABEL = "DEVELOPMENT BUILD — local testing only"
+# One lightweight visual system is shared by setup and its owned dialogs.
+# Font sizes are points so Tk/Windows scaling and accessibility still apply.
+_SPACE = 8
+_COLORS = {
+    "canvas": "#f5f4f0",
+    "surface": "#ffffff",
+    "ink": "#18313f",
+    "muted": "#52636d",
+    "border": "#c7cfce",
+    "primary": "#173e50",
+    "primary_hover": "#24556a",
+    "accent": "#176c68",
+    "accent_soft": "#e2efeb",
+    "warning": "#754300",
+    "warning_surface": "#fff0ce",
+    "disabled": "#65737a",
+    "header": "#08151F",
+    "console": "#10232f",
+    "console_text": "#edf3f5",
+    "header_text": "#d8e7f3",
+}
+_FONT_BODY = "VippBody"
+_FONT_SECTION = "VippSection"
+_FONT_HEADLINE = "VippHeadline"
+_FONT_CODE = "VippCode"
+_FONT_ROLES = {
+    _FONT_BODY: {"family": "Segoe UI", "size": 10, "weight": "normal"},
+    _FONT_SECTION: {"family": "Segoe UI", "size": 10, "weight": "bold"},
+    _FONT_HEADLINE: {"family": "Segoe UI", "size": 20, "weight": "bold"},
+    _FONT_CODE: {"family": "Consolas", "size": 10, "weight": "normal"},
+}
+
+
+def _configure_design_system(root) -> None:
+    """Configure this Tk interpreter only; no system font or setting changes."""
+
+    if not hasattr(root, "tk") or getattr(root, "_vipp_design_ready", False):
+        return
+    from tkinter import font, ttk
+
+    for name, options in _FONT_ROLES.items():
+        if name in font.names(root):
+            named = font.nametofont(name, root=root)
+            named.configure(**options)
+        else:
+            named = font.Font(root=root, name=name, **options)
+        # Named fonts must stay alive; Font.__del__ otherwise deletes them.
+        root.__dict__.setdefault("_vipp_fonts", {})[name] = named
+    style = ttk.Style(root)
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+    style.configure(
+        ".", font=_FONT_BODY, background=_COLORS["canvas"], foreground=_COLORS["ink"]
+    )
+    style.configure("TFrame", background=_COLORS["canvas"])
+    style.configure(
+        "VIPP.Card.TFrame", background=_COLORS["canvas"], bordercolor=_COLORS["border"]
+    )
+    style.configure(
+        "TLabel",
+        background=_COLORS["canvas"],
+        foreground=_COLORS["ink"],
+        font=_FONT_BODY,
+    )
+    style.configure(
+        "TCheckbutton",
+        background=_COLORS["canvas"],
+        font=_FONT_BODY,
+        padding=(0, _SPACE),
+    )
+    style.map("TCheckbutton", background=[("active", _COLORS["canvas"])])
+    style.configure(
+        "TCombobox",
+        font=_FONT_BODY,
+        padding=(_SPACE, _SPACE),
+        fieldbackground=_COLORS["surface"],
+        foreground=_COLORS["ink"],
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", _COLORS["surface"])],
+        foreground=[("disabled", _COLORS["disabled"]), ("readonly", _COLORS["ink"])],
+    )
+    style.configure(
+        "TButton",
+        font=_FONT_BODY,
+        padding=(2 * _SPACE, _SPACE),
+        background=_COLORS["surface"],
+        foreground=_COLORS["ink"],
+        bordercolor=_COLORS["border"],
+        focusthickness=2,
+        focuscolor=_COLORS["accent"],
+    )
+    style.map(
+        "TButton",
+        background=[("active", _COLORS["accent_soft"])],
+        foreground=[("disabled", _COLORS["disabled"])],
+    )
+    style.configure(
+        "VIPP.Primary.TButton",
+        font=_FONT_SECTION,
+        background=_COLORS["primary"],
+        foreground=_COLORS["surface"],
+    )
+    style.map(
+        "VIPP.Primary.TButton",
+        background=[
+            ("disabled", _COLORS["border"]),
+            ("active", _COLORS["primary_hover"]),
+        ],
+        foreground=[("disabled", _COLORS["muted"]), ("!disabled", _COLORS["surface"])],
+    )
+    style.configure("VIPP.TButton", font=_FONT_BODY)
+    style.configure("VIPP.TCheckbutton", background=_COLORS["canvas"])
+    style.configure("VIPP.Section.TLabel", font=_FONT_SECTION)
+    style.configure("VIPP.Muted.TLabel", font=_FONT_BODY, foreground=_COLORS["muted"])
+    style.configure(
+        "VIPP.Stage.TLabel",
+        font=_FONT_BODY,
+        foreground=_COLORS["muted"],
+        background=_COLORS["canvas"],
+        padding=(0, _SPACE),
+    )
+    style.configure(
+        "VIPP.Stage.Active.TLabel",
+        font=_FONT_SECTION,
+        foreground=_COLORS["accent"],
+        background=_COLORS["canvas"],
+        padding=(0, _SPACE),
+    )
+    style.configure(
+        "VIPP.Arrow.TLabel",
+        font=_FONT_HEADLINE,
+        foreground=_COLORS["accent"],
+        background=_COLORS["canvas"],
+        padding=(2 * _SPACE, 0),
+    )
+    style.configure(
+        "Horizontal.TProgressbar",
+        background=_COLORS["accent"],
+        troughcolor=_COLORS["accent_soft"],
+        bordercolor=_COLORS["border"],
+    )
+    style.configure(
+        "TNotebook", background=_COLORS["canvas"], bordercolor=_COLORS["border"]
+    )
+    style.configure("TNotebook.Tab", font=_FONT_BODY, padding=(2 * _SPACE, _SPACE))
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", _COLORS["surface"]), ("!selected", _COLORS["canvas"])],
+        foreground=[("selected", _COLORS["accent"])],
+    )
+    root.option_add("*TCombobox*Listbox.font", _FONT_BODY)
+    root.option_add("*TCombobox*Listbox.background", _COLORS["surface"])
+    root.option_add("*TCombobox*Listbox.foreground", _COLORS["ink"])
+    root.configure(background=_COLORS["canvas"])
+    root._vipp_design_ready = True
+
+
 _HEADER_MIN_WIDTH = 520
 _HEADER_MIN_HEIGHT = 420
 _HEADER_LEFT_PADDING = 22
@@ -453,6 +612,7 @@ class _RegistrationRepairDialog:
         import tkinter as tk
         from tkinter import ttk
 
+        _configure_design_system(parent)
         self._tk = tk
         self._parent = parent
         self._result = False
@@ -487,12 +647,14 @@ class _RegistrationRepairDialog:
         viewport.grid(row=0, column=0, sticky="nsew")
         viewport.columnconfigure(0, weight=1)
         viewport.rowconfigure(0, weight=1)
-        self._canvas = canvas = tk.Canvas(viewport, borderwidth=0, highlightthickness=0)
+        self._canvas = canvas = tk.Canvas(
+            viewport, borderwidth=0, highlightthickness=0, background=_COLORS["canvas"]
+        )
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=canvas.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         canvas.configure(yscrollcommand=scrollbar.set)
-        content = ttk.Frame(canvas, padding=(22, 18, 18, 18))
+        content = ttk.Frame(canvas, padding=(3 * _SPACE, 2 * _SPACE))
         content.columnconfigure(0, weight=1)
         self._content_item = canvas.create_window(0, 0, anchor="nw", window=content)
         content.bind(
@@ -519,45 +681,57 @@ class _RegistrationRepairDialog:
         label(
             "Fix the Windows listing, not the installation",
             row=0,
-            font=("Segoe UI Semibold", 15),
-            padding=(0, 12),
+            font=_FONT_HEADLINE,
+            padding=(0, 2 * _SPACE),
         )
         label(
             "Windows app information does not match the verified VIPP installation.",
             row=1,
-            padding=(0, 12),
+            padding=(0, 2 * _SPACE),
         )
         if review.registered_version and review.installed_version:
             versions = ttk.Frame(
-                content, padding=(12, 9), relief="solid", borderwidth=1
+                content,
+                padding=(2 * _SPACE, _SPACE),
+                relief="solid",
+                borderwidth=1,
+                style="VIPP.Card.TFrame",
             )
-            versions.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+            versions.grid(row=2, column=0, sticky="ew", pady=(0, 2 * _SPACE))
             versions.columnconfigure(1, weight=1)
             for row, caption, version in (
                 (0, "Windows currently lists", review.registered_version),
                 (1, "Verified installed version", review.installed_version),
             ):
                 caption_label = ttk.Label(versions, text=caption, wraplength=260)
-                caption_label.grid(row=row, column=0, sticky="w", padx=(0, 18), pady=3)
+                caption_label.grid(
+                    row=row,
+                    column=0,
+                    sticky="w",
+                    padx=(0, 2 * _SPACE),
+                    pady=_SPACE // 2,
+                )
                 version_label = ttk.Label(
                     versions,
                     text=version,
-                    font=("Segoe UI Semibold", 10),
+                    font=_FONT_SECTION,
                     wraplength=260,
                 )
-                version_label.grid(row=row, column=1, sticky="w", pady=3)
+                version_label.grid(row=row, column=1, sticky="w", pady=_SPACE // 2)
                 self._version_labels.extend((caption_label, version_label))
         if review.managed_root is not None:
-            label("Installation", row=3, font=("Segoe UI Semibold", 10))
+            label("Installation", row=3, font=_FONT_SECTION)
             location_frame = ttk.Frame(content)
-            location_frame.grid(row=4, column=0, sticky="ew", pady=(3, 12))
+            location_frame.grid(row=4, column=0, sticky="ew", pady=(_SPACE, 2 * _SPACE))
             location_frame.columnconfigure(0, weight=1)
             self._location = tk.Text(
                 location_frame,
                 height=2,
                 width=1,
                 wrap="char",
-                font=("Segoe UI", 10),
+                font=_FONT_BODY,
+                background=_COLORS["surface"],
+                foreground=_COLORS["ink"],
                 borderwidth=0,
                 highlightthickness=0,
             )
@@ -575,13 +749,13 @@ class _RegistrationRepairDialog:
             "Setup will save a backup first, then check again. Installing an "
             "update still needs your approval. No older uninstaller will be run.",
             row=5,
-            padding=(0, 12),
+            padding=(0, 2 * _SPACE),
         )
         self._disclosure = ttk.Button(
             content, text="Show technical details", command=self._toggle_details
         )
         self._disclosure.grid(row=6, column=0, sticky="w")
-        self._details_panel = ttk.Frame(content, padding=(0, 10, 0, 0))
+        self._details_panel = ttk.Frame(content, padding=(0, _SPACE, 0, 0))
         self._details_panel.grid(row=7, column=0, sticky="nsew")
         self._details_panel.columnconfigure(0, weight=1)
         self._details = tk.Text(
@@ -589,10 +763,10 @@ class _RegistrationRepairDialog:
             height=11,
             width=1,
             wrap="none",
-            font=("Consolas", 9),
-            background="#10212e",
-            foreground="#edf4fa",
-            insertbackground="#edf4fa",
+            font=_FONT_CODE,
+            background=_COLORS["console"],
+            foreground=_COLORS["console_text"],
+            insertbackground=_COLORS["console_text"],
         )
         self._details.grid(row=1, column=0, sticky="nsew")
         details_y = ttk.Scrollbar(
@@ -610,21 +784,24 @@ class _RegistrationRepairDialog:
         self._details.configure(state="disabled")
         ttk.Button(
             self._details_panel, text="Copy details", command=self._copy_details
-        ).grid(row=0, column=0, sticky="e", pady=(0, 6))
+        ).grid(row=0, column=0, sticky="e", pady=(0, _SPACE))
         self._details_panel.grid_remove()
 
         # Consent controls are outside the scroll body and never disappear when
         # long paths or technical details exceed the available screen height.
-        footer = ttk.Frame(dialog, padding=(18, 12))
+        footer = ttk.Frame(dialog, padding=(3 * _SPACE, 2 * _SPACE))
         footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         ttk.Separator(dialog, orient="horizontal").grid(row=1, column=0, sticky="ew")
         self._cancel = ttk.Button(
             footer, text="Cancel", command=lambda: self._finish(False), default="active"
         )
-        self._cancel.grid(row=0, column=1, padx=(0, 10))
+        self._cancel.grid(row=0, column=1, padx=(0, _SPACE))
         self._repair = ttk.Button(
-            footer, text="Repair entry", command=lambda: self._finish(True)
+            footer,
+            text="Repair entry",
+            command=lambda: self._finish(True),
+            style="VIPP.Primary.TButton",
         )
         self._repair.grid(row=0, column=2)
         self._set_geometry()
@@ -719,6 +896,7 @@ class _DiagnosticsWindow:
 
     def __init__(self, owner: InstallerWindow) -> None:
         tk, ttk = owner._tk, owner._ttk
+        _configure_design_system(owner.root)
         self._owner = owner
         self._window = window = tk.Toplevel(owner.root)
         window.title("VIPP Setup diagnostics")
@@ -732,11 +910,13 @@ class _DiagnosticsWindow:
         # action. Opening or reading diagnostics never authorizes setup.
         window.bind("<Escape>", lambda _event: self.close())
         window.bind("<Return>", lambda _event: "break")
-        heading = ttk.Frame(window, padding=(16, 14, 16, 8))
+        heading = ttk.Frame(
+            window, padding=(2 * _SPACE, 2 * _SPACE, 2 * _SPACE, _SPACE)
+        )
         heading.grid(row=0, column=0, sticky="ew")
-        ttk.Label(
-            heading, text="Setup diagnostics", font=("Segoe UI Semibold", 14)
-        ).pack(anchor="w")
+        ttk.Label(heading, text="Setup diagnostics", font=_FONT_HEADLINE).pack(
+            anchor="w"
+        )
         self._guidance_label = ttk.Label(
             heading,
             text=(
@@ -747,7 +927,7 @@ class _DiagnosticsWindow:
             wraplength=780,
             justify="left",
         )
-        self._guidance_label.pack(anchor="w", fill="x", pady=(5, 0))
+        self._guidance_label.pack(anchor="w", fill="x", pady=(_SPACE, 0))
         self._captured = tk.StringVar()
         self._captured_label = ttk.Label(
             window,
@@ -769,7 +949,9 @@ class _DiagnosticsWindow:
                 width=1,
                 height=18,
                 wrap="none",
-                font=("Consolas", 10),
+                font=_FONT_CODE,
+                background=_COLORS["surface"],
+                foreground=_COLORS["ink"],
                 padx=10,
                 pady=8,
                 state="disabled",
@@ -782,7 +964,9 @@ class _DiagnosticsWindow:
             text.configure(yscrollcommand=scrollbar.set, xscrollcommand=horizontal.set)
             notebook.add(panel, text=title)
             self._texts.append(text)
-        self._footer = footer = ttk.Frame(window, padding=(16, 10, 16, 14))
+        self._footer = footer = ttk.Frame(
+            window, padding=(2 * _SPACE, _SPACE, 2 * _SPACE, 2 * _SPACE)
+        )
         footer.grid(row=3, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         footer.columnconfigure(1, weight=1)
@@ -834,7 +1018,7 @@ class _DiagnosticsWindow:
                 column=index % columns,
                 sticky="ew",
                 padx=(0, 8 if columns == 2 and index % 2 == 0 else 0),
-                pady=(0, 6),
+                pady=(0, _SPACE),
             )
 
     def refresh(self) -> None:
@@ -962,7 +1146,7 @@ class InstallerWindow:
         )
         self.root.geometry(self._bounded_geometry(800, 780))
         self.root.minsize(_HEADER_MIN_WIDTH, _HEADER_MIN_HEIGHT)
-        self.root.configure(background="#f4f7fb")
+        self.root.configure(background=_COLORS["canvas"])
         self.root.bind("<Return>", lambda _event: self._primary_requested())
         self.root.bind("<Escape>", lambda _event: self._close_requested())
         self.root.bind("<Alt-a>", lambda _event: self._toggle_advanced_from_key())
@@ -985,55 +1169,32 @@ class InstallerWindow:
     def _build_window(self) -> None:
         tk = self._tk
         ttk = self._ttk
-        style = ttk.Style(self.root)
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        style.configure("VIPP.TButton", font=("Segoe UI", 10), padding=(18, 9))
-        style.configure(
-            "VIPP.Primary.TButton",
-            font=("Segoe UI Semibold", 10),
-            padding=(22, 10),
-        )
-        style.configure("VIPP.TCheckbutton", background="#f4f7fb")
-        style.configure(
-            "VIPP.Stage.TLabel",
-            font=("Segoe UI", 10),
-            foreground="#526576",
-            background="#f4f7fb",
-            padding=(0, 3),
-        )
-        style.configure(
-            "VIPP.Stage.Active.TLabel",
-            font=("Segoe UI Semibold", 10),
-            foreground="#102a43",
-            background="#f4f7fb",
-            padding=(0, 3),
-        )
+        _configure_design_system(self.root)
 
-        self._header = tk.Frame(self.root, background="#08151F")
+        self._header = tk.Frame(self.root, background=_COLORS["header"])
         self._header.pack(fill="x")
         self._brand_image = self._load_brand_image()
         if self._brand_image is not None:
             self._brand_label = tk.Label(
                 self._header,
                 image=self._brand_image,
-                background="#08151F",
+                background=_COLORS["header"],
                 borderwidth=0,
             )
         else:
             self._brand_label = tk.Label(
                 self._header,
                 text="VIPP",
-                font=("Segoe UI Semibold", 27),
-                foreground="#F8FAFC",
-                background="#08151F",
+                font=_FONT_HEADLINE,
+                foreground=_COLORS["surface"],
+                background=_COLORS["header"],
             )
         self._tagline_label = tk.Label(
             self._header,
             text=VIPP_TAGLINE,
-            font=("Segoe UI", 10),
-            foreground="#d8e7f3",
-            background="#08151F",
+            font=_FONT_BODY,
+            foreground=_COLORS["header_text"],
+            background=_COLORS["header"],
             justify="left",
             anchor="w",
             wraplength=0,
@@ -1052,7 +1213,7 @@ class InstallerWindow:
         viewport.rowconfigure(0, weight=1)
         self._content_canvas = tk.Canvas(
             viewport,
-            background=style.lookup("TFrame", "background") or "#f0f0f0",
+            background=_COLORS["canvas"],
             borderwidth=0,
             highlightthickness=0,
         )
@@ -1065,7 +1226,10 @@ class InstallerWindow:
         self._content_scrollbar.grid(row=0, column=1, sticky="ns")
         self._content_canvas.configure(yscrollcommand=self._content_scrollbar.set)
 
-        outer = ttk.Frame(self._content_canvas, padding=(28, 20, 28, 16))
+        outer = ttk.Frame(
+            self._content_canvas,
+            padding=(3 * _SPACE, 3 * _SPACE, 3 * _SPACE, 2 * _SPACE),
+        )
         self._content_window = self._content_canvas.create_window(
             (0, 0),
             window=outer,
@@ -1078,13 +1242,13 @@ class InstallerWindow:
             tk.Label(
                 outer,
                 text=DEVELOPMENT_BUILD_LABEL,
-                font=("Segoe UI Semibold", 10),
-                foreground="#6b3a00",
-                background="#fff1cc",
+                font=_FONT_SECTION,
+                foreground=_COLORS["warning"],
+                background=_COLORS["warning_surface"],
                 anchor="w",
-                padx=10,
-                pady=7,
-            ).pack(fill="x", pady=(0, 14))
+                padx=2 * _SPACE,
+                pady=_SPACE,
+            ).pack(fill="x", pady=(0, 2 * _SPACE))
         self._build_setup_stages(outer)
         # Keep choices above the variable review/checking message. A method
         # recheck must not move the combobox out from under the pointer.
@@ -1093,7 +1257,7 @@ class InstallerWindow:
         ttk.Label(
             method_panel,
             text="Update method",
-            font=("Segoe UI Semibold", 10),
+            font=_FONT_SECTION,
         ).pack(anchor="w")
         self._strategy_control = ttk.Combobox(
             method_panel,
@@ -1101,8 +1265,9 @@ class InstallerWindow:
             values=tuple(_STRATEGY_LABELS),
             state="readonly",
             width=44,
+            font=_FONT_BODY,
         )
-        self._strategy_control.pack(anchor="w", fill="x", pady=(4, 5))
+        self._strategy_control.pack(anchor="w", fill="x", pady=(_SPACE, _SPACE))
         self._strategy_control.bind(
             "<<ComboboxSelected>>", lambda _event: self._update_method_changed()
         )
@@ -1117,81 +1282,84 @@ class InstallerWindow:
         self._headline_label = ttk.Label(
             outer,
             textvariable=self._headline,
-            font=("Segoe UI Semibold", 18),
+            font=_FONT_HEADLINE,
             wraplength=650,
         )
         self._headline_label.pack(anchor="w", fill="x")
         self._message_label = ttk.Label(
             outer,
             textvariable=self._message,
-            font=("Segoe UI", 10),
+            font=_FONT_BODY,
             wraplength=650,
             justify="left",
         )
-        self._message_label.pack(anchor="w", fill="x", pady=(10, 16))
+        self._message_label.pack(anchor="w", fill="x", pady=(_SPACE, 2 * _SPACE))
 
         self._selected_method_label = ttk.Label(
             outer,
             textvariable=self._selected_method,
-            font=("Segoe UI Semibold", 10),
+            font=_FONT_SECTION,
             wraplength=650,
             justify="left",
         )
 
         self._progress_panel = progress_panel = ttk.Frame(outer)
-        progress_panel.pack(fill="x", pady=(0, 4))
+        progress_panel.pack(fill="x", pady=(0, _SPACE))
+        self._progress_visible = True
         self._task_heading_label = ttk.Label(
             progress_panel,
             textvariable=self._task_heading,
-            font=("Segoe UI Semibold", 12),
+            font=_FONT_SECTION,
             wraplength=650,
         )
-        self._task_heading_label.pack(anchor="w", fill="x", pady=(0, 7))
+        self._task_heading_label.pack(anchor="w", fill="x", pady=(0, _SPACE))
         self._status_label = ttk.Label(
             progress_panel,
             textvariable=self._status,
-            font=("Segoe UI", 10),
+            font=_FONT_BODY,
             wraplength=650,
         )
         self._status_label.pack(anchor="w", fill="x", pady=(0, 8))
         self._progress = ttk.Progressbar(
             progress_panel, mode="indeterminate", maximum=100
         )
-        self._progress.pack(fill="x", pady=(0, 6))
+        self._progress.pack(fill="x", pady=(0, _SPACE))
         self._task_measurement_label = ttk.Label(
             progress_panel,
             textvariable=self._task_measurement,
-            font=("Segoe UI Semibold", 10),
+            font=_FONT_SECTION,
             wraplength=650,
         )
         self._task_measurement_label.pack(anchor="w", fill="x")
         self._total_elapsed_label = ttk.Label(
             progress_panel,
             textvariable=self._total_elapsed,
-            font=("Segoe UI Semibold", 10),
+            font=_FONT_SECTION,
             wraplength=650,
         )
-        self._total_elapsed_label.pack(anchor="w", fill="x", pady=(7, 0))
+        self._total_elapsed_label.pack(anchor="w", fill="x", pady=(_SPACE, 0))
         self._activity_label = ttk.Label(
             progress_panel,
             textvariable=self._activity,
-            font=("Segoe UI", 9),
-            foreground="#526576",
+            font=_FONT_BODY,
+            foreground=_COLORS["muted"],
             justify="left",
             anchor="w",
             wraplength=650,
         )
-        self._activity_label.pack(anchor="w", fill="x", pady=(4, 0))
-        self._install_checklist = ttk.Frame(progress_panel, padding=(0, 12, 0, 0))
+        self._activity_label.pack(anchor="w", fill="x", pady=(_SPACE, 0))
+        self._install_checklist = ttk.Frame(
+            progress_panel, padding=(0, 2 * _SPACE, 0, 0)
+        )
         self._install_checklist.columnconfigure(0, weight=1)
         self._install_phase_labels = []
         for index, (_key, label) in enumerate(_INSTALLATION_STAGES):
             item = ttk.Label(
                 self._install_checklist,
                 text=f"○ {index + 1}  {label}",
-                font=("Segoe UI", 9),
-                foreground="#526576",
-                padding=(0, 3, 8, 3),
+                font=_FONT_BODY,
+                foreground=_COLORS["muted"],
+                padding=(0, _SPACE // 2, _SPACE, _SPACE // 2),
                 anchor="w",
             )
             item.grid(row=index, column=0, sticky="ew")
@@ -1206,12 +1374,12 @@ class InstallerWindow:
             command=self._toggle_advanced,
             style="VIPP.TCheckbutton",
         )
-        advanced_toggle.pack(anchor="w", pady=(18, 4))
+        advanced_toggle.pack(anchor="w", pady=(2 * _SPACE, _SPACE))
 
-        self._advanced = ttk.Frame(outer, padding=(12, 10))
+        self._advanced = ttk.Frame(outer, padding=(0, _SPACE))
         self._build_advanced(self._advanced)
 
-        self._button_bar = ttk.Frame(main, padding=(28, 10, 28, 16))
+        self._button_bar = ttk.Frame(main, padding=(3 * _SPACE, 2 * _SPACE))
         self._button_bar.grid(row=1, column=0, sticky="ew")
         self._cancel = ttk.Button(
             self._button_bar,
@@ -1233,7 +1401,7 @@ class InstallerWindow:
             command=self._secondary_requested,
             style="VIPP.TButton",
         )
-        self._secondary.pack(side="right", padx=(0, 10))
+        self._secondary.pack(side="right", padx=(0, _SPACE))
 
         # Requested widths include the active Windows text scaling.  The
         # normal minimum remains compact, but grows at unusually high scaling
@@ -1252,9 +1420,9 @@ class InstallerWindow:
 
         self._stage_strip = steps = self._ttk.Frame(parent)
         steps.pack(fill="x", pady=(0, 16))
-        self._ttk.Label(
-            steps, text="Setup steps", font=("Segoe UI", 9), foreground="#526576"
-        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 3))
+        self._ttk.Label(steps, text="Setup steps", style="VIPP.Section.TLabel").grid(
+            row=0, column=0, columnspan=5, sticky="w", pady=(0, _SPACE)
+        )
         self._review_stage_label = self._ttk.Label(
             steps,
             text="● Review",
@@ -1262,7 +1430,9 @@ class InstallerWindow:
             anchor="w",
         )
         self._review_stage_label.grid(row=1, column=0, sticky="w")
-        self._ttk.Label(steps, text="→", padding=(14, 0)).grid(row=1, column=1)
+        self._ttk.Label(steps, text="→", style="VIPP.Arrow.TLabel").grid(
+            row=1, column=1
+        )
         self._install_stage_label = self._ttk.Label(
             steps,
             text="○ Install",
@@ -1270,7 +1440,9 @@ class InstallerWindow:
             anchor="w",
         )
         self._install_stage_label.grid(row=1, column=2, sticky="w")
-        self._ttk.Label(steps, text="→", padding=(14, 0)).grid(row=1, column=3)
+        self._ttk.Label(steps, text="→", style="VIPP.Arrow.TLabel").grid(
+            row=1, column=3
+        )
         self._ready_stage_label = self._ttk.Label(
             steps, text="○ Ready", style="VIPP.Stage.TLabel", anchor="w"
         )
@@ -1288,7 +1460,7 @@ class InstallerWindow:
     def _build_console(self, parent) -> None:
         tk, ttk = self._tk, self._ttk
         self._console_panel = panel = ttk.Frame(parent)
-        panel.pack(fill="x", pady=(12, 0))
+        panel.pack(fill="x", pady=(2 * _SPACE, 0))
         self._log_toggle = ttk.Checkbutton(
             panel,
             text="Show installation log",
@@ -1299,10 +1471,8 @@ class InstallerWindow:
         self._console_body = body = ttk.Frame(panel)
         # The whole diagnostic body, including its controls, is a disclosure.
         heading = ttk.Frame(body)
-        heading.pack(fill="x", pady=(8, 5))
-        ttk.Label(heading, text="Recent output", font=("Segoe UI Semibold", 10)).pack(
-            side="left"
-        )
+        heading.pack(fill="x", pady=(_SPACE, _SPACE))
+        ttk.Label(heading, text="Recent output", font=_FONT_SECTION).pack(side="left")
         ttk.Button(heading, text="Jump to latest", command=self._follow_console).pack(
             side="right"
         )
@@ -1312,10 +1482,10 @@ class InstallerWindow:
                 "Recent package output. Scroll up to pause following; select text "
                 "to copy. The full setup log is under Advanced details."
             ),
-            font=("Segoe UI", 9),
+            font=_FONT_BODY,
             wraplength=650,
         )
-        self._console_hint.pack(fill="x", pady=(0, 5))
+        self._console_hint.pack(fill="x", pady=(0, _SPACE))
         content = ttk.Frame(body)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
@@ -1325,12 +1495,12 @@ class InstallerWindow:
             height=8,
             width=1,
             wrap="word",
-            font=("Consolas", 9),
+            font=_FONT_CODE,
             relief="flat",
-            background="#10202e",
-            foreground="#e5edf4",
-            selectbackground="#315873",
-            selectforeground="#ffffff",
+            background=_COLORS["console"],
+            foreground=_COLORS["console_text"],
+            selectbackground=_COLORS["primary_hover"],
+            selectforeground=_COLORS["surface"],
             padx=10,
             pady=8,
             state="disabled",
@@ -1429,7 +1599,7 @@ class InstallerWindow:
         self._advanced_review = review = ttk.Frame(parent)
         review.grid(row=0, column=0, columnspan=2, sticky="ew")
         review.columnconfigure(0, weight=1)
-        ttk.Label(review, text="Computer use", font=("Segoe UI Semibold", 9)).grid(
+        ttk.Label(review, text="Computer use", font=_FONT_SECTION).grid(
             row=0,
             column=0,
             sticky="w",
@@ -1440,13 +1610,14 @@ class InstallerWindow:
             values=tuple(_TRACK_LABELS),
             state="readonly",
             width=42,
+            font=_FONT_BODY,
         )
         self._track_control.grid(
             row=1,
             column=0,
             columnspan=2,
             sticky="ew",
-            pady=(3, 10),
+            pady=(_SPACE, 2 * _SPACE),
         )
         self._track_control.bind(
             "<<ComboboxSelected>>",
@@ -1456,7 +1627,7 @@ class InstallerWindow:
         ttk.Label(
             review,
             text="Managed location",
-            font=("Segoe UI Semibold", 9),
+            font=_FONT_SECTION,
         ).grid(row=2, column=0, columnspan=2, sticky="w")
         self._install_root_control = ttk.Label(
             review,
@@ -1471,7 +1642,7 @@ class InstallerWindow:
             column=0,
             columnspan=2,
             sticky="ew",
-            pady=(3, 10),
+            pady=(_SPACE, 2 * _SPACE),
         )
 
         self._desktop_shortcut_control = ttk.Checkbutton(
@@ -1509,7 +1680,7 @@ class InstallerWindow:
 
         ttk.Button(
             parent, text="View diagnostics…", command=self._open_diagnostics
-        ).grid(row=2, column=0, sticky="w", pady=(14, 5))
+        ).grid(row=2, column=0, sticky="w", pady=(2 * _SPACE, _SPACE))
         ttk.Label(
             parent,
             text=(
@@ -1519,7 +1690,7 @@ class InstallerWindow:
             ),
             justify="left",
             wraplength=650,
-        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, _SPACE))
         self._raw_log_path = self._tk.StringVar(
             value="Raw setup log: available after installation starts"
         )
@@ -1528,7 +1699,7 @@ class InstallerWindow:
             textvariable=self._raw_log_path,
             wraplength=650,
             justify="left",
-            foreground="#526576",
+            foreground=_COLORS["muted"],
         )
         self._raw_log_path_label.grid(row=4, column=0, columnspan=2, sticky="ew")
         parent.columnconfigure(0, weight=1)
@@ -1577,6 +1748,7 @@ class InstallerWindow:
         self._last_rendered_screen = state.screen
         self._last_rendered_phase = phase
         self._state = state
+        self._sync_progress_visibility(state)
         self._render_setup_stage(state)
         self._update_installation_clock(state)
         self._record_status(state.status_message)
@@ -1615,7 +1787,7 @@ class InstallerWindow:
             self._progress.configure(mode="determinate", value=100)
         elif fraction is None:
             self._progress.configure(mode="indeterminate")
-            if state.screen in {
+            if self._progress_visible and state.screen in {
                 InstallerScreen.CHECKING,
                 InstallerScreen.WORKING,
                 InstallerScreen.CANCELLING,
@@ -1653,6 +1825,29 @@ class InstallerWindow:
             }
         ):
             self.root.after_idle(self._focus_primary_if_available)
+
+    def _sync_progress_visibility(self, state: InstallerViewState) -> None:
+        """Idle review/results are not work and must not display a progress bar."""
+
+        visible = state.screen in {
+            InstallerScreen.CHECKING,
+            InstallerScreen.WORKING,
+            InstallerScreen.CANCELLING,
+            InstallerScreen.SUCCESS,
+        } or (
+            state.installation_started_at is not None
+            and state.screen in {InstallerScreen.FAILED, InstallerScreen.CANCELLED}
+        )
+        if visible == self._progress_visible:
+            return
+        self._progress_visible = visible
+        if visible:
+            self._progress_panel.pack(
+                fill="x", pady=(0, _SPACE), before=self._console_panel
+            )
+        else:
+            self._progress.stop()
+            self._progress_panel.pack_forget()
 
     def _focus_primary_if_available(self) -> None:
         # Check at idle execution, not only when scheduling: a diagnostics or
@@ -1694,12 +1889,10 @@ class InstallerWindow:
             InstallerScreen.CANCELLING,
             InstallerScreen.CANCELLED,
             InstallerScreen.FAILED,
-        } and state.target_kind in {
-            TargetKind.NEW,
-            TargetKind.UPDATE,
-            TargetKind.REPAIR,
         }:
-            self._installation_started = True
+            # A discovered target alone does not prove approval happened.
+            # Preflight can fail for an UPDATE without ever starting an install.
+            self._installation_started = state.installation_started_at is not None
 
         installing = self._installation_started
         if installing and not previous_started:
@@ -1816,17 +2009,14 @@ class InstallerWindow:
                 label.configure(
                     text=text,
                     foreground={
-                        "complete": "#356447",
-                        "current": "#102a43",
-                        "pending": "#66788a",
-                        "stopped": "#8a4700",
+                        "complete": _COLORS["accent"],
+                        "current": _COLORS["ink"],
+                        "pending": _COLORS["muted"],
+                        "stopped": _COLORS["warning"],
                     }[status],
-                    font=(
-                        "Segoe UI Semibold"
-                        if status in {"current", "stopped"}
-                        else "Segoe UI",
-                        9,
-                    ),
+                    font=_FONT_SECTION
+                    if status in {"current", "stopped"}
+                    else _FONT_BODY,
                 )
         else:
             heading = (
