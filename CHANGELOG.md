@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Open VIPP from Windows setup with the selected installation's own Python/DLL
+  search paths rather than the setup caller's Python/Qt overrides or frozen DLL
+  directory. This avoids cross-runtime OpenSSL DLL conflicts without changing
+  the computer's PATH or reinstalling packages.
+
 - Windows setup offers a default-when-safe incremental update and an explicit
   fresh environment. Incremental app-only updates reuse verified installed
   dependencies in a staged replacement; both paths retain rollback and use

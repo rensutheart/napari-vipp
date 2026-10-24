@@ -6,14 +6,18 @@ import json
 import os
 import secrets
 import subprocess
+import sys
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from napari_vipp.installer.discovery import (
     DiscoveryServices,
+    _read_pyvenv_configuration,
+    _unsafe_pyvenv_base_path,
     default_services,
     discover_installation,
 )
@@ -61,6 +65,27 @@ from napari_vipp.installer.python_discovery import (
 _SETUP_HELP_URL = (
     "https://rensutheart.github.io/vipp-mkdocs/stable/"
     "getting-started/installation/#troubleshooting"
+)
+
+_DLL_DIRECTORY_LOCK = threading.Lock()
+# These select another interpreter's modules or another Qt build's loader/ABI.
+# They cannot safely cross into a separately managed application. Other Python
+# controls (for example bytecode policy), CUDA configuration, custom PATH entries
+# and non-loader Qt diagnostics remain unchanged in the child's environment.
+_CROSS_RUNTIME_OVERRIDES = frozenset(
+    {
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "QT_API",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "QT_QPA_PLATFORM",
+        "QML_IMPORT_PATH",
+        "QML2_IMPORT_PATH",
+        "QTWEBENGINEPROCESS_PATH",
+        "QTWEBENGINE_RESOURCES_PATH",
+        "QTWEBENGINE_LOCALES_PATH",
+    }
 )
 
 
@@ -683,16 +708,19 @@ class WindowsInstallerBackend:
             self._services,
             launcher=launcher,
         )
-        subprocess.Popen(
-            (str(launcher), "--desktop"),
-            cwd=str(working_directory),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            shell=False,
-            creationflags=creationflags,
-        )
+        environment = _vipp_launch_environment(launcher, self._services, self._environ)
+        with _external_program_dll_directory():
+            subprocess.Popen(
+                (str(launcher), "--desktop"),
+                cwd=str(working_directory),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                shell=False,
+                creationflags=creationflags,
+            )
 
     def open_owned_uninstaller(self, prepared: PreparedInstall) -> None:
         """Revalidate and launch one exact ownership-recorded uninstaller."""
@@ -1489,6 +1517,196 @@ def _stable_launch_directory(
     raise RuntimeError(
         "Windows could not find a stable Documents or home folder for VIPP."
     )
+
+
+def _vipp_launch_environment(
+    launcher: Path,
+    services: DiscoveryServices,
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    """Isolate one managed Python/Qt child without changing caller settings.
+
+    A venv's Python DLLs can live outside that venv. Prepending only Scripts is
+    insufficient: a Qt OpenSSL dependency might otherwise find a different tool's
+    DLL on inherited PATH. Derive the actual base from local venv metadata, never
+    from the installer's Python, PATH, a fixed drive, or an interpreter subprocess.
+    """
+
+    environment = Path(os.path.abspath(launcher.parent.parent))
+    _safe_launch_path(launcher, services, directory=False)
+    _safe_launch_path(environment, services, directory=True)
+    configuration_path = environment / "pyvenv.cfg"
+    _safe_launch_path(configuration_path, services, directory=False)
+    try:
+        with configuration_path.open("rb") as stream:
+            raw_configuration = stream.read(64 * 1024 + 1)
+        text = raw_configuration.decode("utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(
+            "The VIPP environment's pyvenv.cfg could not be read."
+        ) from exc
+    if len(raw_configuration) > 64 * 1024:
+        raise RuntimeError("The VIPP environment's pyvenv.cfg is unexpectedly large.")
+    configuration = _read_pyvenv_configuration(environment, text=text)
+    problem = configuration.error or _unsafe_pyvenv_base_path(configuration, services)
+    if (
+        not configuration.present
+        or configuration.include_system_site_packages is not False
+        or configuration.home is None
+        or problem
+    ):
+        raise RuntimeError(
+            "The VIPP environment's base Python could not be verified. "
+            + (problem or "A private pyvenv.cfg is required.")
+        )
+    base = configuration.home
+    executable = configuration.executable or base / "python.exe"
+    if not _same_path(executable.parent, base):
+        raise RuntimeError("The VIPP environment's base Python metadata disagrees.")
+    _safe_launch_path(base, services, directory=True)
+    _safe_launch_path(executable, services, directory=False)
+    # Corroborate managed layouts against the already accepted ownership record.
+    # Other verified venv callers still have their own local pyvenv.cfg boundary.
+    if (
+        environment.parent.name == MANAGED_ENVIRONMENTS_DIRECTORY
+        and environment.parent.parent.name == OWNERSHIP_DIRECTORY
+    ):
+        inspection = inspect_ownership(environment.parent.parent.parent)
+        record = inspection.record
+        if (
+            inspection.state is not OwnershipState.VALID
+            or record is None
+            or not _same_path(record.environment_root, environment)
+            or not _same_path(record.base_python, executable)
+        ):
+            raise RuntimeError(
+                "The VIPP launch environment differs from its accepted ownership."
+            )
+    directories = [launcher.parent, environment]
+    for optional in (
+        base / "DLLs",
+        base,
+        environment / "DLLs",
+        environment / "Library" / "bin",
+        environment / "Lib" / "site-packages" / "PyQt6" / "Qt6" / "bin",
+        environment / "Lib" / "site-packages" / "PySide6",
+        environment / "Lib" / "site-packages" / "PySide6" / "Qt" / "bin",
+    ):
+        if optional.exists():
+            _safe_launch_path(optional, services, directory=True)
+            directories.append(optional)
+
+    child = {
+        key: value
+        for key, value in environ.items()
+        if key.upper() not in _CROSS_RUNTIME_OVERRIDES and key.upper() != "PATH"
+    }
+    inherited_path = next(
+        (value for key, value in environ.items() if key.upper() == "PATH"), ""
+    )
+    frozen_root = (
+        getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
+    )
+    frozen_root = Path(frozen_root) if frozen_root else None
+    entries = [str(directory) for directory in directories]
+    for component in inherited_path.split(os.pathsep):
+        selected = component.strip('"')
+        if (
+            frozen_root is not None
+            and selected
+            and _same_or_descendant(Path(selected), frozen_root)
+        ):
+            continue
+        # Preserve unrelated user/tool/CUDA PATH components and their ordering.
+        entries.append(component)
+    child["PATH"] = os.pathsep.join(dict.fromkeys(entries))
+    return child
+
+
+def _safe_launch_path(
+    path: Path, services: DiscoveryServices, *, directory: bool
+) -> None:
+    """Never promote redirected, missing or remote directories into DLL PATH."""
+
+    try:
+        unsafe = (
+            not path.is_absolute()
+            or str(path).startswith(("\\\\", "//"))
+            or path.is_symlink()
+            or services.reparse_probe(path)
+            or (
+                services.remote_path_probe is not None
+                and services.remote_path_probe(path)
+            )
+        )
+        exists = path.is_dir() if directory else path.is_file()
+    except Exception as exc:
+        raise RuntimeError(
+            f"The VIPP launch path could not be verified: {path}"
+        ) from exc
+    if unsafe or not exists:
+        raise RuntimeError(f"The VIPP launch path is missing or unsafe: {path}")
+
+
+class _WindowsDllDirectory:
+    """Small injectable Win32 boundary; never used on an unfrozen launch."""
+
+    def __init__(self) -> None:
+        import ctypes
+
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.GetDllDirectoryW.argtypes = [ctypes.c_uint32, ctypes.c_wchar_p]
+        self._kernel32.GetDllDirectoryW.restype = ctypes.c_uint32
+        self._kernel32.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+        self._kernel32.SetDllDirectoryW.restype = ctypes.c_int
+
+    def get(self) -> str:
+        ctypes = self._ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        ctypes.set_last_error(0)
+        size = self._kernel32.GetDllDirectoryW(len(buffer), buffer)
+        error = ctypes.get_last_error()
+        if size >= len(buffer) or (size == 0 and error):
+            raise OSError(error, "Windows could not snapshot its DLL directory.")
+        return buffer.value
+
+    def set(self, directory: str | None) -> None:
+        if not self._kernel32.SetDllDirectoryW(directory):
+            raise OSError(
+                self._ctypes.get_last_error(),
+                "Windows could not change its temporary DLL directory.",
+            )
+
+
+def _windows_dll_directory_api() -> _WindowsDllDirectory:
+    return _WindowsDllDirectory()
+
+
+@contextmanager
+def _external_program_dll_directory() -> Iterator[None]:
+    """Undo frozen-loader inheritance only for the duration of child creation.
+
+    PyInstaller's SetDllDirectory is inherited independently of env/PATH. Keep
+    this unavoidable process-global transition serialized and restore the actual
+    prior path, not an assumed _MEIPASS. An empty snapshot means no additional
+    DLL directory: leave it untouched, preserving NULL-versus-empty semantics.
+    """
+
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        yield
+        return
+    with _DLL_DIRECTORY_LOCK:
+        api = _windows_dll_directory_api()
+        previous = api.get()
+        if not previous:
+            yield
+            return
+        try:
+            api.set(None)
+            yield
+        finally:
+            api.set(previous)
 
 
 def _same_or_descendant(path: Path, parent: Path) -> bool:

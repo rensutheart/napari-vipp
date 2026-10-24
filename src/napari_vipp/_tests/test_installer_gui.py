@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import subprocess
 import sys
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +36,222 @@ from napari_vipp.installer.gui import (
     build_parser,
 )
 from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
+from napari_vipp.installer.ownership import (
+    OwnedPackage,
+    OwnershipRecord,
+    managed_environments_root,
+    write_ownership_record,
+)
+
+
+def _existing_open_target(tmp_path, track):
+    target = tmp_path / "private test location" / "environments" / track.value
+    environment = managed_environments_root(target) / "installed-version"
+    scripts = environment / "Scripts"
+    scripts.mkdir(parents=True)
+    marker = environment / ".vipp-install-candidate.json"
+    marker.write_text("{}", encoding="utf-8")
+    (environment / "pyvenv.cfg").write_text("home = fixture-base\n", encoding="utf-8")
+    (scripts / "python.exe").touch()
+    (scripts / "vipp-app.exe").write_bytes(b"fixture launcher")
+    record = OwnershipRecord(
+        installation_id=str(uuid.uuid4()),
+        managed_root=target,
+        environment_root=environment,
+        distribution="napari-vipp",
+        version="0.16.0a7",
+        track=track,
+        base_python=tmp_path / "separate base" / "python.exe",
+        resolved_plan_id="c" * 64,
+        packages=(OwnedPackage("napari-vipp", "0.16.0a7", "d" * 64),),
+        created_at="2026-10-24T00:00:00Z",
+        updated_at="2026-10-24T00:00:00Z",
+        environment_marker_sha256=hashlib.sha256(marker.read_bytes()).hexdigest(),
+    )
+    write_ownership_record(target, record)
+    return target, record
+
+
+class _OpenOnlyBackend:
+    def __init__(self):
+        self.opened = []
+
+    def open_vipp(self, launcher):
+        self.opened.append(launcher)
+
+    def __getattr__(self, name):
+        raise AssertionError(f"Launch-only must not enter setup: {name}")
+
+
+@pytest.mark.parametrize("track", tuple(ComputeTrack))
+def test_open_installed_is_read_only_and_independent_of_bundled_version(
+    tmp_path, monkeypatch, track
+):
+    from napari_vipp.installer import discovery
+
+    target, record = _existing_open_target(tmp_path, track)
+    monkeypatch.setattr(
+        discovery, "_windows_known_folder", lambda _: tmp_path / "local"
+    )
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+    before = {str(p): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", track.value, "--install-root", str(target)],
+            backend=backend,
+        )
+        == 0
+    )
+    assert backend.opened == [record.environment_root / "Scripts" / "vipp-app.exe"]
+    assert before == {str(p): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(
+    "damage", ["absent", "wrong-track", "launcher", "journal", "marker"]
+)
+def test_open_installed_refuses_unready_roots_without_setup(
+    tmp_path, monkeypatch, damage
+):
+    from napari_vipp.installer import discovery, engine
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    local = tmp_path / "local"
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: local)
+    track = "cpu"
+    if damage == "absent":
+        target = tmp_path / "unowned"
+    elif damage == "wrong-track":
+        track = "cuda13"
+    elif damage == "launcher":
+        (record.environment_root / "Scripts" / "vipp-app.exe").unlink()
+    elif damage == "marker":
+        (record.environment_root / ".vipp-install-candidate.json").write_text(
+            "changed", encoding="utf-8"
+        )
+    else:
+        journal = engine._transaction_journal_path(local / "VIPP" / "installer", target)
+        journal.parent.mkdir(parents=True)
+        journal.write_text("preserve pending transaction", encoding="utf-8")
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", track, "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert not backend.opened
+    if damage == "journal":
+        assert journal.read_text(encoding="utf-8") == "preserve pending transaction"
+
+
+def test_open_installed_rechecks_manifest_before_spawn(tmp_path, monkeypatch):
+    from napari_vipp.installer import discovery, ownership
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: None)
+    original = ownership.inspect_ownership
+    calls = []
+
+    def changed(root):
+        calls.append(root)
+        if len(calls) == 2:
+            write_ownership_record(
+                target, replace(record, updated_at="2026-10-24T01:00Z")
+            )
+        return original(root)
+
+    monkeypatch.setattr(ownership, "inspect_ownership", changed)
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", "cpu", "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert len(calls) == 2
+    assert not backend.opened
+
+
+def test_open_installed_bounds_marker_read_even_if_file_grows(tmp_path, monkeypatch):
+    from napari_vipp.installer import discovery
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: None)
+    marker = record.environment_root / ".vipp-install-candidate.json"
+    original_open = Path.open
+    reads = []
+
+    class GrowingMarker(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    def open_file(path, *args, **kwargs):
+        if path == marker:
+            return GrowingMarker(b"x" * (1024 * 1024 + 10))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_file)
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", "cpu", "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert reads == [1024 * 1024 + 1]
+    assert not backend.opened
+
+
+@pytest.mark.parametrize("damage", ["redirected-launcher", "custom-root-journal"])
+def test_open_installed_checks_direct_paths_and_custom_journal(
+    tmp_path, monkeypatch, damage
+):
+    from napari_vipp.installer import discovery, engine
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: None)
+    if damage == "redirected-launcher":
+        original = engine._path_has_reparse_component
+        launcher = record.environment_root / "Scripts" / "vipp-app.exe"
+        monkeypatch.setattr(
+            engine,
+            "_path_has_reparse_component",
+            lambda path: path == launcher or original(path),
+        )
+    else:
+        journal = engine._transaction_journal_path(
+            target.parent.parent / "installer", target
+        )
+        journal.parent.mkdir(parents=True)
+        journal.write_text("pending", encoding="utf-8")
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", "cpu", "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert not backend.opened
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        ["--track", "cpu", "--base-python", "other"],
+        ["--track", "cpu", "--update-strategy", "fresh"],
+    ],
+)
+def test_open_installed_requires_explicit_track_and_no_install_options(extra):
+    backend = _OpenOnlyBackend()
+    assert gui_module.main(["--open-installed", *extra], backend=backend) == 1
+    assert not backend.opened
 
 
 class _Controller:

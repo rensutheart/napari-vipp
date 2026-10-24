@@ -1,8 +1,8 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev4`; this is not a public release. The earlier
-`dev1`/`dev2`/`dev3` artifacts and failed trials remain retained as qualification evidence.
+Development build: `0.16.0a8.dev5`; this is not a public release. The earlier
+`dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
 
@@ -59,6 +59,18 @@ Present-but-altered or redirected old files remain blocked. A change in that
 old-file state invalidates the review. No old uninstaller is ever executed.
 
 ## Qualification and handoff
+
+Open VIPP is a separate launch boundary. Discover the selected environment and
+its declared base Python without probing another interpreter; use those DLL
+directories first, exclude the frozen setup directory and cross-runtime Python/Qt
+loader overrides from the child, and temporarily reset/restore the frozen Windows
+DLL directory around process creation. Do not alter persistent PATH, special-case
+a caller/tool/vendor, or reinstall packages to correct inherited search state.
+The read-only diagnostic `--open-installed` route requires an explicit compute
+track and verified owned, healthy installed-version identity. It never enters
+setup preparation, transaction recovery, registration repair or package apply;
+the same backend Open path is used by the setup button. This permits frozen
+launch regression testing against an existing disposable installation.
 
 Run focused installer/controller/GUI/cache/copy tests, including stale approval,
 failure, cancellation, byte/hash damage, fresh fallback and launchers. Exercise

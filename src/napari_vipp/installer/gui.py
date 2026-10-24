@@ -7,6 +7,7 @@ therefore stays independent of napari, Qt, NumPy, and every GPU library.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import os
 import queue
@@ -311,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--install-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--base-python", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--open-installed", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--update-strategy",
         choices=tuple(item.value for item in UpdateStrategy),
@@ -1469,6 +1471,84 @@ class InstallerWindow:
         widget.configure(state="normal" if enabled else "disabled")
 
 
+def _open_installed(selection: InstallerSelection, backend: InstallerBackend) -> None:
+    """Open an owned current runtime without entering any setup/recovery path.
+
+    This diagnostic entry point also exercises the frozen launch boundary without
+    requiring an update. It deliberately assesses the *installed* version, not
+    the version bundled in this setup program. No registry authority is needed
+    to launch a custom owned root; it does not authorize changes to that root.
+    """
+    from napari_vipp.installer.discovery import _windows_known_folder
+    from napari_vipp.installer.engine import (
+        ManagedTargetKind,
+        _path_has_reparse_component,
+        _transaction_journal_path,
+        inspect_managed_target,
+    )
+    from napari_vipp.installer.models import ComputeTrack, ReleaseSpec
+    from napari_vipp.installer.ownership import OwnershipState, inspect_ownership
+
+    if selection.track is TrackChoice.AUTOMATIC:
+        raise ValueError("Opening an installed VIPP requires an explicit --track.")
+    local = _windows_known_folder("local_app_data")
+    target = selection.install_root
+    if target is None:
+        if local is None:
+            raise ValueError("The current account's VIPP location is unavailable.")
+        target = local / "VIPP" / "environments" / selection.track.value
+    if not target.is_absolute():
+        raise ValueError("The existing installation location must be absolute.")
+    before = inspect_ownership(target)
+    record = before.record
+    if before.state is not OwnershipState.VALID or record is None:
+        raise ValueError(before.error or "This is not a verified VIPP installation.")
+    if record.distribution.lower().replace("_", "-") != "napari-vipp":
+        raise ValueError("This ownership record does not belong to VIPP.")
+    inspection = inspect_managed_target(
+        target,
+        release=ReleaseSpec(record.distribution, record.version),
+        track=ComputeTrack(selection.track.value),
+        exhaustive=False,
+    )
+    if inspection.kind is not ManagedTargetKind.CURRENT:
+        raise ValueError(inspection.reason)
+    # Inspect only known journal locations; never run the recovery engine here.
+    state_roots = []
+    if local is not None:
+        state_roots.append(local / "VIPP" / "installer")
+    if target.parent.name.lower() == "environments":
+        state_roots.append(target.parent.parent / "installer")
+    for state_root in state_roots:
+        journal = _transaction_journal_path(state_root, target)
+        if journal.exists() or _path_has_reparse_component(journal):
+            raise ValueError("Finish or recover the pending VIPP setup before opening.")
+    launcher = record.environment_root / "Scripts" / "vipp-app.exe"
+    marker = record.environment_root / ".vipp-install-candidate.json"
+    for path in (
+        record.environment_root / "pyvenv.cfg",
+        record.environment_root / "Scripts" / "python.exe",
+        launcher,
+        marker,
+    ):
+        if not path.is_file() or _path_has_reparse_component(path):
+            raise ValueError("The installed VIPP runtime is missing or redirected.")
+    with marker.open("rb") as stream:
+        marker_bytes = stream.read(1024 * 1024 + 1)
+    if len(marker_bytes) > 1024 * 1024 or (
+        hashlib.sha256(marker_bytes).hexdigest() != record.environment_marker_sha256
+    ):
+        raise ValueError("The installed VIPP environment marker has changed.")
+    after = inspect_ownership(target)
+    if (
+        after.state is not OwnershipState.VALID
+        or after.manifest_sha256 != before.manifest_sha256
+        or after.record != record
+    ):
+        raise ValueError("The VIPP installation changed while preparing to open.")
+    backend.open_vipp(launcher)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -1477,30 +1557,42 @@ def main(
     """Open the setup window.  This is the PyInstaller GUI entry point."""
 
     args = build_parser().parse_args(argv)
-    try:
-        import tkinter as tk
-    except ImportError as exc:
-        print(f"VIPP Setup needs the Windows Tk runtime: {exc}", file=sys.stderr)
-        return 1
     if os.name != "nt" and backend is None:
         print("The VIPP setup program currently supports Windows.", file=sys.stderr)
         return 2
+    selection = InstallerSelection(
+        track=TrackChoice(args.track),
+        install_root=args.install_root,
+        update_strategy=UpdateStrategy(args.update_strategy),
+    )
     selected_backend = backend
     if selected_backend is None:
         from napari_vipp.installer.windows_backend import WindowsInstallerBackend
 
         selected_backend = WindowsInstallerBackend(preferred_python=args.base_python)
+    if args.open_installed:
+        try:
+            if args.base_python or selection.update_strategy is not UpdateStrategy.AUTO:
+                raise ValueError("Opening VIPP cannot select an install/update method.")
+            _close_frozen_splash()
+            _open_installed(selection, selected_backend)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(
+                f"VIPP Setup could not open the installed VIPP: {exc}", file=sys.stderr
+            )
+            return 1
+        return 0
+    try:
+        import tkinter as tk
+    except ImportError as exc:
+        print(f"VIPP Setup needs the Windows Tk runtime: {exc}", file=sys.stderr)
+        return 1
     try:
         root = tk.Tk()
     except tk.TclError as exc:
         print(f"VIPP Setup could not open its window: {exc}", file=sys.stderr)
         return 1
     _close_frozen_splash()
-    selection = InstallerSelection(
-        track=TrackChoice(args.track),
-        install_root=args.install_root,
-        update_strategy=UpdateStrategy(args.update_strategy),
-    )
     InstallerWindow(root, selected_backend, initial_selection=selection)
     root.mainloop()
     return 0

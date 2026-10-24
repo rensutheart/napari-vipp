@@ -21,6 +21,9 @@ local development installer. No release/publication is authorized by this work;
 preserve unfinished AI work and all existing installations during testing.
 Include an explicit, backed-up Windows registration repair review for verified
 same-installation stale entries; do not silently bypass update ownership checks.
+The approved 2026-10-24 follow-up isolates **Open VIPP** from caller/frozen DLL
+search state generically, without persistent PATH changes or GPU reinstallation;
+qualify the rebuilt private installer against an already-owned disposable runtime.
 
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished

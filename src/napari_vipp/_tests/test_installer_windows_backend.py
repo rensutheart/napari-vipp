@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from napari_vipp.installer import discovery as discovery_module
+from napari_vipp.installer import windows_backend as windows_backend_module
 from napari_vipp.installer.discovery import (
     DiscoveryServices,
     InterpreterProbe,
@@ -1751,10 +1752,7 @@ def test_open_vipp_uses_documents_not_the_replaceable_environment(
     tmp_path,
     monkeypatch,
 ):
-    launcher = tmp_path / "managed" / ".vipp" / "environments" / "current"
-    launcher = launcher / "Scripts" / "vipp-cpu.exe"
-    launcher.parent.mkdir(parents=True)
-    launcher.touch()
+    launcher, _base = _launch_environment_fixture(tmp_path)
     calls = []
     monkeypatch.setattr(
         "napari_vipp.installer.windows_backend.subprocess.Popen",
@@ -1776,6 +1774,351 @@ def test_open_vipp_uses_documents_not_the_replaceable_environment(
         )
     else:
         assert calls[0][1]["creationflags"] == 0
+
+
+def _launch_environment_fixture(tmp_path):
+    """Different arbitrary locations model a venv backed by another volume."""
+
+    environment = tmp_path / "application storage" / "accepted environment"
+    base = tmp_path / "independent Python location"
+    for directory in (
+        environment / "Scripts",
+        environment / "Lib" / "site-packages" / "PyQt6" / "Qt6" / "bin",
+        base / "DLLs",
+    ):
+        directory.mkdir(parents=True)
+    launcher = environment / "Scripts" / "vipp-cpu.exe"
+    launcher.touch()
+    (base / "python.exe").touch()
+    (environment / "pyvenv.cfg").write_text(
+        f"home = {base}\ninclude-system-site-packages = false\n"
+        f"executable = {base / 'python.exe'}\n",
+        encoding="utf-8",
+    )
+    return launcher, base
+
+
+class _DllDirectory:
+    def __init__(self, directory):
+        self.directory = directory
+        self.writes = []
+
+    def get(self):
+        return self.directory
+
+    def set(self, directory):
+        self.writes.append(directory)
+        self.directory = directory
+
+
+def _frozen_launch_fixture(monkeypatch, *, directory="unrelated prior DLL directory"):
+    api = _DllDirectory(directory)
+    monkeypatch.setattr(
+        windows_backend_module,
+        "sys",
+        SimpleNamespace(platform="win32", frozen=True),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        windows_backend_module,
+        "_windows_dll_directory_api",
+        lambda: api,
+        raising=False,
+    )
+    return api
+
+
+def test_open_vipp_isolates_child_loader_environment_without_changing_parent(
+    tmp_path, monkeypatch
+):
+    launcher, base = _launch_environment_fixture(tmp_path)
+    environment = launcher.parent.parent
+    frozen = tmp_path / "arbitrary frozen payload"
+    custom = str(tmp_path / "custom command tools")
+    foreign = str(tmp_path / "different tool runtime" / "Library" / "bin")
+    similar = str(frozen.with_name(frozen.name + "-unrelated"))
+    inherited = {
+        "Path": os.pathsep.join(
+            [foreign, str(frozen), str(frozen / "nested"), similar, custom]
+        ),
+        "PYTHONHOME": "another interpreter",
+        "pythonpath": "injected modules",
+        "QT_API": "another binding",
+        "QT_PLUGIN_PATH": "another Qt plugins directory",
+        "QT_QPA_PLATFORM_PLUGIN_PATH": "another platforms directory",
+        "QT_QPA_PLATFORM": "offscreen",
+        "QML2_IMPORT_PATH": "another QML ABI",
+        "CUDA_PATH": "user CUDA toolkit",
+        "CUDA_VISIBLE_DEVICES": "1",
+        "QT_DEBUG_PLUGINS": "1",
+        "CUSTOM_PLUGIN_CONFIGURATION": "keep this",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "VIPP_WORKFLOW_RECOVERY_ROOT": "owned test recovery",
+        "NAPARI_CONFIG": "owned test settings",
+    }
+    original = dict(inherited)
+    parent_environment = dict(os.environ)
+    api = _frozen_launch_fixture(monkeypatch)
+    windows_backend_module.sys._MEIPASS = str(frozen)
+    calls = []
+    dll_directories_during_spawn = []
+
+    def popen(argv, **kwargs):
+        assert windows_backend_module._DLL_DIRECTORY_LOCK.locked()
+        dll_directories_during_spawn.append(api.directory)
+        calls.append((argv, kwargs))
+
+    monkeypatch.setattr(windows_backend_module.subprocess, "Popen", popen)
+    backend = WindowsInstallerBackend(services=_services(tmp_path), environ=inherited)
+
+    backend.open_vipp(launcher)
+
+    child = calls[0][1]["env"]
+    components = child["PATH"].split(os.pathsep)
+    assert components.index(str(base / "DLLs")) < components.index(foreign)
+    assert components.index(str(base)) < components.index(foreign)
+    assert components.index(str(launcher.parent)) < components.index(foreign)
+    qt_bin = environment / "Lib" / "site-packages" / "PyQt6" / "Qt6" / "bin"
+    assert components.index(str(qt_bin)) < components.index(foreign)
+    assert components[-3:] == [foreign, similar, custom]
+    assert str(frozen) not in components
+    assert str(frozen / "nested") not in components
+    for name in (
+        "pythonhome",
+        "pythonpath",
+        "qt_api",
+        "qt_plugin_path",
+        "qt_qpa_platform_plugin_path",
+        "qt_qpa_platform",
+        "qml2_import_path",
+    ):
+        assert name not in {key.casefold() for key in child}
+    for name in (
+        "CUDA_PATH",
+        "CUDA_VISIBLE_DEVICES",
+        "QT_DEBUG_PLUGINS",
+        "CUSTOM_PLUGIN_CONFIGURATION",
+        "PYTHONDONTWRITEBYTECODE",
+        "VIPP_WORKFLOW_RECOVERY_ROOT",
+        "NAPARI_CONFIG",
+    ):
+        assert child[name] == original[name]
+    assert inherited == original
+    assert dict(os.environ) == parent_environment
+    assert dll_directories_during_spawn == [None]
+    assert api.directory == "unrelated prior DLL directory"
+    assert api.writes == [None, "unrelated prior DLL directory"]
+    assert not windows_backend_module._DLL_DIRECTORY_LOCK.locked()
+
+
+@pytest.mark.parametrize("platform,frozen", [("linux", True), ("win32", False)])
+def test_open_vipp_does_not_change_loader_state_outside_frozen_windows(
+    tmp_path, monkeypatch, platform, frozen
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    monkeypatch.setattr(
+        windows_backend_module,
+        "sys",
+        SimpleNamespace(platform=platform, frozen=frozen),
+    )
+
+    def forbidden():
+        pytest.fail("Non-Windows/unfrozen Open must not access the DLL-directory API.")
+
+    monkeypatch.setattr(windows_backend_module, "_windows_dll_directory_api", forbidden)
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+        launcher
+    )
+
+    assert len(calls) == 1
+    assert "env" in calls[0]
+
+
+def test_open_vipp_leaves_an_empty_prior_dll_directory_exactly_untouched(
+    tmp_path, monkeypatch
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    api = _frozen_launch_fixture(monkeypatch, directory="")
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+        launcher
+    )
+
+    assert len(calls) == 1
+    assert api.directory == ""
+    assert api.writes == []
+
+
+@pytest.mark.parametrize("failure", ["snapshot", "reset", "restore"])
+def test_open_vipp_surfaces_loader_failures_and_restores_after_reset_failure(
+    tmp_path, monkeypatch, failure
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    api = _frozen_launch_fixture(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+    original_set = api.set
+
+    def get():
+        if failure == "snapshot":
+            raise OSError("snapshot failed")
+        return api.directory
+
+    def set_directory(directory):
+        original_set(directory)
+        if (failure == "reset" and directory is None) or (
+            failure == "restore" and directory is not None
+        ):
+            raise OSError(f"{failure} failed")
+
+    api.get = get
+    api.set = set_directory
+
+    with pytest.raises(OSError, match=f"{failure} failed"):
+        WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+            launcher
+        )
+
+    assert len(calls) == (1 if failure == "restore" else 0)
+    assert not windows_backend_module._DLL_DIRECTORY_LOCK.locked()
+    if failure != "snapshot":
+        assert api.writes == [None, "unrelated prior DLL directory"]
+        assert api.directory == "unrelated prior DLL directory"
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["relative-base", "different-base", "redirected-dlls"]
+)
+def test_open_vipp_rejects_unsafe_base_metadata_before_spawning(
+    tmp_path, monkeypatch, unsafe
+):
+    launcher, base = _launch_environment_fixture(tmp_path)
+    services = _services(tmp_path)
+    if unsafe == "relative-base":
+        (launcher.parent.parent / "pyvenv.cfg").write_text(
+            "home = relative-python\ninclude-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+    elif unsafe == "different-base":
+        unrelated = tmp_path / "unrelated runtime" / "python.exe"
+        unrelated.parent.mkdir()
+        unrelated.touch()
+        (launcher.parent.parent / "pyvenv.cfg").write_text(
+            f"home = {base}\ninclude-system-site-packages = false\n"
+            f"executable = {unrelated}\n",
+            encoding="utf-8",
+        )
+    else:
+        services = replace(services, reparse_probe=lambda path: path == base / "DLLs")
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    with pytest.raises(RuntimeError, match="base Python|unsafe"):
+        WindowsInstallerBackend(services=services, environ={}).open_vipp(launcher)
+
+    assert calls == []
+
+
+def test_open_vipp_reads_one_bounded_configuration_snapshot(tmp_path, monkeypatch):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    configuration = launcher.parent.parent / "pyvenv.cfg"
+    original_open = Path.open
+    reads = []
+
+    class GrowingConfiguration:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size):
+            reads.append(size)
+            return b"x" * size
+
+    def open_path(path, *args, **kwargs):
+        if path == configuration:
+            return GrowingConfiguration()
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_path)
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    with pytest.raises(RuntimeError, match="unexpectedly large"):
+        WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+            launcher
+        )
+
+    assert reads == [64 * 1024 + 1]
+    assert calls == []
+
+
+def test_open_vipp_rejects_a_base_differing_from_accepted_ownership(
+    tmp_path, monkeypatch
+):
+    launcher, base = _launch_environment_fixture(tmp_path)
+    target = tmp_path / "managed root"
+    _write_owned_cuda_installation(
+        target, base_python=tmp_path / "other Python" / "python.exe"
+    )
+    record = inspect_ownership(target).record
+    assert record is not None
+    environment = record.environment_root
+    owned_launcher = environment / "Scripts" / launcher.name
+    owned_launcher.parent.mkdir(parents=True)
+    owned_launcher.touch()
+    (environment / "pyvenv.cfg").write_text(
+        f"home = {base}\ninclude-system-site-packages = false\n"
+        f"executable = {base / 'python.exe'}\n",
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    with pytest.raises(RuntimeError, match="accepted ownership"):
+        WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+            owned_launcher
+        )
+
+    assert calls == []
+
+
+def test_open_vipp_restores_actual_frozen_dll_directory_after_spawn_failure(
+    tmp_path, monkeypatch
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    api = _frozen_launch_fixture(monkeypatch)
+
+    def fail(*_args, **_kwargs):
+        assert api.directory is None
+        raise OSError("owned mocked child could not start")
+
+    monkeypatch.setattr(windows_backend_module.subprocess, "Popen", fail)
+    backend = WindowsInstallerBackend(services=_services(tmp_path), environ={})
+
+    with pytest.raises(OSError, match="owned mocked child could not start"):
+        backend.open_vipp(launcher)
+
+    assert api.directory == "unrelated prior DLL directory"
+    assert api.writes == [None, "unrelated prior DLL directory"]
 
 
 def test_prepare_reports_plain_language_discovery_and_decision_milestones(
