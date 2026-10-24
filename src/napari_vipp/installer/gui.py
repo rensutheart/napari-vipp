@@ -247,8 +247,12 @@ def _activity_text(
     screen: InstallerScreen | None = None,
     elapsed_seconds: int = 0,
     quiet_seconds: int = 0,
+    reviewing: bool = False,
 ) -> str:
-    visible = history[-3:] or ["Starting VIPP Setup…"]
+    # Read-only checks are not completed installation milestones. Repeated
+    # method reviews show just their current status; diagnostics retain history.
+    visible = history[-1:] if reviewing or screen in _REVIEW_SCREENS else history[-3:]
+    visible = visible or ["Starting VIPP Setup…"]
     lines = []
     for index, message in enumerate(visible):
         marker = "●" if index == len(visible) - 1 else "✓"
@@ -405,6 +409,7 @@ class InstallerWindow:
         self._last_rendered_screen: InstallerScreen | None = None
         self._last_rendered_phase = ""
         self._status_history = ["Starting VIPP Setup…"]
+        self._install_status_history: list[str] = []
         self._brand_image = None
         self._header_stacked: bool | None = None
         self._stage_started_at = time.monotonic()
@@ -468,6 +473,7 @@ class InstallerWindow:
             "VIPP.Stage.TLabel",
             font=("Segoe UI", 10),
             foreground="#526576",
+            background="#f4f7fb",
             padding=(10, 6),
         )
         style.configure(
@@ -553,43 +559,9 @@ class InstallerWindow:
                 padx=10,
                 pady=7,
             ).pack(fill="x", pady=(0, 14))
-        steps = ttk.Frame(outer)
-        steps.pack(fill="x", pady=(0, 16))
-        steps.columnconfigure(0, weight=1)
-        steps.columnconfigure(2, weight=1)
-        self._review_stage_label = ttk.Label(
-            steps,
-            text="1  Review (current)",
-            style="VIPP.Stage.Active.TLabel",
-            anchor="center",
-            wraplength=260,
-        )
-        self._review_stage_label.grid(row=0, column=0, sticky="ew")
-        ttk.Label(steps, text="→", anchor="center").grid(row=0, column=1, padx=8)
-        self._install_stage_label = ttk.Label(
-            steps,
-            text="2  Installing",
-            style="VIPP.Stage.TLabel",
-            anchor="center",
-            wraplength=260,
-        )
-        self._install_stage_label.grid(row=0, column=2, sticky="ew")
-        self._headline_label = ttk.Label(
-            outer,
-            textvariable=self._headline,
-            font=("Segoe UI Semibold", 18),
-            wraplength=650,
-        )
-        self._headline_label.pack(anchor="w", fill="x")
-        self._message_label = ttk.Label(
-            outer,
-            textvariable=self._message,
-            font=("Segoe UI", 10),
-            wraplength=650,
-            justify="left",
-        )
-        self._message_label.pack(anchor="w", fill="x", pady=(10, 16))
-
+        self._build_setup_stages(outer)
+        # Keep choices above the variable review/checking message. A method
+        # recheck must not move the combobox out from under the pointer.
         self._method_panel = method_panel = ttk.Frame(outer)
         method_panel.pack(fill="x", pady=(0, 16))
         ttk.Label(
@@ -615,6 +587,22 @@ class InstallerWindow:
             justify="left",
         )
         self._strategy_help_label.pack(anchor="w", fill="x")
+
+        self._headline_label = ttk.Label(
+            outer,
+            textvariable=self._headline,
+            font=("Segoe UI Semibold", 18),
+            wraplength=650,
+        )
+        self._headline_label.pack(anchor="w", fill="x")
+        self._message_label = ttk.Label(
+            outer,
+            textvariable=self._message,
+            font=("Segoe UI", 10),
+            wraplength=650,
+            justify="left",
+        )
+        self._message_label.pack(anchor="w", fill="x", pady=(10, 16))
 
         self._selected_method_label = ttk.Label(
             outer,
@@ -711,6 +699,35 @@ class InstallerWindow:
             ),
             _HEADER_MIN_HEIGHT,
         )
+
+    def _build_setup_stages(self, parent) -> None:
+        """Two noninteractive cells with explicit theme-independent rules."""
+
+        border = "#8397aa"
+        self._stage_strip = steps = self._tk.Frame(
+            parent, background=border, borderwidth=0, padx=1, pady=1
+        )
+        steps.pack(fill="x", pady=(0, 16))
+        steps.columnconfigure(0, weight=1, uniform="setup-stages")
+        steps.columnconfigure(2, weight=1, uniform="setup-stages")
+        self._review_stage_label = self._ttk.Label(
+            steps,
+            text="1  Review (current)",
+            style="VIPP.Stage.Active.TLabel",
+            anchor="center",
+            wraplength=260,
+        )
+        self._review_stage_label.grid(row=0, column=0, sticky="nsew")
+        self._stage_divider = self._tk.Frame(steps, background=border, width=1)
+        self._stage_divider.grid(row=0, column=1, sticky="ns")
+        self._install_stage_label = self._ttk.Label(
+            steps,
+            text="2  Installing",
+            style="VIPP.Stage.TLabel",
+            anchor="center",
+            wraplength=260,
+        )
+        self._install_stage_label.grid(row=0, column=2, sticky="nsew")
 
     def _header_resized(self, event) -> None:
         self._set_header_layout(
@@ -989,16 +1006,18 @@ class InstallerWindow:
         self._last_rendered_screen = state.screen
         self._last_rendered_phase = state.progress_stage
         self._state = state
+        self._render_setup_stage(state)
         self._record_status(state.status_message)
         self._headline.set(state.headline)
         self._message.set(_reviewed_message(state, self._selection))
         self._status.set(state.status_message)
         self._activity.set(
             _activity_text(
-                self._status_history,
+                self._activity_messages(),
                 screen=state.screen,
                 elapsed_seconds=self._elapsed_seconds(),
                 quiet_seconds=self._quiet_seconds(),
+                reviewing=not self._installation_started,
             )
         )
         self._primary_text.set(state.primary_label)
@@ -1007,7 +1026,6 @@ class InstallerWindow:
         self._set_enabled(self._secondary, state.secondary_enabled)
         self._set_enabled(self._cancel, state.cancel_enabled)
         self._set_settings_enabled(state)
-        self._render_setup_stage(state)
         self._set_enabled(
             self._open_log,
             state.log_path is not None and state.log_path.is_file(),
@@ -1069,6 +1087,8 @@ class InstallerWindow:
             self._installation_started = True
 
         installing = self._installation_started
+        if installing and not previous_started:
+            self._install_status_history = []
         if installing:
             suffix = (
                 "complete"
@@ -1098,7 +1118,9 @@ class InstallerWindow:
         if show_review != self._review_controls_visible:
             self._review_controls_visible = show_review
             if show_review:
-                self._method_panel.pack(fill="x", pady=(0, 16), before=self._progress)
+                self._method_panel.pack(
+                    fill="x", pady=(0, 16), before=self._headline_label
+                )
                 self._advanced_review.grid()
             else:
                 self._method_panel.pack_forget()
@@ -1199,10 +1221,11 @@ class InstallerWindow:
         self._last_elapsed_second = elapsed
         self._activity.set(
             _activity_text(
-                self._status_history,
+                self._activity_messages(),
                 screen=state.screen,
                 elapsed_seconds=elapsed,
                 quiet_seconds=self._quiet_seconds(),
+                reviewing=not getattr(self, "_installation_started", False),
             )
         )
         # The timer belongs to the progress summary, not the diagnostic text.
@@ -1210,6 +1233,11 @@ class InstallerWindow:
 
     def _record_status(self, message: str) -> None:
         normalized = " ".join(message.split())
+        if normalized and getattr(self, "_installation_started", False):
+            milestones = self._install_status_history
+            if not milestones or milestones[-1] != normalized:
+                milestones.append(normalized)
+                del milestones[:-_STATUS_HISTORY_LIMIT]
         if not normalized or (
             self._status_history and self._status_history[-1] == normalized
         ):
@@ -1217,6 +1245,11 @@ class InstallerWindow:
         self._status_history.append(normalized)
         del self._status_history[:-_STATUS_HISTORY_LIMIT]
         self._last_activity_at = time.monotonic()
+
+    def _activity_messages(self) -> list[str]:
+        if getattr(self, "_installation_started", False):
+            return getattr(self, "_install_status_history", self._status_history)
+        return self._status_history
 
     def _quiet_seconds(self) -> int:
         last_activity = getattr(self, "_last_activity_at", time.monotonic())
@@ -1496,6 +1529,11 @@ class InstallerWindow:
     def _update_method_changed(self) -> None:
         """Invalidate the old authorization and review the newly visible method."""
 
+        if (
+            self._suppress_setting_events
+            or self._selection_from_controls() == self._selection
+        ):
+            return
         self._mark_settings_dirty()
         self._check_settings_requested()
 
@@ -1524,9 +1562,10 @@ class InstallerWindow:
         self._record_status(message)
         self._activity.set(
             _activity_text(
-                self._status_history,
+                self._activity_messages(),
                 screen=self._state.screen if self._state is not None else None,
                 elapsed_seconds=self._elapsed_seconds(),
+                reviewing=not getattr(self, "_installation_started", False),
             )
         )
         if self._state is not None:

@@ -1,7 +1,7 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev6`; this is not a public release. The earlier
+Development build: `0.16.0a8.dev7`; this is not a public release. The earlier
 `dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
@@ -24,6 +24,12 @@ after explicit approval, show only the selected-method summary and relevant
 progress/logs. Failure/cancellation/retry must retain honest stage context, and
 registration-only repair must not appear as package installation. Selecting a
 method never starts an apply. Retain existing controller/ownership/consent guards.
+Keep the method selector before variable-length review/check results so rechecks
+do not move it. Opening the list performs no check; selecting the unchanged value
+is a no-op. A changed value still invalidates and rechecks the exact selection
+before approval is enabled. Review shows one current activity rather than
+marking earlier read-only checks as completed install steps. Stage cells have
+solid shared boundaries and remain descriptive, not navigable tabs.
 Avoid a global "no downloads" claim: the copy phase copies compatible current
 versions, while the Fresh route may fetch missing required artifacts. A newer
 dependency on PyPI alone does not make an otherwise eligible fast update upgrade

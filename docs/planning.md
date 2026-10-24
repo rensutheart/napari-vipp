@@ -26,6 +26,8 @@ search state generically, without persistent PATH changes or GPU reinstallation;
 qualify the rebuilt private installer against an already-owned disposable runtime.
 Current UI follow-up presents separate Review/Installing stages and precise
 dependency/cache wording; package-selection and explicit approval remain unchanged.
+Follow-up polish adds a bordered stage strip and a stable method selector with
+quiet read-only check feedback; it does not remove exact-selection rechecks.
 
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished

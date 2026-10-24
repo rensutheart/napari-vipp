@@ -414,6 +414,7 @@ def _staged_window():
     window._install_stage_label = _Widget()
     window._content_canvas = _Canvas()
     window._progress = object()
+    window._headline_label = object()
     window.root = SimpleNamespace(after_idle=lambda callback: callback())
     return window
 
@@ -474,6 +475,11 @@ def test_review_displays_requested_method_selected_method_and_fallback_reason():
 
 def test_method_choice_invalidates_then_rechecks_without_applying():
     window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection()
+    selected = replace(window._selection, update_strategy=UpdateStrategy.FRESH)
+    window._selection_from_controls = lambda: selected
+    window._suppress_setting_events = False
+    window._controller = _Controller()
     calls = []
     window._mark_settings_dirty = lambda: calls.append("invalidate")
     window._check_settings_requested = lambda: calls.append("check")
@@ -481,6 +487,83 @@ def test_method_choice_invalidates_then_rechecks_without_applying():
     window._update_method_changed()
 
     assert calls == ["invalidate", "check"]
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_unchanged_method_selection_does_not_invalidate_or_repeat_checks(busy):
+    window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection()
+    window._selection_from_controls = lambda: window._selection
+    window._suppress_setting_events = False
+    window._controller = _Controller()
+    window._controller.busy = busy
+    window._mark_settings_dirty = lambda: pytest.fail("Invalidated unchanged method")
+    window._check_settings_requested = lambda: pytest.fail("Repeated unchanged check")
+
+    window._update_method_changed()
+
+    assert window._controller.calls == []
+
+
+def test_method_panel_precedes_variable_review_summary_and_returns_there_on_retry():
+    source = (Path(__file__).resolve().parents[1] / "installer" / "gui.py").read_text(
+        encoding="utf-8"
+    )
+    build = source[source.index("    def _build_window(") :]
+    assert build.index("self._method_panel =") < build.index("self._headline_label =")
+    window = _staged_window()
+    window._headline_label = object()
+    window._render_setup_stage(_state(InstallerScreen.WORKING, kind=TargetKind.UPDATE))
+
+    window._render_setup_stage(_state(InstallerScreen.CHECKING))
+
+    assert window._method_panel.packs[-1]["before"] is window._headline_label
+
+
+def test_stage_strip_has_solid_outer_rule_and_middle_divider_without_tab_actions():
+    class Frame:
+        def __init__(self, master, **kwargs):
+            self.master = master
+            self.options = kwargs
+            self.columns = []
+            self.layout = {}
+
+        def pack(self, **kwargs):
+            self.layout = kwargs
+
+        def grid(self, **kwargs):
+            self.layout = kwargs
+
+        def columnconfigure(self, column, **kwargs):
+            self.columns.append((column, kwargs))
+
+    window = object.__new__(InstallerWindow)
+    window._tk = SimpleNamespace(Frame=Frame)
+    window._ttk = SimpleNamespace(Label=Frame)
+    parent = object()
+
+    window._build_setup_stages(parent)
+
+    strip = window._stage_strip
+    divider = window._stage_divider
+    assert strip.master is parent
+    assert strip.options["background"] == divider.options["background"]
+    assert strip.options["padx"] >= 1
+    assert strip.options["pady"] >= 1
+    assert divider.options["width"] >= 1
+    assert divider.layout == {"row": 0, "column": 1, "sticky": "ns"}
+    assert window._review_stage_label.layout == {
+        "row": 0,
+        "column": 0,
+        "sticky": "nsew",
+    }
+    assert window._install_stage_label.layout == {
+        "row": 0,
+        "column": 2,
+        "sticky": "nsew",
+    }
+    assert "command" not in window._review_stage_label.options
+    assert "command" not in window._install_stage_label.options
 
 
 def test_review_then_installing_hides_choices_without_changing_approval():
@@ -558,7 +641,7 @@ def test_terminal_install_results_keep_stage_and_diagnostics_not_review_clutter(
     assert window._method_panel.visible
     assert window._advanced_review.visible
     assert not window._selected_method_label.visible
-    assert window._method_panel.packs[-1]["before"] is window._progress
+    assert window._method_panel.packs[-1]["before"] is window._headline_label
     assert window._controller.calls == []
 
 
@@ -953,11 +1036,64 @@ def test_checking_activity_explains_light_preflight_and_elapsed_time():
         elapsed_seconds=134,
     )
 
-    assert "✓ Starting VIPP Setup…" in rendered
+    assert "✓" not in rendered
+    assert "Starting VIPP Setup…" not in rendered
     assert "● Checking the installation and available update methods…" in rendered
     assert "Packages will not be downloaded or installed until you approve" in rendered
     assert "reviewing exact packages" not in rendered
     assert "Elapsed in this phase: 2m 14s" in rendered
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.READY, InstallerScreen.CURRENT, InstallerScreen.BLOCKED],
+)
+def test_review_activity_shows_only_current_status_not_completed_old_checks(screen):
+    rendered = _activity_text(
+        ["Checked Automatic", "Checked Incremental", "Fresh installation is ready"],
+        screen=screen,
+    )
+
+    assert rendered == "● Fresh installation is ready"
+    assert "✓" not in rendered
+
+
+def test_install_activity_does_not_promote_review_checks_to_completed_steps():
+    window = object.__new__(InstallerWindow)
+    window._status_history = ["Ready for approval"]
+    window._install_status_history = []
+    window._installation_started = False
+    window._record_status("Checking Fresh installation")
+    assert window._install_status_history == []
+    window._installation_started = True
+    window._record_status("Preparing files")
+
+    rendered = _activity_text(
+        window._activity_messages(), screen=InstallerScreen.WORKING
+    )
+
+    assert rendered.splitlines()[0] == "● Preparing files"
+    assert "✓" not in rendered
+    assert "Checking Fresh" not in rendered
+    assert "Checking Fresh installation" in window._status_history
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.WORKING, InstallerScreen.CANCELLED, InstallerScreen.FAILED],
+)
+def test_registration_and_stopped_review_activity_do_not_claim_old_checks_completed(
+    screen,
+):
+    rendered = _activity_text(
+        ["A former review", "Current registration or stopped-check status"],
+        screen=screen,
+        reviewing=True,
+    )
+
+    assert rendered.splitlines()[0] == "● Current registration or stopped-check status"
+    assert "A former review" not in rendered
+    assert "✓" not in rendered
 
 
 @pytest.mark.parametrize(

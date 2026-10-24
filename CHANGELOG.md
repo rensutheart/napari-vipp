@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Give the Windows setup stages solid boundaries and keep the update-method
+  selector stationary while reviewing a changed choice. Avoid repeating checks
+  for an unchanged choice, and show read-only review activity without misleading
+  completed-step ticks. Exact-settings approval and update safety are unchanged.
+
 - Separate Windows setup into focused Review and Installing stages. Hide the
   update-method controls after approval, keep progress and logs prominent, and
   clarify that fast updates retain compatible dependency versions while Fresh
