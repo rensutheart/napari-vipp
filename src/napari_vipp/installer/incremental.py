@@ -920,6 +920,39 @@ def _copy_raw_script(
     return len(data), "sha256=" + value
 
 
+def _validate_pth(data: bytes, parent: Path, site: Path) -> None:
+    """Interpret relative paths only; never execute or rewrite .pth contents."""
+    for line in data.decode("utf-8").splitlines():
+        # Match site.addpackage's trailing-whitespace and import-line handling.
+        line = line.rstrip()
+        if not line or line.startswith(("#", "import ", "import\t")):
+            continue
+        path = PurePosixPath(line.replace("\\", "/"))
+        _require(
+            not path.is_absolute()
+            and ".." not in path.parts
+            and ":" not in line
+            and all(
+                not any(ord(char) < 32 or char in '<>"|?*' for char in part)
+                and not part.endswith((" ", "."))
+                and part.split(".")[0].casefold() not in _RESERVED
+                for part in path.parts
+            ),
+            "A dependency .pth escapes the candidate.",
+        )
+        target = Path(os.path.abspath(parent.joinpath(*path.parts)))
+        _require(
+            target == site or target.is_relative_to(site),
+            "A dependency .pth escapes the candidate.",
+        )
+        # Python ignores missing safe paths, but existing ancestors must not
+        # redirect even when the final target is absent (or a dangling link).
+        existing = target
+        while not os.path.lexists(existing):
+            existing = existing.parent
+        _direct(existing)
+
+
 def copy_reused_packages(
     plan: ReusePlan,
     candidate: Path,
@@ -960,9 +993,10 @@ def copy_reused_packages(
         declared_bytes + _COPY_FREE_MARGIN <= shutil.disk_usage(candidate).free,
         "Not enough actual free space to copy verified dependencies safely.",
     )
+    pth_files = []
     for package in plan.packages:
         for item in package.files:
-            _source_file(source_site, item)
+            source = _source_file(source_site, item)
             if item.kind != "script":
                 destination = _installed_file(target_site, item)
                 _require(
@@ -973,6 +1007,9 @@ def copy_reused_packages(
                 while not existing.exists():
                     existing = existing.parent
                 _direct(existing)
+                if destination.suffix == ".pth":
+                    _validate_pth(_read(source), source.parent, source_site)
+                    pth_files.append((destination, item))
     copied_files = copied_bytes = 0
     total = sum(len(value.files) for value in plan.packages)
     completed = 0
@@ -989,20 +1026,6 @@ def copy_reused_packages(
                 destination = _installed_file(target_site, item)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _direct(destination.parent)
-                if destination.suffix == ".pth":
-                    for line in _read(source).decode("utf-8").splitlines():
-                        if not line.strip() or line.startswith(
-                            ("#", "import ", "import\t")
-                        ):
-                            continue
-                        path = PurePosixPath(line)
-                        _require(
-                            not path.is_absolute()
-                            and ".." not in path.parts
-                            and ":" not in line
-                            and "\\" not in line,
-                            "A dependency .pth escapes the candidate.",
-                        )
                 if item.kind == "raw-script":
                     size, digest = _copy_raw_script(
                         source,
@@ -1035,6 +1058,18 @@ def copy_reused_packages(
         rows.append((package.dist_info + "/RECORD", "", ""))
         with record_path.open("x", encoding="utf-8", newline="") as stream:
             csv.writer(stream, lineterminator="\n").writerows(rows)
+    # A .pth may precede its target's files or even another distribution in the
+    # copy order. Check the completed candidate before any interpreter is run.
+    for destination, item in pth_files:
+        _checkpoint(cancellation)
+        data = _read(destination)
+        algorithm, _, expected = item.digest.partition("=")
+        digest = base64.urlsafe_b64encode(hashlib.new(algorithm, data).digest())
+        _require(
+            len(data) == item.size and digest.rstrip(b"=").decode() == expected,
+            "A dependency .pth changed during copying.",
+        )
+        _validate_pth(data, destination.parent, target_site)
     final = assess_incremental(
         plan.record, plan.release, plan.python_snapshot, track=plan.track
     )

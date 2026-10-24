@@ -354,6 +354,166 @@ def test_added_legacy_self_alias_still_invalidates_an_existing_metadata_review(s
         copy_reused_packages(plan, _candidate(record))
 
 
+def test_pywin32_pth_relative_windows_paths_are_copied_without_execution(source):
+    record, release, python, site = source
+    data = (
+        b"# .pth file for the PyWin32 extensions\r\n"
+        b"win32\r\nwin32\\lib\r\npythonwin\r\n"
+        b"# And some hackery to deal with environments "
+        b"where the post_install script\r\n"
+        b"# isn't run.\r\nimport pywin32_bootstrap\r\n"
+    )
+    assert len(data) == 185
+    _distribution(
+        site,
+        "dependency",
+        "1.2",
+        files={
+            # Keep .pth first to prove candidate target checks wait for copies.
+            "pywin32.pth": data,
+            "win32/lib/pywin32_bootstrap.py": b"raise RuntimeError('not executed')\n",
+            "pythonwin/__init__.py": b"raise RuntimeError('not executed')\n",
+        },
+    )
+    plan = assess_incremental(record, release, python)
+    assert plan.eligible, plan.reason
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    assert (site / "pywin32.pth").read_bytes() == data
+    assert (target / "Lib/site-packages/pywin32.pth").read_bytes() == data
+    assert (target / "Lib/site-packages/win32/lib/pywin32_bootstrap.py").is_file()
+    rows = _record_rows(target / "Lib/site-packages/dependency-1.2.dist-info/RECORD")
+    assert next(row for row in rows if row[0] == "pywin32.pth") == [
+        "pywin32.pth",
+        _digest(data),
+        "185",
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "win32/lib   \t",
+        "win32\\lib\t ",
+        "./win32//lib/",
+        ".",
+        "missing\\optional",
+        "data.zip",
+    ],
+)
+def test_pth_keeps_safe_existing_python_path_semantics(source, line):
+    record, release, python, site = source
+    data = (line + "\r\n").encode()
+    _distribution(
+        site,
+        "dependency",
+        "1.2",
+        files={"paths.pth": data, "win32/lib/owned.py": b"x=1\n", "data.zip": b"z"},
+    )
+    plan = assess_incremental(record, release, python)
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    assert (site / "paths.pth").read_bytes() == data
+    assert (target / "Lib/site-packages/paths.pth").read_bytes() == data
+    assert not (target / "Lib/site-packages/missing").exists()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "../outside",
+        "..\\outside",
+        "valid/../outside",
+        "valid\\..\\outside",
+        "/outside",
+        "\\outside",
+        "//server/share",
+        "\\\\server\\share",
+        "C:/outside",
+        "C:\\outside",
+        "C:outside",
+        "valid:stream",
+        "valid\0invalid",
+        "valid/\x01invalid",
+        "NUL",
+        "valid./child",
+    ],
+)
+def test_pth_absolute_escaping_or_aliased_paths_are_refused(source, line):
+    record, release, python, site = source
+    data = (line + "\n").encode()
+    _distribution(site, "dependency", "1.2", files={"paths.pth": data})
+    plan = assess_incremental(record, release, python)
+    target = _candidate(record)
+    with pytest.raises(IncrementalReuseError, match="dependency .pth"):
+        copy_reused_packages(plan, target)
+    assert (site / "paths.pth").read_bytes() == data
+    assert not (target / "Lib/site-packages/paths.pth").exists()
+
+
+@pytest.mark.parametrize("side", ["source", "candidate"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_pth_existing_target_or_missing_below_reparse_is_refused(
+    source, monkeypatch, side, missing
+):
+    record, release, python, site = source
+    data = b"linked\\missing\n" if missing else b"linked\n"
+    _distribution(site, "dependency", "1.2", files={"paths.pth": data})
+    (site / "linked").mkdir()
+    plan = assess_incremental(record, release, python)
+    target = _candidate(record)
+    (target / "Lib/site-packages/linked").mkdir()
+    redirected = (site if side == "source" else target / "Lib/site-packages") / "linked"
+    original = Path.lstat
+
+    def lstat(path, *args, **kwargs):
+        if path == redirected:
+            return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(IncrementalReuseError, match="redirected"):
+        copy_reused_packages(plan, target)
+    assert (site / "paths.pth").read_bytes() == data
+    if side == "source":
+        assert not (target / "Lib/site-packages/paths.pth").exists()
+
+
+def test_pth_candidate_tamper_after_copy_is_refused_before_return(source):
+    record, release, python, site = source
+    data = b"missing\\safe\n"
+    _distribution(site, "dependency", "1.2", files={"paths.pth": data})
+    plan = assess_incremental(record, release, python)
+    target = _candidate(record)
+    destination = target / "Lib/site-packages/paths.pth"
+    changed = False
+
+    def progress(_count, _total):
+        nonlocal changed
+        if destination.exists() and not changed:
+            changed = True
+            destination.write_bytes(b"elsewhere\n")
+
+    with pytest.raises(IncrementalReuseError, match=".pth changed during copying"):
+        copy_reused_packages(plan, target, progress=progress)
+    assert changed
+    assert (site / "paths.pth").read_bytes() == data
+
+
+def test_pth_comments_and_existing_import_line_exemptions_are_not_executed(source):
+    record, release, python, site = source
+    data = (
+        b"\r\n# ignored ../outside\r\n"
+        b"import missing_synthetic_module; raise RuntimeError('do not execute')\r\n"
+        b"import\tmissing_synthetic_module\r\n"
+    )
+    _distribution(site, "dependency", "1.2", files={"paths.pth": data})
+    plan = assess_incremental(record, release, python)
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    assert (target / "Lib/site-packages/paths.pth").read_bytes() == data
+
+
 @pytest.mark.parametrize(
     "damage", ["no-hash", "non-entry-script", "bad-direct-metadata"]
 )
