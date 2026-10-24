@@ -261,6 +261,7 @@ def test_reparse_attribute_is_refused_without_following_it(tmp_path, monkeypatch
     def metadata(path):
         found = original(path)
         if path == root:
+
             class Reparse:
                 st_mode = found.st_mode
                 st_file_attributes = 0x0400
@@ -275,7 +276,8 @@ def test_reparse_attribute_is_refused_without_following_it(tmp_path, monkeypatch
 
 def _second_artifact():
     return PackageArtifact(
-        "another", "2.0",
+        "another",
+        "2.0",
         "https://files.pythonhosted.org/packages/another-2.0-py3-none-any.whl",
         hashlib.sha256(b"another payload").hexdigest(),
     )
@@ -305,6 +307,71 @@ def test_materialize_downloads_only_misses_and_returns_reviewed_order(tmp_path):
     assert result == (package_cache_path(cache, second), cached)
     assert result[0].read_bytes() == b"another payload"
     assert result[1].read_bytes() == _BODY
+
+
+def test_materialize_progress_separates_lookup_batch_and_verified_artifacts(tmp_path):
+    first, second = _artifact(), _second_artifact()
+    cache = tmp_path / "cache"
+    cache_package(cache, first, fetcher=_fetch)
+    updates = []
+
+    def downloader(_lock, destination):
+        assert updates[-1] == ("downloading", 0, 1, "")
+        assert not any(stage == "complete" for stage, *_ in updates)
+        (destination / second.filename).write_bytes(b"another payload")
+
+    materialize_packages(
+        (first, second),
+        cache,
+        tmp_path / "downloads",
+        downloader=downloader,
+        progress=lambda *args: updates.append(args),
+    )
+    assert updates[:3] == [
+        ("cache_lookup", 0, 2, ""),
+        ("cache_lookup", 1, 2, "example"),
+        ("cache_lookup", 2, 2, "another"),
+    ]
+    assert ("download_verified", 1, 1, "another") in updates
+    assert updates[-1] == ("complete", 2, 2, "")
+
+
+def test_materialize_progress_never_completes_after_failed_verification(tmp_path):
+    updates = []
+
+    def downloader(_lock, destination):
+        (destination / _artifact().filename).write_bytes(b"not the reviewed bytes")
+
+    with pytest.raises(PackageCacheError, match="SHA-256"):
+        materialize_packages(
+            (_artifact(),),
+            tmp_path / "cache",
+            tmp_path / "downloads",
+            downloader=downloader,
+            progress=lambda *args: updates.append(args),
+        )
+    assert ("download_verified", 0, 1, "") in updates
+    assert not any(
+        stage == "complete" or (stage == "download_verified" and completed > 0)
+        for stage, completed, _total, _name in updates
+    )
+
+
+def test_materialize_progress_failure_cannot_change_cache_semantics(tmp_path):
+    def broken_observer(*_args):
+        raise RuntimeError("The display is gone")
+
+    def downloader(_lock, destination):
+        (destination / _artifact().filename).write_bytes(_BODY)
+
+    paths = materialize_packages(
+        (_artifact(),),
+        tmp_path / "cache",
+        tmp_path / "downloads",
+        downloader=downloader,
+        progress=broken_observer,
+    )
+    assert paths[0].read_bytes() == _BODY
 
 
 def test_materialize_all_hits_skips_callback_and_download_directory(tmp_path):
@@ -356,7 +423,9 @@ def test_materialize_preserves_unrelated_downloads_and_failed_outputs(tmp_path):
 
     with pytest.raises(OSError, match="child failed"):
         materialize_packages(
-            (_artifact(),), tmp_path / "cache", download_directory,
+            (_artifact(),),
+            tmp_path / "cache",
+            download_directory,
             downloader=downloader,
         )
     assert unrelated.read_text() == "keep"
@@ -370,7 +439,9 @@ def test_materialize_requires_unchanged_hash_lock(tmp_path):
 
     with pytest.raises(PackageCacheError, match="lock changed"):
         materialize_packages(
-            (_artifact(),), tmp_path / "cache", tmp_path / "download",
+            (_artifact(),),
+            tmp_path / "cache",
+            tmp_path / "download",
             downloader=downloader,
         )
     assert not package_cache_path(tmp_path / "cache", _artifact()).exists()
@@ -385,8 +456,11 @@ def test_materialize_download_cancellation_cannot_publish(tmp_path):
 
     with pytest.raises(PackageCacheCancelled):
         materialize_packages(
-            (_artifact(),), tmp_path / "cache", tmp_path / "download",
-            downloader=downloader, cancellation=cancelled,
+            (_artifact(),),
+            tmp_path / "cache",
+            tmp_path / "download",
+            downloader=downloader,
+            cancellation=cancelled,
         )
     assert not package_cache_path(tmp_path / "cache", _artifact()).exists()
 
@@ -397,7 +471,9 @@ def test_materialize_duplicate_packages_fail_before_downloading(tmp_path):
 
     with pytest.raises(PackageCacheError, match="duplicate"):
         materialize_packages(
-            (_artifact(), _artifact()), tmp_path / "cache", tmp_path / "download",
+            (_artifact(), _artifact()),
+            tmp_path / "cache",
+            tmp_path / "download",
             downloader=downloader,
         )
     assert not (tmp_path / "download").exists()
@@ -412,7 +488,9 @@ def test_materialize_local_wheels_need_separate_caller_validation(tmp_path):
 
     with pytest.raises(ValueError, match="official HTTPS"):
         materialize_packages(
-            (LocalWheel(),), tmp_path / "cache", tmp_path / "download",
+            (LocalWheel(),),
+            tmp_path / "cache",
+            tmp_path / "download",
             downloader=lambda *_: pytest.fail("Do not fetch arbitrary file URLs"),
         )
 

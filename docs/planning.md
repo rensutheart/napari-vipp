@@ -30,6 +30,10 @@ Follow-up polish adds a bordered stage strip and a stable method selector with
 quiet read-only check feedback; it does not remove exact-selection rechecks.
 The registration-only confirmation now separates concise scope/version facts
 from full expandable technical changes, with cancellation as the default.
+The next private progress follow-up shows six transactional phases separately
+from true file/package/check counts, with a collapsed diagnostic log and no
+fabricated subprocess percentage or time estimate. Keep copy/hash/rollback
+semantics and installed environments unchanged during isolated qualification.
 
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished

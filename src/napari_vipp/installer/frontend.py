@@ -50,6 +50,9 @@ class ProgressUnit(StrEnum):
     ACTIVITY = "activity"
     STEPS = "steps"
     BYTES = "bytes"
+    FILES = "files"
+    PACKAGES = "packages"
+    CHECKS = "checks"
 
 
 class TrackChoice(StrEnum):
@@ -379,6 +382,9 @@ class InstallerViewState:
     selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
     strategy_reason: str = ""
     registration_repair: RegistrationRepairReview | None = None
+    progress_completed: int | None = None
+    progress_total: int | None = None
+    installation_stage: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
@@ -585,6 +591,7 @@ class InstallerController:
                     cancel_enabled=True,
                     status_message="Preparing the installation…",
                     progress_stage="preparing",
+                    installation_stage="preparing",
                     technical_details=prepared.technical_details,
                     target_kind=prepared.kind,
                     target=prepared.target,
@@ -663,6 +670,8 @@ class InstallerController:
                     progress_fraction=None,
                     progress_stage="rolling_back",
                     progress_unit=ProgressUnit.ACTIVITY,
+                    progress_completed=None,
+                    progress_total=None,
                 )
             )
 
@@ -910,6 +919,7 @@ class InstallerController:
                         progress_fraction=1.0,
                         progress_stage="completed",
                         progress_unit=ProgressUnit.STEPS,
+                        installation_stage="completed",
                         log_path=outcome.log_path or self._state.log_path,
                         required_free_bytes=prepared.required_free_bytes,
                         temporary_free_bytes=prepared.temporary_free_bytes,
@@ -960,6 +970,24 @@ class InstallerController:
                     progress_fraction=update.fraction,
                     progress_stage=update.stage,
                     progress_unit=update.unit,
+                    progress_completed=update.completed,
+                    progress_total=update.total,
+                    installation_stage=(
+                        update.stage
+                        if self._state.screen
+                        in {InstallerScreen.WORKING, InstallerScreen.CANCELLING}
+                        and self._state.installation_stage
+                        and update.stage
+                        in {
+                            "preparing",
+                            "creating_environment",
+                            "installing",
+                            "verifying",
+                            "creating_shortcuts",
+                            "committing",
+                        }
+                        else self._state.installation_stage
+                    ),
                     log_path=update.log_path or self._state.log_path,
                 )
             )
@@ -984,6 +1012,7 @@ class InstallerController:
                     secondary_enabled=True,
                     status_message="Cancellation completed.",
                     progress_stage="cancelled",
+                    installation_stage=self._state.installation_stage,
                     log_path=self._state.log_path,
                     required_free_bytes=(
                         prepared.required_free_bytes if prepared else None
@@ -1031,6 +1060,7 @@ class InstallerController:
                     secondary_enabled=True,
                     status_message="Setup stopped before completion.",
                     progress_stage="failed",
+                    installation_stage=self._state.installation_stage,
                     log_path=self._state.log_path,
                     required_free_bytes=(
                         selected.required_free_bytes if selected else None

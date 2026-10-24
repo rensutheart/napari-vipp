@@ -1,7 +1,7 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev8`; this is not a public release. The earlier
+Development build: `0.16.0a8.dev9`; this is not a public release. The earlier
 `dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
@@ -34,6 +34,19 @@ Avoid a global "no downloads" claim: the copy phase copies compatible current
 versions, while the Fresh route may fetch missing required artifacts. A newer
 dependency on PyPI alone does not make an otherwise eligible fast update upgrade
 that dependency.
+
+The Installing view names all six transactional stages (prepare, workspace,
+packages, verification, shortcuts, finish) and persists the last reached stage
+in controller state, including across coalesced GUI events and safe rollback.
+Only successful completion marks all stages complete. Within-stage task counts
+use typed files/packages/checks/bytes, never equal-weight global/time estimates.
+Copy counts cover checked/copied RECORD entries; destination preflight and late
+source/.pth validation remain visible, and completion waits for their guards.
+Cache counts describe verified artifacts, not inferred network transfer. One
+hash-locked pip install batch reports its known package total but confirms them
+only after successful process completion; unreported inner work is not guessed.
+Keep the bounded live output collected behind Show installation log, with a
+failure-triggered reveal and ordinary access to the complete setup log.
 
 ## Implementation boundary
 

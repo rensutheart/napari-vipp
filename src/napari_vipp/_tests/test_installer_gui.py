@@ -18,6 +18,7 @@ from napari_vipp.installer.frontend import (
     InstallerSelection,
     InstallerViewState,
     InstallSizeEstimate,
+    ProgressUnit,
     RegistrationRepairReview,
     TargetKind,
 )
@@ -30,8 +31,11 @@ from napari_vipp.installer.gui import (
     _header_inline_width,
     _header_minimum_width,
     _header_should_stack,
+    _installation_stage_rows,
     _reviewed_message,
     _size_review_text,
+    _task_fraction,
+    _task_progress_text,
     _window_title,
     build_parser,
 )
@@ -414,6 +418,7 @@ def _staged_window():
     window._install_stage_label = _Widget()
     window._content_canvas = _Canvas()
     window._progress = object()
+    window._progress_panel = object()
     window._headline_label = object()
     window.root = SimpleNamespace(after_idle=lambda callback: callback())
     return window
@@ -594,7 +599,7 @@ def test_review_then_installing_hides_choices_without_changing_approval():
         window._install_stage_label.configured[-1]["text"] == "2  Installing (current)"
     )
     assert window._selected_method_label.packs == [
-        {"fill": "x", "pady": (0, 12), "before": window._progress}
+        {"fill": "x", "pady": (0, 12), "before": window._progress_panel}
     ]
     assert window._content_canvas.moves == [0.0]
     assert window._controller.calls == []
@@ -1402,7 +1407,7 @@ def test_current_secondary_action_is_explicit_repair():
     assert window._controller.calls == ["repair"]
 
 
-def test_plain_activity_history_marks_prior_and_current_steps():
+def test_message_history_never_fabricates_completed_installation_stages():
     rendered = _activity_text(
         [
             "Starting VIPP Setup…",
@@ -1411,11 +1416,8 @@ def test_plain_activity_history_marks_prior_and_current_steps():
         ]
     )
 
-    assert rendered.splitlines() == [
-        "✓ Starting VIPP Setup…",
-        "✓ Checking Windows and Python…",
-        "● Checking available hardware…",
-    ]
+    assert rendered.splitlines() == ["Checking available hardware…"]
+    assert "✓" not in rendered
 
 
 def test_checking_activity_explains_light_preflight_and_elapsed_time():
@@ -1427,7 +1429,7 @@ def test_checking_activity_explains_light_preflight_and_elapsed_time():
 
     assert "✓" not in rendered
     assert "Starting VIPP Setup…" not in rendered
-    assert "● Checking the installation and available update methods…" in rendered
+    assert "Checking the installation and available update methods…" in rendered
     assert "Packages will not be downloaded or installed until you approve" in rendered
     assert "reviewing exact packages" not in rendered
     assert "Elapsed in this phase: 2m 14s" in rendered
@@ -1443,7 +1445,7 @@ def test_review_activity_shows_only_current_status_not_completed_old_checks(scre
         screen=screen,
     )
 
-    assert rendered == "● Fresh installation is ready"
+    assert rendered == "Fresh installation is ready"
     assert "✓" not in rendered
 
 
@@ -1461,7 +1463,7 @@ def test_install_activity_does_not_promote_review_checks_to_completed_steps():
         window._activity_messages(), screen=InstallerScreen.WORKING
     )
 
-    assert rendered.splitlines()[0] == "● Preparing files"
+    assert rendered.splitlines()[0] == "Preparing files"
     assert "✓" not in rendered
     assert "Checking Fresh" not in rendered
     assert "Checking Fresh installation" in window._status_history
@@ -1480,7 +1482,7 @@ def test_registration_and_stopped_review_activity_do_not_claim_old_checks_comple
         reviewing=True,
     )
 
-    assert rendered.splitlines()[0] == "● Current registration or stopped-check status"
+    assert rendered.splitlines()[0] == "Current registration or stopped-check status"
     assert "A former review" not in rendered
     assert "✓" not in rendered
 
@@ -1530,7 +1532,7 @@ def test_size_review_separates_approximate_estimates_from_enforced_minimums():
     assert rendered in reviewed
 
 
-def test_quiet_active_phase_reports_heartbeat_without_claiming_failure():
+def test_elapsed_activity_is_secondary_and_does_not_invent_expected_duration():
     latest = "Installing VIPP and its required components…"
     rendered = _activity_text(
         ["Preparing files…", latest],
@@ -1540,9 +1542,9 @@ def test_quiet_active_phase_reports_heartbeat_without_claiming_failure():
     )
 
     assert latest in rendered
-    assert "Still working — no new milestone for 2m 05s" in rendered
-    assert "taking longer than usual" in rendered
-    assert "setup has not reported a failure" in rendered
+    assert "Elapsed in this phase: 5m 05s" in rendered
+    assert "no new milestone" not in rendered
+    assert "taking longer than usual" not in rendered
 
     stopped = _activity_text(
         ["Setup stopped before completion."],
@@ -2061,7 +2063,7 @@ def test_elapsed_refresh_does_not_rewrite_diagnostics_or_console():
 
     window._refresh_elapsed()
 
-    assert "Elapsed in this phase: 2s" in window._activity.get()
+    assert "Elapsed in this stage: 2s" in window._activity.get()
 
 
 @pytest.fixture
@@ -2176,9 +2178,232 @@ def test_complete_setup_window_streams_without_advanced_details(
     window._poll_states()
     root.update()
     assert not window._show_advanced.get()
+    assert not window._show_log.get()
+    assert not window._console.winfo_ismapped()
+    window._show_log.set(True)
+    window._toggle_log()
+    root.update()
     assert window._console.winfo_ismapped()
     assert "Downloading component.whl" in window._console.get("1.0", "end")
     assert "Installing collected packages" in window._console.get("1.0", "end")
     assert window._button_bar.winfo_y() + window._button_bar.winfo_height() <= (
         window._button_bar.master.winfo_height()
     )
+
+
+@pytest.mark.parametrize(
+    "unit,completed,total,expected",
+    [
+        (
+            ProgressUnit.FILES,
+            48123,
+            83204,
+            "48,123 of 83,204 files checked/copied · 58% of this task",
+        ),
+        (ProgressUnit.PACKAGES, 3, 12, "3 of 12 packages · 25% of this task"),
+        (ProgressUnit.CHECKS, 0, 5, "0 of 5 checks · 0% of this task"),
+        (ProgressUnit.BYTES, 1024, 4096, "1 KiB of 4 KiB · 25% of this task"),
+    ],
+)
+def test_measured_task_count_and_bar_use_exact_backend_totals(
+    unit, completed, total, expected
+):
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="installing",
+        progress_unit=unit,
+        progress_completed=completed,
+        progress_total=total,
+        # The old overall-step fraction must never override measured work.
+        progress_fraction=1.0,
+    )
+
+    assert _task_progress_text(state) == expected
+    assert _task_fraction(state) == completed / total
+
+
+@pytest.mark.parametrize(
+    "completed,total,unit",
+    [
+        (None, None, ProgressUnit.ACTIVITY),
+        (None, 160, ProgressUnit.PACKAGES),
+        (0, 0, ProgressUnit.FILES),
+        (3, 6, ProgressUnit.STEPS),
+    ],
+)
+def test_unknown_work_never_shows_invented_task_or_global_percentage(
+    completed, total, unit
+):
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_unit=unit,
+        progress_completed=completed,
+        progress_total=total,
+        progress_fraction=0.5,
+    )
+
+    assert _task_fraction(state) is None
+    assert _task_progress_text(state) == (
+        "Working — this task does not report a measurable total."
+    )
+    assert "%" not in _task_progress_text(state)
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.FAILED, InstallerScreen.CANCELLED, InstallerScreen.CANCELLING],
+)
+def test_stopped_install_does_not_promote_stale_task_counts_to_100_percent(screen):
+    state = replace(
+        _state(screen),
+        progress_unit=ProgressUnit.FILES,
+        progress_completed=20,
+        progress_total=20,
+        progress_fraction=1.0,
+    )
+
+    assert _task_fraction(state) is None
+    assert "100%" not in _task_progress_text(state)
+    rows = _installation_stage_rows(state, 2)
+    assert [status for _text, status in rows] == [
+        "complete",
+        "complete",
+        "stopped",
+        "pending",
+        "pending",
+        "pending",
+    ]
+
+
+def _measured_progress_window():
+    window = object.__new__(InstallerWindow)
+    window._installation_started = True
+    window._last_install_stage_index = None
+    window._install_checklist = _StagePanel(visible=False)
+    window._install_phase_labels = [_Widget() for _ in range(6)]
+    window._task_heading = _Value()
+    window._task_measurement = _Value()
+    window._activity = _Value()
+    window._elapsed_seconds = lambda: 25
+    return window
+
+
+def test_six_stage_checklist_tracks_stable_ids_not_each_changing_activity_message():
+    window = _measured_progress_window()
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="installing",
+        installation_stage="installing",
+        status_message="Copying dependency files",
+    )
+    for message in [
+        "Copying dependency files",
+        "Installing the VIPP wheel",
+        "Checking packages",
+    ]:
+        window._state = replace(state, status_message=message)
+        window._render_installation_progress(window._state)
+        assert window._task_heading.get() == "Stage 3 of 6 · Packages"
+        assert [
+            label.configured[-1]["text"][0] for label in window._install_phase_labels
+        ] == ["✓", "✓", "●", "○", "○", "○"]
+    assert window._install_checklist.visible
+    assert window._activity.get() == "Elapsed in this stage: 25s"
+
+
+def test_coalesced_failure_uses_controller_retained_stage_without_earlier_render():
+    window = _measured_progress_window()
+    state = replace(
+        _state(InstallerScreen.FAILED),
+        progress_stage="failed",
+        installation_stage="verifying",
+    )
+    window._state = state
+
+    window._render_installation_progress(state)
+
+    assert window._task_heading.get() == "Stopped at stage 4 of 6"
+    assert [
+        label.configured[-1]["text"][0] for label in window._install_phase_labels
+    ] == ["✓", "✓", "✓", "■", "○", "○"]
+    assert window._activity.get() == ""
+
+
+def test_rollback_keeps_last_reached_stage_and_does_not_mark_remaining_complete():
+    window = _measured_progress_window()
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="rolling_back",
+        installation_stage="installing",
+    )
+    window._state = state
+
+    window._render_installation_progress(state)
+
+    assert window._task_heading.get() == "Rolling back safely"
+    assert [
+        label.configured[-1]["text"][0] for label in window._install_phase_labels
+    ] == ["✓", "✓", "■", "○", "○", "○"]
+
+
+def test_only_success_marks_all_six_stages_complete():
+    state = replace(_state(InstallerScreen.SUCCESS), installation_stage="completed")
+
+    assert len(_installation_stage_rows(state, None)) == 6
+    assert all(
+        status == "complete" for _text, status in _installation_stage_rows(state, None)
+    )
+    assert _task_progress_text(state) == "All installation stages completed."
+
+
+def test_read_only_review_and_registration_repair_have_no_installation_checklist():
+    window = _measured_progress_window()
+    window._installation_started = False
+    for screen, stage in [
+        (InstallerScreen.CHECKING, "checking"),
+        (InstallerScreen.WORKING, "repairing_registration"),
+    ]:
+        window._state = replace(_state(screen), progress_stage=stage)
+        window._render_installation_progress(window._state)
+        assert not window._install_checklist.visible
+        assert "of 6" not in window._task_heading.get()
+
+
+def test_task_percentage_cannot_round_up_to_finished_before_final_item():
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="installing",
+        progress_unit=ProgressUnit.FILES,
+        progress_completed=83203,
+        progress_total=83204,
+    )
+    assert "83,203 of 83,204" in _task_progress_text(state)
+    assert "99%" in _task_progress_text(state)
+    assert "100%" not in _task_progress_text(state)
+    assert "100%" in _task_progress_text(replace(state, progress_completed=83204))
+
+
+def test_log_disclosure_retains_output_and_honors_choice_until_failure():
+    window = object.__new__(InstallerWindow)
+    window._show_log = _Value(False)
+    window._console_body = _StagePanel(visible=False)
+    window._console = object()
+    window._render_log_disclosure(_state(InstallerScreen.WORKING))
+    assert not window._console_body.visible
+    window._show_log.set(True)
+    window._toggle_log()
+    assert window._console_body.visible
+    window._show_log.set(False)
+    window._toggle_log()
+    window._render_log_disclosure(_state(InstallerScreen.WORKING))
+    assert not window._console_body.visible
+
+    window._render_log_disclosure(_state(InstallerScreen.FAILED))
+
+    assert window._show_log.get()
+    assert window._console_body.visible
+    assert window._console is not None  # Disclosure never recreates/losses Text.
+    window._show_log.set(False)
+    window._toggle_log()
+    window._render_log_disclosure(_state(InstallerScreen.FAILED))
+    assert not window._console_body.visible

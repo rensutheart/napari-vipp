@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Show all six Windows installation stages and separate measured task progress:
+  dependency files checked/copied, verified package artifacts and acceptance
+  checks. Keep pip's unreported batch work explicitly indeterminate rather than
+  inventing per-package completion. Collapse the live log by default and show it
+  automatically on failure; installation, rollback and ownership guards remain.
+
 - Make Windows entry-repair confirmation concise, with explicit Repair entry
   and Cancel actions and expandable, copyable exact changes/backup details.
   No packages or workflows are changed and update approval remains separate.

@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -1556,6 +1557,13 @@ class ManagedInstallerEngine:
                         log_path=log_path,
                     ),
                 )
+                _emit(
+                    progress,
+                    ProgressStage.CREATING_ENVIRONMENT,
+                    "Preparing the replacement's package tools…",
+                    1,
+                    6,
+                )
                 self._run_checked(
                     (str(target_python), "-m", "ensurepip", "--upgrade"),
                     log=log,
@@ -1602,17 +1610,27 @@ class ManagedInstallerEngine:
                             refreshed,
                             candidate,
                             cancellation=cancellation,
-                            progress=lambda count, total: _emit(
+                            preflight_progress=_file_progress_callback(
                                 progress,
-                                ProgressStage.INSTALLING,
-                                "Copying verified dependencies into the replacement…",
-                                count,
-                                total,
+                                "Checking dependency file destinations… "
+                                f"({len(refreshed.packages)} packages)",
+                            ),
+                            progress=_file_progress_callback(
+                                progress,
+                                "Dependency files checked/copied… "
+                                f"({len(refreshed.packages)} packages)",
                             ),
                         )
                     except ReuseCancelled as exc:
                         raise InstallCancelled(str(exc)) from exc
                     _checkpoint(cancellation)
+                    _emit(
+                        progress,
+                        ProgressStage.INSTALLING,
+                        "Rebuilding dependency launchers in the replacement…",
+                        2,
+                        6,
+                    )
                     self._run_checked(
                         script_generation_argv(refreshed, candidate),
                         log=log,
@@ -1652,6 +1670,16 @@ class ManagedInstallerEngine:
                     2,
                     6,
                 )
+                package_count = len(install_packages)
+                _emit(
+                    progress,
+                    ProgressStage.INSTALLING,
+                    f"Installing {package_count} packages as one verified batch; "
+                    "individual package completion is unavailable until pip finishes…",
+                    0,
+                    package_count,
+                    unit="packages",
+                )
                 self._run_checked(
                     (
                         str(target_python),
@@ -1685,12 +1713,29 @@ class ManagedInstallerEngine:
                 )
                 _emit(
                     progress,
+                    ProgressStage.INSTALLING,
+                    "Verified package batch installed.",
+                    package_count,
+                    package_count,
+                    unit="packages",
+                )
+                _emit(
+                    progress,
                     ProgressStage.VERIFYING,
                     "Making sure VIPP is ready…",
                     3,
                     6,
                 )
-                for action in prepared.plan.acceptance:
+                check_count = len(prepared.plan.acceptance)
+                _emit(
+                    progress,
+                    ProgressStage.VERIFYING,
+                    "Running acceptance checks…",
+                    0,
+                    check_count,
+                    unit="checks",
+                )
+                for check_index, action in enumerate(prepared.plan.acceptance, start=1):
                     self._run_checked(
                         _acceptance_argv(action, target_python),
                         log=log,
@@ -1702,6 +1747,22 @@ class ManagedInstallerEngine:
                             log_path=log_path,
                         ),
                     )
+                    _emit(
+                        progress,
+                        ProgressStage.VERIFYING,
+                        f"Passed: {action.description}",
+                        check_index,
+                        check_count,
+                        unit="checks",
+                    )
+                _emit(
+                    progress,
+                    ProgressStage.VERIFYING,
+                    "Acceptance checks passed. Validating setup and previous "
+                    "workspaces…",
+                    3,
+                    6,
+                )
                 try:
                     pip_temp.rmdir()
                 except OSError:
@@ -2116,6 +2177,29 @@ class ManagedInstallerEngine:
 
         remote = tuple(p for p in packages if urlsplit(p.source_url).scheme == "https")
 
+        def cache_progress(stage, completed, total, package_name):
+            messages = {
+                "cache_lookup": "Checking cached package files…",
+                "downloading": (
+                    f"Downloading {total} missing package files; individual "
+                    "completion is unavailable while pip downloads…"
+                ),
+                "download_verified": "Verifying downloaded package files…",
+                "cache_rechecking": "Rechecking prepared package files…",
+                "complete": "Package files ready.",
+            }
+            message = messages[stage]
+            if package_name:
+                message += f" {package_name}"
+            _emit(
+                progress,
+                ProgressStage.INSTALLING,
+                message,
+                completed,
+                0 if stage == "downloading" else total,
+                unit="packages",
+            )
+
         def download(requirements: Path, destination: Path) -> None:
             self._run_checked(
                 (
@@ -2155,6 +2239,7 @@ class ManagedInstallerEngine:
                 run_directory / "downloads",
                 downloader=download,
                 cancellation=cancellation,
+                progress=cache_progress,
             )
         except PackageCacheCancelled as exc:
             raise InstallCancelled(str(exc)) from exc
@@ -4931,6 +5016,34 @@ def _emit(
     except Exception:
         # A display callback cannot corrupt an installation transaction.
         return
+
+
+def _file_progress_callback(
+    callback: ProgressCallback | None, message: str
+) -> Callable[[int, int], None]:
+    """Throttle display emissions, not copying, hashing or cancellation checks."""
+    last_emitted_at = None
+
+    def update(completed: int, total: int) -> None:
+        nonlocal last_emitted_at
+        now = time.monotonic()
+        if (
+            completed == 0
+            or completed == total
+            or last_emitted_at is None
+            or now - last_emitted_at >= 0.1
+        ):
+            last_emitted_at = now
+            _emit(
+                callback,
+                ProgressStage.INSTALLING,
+                message,
+                completed,
+                total,
+                unit="files",
+            )
+
+    return update
 
 
 def _console_callback(

@@ -658,6 +658,103 @@ def test_first_apply_progress_exposes_the_existing_exact_run_log(tmp_path):
     }
 
 
+def test_apply_reports_successful_locked_batch_and_acceptance_check_counts(tmp_path):
+    events = []
+
+    class ObservingRunner(_FakeRunner):
+        def run(self, argv, **kwargs):
+            if "--requirement" in argv and "--no-index" in argv:
+                measured = [event for event in events if event.unit == "packages"]
+                assert measured[-1].completed == 0
+                assert measured[-1].total == 2
+                assert "batch" in measured[-1].message.lower()
+            return super().run(argv, **kwargs)
+
+    engine = _engine(tmp_path, ObservingRunner())
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+    assert result.succeeded
+    batches = [event for event in events if event.unit == "packages"]
+    assert [(event.completed, event.total) for event in batches] == [(0, 2), (2, 2)]
+    checks = [event for event in events if event.unit == "checks"]
+    total = len(prepared.plan.acceptance)
+    assert total > 0
+    assert [(event.completed, event.total) for event in checks] == [
+        (count, total) for count in range(total + 1)
+    ]
+    stages = [event.stage for event in events if event.unit == "steps"]
+    assert list(dict.fromkeys(stages)) == [
+        ProgressStage.PREPARING,
+        ProgressStage.CREATING_ENVIRONMENT,
+        ProgressStage.INSTALLING,
+        ProgressStage.VERIFYING,
+        ProgressStage.CREATING_SHORTCUTS,
+        ProgressStage.COMMITTING,
+        ProgressStage.COMPLETED,
+    ]
+
+
+def test_apply_failed_batch_never_reports_packages_installed(tmp_path):
+    class FailingBatchRunner(_FakeRunner):
+        def run(self, argv, **kwargs):
+            if "--requirement" in argv and "--no-index" in argv:
+                return CommandResult(1, "", "simulated install failure")
+            return super().run(argv, **kwargs)
+
+    engine = _engine(tmp_path, FailingBatchRunner())
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+    events = []
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+    assert not result.succeeded
+    batches = [event for event in events if event.unit == "packages"]
+    assert [(event.completed, event.total) for event in batches] == [(0, 2)]
+    assert not [event for event in events if event.unit == "checks"]
+
+
+def test_apply_failed_acceptance_counts_only_successful_checks(tmp_path):
+    engine = _engine(tmp_path, _FakeRunner(fail_acceptance=True))
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+    events = []
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+    assert not result.succeeded
+    checks = [event for event in events if event.unit == "checks"]
+    assert [(event.completed, event.total) for event in checks] == [
+        (0, len(prepared.plan.acceptance))
+    ]
+
+
+def test_file_progress_is_throttled_and_keeps_exact_boundaries(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+    events = []
+    callback = engine_module._file_progress_callback(events.append, "Copying files")
+    callback(0, 10_000)
+    for count in range(1, 5000):
+        callback(count, 10_000)
+    assert [(event.completed, event.total) for event in events] == [(0, 10_000)]
+    clock[0] += 0.2
+    callback(5000, 10_000)
+    callback(10_000, 10_000)
+    assert [(event.completed, event.total) for event in events] == [
+        (0, 10_000),
+        (5000, 10_000),
+        (10_000, 10_000),
+    ]
+    assert all(event.unit == "files" for event in events)
+
+
 def test_failed_update_preserves_active_environment_and_manifest(tmp_path):
     target = tmp_path / "managed"
     old = _record(target, version="0.13.0a6")

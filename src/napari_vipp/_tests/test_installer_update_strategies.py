@@ -382,7 +382,7 @@ def _cache_integration(tmp_path):
     return legacy._engine(tmp_path, runner), runner, (dependency, vipp), bundled
 
 
-def _materialize(engine, packages, run, state):
+def _materialize(engine, packages, run, state, *, progress=None):
     run.mkdir()
     lock = run / "requirements.lock"
     engine_module._write_lock_file(lock, packages)
@@ -396,7 +396,7 @@ def _materialize(engine, packages, run, state):
             log=log,
             cancellation=None,
             env={},
-            progress=None,
+            progress=progress,
         )
     return result, lock
 
@@ -433,6 +433,32 @@ def test_engine_cache_materializes_exact_dependency_once_then_reuses_it(tmp_path
         ),
     )
     assert hashlib.sha256(cached.read_bytes()).hexdigest() == dependency.sha256
+
+
+def test_engine_cache_reports_counted_checks_but_not_fake_download_progress(tmp_path):
+    engine, runner, packages, _bundled = _cache_integration(tmp_path)
+    events = []
+    _materialize(
+        engine,
+        packages,
+        tmp_path / "run-a",
+        tmp_path / "installer-state",
+        progress=events.append,
+    )
+    assert len(runner.calls) == 1
+    assert all(
+        event.stage is engine_module.ProgressStage.INSTALLING for event in events
+    )
+    assert all(event.unit == "packages" for event in events)
+    download = [event for event in events if event.message.startswith("Downloading")]
+    assert len(download) == 1
+    assert (download[0].completed, download[0].total) == (0, 0)
+    assert "1 missing package" in download[0].message
+    assert "individual completion is unavailable" in download[0].message
+    assert events[-1].message == "Package files ready."
+    assert (events[-1].completed, events[-1].total) == (1, 1)
+    verified = [event for event in events if event.message.startswith("Verifying")]
+    assert [(event.completed, event.total) for event in verified] == [(0, 1), (1, 1)]
 
 
 def test_engine_cache_refuses_corruption_without_refetch_or_foreign_overwrite(tmp_path):

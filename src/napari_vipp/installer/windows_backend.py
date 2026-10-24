@@ -1426,10 +1426,20 @@ def _progress_update(event: object) -> ProgressUpdate:
     raw_unit = ProgressUnit(str(getattr(event, "unit", ProgressUnit.STEPS.value)))
     completed = _optional_int(getattr(event, "completed", None))
     total = _optional_int(getattr(event, "total", None))
-    trustworthy_bytes = (
-        raw_unit is ProgressUnit.BYTES and total is not None and total > 0
+    measured_count = (
+        raw_unit
+        in {
+            ProgressUnit.BYTES,
+            ProgressUnit.FILES,
+            ProgressUnit.PACKAGES,
+            ProgressUnit.CHECKS,
+        }
+        and completed is not None
+        and total is not None
+        and total > 0
+        and 0 <= completed <= total
     )
-    indeterminate = stage_value in {"installing", "resolving"} and not trustworthy_bytes
+    indeterminate = stage_value in {"installing", "resolving"} and not measured_count
     return ProgressUpdate(
         stage=stage_value,
         message=str(getattr(event, "message", "Working…")),

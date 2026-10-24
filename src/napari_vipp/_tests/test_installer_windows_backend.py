@@ -1483,6 +1483,42 @@ def test_prepared_routes_expose_estimates_and_unchanged_space_thresholds(
     assert prepared.size_estimate.peak_temporary_bytes == peak_mib * 1024**2
 
 
+@pytest.mark.parametrize("unit", ["files", "packages", "checks"])
+def test_progress_adapter_preserves_exact_local_work_counts(unit):
+    update = _progress_update(
+        SimpleNamespace(
+            stage="installing",
+            message="Measured work",
+            completed=321,
+            total=1000,
+            unit=unit,
+        )
+    )
+    assert update.completed == 321
+    assert update.total == 1000
+    assert update.unit.value == unit
+    assert update.fraction == pytest.approx(0.321)
+
+
+@pytest.mark.parametrize(
+    "completed,total", [(None, 10), (-1, 10), (11, 10), (0, 0), (True, 10)]
+)
+def test_progress_adapter_does_not_promote_invalid_local_counts(completed, total):
+    update = _progress_update(
+        SimpleNamespace(
+            stage="installing",
+            message="Unknown work",
+            completed=completed,
+            total=total,
+            unit="files",
+        )
+    )
+    assert update.unit is ProgressUnit.ACTIVITY
+    assert update.completed is None
+    assert update.total is None
+    assert update.fraction is None
+
+
 def test_progress_adapter_preserves_stage_unit_log_and_truthful_indeterminacy(
     tmp_path,
 ):

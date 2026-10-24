@@ -958,8 +958,16 @@ def copy_reused_packages(
     candidate: Path,
     cancellation: object | None = None,
     progress: Callable[[int, int], None] | None = None,
+    *,
+    preflight_progress: Callable[[int, int], None] | None = None,
 ) -> ReuseCopyResult:
-    """Verify/copy independent bytes; caller owns candidate rollback and target lock."""
+    """Verify/copy independent bytes; caller owns candidate rollback and target lock.
+
+    Counts are reviewed RECORD entries, including checked script entries and the
+    regenerated RECORD, not a claim that every entry is copied byte for byte.
+    Display callbacks are advisory. Only the final copy event means the late
+    source-metadata and candidate .pth checks have also passed.
+    """
     _checkpoint(cancellation)
     _require(
         plan.record is not None
@@ -993,9 +1001,13 @@ def copy_reused_packages(
         declared_bytes + _COPY_FREE_MARGIN <= shutil.disk_usage(candidate).free,
         "Not enough actual free space to copy verified dependencies safely.",
     )
+    total = sum(len(value.files) for value in plan.packages)
+    _copy_progress(preflight_progress, 0, total)
+    preflight_completed = 0
     pth_files = []
     for package in plan.packages:
         for item in package.files:
+            _checkpoint(cancellation)
             source = _source_file(source_site, item)
             if item.kind != "script":
                 destination = _installed_file(target_site, item)
@@ -1010,9 +1022,11 @@ def copy_reused_packages(
                 if destination.suffix == ".pth":
                     _validate_pth(_read(source), source.parent, source_site)
                     pth_files.append((destination, item))
+            preflight_completed += 1
+            _copy_progress(preflight_progress, preflight_completed, total)
     copied_files = copied_bytes = 0
-    total = sum(len(value.files) for value in plan.packages)
     completed = 0
+    _copy_progress(progress, 0, total)
     for package in plan.packages:
         rows = []
         for item in package.files:
@@ -1052,8 +1066,9 @@ def copy_reused_packages(
             else:
                 _verify_and_copy(source, item, None, cancellation)
             completed += 1
-            if progress is not None:
-                progress(completed, total)
+            # Withhold full completion until the post-copy checks below pass.
+            if completed < total:
+                _copy_progress(progress, completed, total)
         record_path = target_site / package.dist_info / "RECORD"
         rows.append((package.dist_info + "/RECORD", "", ""))
         with record_path.open("x", encoding="utf-8", newline="") as stream:
@@ -1077,9 +1092,19 @@ def copy_reused_packages(
         final.eligible and final.fingerprint == plan.fingerprint,
         "Source metadata changed during copying.",
     )
-    if progress is not None:
-        progress(total, total)
+    _copy_progress(progress, total, total)
     return ReuseCopyResult(copied_files, copied_bytes)
+
+
+def _copy_progress(
+    callback: Callable[[int, int], None] | None, completed: int, total: int
+) -> None:
+    if callback is not None:
+        try:
+            callback(completed, total)
+        except Exception:
+            # A broken display cannot change the installation transaction.
+            pass
 
 
 _SCRIPT_GENERATOR = r"""

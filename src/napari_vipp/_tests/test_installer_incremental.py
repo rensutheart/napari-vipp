@@ -207,6 +207,75 @@ def test_eligible_is_immutable_and_only_dependencies_are_staged(source):
     ).stat().st_ino
 
 
+def test_copy_progress_has_exact_initial_and_final_file_record_counts(source):
+    record, release, python, _site = source
+    plan = assess_incremental(record, release, python)
+    total = sum(len(package.files) for package in plan.packages)
+    calls = []
+    preflight = []
+    copy_reused_packages(
+        plan,
+        _candidate(record),
+        progress=lambda *v: calls.append(v),
+        preflight_progress=lambda *v: preflight.append(v),
+    )
+    assert total > 0
+    assert calls[0] == (0, total)
+    assert calls[-1] == (total, total)
+    assert sum(completed == total for completed, _ in calls) == 1
+    assert all(bound == total for _, bound in calls)
+    assert [count for count, _ in calls] == sorted(count for count, _ in calls)
+    assert preflight == [(count, total) for count in range(total + 1)]
+
+
+def test_copy_progress_full_count_is_after_late_source_metadata_check(
+    source, monkeypatch
+):
+    from napari_vipp.installer import incremental as incremental_module
+
+    record, release, python, site = source
+    # A legal RECORD order with its own row first formerly reported total
+    # during copying, before the late metadata check could reject the result.
+    record_file = site / "dependency-1.2.dist-info/RECORD"
+    rows = _record_rows(record_file)
+    with record_file.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows([rows[-1], *rows[:-1]])
+    plan = assess_incremental(record, release, python)
+    assess = incremental_module.assess_incremental
+    calls = []
+    assessments = 0
+
+    def reject_late(*args, **kwargs):
+        nonlocal assessments
+        assessments += 1
+        result = assess(*args, **kwargs)
+        return replace(result, eligible=False) if assessments == 2 else result
+
+    monkeypatch.setattr(incremental_module, "assess_incremental", reject_late)
+    with pytest.raises(IncrementalReuseError, match="Source metadata changed"):
+        copy_reused_packages(
+            plan, _candidate(record), progress=lambda *v: calls.append(v)
+        )
+    assert assessments == 2
+    assert calls and not any(count == total for count, total in calls)
+
+
+def test_copy_progress_observer_failure_is_not_an_installation_failure(source):
+    record, release, python, _site = source
+    plan = assess_incremental(record, release, python)
+
+    def broken_observer(*_args):
+        raise RuntimeError("The display is gone")
+
+    result = copy_reused_packages(
+        plan,
+        _candidate(record),
+        progress=broken_observer,
+        preflight_progress=broken_observer,
+    )
+    assert result.copied_files > 0
+
+
 @pytest.mark.parametrize("requirement", ["missing>=1", "dependency>=2"])
 def test_changed_dependency_closure_requires_fresh(source, requirement):
     record, release, python, _ = source

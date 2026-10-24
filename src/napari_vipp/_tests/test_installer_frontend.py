@@ -262,6 +262,77 @@ def test_progress_units_distinguish_byte_progress_from_unknown_activity():
     assert unknown_activity.fraction is None
 
 
+@pytest.mark.parametrize(
+    "unit", [ProgressUnit.FILES, ProgressUnit.PACKAGES, ProgressUnit.CHECKS]
+)
+def test_controller_preserves_exact_measured_counts_through_console_and_rollback(
+    tmp_path, unit
+):
+    workers = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.UPDATE, tmp_path)),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    generation = controller._generation
+    controller._on_progress(
+        generation, ProgressUpdate("installing", "Measured task", 23, 100, unit)
+    )
+    measured = controller.state
+    assert measured.progress_completed == 23
+    assert measured.progress_total == 100
+    assert measured.progress_unit is unit
+    assert measured.progress_fraction == pytest.approx(0.23)
+    assert measured.installation_stage == "installing"
+    controller._on_progress(
+        generation, ProgressUpdate("installing", "", console_text="pip output\n")
+    )
+    assert controller.state == measured
+    controller._on_progress(
+        generation,
+        ProgressUpdate("rolling_back", "Cleaning up", unit=ProgressUnit.ACTIVITY),
+    )
+    assert controller.state.installation_stage == "installing"
+    assert controller.state.progress_completed is None
+    assert controller.state.progress_total is None
+    controller._fail(
+        "Stopped", "Safe failure", RuntimeError("test only"), generation=generation
+    )
+    assert controller.state.installation_stage == "installing"
+    assert controller.state.progress_fraction is None
+
+
+def test_cancel_clears_task_counts_but_preserves_last_installation_stage(tmp_path):
+    workers = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    controller._on_progress(
+        controller._generation,
+        ProgressUpdate("verifying", "Checking", 2, 3, ProgressUnit.CHECKS),
+    )
+    controller.cancel()
+    assert controller.state.screen is InstallerScreen.CANCELLING
+    assert controller.state.installation_stage == "verifying"
+    assert controller.state.progress_completed is None
+    assert controller.state.progress_total is None
+    assert controller.state.progress_fraction is None
+    controller._show_cancelled(controller._generation)
+    assert controller.state.installation_stage == "verifying"
+    controller.retry()
+    assert controller.state.installation_stage == ""
+    assert controller.state.progress_completed is None
+    assert controller.state.progress_total is None
+
+
 def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):
     class _PhasedBackend(_Backend):
         def apply(self, prepared, *, confirmed, progress, cancellation):

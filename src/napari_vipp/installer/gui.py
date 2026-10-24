@@ -113,6 +113,102 @@ _PHASE_LABELS = {
     "cancelled": "Cancelled",
     "failed": "Failed",
 }
+_INSTALLATION_STAGES = (
+    ("preparing", "Prepare"),
+    ("creating_environment", "Environment"),
+    ("installing", "Packages"),
+    ("verifying", "Checks"),
+    ("creating_shortcuts", "Shortcuts"),
+    ("committing", "Finish"),
+)
+
+
+def _installation_stage_index(stage: str) -> int | None:
+    return next(
+        (
+            index
+            for index, (key, _label) in enumerate(_INSTALLATION_STAGES)
+            if key == stage
+        ),
+        None,
+    )
+
+
+def _installation_stage_rows(
+    state: InstallerViewState, last_reached: int | None
+) -> tuple[tuple[str, str], ...]:
+    """Only a later engine stage proves an earlier stage complete."""
+
+    success = state.screen is InstallerScreen.SUCCESS
+    stopped = (
+        state.screen
+        in {
+            InstallerScreen.CANCELLING,
+            InstallerScreen.CANCELLED,
+            InstallerScreen.FAILED,
+        }
+        or state.progress_stage == "rolling_back"
+    )
+    rows = []
+    for index, (_key, label) in enumerate(_INSTALLATION_STAGES):
+        if success or (last_reached is not None and index < last_reached):
+            marker, status = "✓", "complete"
+        elif index == last_reached:
+            marker, status = ("■", "stopped") if stopped else ("●", "current")
+        else:
+            marker, status = "○", "pending"
+        rows.append((f"{marker} {index + 1}  {label}", status))
+    return tuple(rows)
+
+
+def _task_fraction(state: InstallerViewState) -> float | None:
+    if state.screen not in {InstallerScreen.CHECKING, InstallerScreen.WORKING}:
+        return None
+    if state.progress_stage == "rolling_back":
+        return None
+    completed = getattr(state, "progress_completed", None)
+    total = getattr(state, "progress_total", None)
+    unit = getattr(state.progress_unit, "value", state.progress_unit)
+    if (
+        type(completed) is int
+        and type(total) is int
+        and 0 <= completed <= total
+        and total > 0
+        and unit in {"files", "packages", "checks", "bytes"}
+    ):
+        return completed / total
+    return None
+
+
+def _task_progress_text(state: InstallerViewState) -> str:
+    """Measured work is local to this task, never an estimated overall percent."""
+
+    fraction = _task_fraction(state)
+    if fraction is not None:
+        completed = state.progress_completed
+        total = state.progress_total
+        unit = getattr(state.progress_unit, "value", state.progress_unit)
+        count = (
+            f"{_format_size(completed)} of {_format_size(total)}"
+            if unit == "bytes"
+            else f"{completed:,} of {total:,} "
+            + ("files checked/copied" if unit == "files" else unit)
+        )
+        # Rounding must not claim 100% while late integrity checks or the final
+        # item are still pending (e.g. 83,203 / 83,204).
+        percent = 100 if completed == total else min(99, round(fraction * 100))
+        return f"{count} · {percent}% of this task"
+    if state.progress_stage == "rolling_back":
+        return "Restoring the previous state — this is not completed installation work."
+    if state.screen in {InstallerScreen.CHECKING, InstallerScreen.WORKING}:
+        return "Working — this task does not report a measurable total."
+    if state.screen is InstallerScreen.CANCELLING:
+        return "Stopping safely — waiting for the current operation to return."
+    if state.screen is InstallerScreen.SUCCESS:
+        return "All installation stages completed."
+    if state.screen in {InstallerScreen.CANCELLED, InstallerScreen.FAILED}:
+        return "Installation did not complete."
+    return "No packages change until you approve."
 
 
 class _ConsoleBuffer:
@@ -249,17 +345,16 @@ def _activity_text(
     quiet_seconds: int = 0,
     reviewing: bool = False,
 ) -> str:
-    # Read-only checks are not completed installation milestones. Repeated
-    # method reviews show just their current status; diagnostics retain history.
-    visible = history[-1:] if reviewing or screen in _REVIEW_SCREENS else history[-3:]
+    # Changing messages are activity, not proof of completed engine stages.
+    # The stable stage checklist owns completion marks; history stays in details.
+    visible = history[-1:]
     visible = visible or ["Starting VIPP Setup…"]
     lines = []
-    for index, message in enumerate(visible):
-        marker = "●" if index == len(visible) - 1 else "✓"
-        lines.append(f"{marker} {message}")
+    for message in visible:
+        lines.append(message)
     if screen is InstallerScreen.CHECKING:
         latest = visible[-1]
-        lines[-1] = "● Checking the installation and available update methods…"
+        lines[-1] = "Checking the installation and available update methods…"
         lines.append(f"  Latest activity: {latest}")
         lines.append(
             "  Packages will not be downloaded or installed until you approve."
@@ -270,17 +365,6 @@ def _activity_text(
         InstallerScreen.CANCELLING,
     }:
         lines.append(f"  Elapsed in this phase: {_format_elapsed(elapsed_seconds)}")
-        if quiet_seconds >= 60:
-            lines.append(
-                "  Still working — no new milestone for "
-                f"{_format_elapsed(quiet_seconds)}."
-            )
-        if quiet_seconds >= 120:
-            lines.append(
-                "  This phase is taking longer than usual, but setup has not "
-                "reported a failure. Advanced details keeps the latest activity "
-                "and setup log location visible."
-            )
     return "\n".join(lines)
 
 
@@ -663,6 +747,9 @@ class InstallerWindow:
         self._message = tk.StringVar()
         self._selected_method = tk.StringVar()
         self._status = tk.StringVar()
+        self._task_heading = tk.StringVar(value="Checking this computer")
+        self._task_measurement = tk.StringVar()
+        self._show_log = tk.BooleanVar(value=False)
         self._activity = tk.StringVar(
             value=_activity_text(
                 ["Starting VIPP Setup…"],
@@ -695,6 +782,7 @@ class InstallerWindow:
         self._last_elapsed_second = -1
         self._details_text = ""
         self._installation_started = False
+        self._last_install_stage_index: int | None = None
         self._review_controls_visible = True
         self._development_build = _is_development_build()
         self._repair_dialog_open = False
@@ -891,43 +979,58 @@ class InstallerWindow:
             justify="left",
         )
 
-        self._progress = ttk.Progressbar(outer, mode="indeterminate", maximum=100)
-        self._progress.pack(fill="x", pady=(0, 9))
-        self._status_label = ttk.Label(
-            outer,
-            textvariable=self._status,
-            font=("Segoe UI", 9),
+        self._progress_panel = progress_panel = ttk.Frame(outer)
+        progress_panel.pack(fill="x", pady=(0, 4))
+        self._task_heading_label = ttk.Label(
+            progress_panel,
+            textvariable=self._task_heading,
+            font=("Segoe UI Semibold", 12),
             wraplength=650,
         )
-        self._status_label.pack(anchor="w", fill="x")
-
-        activity = tk.Frame(
-            outer,
-            background="#e8f1f7",
-            highlightbackground="#c9d8e5",
-            highlightthickness=1,
-            padx=12,
-            pady=9,
+        self._task_heading_label.pack(anchor="w", fill="x", pady=(0, 7))
+        self._status_label = ttk.Label(
+            progress_panel,
+            textvariable=self._status,
+            font=("Segoe UI", 10),
+            wraplength=650,
         )
-        activity.pack(fill="x", pady=(12, 0))
-        tk.Label(
-            activity,
-            text="Setup progress",
-            font=("Segoe UI Semibold", 9),
-            foreground="#102a43",
-            background="#e8f1f7",
-        ).pack(anchor="w")
-        self._activity_label = tk.Label(
-            activity,
+        self._status_label.pack(anchor="w", fill="x", pady=(0, 8))
+        self._progress = ttk.Progressbar(
+            progress_panel, mode="indeterminate", maximum=100
+        )
+        self._progress.pack(fill="x", pady=(0, 6))
+        self._task_measurement_label = ttk.Label(
+            progress_panel,
+            textvariable=self._task_measurement,
+            font=("Segoe UI Semibold", 10),
+            wraplength=650,
+        )
+        self._task_measurement_label.pack(anchor="w", fill="x")
+        self._activity_label = ttk.Label(
+            progress_panel,
             textvariable=self._activity,
             font=("Segoe UI", 9),
-            foreground="#243b53",
-            background="#e8f1f7",
+            foreground="#526576",
             justify="left",
             anchor="w",
-            wraplength=440,
+            wraplength=650,
         )
         self._activity_label.pack(anchor="w", fill="x", pady=(4, 0))
+        self._install_checklist = ttk.Frame(progress_panel, padding=(0, 12, 0, 0))
+        self._install_checklist.columnconfigure(0, weight=1, uniform="phase-list")
+        self._install_checklist.columnconfigure(1, weight=1, uniform="phase-list")
+        self._install_phase_labels = []
+        for index, (_key, label) in enumerate(_INSTALLATION_STAGES):
+            item = ttk.Label(
+                self._install_checklist,
+                text=f"○ {index + 1}  {label}",
+                font=("Segoe UI", 9),
+                foreground="#526576",
+                padding=(0, 3, 8, 3),
+                anchor="w",
+            )
+            item.grid(row=index % 3, column=index // 3, sticky="ew")
+            self._install_phase_labels.append(item)
 
         self._build_console(outer)
 
@@ -1019,18 +1122,27 @@ class InstallerWindow:
 
     def _build_console(self, parent) -> None:
         tk, ttk = self._tk, self._ttk
-        panel = ttk.Frame(parent)
-        panel.pack(fill="both", expand=True, pady=(14, 0))
-        heading = ttk.Frame(panel)
-        heading.pack(fill="x", pady=(0, 5))
-        ttk.Label(
-            heading, text="Installation log", font=("Segoe UI Semibold", 10)
-        ).pack(side="left")
+        self._console_panel = panel = ttk.Frame(parent)
+        panel.pack(fill="x", pady=(12, 0))
+        self._log_toggle = ttk.Checkbutton(
+            panel,
+            text="Show installation log",
+            variable=self._show_log,
+            command=self._toggle_log,
+        )
+        self._log_toggle.pack(anchor="w")
+        self._console_body = body = ttk.Frame(panel)
+        # The whole diagnostic body, including its controls, is a disclosure.
+        heading = ttk.Frame(body)
+        heading.pack(fill="x", pady=(8, 5))
+        ttk.Label(heading, text="Recent output", font=("Segoe UI Semibold", 10)).pack(
+            side="left"
+        )
         ttk.Button(heading, text="Jump to latest", command=self._follow_console).pack(
             side="right"
         )
         self._console_hint = ttk.Label(
-            panel,
+            body,
             text=(
                 "Recent package output. Scroll up to pause following; select text "
                 "to copy. The full setup log is under Advanced details."
@@ -1039,13 +1151,13 @@ class InstallerWindow:
             wraplength=650,
         )
         self._console_hint.pack(fill="x", pady=(0, 5))
-        content = ttk.Frame(panel)
+        content = ttk.Frame(body)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
         self._console = tk.Text(
             content,
-            height=11,
+            height=8,
             width=1,
             wrap="word",
             font=("Consolas", 9),
@@ -1069,6 +1181,12 @@ class InstallerWindow:
             "Checking packages can be quiet. Download/install messages appear "
             "here as the tools report them.\n"
         )
+
+    def _toggle_log(self) -> None:
+        if self._show_log.get():
+            self._console_body.pack(fill="both", expand=True)
+        else:
+            self._console_body.pack_forget()
 
     def _append_console(self, text: str) -> None:
         if not text:
@@ -1276,29 +1394,32 @@ class InstallerWindow:
     def _render(self, state: InstallerViewState) -> None:
         previous_screen = self._last_rendered_screen
         previous_phase = self._last_rendered_phase
-        if (
-            previous_screen is not state.screen
-            or previous_phase != state.progress_stage
-        ):
+        phase = state.installation_stage or state.progress_stage
+        if previous_screen is not state.screen or previous_phase != phase:
             self._stage_started_at = time.monotonic()
             self._last_elapsed_second = -1
         self._last_rendered_screen = state.screen
-        self._last_rendered_phase = state.progress_stage
+        self._last_rendered_phase = phase
         self._state = state
         self._render_setup_stage(state)
         self._record_status(state.status_message)
         self._headline.set(state.headline)
-        self._message.set(_reviewed_message(state, self._selection))
-        self._status.set(state.status_message)
-        self._activity.set(
-            _activity_text(
-                self._activity_messages(),
-                screen=state.screen,
-                elapsed_seconds=self._elapsed_seconds(),
-                quiet_seconds=self._quiet_seconds(),
-                reviewing=not self._installation_started,
+        self._message.set(
+            (
+                (
+                    "The previous version stays available until the replacement "
+                    "passes checks."
+                    if state.target_kind in {TargetKind.UPDATE, TargetKind.REPAIR}
+                    else "The installation is verified before it becomes active."
+                )
+                if state.screen is InstallerScreen.WORKING
+                else state.message
             )
+            if self._installation_started
+            else _reviewed_message(state, self._selection)
         )
+        self._status.set(state.status_message)
+        self._render_installation_progress(state)
         self._primary_text.set(state.primary_label)
         self._secondary_text.set(state.secondary_label or "Close")
         self._set_enabled(self._primary, state.primary_enabled)
@@ -1309,7 +1430,11 @@ class InstallerWindow:
             self._open_log,
             state.log_path is not None and state.log_path.is_file(),
         )
-        if state.progress_fraction is None:
+        fraction = _task_fraction(state)
+        if state.screen is InstallerScreen.SUCCESS:
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=100)
+        elif fraction is None:
             self._progress.configure(mode="indeterminate")
             if state.screen in {
                 InstallerScreen.CHECKING,
@@ -1324,8 +1449,9 @@ class InstallerWindow:
             self._progress.stop()
             self._progress.configure(
                 mode="determinate",
-                value=state.progress_fraction * 100,
+                value=fraction * 100,
             )
+        self._render_log_disclosure(state)
         details = self._rendered_details(state)
         self._replace_details(details)
         if (
@@ -1368,6 +1494,8 @@ class InstallerWindow:
         installing = self._installation_started
         if installing and not previous_started:
             self._install_status_history = []
+        if not installing:
+            self._last_install_stage_index = None
         if installing:
             suffix = (
                 "complete"
@@ -1407,18 +1535,107 @@ class InstallerWindow:
         if installing != previous_started:
             if installing:
                 self._selected_method_label.pack(
-                    fill="x", pady=(0, 12), before=self._progress
+                    fill="x", pady=(0, 12), before=self._progress_panel
                 )
             else:
                 self._selected_method_label.pack_forget()
             self.root.after_idle(lambda: self._content_canvas.yview_moveto(0.0))
 
+    def _render_log_disclosure(self, state: InstallerViewState) -> None:
+        # Normal updates never reopen a log the user deliberately collapsed.
+        # A new failure exposes actionable recent output without discarding it.
+        was_failed = getattr(self, "_last_log_screen_failed", False)
+        self._last_log_screen_failed = state.screen is InstallerScreen.FAILED
+        if self._last_log_screen_failed and not was_failed and not self._show_log.get():
+            self._show_log.set(True)
+            self._toggle_log()
+
+    def _render_installation_progress(self, state: InstallerViewState) -> None:
+        installing = self._installation_started
+        if installing:
+            stage = getattr(state, "installation_stage", "") or state.progress_stage
+            reached = _installation_stage_index(stage)
+            if reached is not None:
+                self._last_install_stage_index = reached
+            reached = self._last_install_stage_index
+            if state.screen is InstallerScreen.SUCCESS:
+                heading = "6 of 6 stages complete"
+            elif state.progress_stage == "rolling_back":
+                heading = "Rolling back safely"
+            elif state.screen in {
+                InstallerScreen.CANCELLING,
+                InstallerScreen.CANCELLED,
+                InstallerScreen.FAILED,
+            }:
+                heading = (
+                    (
+                        "Stopping at stage "
+                        if state.screen is InstallerScreen.CANCELLING
+                        else "Stopped at stage "
+                    )
+                    + f"{reached + 1} of 6"
+                    if reached is not None
+                    else "Installation stopped"
+                )
+            elif reached is not None:
+                heading = (
+                    f"Stage {reached + 1} of 6 · {_INSTALLATION_STAGES[reached][1]}"
+                )
+            else:
+                heading = "Preparing installation stages"
+            self._install_checklist.pack(fill="x")
+            for label, (text, status) in zip(
+                self._install_phase_labels,
+                _installation_stage_rows(state, reached),
+                strict=True,
+            ):
+                label.configure(
+                    text=text,
+                    foreground={
+                        "complete": "#356447",
+                        "current": "#102a43",
+                        "pending": "#66788a",
+                        "stopped": "#8a4700",
+                    }[status],
+                    font=(
+                        "Segoe UI Semibold"
+                        if status in {"current", "stopped"}
+                        else "Segoe UI",
+                        9,
+                    ),
+                )
+        else:
+            heading = (
+                "Checking this computer"
+                if state.screen is InstallerScreen.CHECKING
+                else "Repairing Windows app information"
+                if state.progress_stage == "repairing_registration"
+                else "Review"
+            )
+            self._install_checklist.pack_forget()
+        self._task_heading.set(heading)
+        self._task_measurement.set(_task_progress_text(state))
+        self._refresh_activity_summary()
+
+    def _refresh_activity_summary(self) -> None:
+        state = self._state
+        if state is None:
+            return
+        # Timers are secondary and do not turn arbitrary status changes into
+        # completed milestones or suggest a predicted time remaining.
+        if state.screen in {
+            InstallerScreen.CHECKING,
+            InstallerScreen.WORKING,
+            InstallerScreen.CANCELLING,
+        }:
+            self._activity.set(
+                f"Elapsed in this stage: {_format_elapsed(self._elapsed_seconds())}"
+            )
+        else:
+            self._activity.set("")
+
     def _rendered_details(self, state: InstallerViewState) -> str:
-        progress = (
-            "active (duration is not yet predictable)"
-            if state.progress_fraction is None
-            else f"{state.progress_fraction * 100:.0f}%"
-        )
+        progress = _task_progress_text(state)
         shortcut_request = (
             "requested" if self._selection.create_desktop_shortcut else "not requested"
         )
@@ -1436,7 +1653,7 @@ class InstallerWindow:
                 f"Stage: {_STAGE_LABELS[state.screen]}",
                 f"Phase: {phase}",
                 f"Current activity: {current_activity}",
-                f"Progress: {progress}",
+                f"Measured task progress: {progress}",
                 f"Elapsed in this phase: {_format_elapsed(self._elapsed_seconds())}",
                 f"Requested computer use: {_LABEL_FOR_TRACK[self._selection.track]}",
                 "Requested update method: "
@@ -1498,15 +1715,7 @@ class InstallerWindow:
         if elapsed == self._last_elapsed_second:
             return
         self._last_elapsed_second = elapsed
-        self._activity.set(
-            _activity_text(
-                self._activity_messages(),
-                screen=state.screen,
-                elapsed_seconds=elapsed,
-                quiet_seconds=self._quiet_seconds(),
-                reviewing=not getattr(self, "_installation_started", False),
-            )
-        )
+        self._refresh_activity_summary()
         # The timer belongs to the progress summary, not the diagnostic text.
         # Replacing the latter every second used to reset the user's scroll.
 
@@ -1621,6 +1830,9 @@ class InstallerWindow:
             self._console_hint.configure(wraplength=wrap)
         if hasattr(self, "_selected_method_label"):
             self._selected_method_label.configure(wraplength=wrap)
+        if hasattr(self, "_task_heading_label"):
+            self._task_heading_label.configure(wraplength=wrap)
+            self._task_measurement_label.configure(wraplength=wrap)
         for label in (
             getattr(self, "_review_stage_label", None),
             getattr(self, "_install_stage_label", None),

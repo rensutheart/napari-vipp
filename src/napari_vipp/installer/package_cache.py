@@ -200,6 +200,7 @@ def materialize_packages(
     *,
     downloader: Callable[[Path, Path], object],
     cancellation: object | None = None,
+    progress: Callable[[str, int, int, str], None] | None = None,
 ) -> tuple[Path, ...]:
     """Return verified local wheels in reviewed package order.
 
@@ -210,6 +211,9 @@ def materialize_packages(
     It receives the lock path and a new empty destination, both inside a new
     operation directory. Its files remain available as diagnostic evidence.
     Local bundled VIPP artifacts must be validated separately by the caller.
+    Optional advisory progress separates cache lookup, an unmeasured download
+    batch, verified downloaded artifacts and the final cache recheck. Counts
+    never infer per-package completion from pip console output.
     """
 
     artifacts = tuple(
@@ -222,16 +226,21 @@ def materialize_packages(
     filenames = [artifact.filename for artifact in artifacts]
     if len(names) != len(set(names)) or len(filenames) != len(set(filenames)):
         raise PackageCacheError("The package batch contains duplicate identities.")
-    paths = [
-        get_cached_package(cache_root, artifact, cancellation=cancellation)
-        for artifact in artifacts
-    ]
+    total = len(artifacts)
+    _materialize_progress(progress, "cache_lookup", 0, total)
+    paths = []
+    for index, artifact in enumerate(artifacts, start=1):
+        paths.append(
+            get_cached_package(cache_root, artifact, cancellation=cancellation)
+        )
+        _materialize_progress(progress, "cache_lookup", index, total, artifact.name)
     missing = [
         artifact
         for artifact, path in zip(artifacts, paths, strict=True)
         if path is None
     ]
     if not missing:
+        _materialize_progress(progress, "complete", total, total)
         return tuple(paths)
 
     root = Path(download_directory)
@@ -253,6 +262,10 @@ def materialize_packages(
         os.fsync(stream.fileno())
         lock_identity = _identity(os.fstat(stream.fileno()))
     _check_cancelled(cancellation)
+    # The exact batch size is known, but pip does not expose reliable item
+    # completion while it downloads. A consumer must not turn this into a
+    # fabricated byte or per-package percentage.
+    _materialize_progress(progress, "downloading", 0, len(missing))
     downloader(lock_path, destination)
     # There is no installer mutation after a cancelled or failed download.
     _check_cancelled(cancellation)
@@ -272,6 +285,8 @@ def materialize_packages(
         if not stat.S_ISREG(entry.lstat().st_mode):
             raise PackageCacheError("A downloaded wheel is not a regular file.")
 
+    verified_downloads = 0
+    _materialize_progress(progress, "download_verified", 0, len(missing))
     for index, (artifact, path) in enumerate(zip(artifacts, paths, strict=True)):
         if path is not None:
             continue
@@ -295,12 +310,44 @@ def materialize_packages(
             fetcher=local_fetcher,
             cancellation=cancellation,
         )
+        verified_downloads += 1
+        _materialize_progress(
+            progress,
+            "download_verified",
+            verified_downloads,
+            len(missing),
+            artifact.name,
+        )
     # Downloading may take a while. Do not return an earlier cache hit that
     # changed while the caller's child process was running.
-    for artifact in artifacts:
+    _materialize_progress(progress, "cache_rechecking", 0, total)
+    for index, artifact in enumerate(artifacts, start=1):
         if get_cached_package(cache_root, artifact, cancellation=cancellation) is None:
             raise PackageCacheError("A reviewed cached wheel disappeared.")
+        _materialize_progress(
+            progress,
+            "cache_rechecking",
+            index,
+            total,
+            artifact.name,
+        )
+    _materialize_progress(progress, "complete", total, total)
     return tuple(paths)
+
+
+def _materialize_progress(
+    callback: Callable[[str, int, int, str], None] | None,
+    stage: str,
+    completed: int,
+    total: int,
+    package_name: str = "",
+) -> None:
+    if callback is not None:
+        try:
+            callback(stage, completed, total, package_name)
+        except Exception:
+            # Presentation is not authority over package verification or apply.
+            pass
 
 
 def _url_filename(url: str) -> str:
@@ -413,11 +460,13 @@ def _verified_entry(
         after = os.fstat(stream.fileno())
     _checkpoint(cancellation, deadline)
     current = _assert_identity(path, _identity(before))
+
     def stamp(value):
         # Windows hard-link creation times differ between stat(path) and
         # fstat(handle). Identity, size, last-write time and the complete hash
         # must agree; a platform-dependent creation time is not an invariant.
         return value.st_size, value.st_mtime_ns
+
     if (
         stamp(before) != stamp(opened)
         or stamp(before) != stamp(after)
