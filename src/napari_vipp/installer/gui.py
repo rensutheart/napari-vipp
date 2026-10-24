@@ -13,7 +13,6 @@ import os
 import queue
 import subprocess
 import sys
-import textwrap
 import threading
 import time
 import webbrowser
@@ -28,6 +27,7 @@ from napari_vipp.installer.frontend import (
     InstallerScreen,
     InstallerSelection,
     InstallerViewState,
+    RegistrationRepairReview,
     TargetKind,
     TrackChoice,
 )
@@ -352,6 +352,284 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _registration_repair_details(review: RegistrationRepairReview) -> str:
+    """Keep the authorized preview complete; wrapping belongs to the widget."""
+
+    return (
+        review.preview
+        + f"\n\nBackup before changes:\n{review.backup_path}"
+        + f"\n\nReview fingerprint:\n{review.fingerprint}"
+    )
+
+
+class _RegistrationRepairDialog:
+    """A registry-only consent dialog with a bounded, scrollable disclosure."""
+
+    def __init__(self, parent, review: RegistrationRepairReview) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+
+        self._tk = tk
+        self._parent = parent
+        self._result = False
+        self._details_visible = False
+        self._details_text = _registration_repair_details(review)
+        self._window = tk.Toplevel(parent)
+        try:
+            self._build(review, ttk)
+        except BaseException:
+            self._window.destroy()
+            raise
+
+    def _build(self, review: RegistrationRepairReview, ttk) -> None:
+        tk = self._tk
+        parent = self._parent
+        dialog = self._window
+        dialog.withdraw()
+        dialog.title("Repair Windows app entry?")
+        dialog.transient(parent)
+        dialog.resizable(True, True)
+        self._maximum_width = max(240, dialog.winfo_screenwidth() - 80)
+        self._maximum_height = max(200, dialog.winfo_screenheight() - 120)
+        dialog.maxsize(self._maximum_width, self._maximum_height)
+        dialog.minsize(min(440, self._maximum_width), min(280, self._maximum_height))
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: self._finish(False))
+        dialog.bind("<Escape>", lambda _event: self._finish(False))
+        dialog.bind("<Return>", self._return_pressed)
+
+        viewport = ttk.Frame(dialog)
+        viewport.grid(row=0, column=0, sticky="nsew")
+        viewport.columnconfigure(0, weight=1)
+        viewport.rowconfigure(0, weight=1)
+        self._canvas = canvas = tk.Canvas(viewport, borderwidth=0, highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        content = ttk.Frame(canvas, padding=(22, 18, 18, 18))
+        content.columnconfigure(0, weight=1)
+        self._content_item = canvas.create_window(0, 0, anchor="nw", window=content)
+        content.bind(
+            "<Configure>",
+            lambda _event: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        self._wrapped_labels = []
+        self._version_labels = []
+        canvas.bind("<Configure>", self._resized)
+
+        def label(text, *, row, font=None, padding=(0, 0)):
+            widget = ttk.Label(
+                content,
+                text=text,
+                anchor="w",
+                justify="left",
+                wraplength=560,
+                **({"font": font} if font else {}),
+            )
+            widget.grid(row=row, column=0, sticky="ew", pady=padding)
+            self._wrapped_labels.append(widget)
+            return widget
+
+        label(
+            "Fix the Windows listing, not the installation",
+            row=0,
+            font=("Segoe UI Semibold", 15),
+            padding=(0, 12),
+        )
+        label(
+            "Windows app information does not match the verified VIPP installation.",
+            row=1,
+            padding=(0, 12),
+        )
+        if review.registered_version and review.installed_version:
+            versions = ttk.Frame(
+                content, padding=(12, 9), relief="solid", borderwidth=1
+            )
+            versions.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+            versions.columnconfigure(1, weight=1)
+            for row, caption, version in (
+                (0, "Windows currently lists", review.registered_version),
+                (1, "Verified installed version", review.installed_version),
+            ):
+                caption_label = ttk.Label(versions, text=caption, wraplength=260)
+                caption_label.grid(row=row, column=0, sticky="w", padx=(0, 18), pady=3)
+                version_label = ttk.Label(
+                    versions,
+                    text=version,
+                    font=("Segoe UI Semibold", 10),
+                    wraplength=260,
+                )
+                version_label.grid(row=row, column=1, sticky="w", pady=3)
+                self._version_labels.extend((caption_label, version_label))
+        if review.managed_root is not None:
+            label("Installation", row=3, font=("Segoe UI Semibold", 10))
+            location_frame = ttk.Frame(content)
+            location_frame.grid(row=4, column=0, sticky="ew", pady=(3, 12))
+            location_frame.columnconfigure(0, weight=1)
+            self._location = tk.Text(
+                location_frame,
+                height=2,
+                width=1,
+                wrap="char",
+                font=("Segoe UI", 10),
+                borderwidth=0,
+                highlightthickness=0,
+            )
+            self._location.grid(row=0, column=0, sticky="ew")
+            location_scroll = ttk.Scrollbar(
+                location_frame, orient="vertical", command=self._location.yview
+            )
+            location_scroll.grid(row=0, column=1, sticky="ns")
+            self._location.configure(yscrollcommand=location_scroll.set)
+            self._location.insert("1.0", str(review.managed_root))
+            self._location.configure(state="disabled")
+        label(
+            "Only VIPP's Windows Installed apps entry will change. Your packages, "
+            "workflows and shortcuts will stay as they are.\n\n"
+            "Setup will save a backup first, then check again. Installing an "
+            "update still needs your approval. No older uninstaller will be run.",
+            row=5,
+            padding=(0, 12),
+        )
+        self._disclosure = ttk.Button(
+            content, text="Show technical details", command=self._toggle_details
+        )
+        self._disclosure.grid(row=6, column=0, sticky="w")
+        self._details_panel = ttk.Frame(content, padding=(0, 10, 0, 0))
+        self._details_panel.grid(row=7, column=0, sticky="nsew")
+        self._details_panel.columnconfigure(0, weight=1)
+        self._details = tk.Text(
+            self._details_panel,
+            height=11,
+            width=1,
+            wrap="none",
+            font=("Consolas", 9),
+            background="#10212e",
+            foreground="#edf4fa",
+            insertbackground="#edf4fa",
+        )
+        self._details.grid(row=1, column=0, sticky="nsew")
+        details_y = ttk.Scrollbar(
+            self._details_panel, orient="vertical", command=self._details.yview
+        )
+        details_y.grid(row=1, column=1, sticky="ns")
+        details_x = ttk.Scrollbar(
+            self._details_panel, orient="horizontal", command=self._details.xview
+        )
+        details_x.grid(row=2, column=0, sticky="ew")
+        self._details.configure(
+            yscrollcommand=details_y.set, xscrollcommand=details_x.set
+        )
+        self._details.insert("1.0", self._details_text)
+        self._details.configure(state="disabled")
+        ttk.Button(
+            self._details_panel, text="Copy details", command=self._copy_details
+        ).grid(row=0, column=0, sticky="e", pady=(0, 6))
+        self._details_panel.grid_remove()
+
+        # Consent controls are outside the scroll body and never disappear when
+        # long paths or technical details exceed the available screen height.
+        footer = ttk.Frame(dialog, padding=(18, 12))
+        footer.grid(row=2, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        ttk.Separator(dialog, orient="horizontal").grid(row=1, column=0, sticky="ew")
+        self._cancel = ttk.Button(
+            footer, text="Cancel", command=lambda: self._finish(False), default="active"
+        )
+        self._cancel.grid(row=0, column=1, padx=(0, 10))
+        self._repair = ttk.Button(
+            footer, text="Repair entry", command=lambda: self._finish(True)
+        )
+        self._repair.grid(row=0, column=2)
+        self._set_geometry()
+
+    def _set_geometry(self) -> None:
+        width = min(680, self._maximum_width)
+        height = min(690 if self._details_visible else 580, self._maximum_height)
+        self._window.geometry(f"{width}x{height}")
+
+    def _resized(self, event) -> None:
+        self._canvas.itemconfigure(self._content_item, width=event.width)
+        for label in self._wrapped_labels:
+            label.configure(wraplength=max(120, event.width - 44))
+        for label in self._version_labels:
+            label.configure(wraplength=max(80, (event.width - 90) // 2))
+
+    def _toggle_details(self) -> None:
+        self._details_visible = not self._details_visible
+        if self._details_visible:
+            self._details_panel.grid()
+        else:
+            self._details_panel.grid_remove()
+        self._disclosure.configure(
+            text="Hide technical details"
+            if self._details_visible
+            else "Show technical details"
+        )
+        self._set_geometry()
+
+    def _copy_details(self) -> None:
+        self._window.clipboard_clear()
+        self._window.clipboard_append(self._details_text)
+
+    def _finish(self, confirmed: bool) -> str:
+        self._result = confirmed is True
+        self._release_own_grab()
+        self._window.destroy()
+        return "break"
+
+    def _return_pressed(self, _event=None) -> str:
+        focused = self._window.focus_get()
+        if focused is self._repair:
+            self._repair.invoke()
+        elif focused is self._cancel:
+            self._cancel.invoke()
+        return "break"
+
+    def show(self) -> bool:
+        """Default to cancellation and release only this modal's grab."""
+
+        prior_focus = None
+        prior_grab = None
+        try:
+            prior_focus = self._parent.focus_get()
+            prior_grab = self._parent.grab_current()
+            self._window.deiconify()
+            self._window.wait_visibility()
+            self._window.grab_set()
+            self._cancel.focus_set()
+            self._window.wait_window()
+            return self._result
+        except self._tk.TclError:
+            self._result = False
+            return False
+        finally:
+            self._release_own_grab()
+            for widget, action in (
+                (self._window, "destroy"),
+                (prior_grab, "grab_set"),
+                (prior_focus, "focus_set"),
+            ):
+                try:
+                    if widget is not None and widget.winfo_exists():
+                        getattr(widget, action)()
+                except self._tk.TclError:
+                    # The parent or a previous modal may already have closed.
+                    pass
+
+    def _release_own_grab(self) -> None:
+        try:
+            if (
+                self._window.winfo_exists()
+                and self._window.grab_current() is self._window
+            ):
+                self._window.grab_release()
+        except self._tk.TclError:
+            pass
+
+
 class InstallerWindow:
     """Tk renderer around the display-independent installer controller."""
 
@@ -419,6 +697,7 @@ class InstallerWindow:
         self._installation_started = False
         self._review_controls_visible = True
         self._development_build = _is_development_build()
+        self._repair_dialog_open = False
 
         self._configure_root()
         self._build_window()
@@ -1355,6 +1634,8 @@ class InstallerWindow:
         self._toggle_advanced()
 
     def _primary_requested(self) -> None:
+        if getattr(self, "_repair_dialog_open", False):
+            return
         state = self._state
         if state is None:
             return
@@ -1369,35 +1650,7 @@ class InstallerWindow:
                 self._controller.open_owned_uninstaller()
             elif state.blocked_action is BlockedAction.REPAIR_REGISTRATION:
                 review = state.registration_repair
-                raw_preview = (
-                    (
-                        review.preview
-                        + f"\n\nBackup before changes: {review.backup_path}\n\n"
-                        "Only this Windows entry will change. No packages, workflows "
-                        "or shortcuts will be installed, updated or removed. Setup "
-                        "will check again afterward; updating still needs approval.\n\n"
-                        "Repair this entry now?"
-                    )
-                    if review is not None
-                    else ""
-                )
-                displayed_preview = "\n".join(
-                    textwrap.fill(
-                        line,
-                        width=90,
-                        break_long_words=True,
-                        break_on_hyphens=False,
-                        replace_whitespace=False,
-                    )
-                    for line in raw_preview.splitlines()
-                )
-                if review is not None and self._messagebox.askyesno(
-                    "Repair VIPP's Windows uninstall entry?",
-                    displayed_preview,
-                    parent=self.root,
-                    default="no",
-                    icon="warning",
-                ):
+                if review is not None and self._confirm_registration_repair(review):
                     self._controller.repair_registration(
                         confirmed=True, fingerprint=review.fingerprint
                     )
@@ -1415,6 +1668,13 @@ class InstallerWindow:
                 self._controller.retry()
         elif state.screen in {InstallerScreen.CANCELLED, InstallerScreen.FAILED}:
             self._controller.retry()
+
+    def _confirm_registration_repair(self, review: RegistrationRepairReview) -> bool:
+        self._repair_dialog_open = True
+        try:
+            return _RegistrationRepairDialog(self.root, review).show() is True
+        finally:
+            self._repair_dialog_open = False
 
     def _secondary_requested(self) -> None:
         state = self._state
@@ -1617,6 +1877,8 @@ class InstallerWindow:
             )
 
     def _close_requested(self) -> None:
+        if getattr(self, "_repair_dialog_open", False):
+            return
         if self._controller.busy:
             if (
                 self._state is not None

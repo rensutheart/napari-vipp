@@ -867,9 +867,9 @@ def test_owned_uninstaller_action_stays_inside_controller_boundary():
     assert window._controller.calls == ["open-uninstaller"]
 
 
-@pytest.mark.parametrize("accepted", [False, True])
-def test_registration_repair_confirmation_displays_changes_backup_and_scope(
-    tmp_path, accepted
+@pytest.mark.parametrize("accepted", [False, True, "yes", 1])
+def test_registration_repair_uses_scoped_dialog_and_exact_captured_review(
+    tmp_path, accepted, monkeypatch
 ):
     review = RegistrationRepairReview(
         "a" * 64,
@@ -887,27 +887,416 @@ def test_registration_repair_confirmation_displays_changes_backup_and_scope(
         )
     )
     window.root = object()
-    prompts = []
+    dialogs = []
 
-    def askyesno(title, message, *, parent, default, icon):
-        prompts.append((title, message, parent, default, icon))
-        return accepted
+    def dialog(parent, captured_review):
+        dialogs.append((parent, captured_review))
+        return SimpleNamespace(show=lambda: accepted)
 
-    window._messagebox = SimpleNamespace(askyesno=askyesno)
+    monkeypatch.setattr(gui_module, "_RegistrationRepairDialog", dialog, raising=False)
+    window._messagebox = SimpleNamespace(
+        askyesno=lambda *_args, **_kwargs: pytest.fail("Used unbounded system dialog")
+    )
     window._primary_requested()
 
-    assert len(prompts) == 1
-    assert review.preview in prompts[0][1]
-    unwrapped = prompts[0][1].replace("\n", "")
-    normalized = " ".join(prompts[0][1].split())
-    assert str(review.backup_path) in unwrapped
-    assert "No packages, workflows or shortcuts" in normalized
-    assert "updating still needs approval" in normalized
-    assert prompts[0][3:] == ("no", "warning")
-    assert max(map(len, prompts[0][1].splitlines())) <= 90
+    assert dialogs == [(window.root, review)]
+    assert window._repair_dialog_open is False
     assert window._controller.calls == (
-        [("repair-registration", True, "a" * 64)] if accepted else []
+        [("repair-registration", True, "a" * 64)] if accepted is True else []
     )
+
+
+def test_registration_repair_confirmation_keeps_the_captured_fingerprint(
+    tmp_path, monkeypatch
+):
+    review = RegistrationRepairReview(
+        "a" * 64, "Exact review", tmp_path / "backup.json", object()
+    )
+    window = _window(
+        replace(
+            _state(
+                InstallerScreen.BLOCKED,
+                blocked_action=BlockedAction.REPAIR_REGISTRATION,
+            ),
+            registration_repair=review,
+        )
+    )
+    window.root = object()
+
+    def show():
+        # A newer queued review may render during the nested modal event loop.
+        # The controller must receive the fingerprint actually reviewed, not a
+        # newly substituted one; its existing generation guard rejects staleness.
+        window._state = replace(
+            window._state, registration_repair=replace(review, fingerprint="b" * 64)
+        )
+        return True
+
+    monkeypatch.setattr(
+        gui_module,
+        "_RegistrationRepairDialog",
+        lambda *_args: SimpleNamespace(show=show),
+    )
+    window._primary_requested()
+    assert window._controller.calls == [("repair-registration", True, "a" * 64)]
+
+
+def test_registration_repair_missing_review_never_opens_or_repairs(monkeypatch):
+    window = _window(
+        _state(
+            InstallerScreen.BLOCKED,
+            blocked_action=BlockedAction.REPAIR_REGISTRATION,
+        )
+    )
+    monkeypatch.setattr(
+        gui_module,
+        "_RegistrationRepairDialog",
+        lambda *_args: pytest.fail("No captured repair review"),
+    )
+    window._primary_requested()
+    assert window._controller.calls == []
+
+
+def test_registration_repair_modal_suppresses_parent_return_and_escape():
+    window = _window(_state(InstallerScreen.READY))
+    window._repair_dialog_open = True
+    window._primary_requested()
+    window._close_requested()
+    assert window._controller.calls == []
+
+
+def test_registration_repair_dialog_failure_clears_parent_modal_guard(
+    tmp_path, monkeypatch
+):
+    review = RegistrationRepairReview(
+        "a" * 64, "Exact review", tmp_path / "backup.json", object()
+    )
+    window = _window(_state(InstallerScreen.BLOCKED))
+    window.root = object()
+
+    def fail(*_args):
+        assert window._repair_dialog_open
+        raise RuntimeError("synthetic dialog failure")
+
+    monkeypatch.setattr(gui_module, "_RegistrationRepairDialog", fail)
+    with pytest.raises(RuntimeError, match="synthetic dialog"):
+        window._confirm_registration_repair(review)
+    assert window._repair_dialog_open is False
+    assert window._controller.calls == []
+
+
+class _DialogTclError(RuntimeError):
+    pass
+
+
+class _DialogWidget:
+    """Record Tk layout/events without constructing a Tk interpreter or window."""
+
+    def __init__(self, kind="root", parent=None, **options):
+        self.kind = kind
+        self.parent = parent
+        self.options = options
+        self.shared = parent.shared if parent else {"grab": None, "focus": None}
+        self.widgets = parent.widgets if parent else []
+        self.widgets.append(self)
+        self.exists = True
+        self.visible = True
+        self.bindings = {}
+        self.protocols = {}
+        self.grid_options = {}
+        self.content = ""
+        self.events = []
+        self.wait_action = lambda: self.destroy()
+
+    def __getattr__(self, name):
+        if name in {
+            "title",
+            "transient",
+            "resizable",
+            "maxsize",
+            "minsize",
+            "columnconfigure",
+            "rowconfigure",
+            "geometry",
+            "itemconfigure",
+            "yview",
+            "xview",
+            "set",
+            "deiconify",
+            "withdraw",
+        }:
+            return lambda *args, **kwargs: self.events.append((name, args, kwargs))
+        raise AttributeError(name)
+
+    def configure(self, **options):
+        self.options.update(options)
+
+    def grid(self, **options):
+        self.grid_options.update(options)
+        self.visible = True
+
+    def grid_remove(self):
+        self.visible = False
+
+    def bind(self, event, callback):
+        self.bindings[event] = callback
+
+    def protocol(self, name, callback):
+        self.protocols[name] = callback
+
+    def insert(self, _index, text):
+        self.content += text
+
+    def create_window(self, *_args, **_kwargs):
+        return "content-item"
+
+    def bbox(self, _tag):
+        return (0, 0, 640, 1200)
+
+    def winfo_screenwidth(self):
+        return 1024
+
+    def winfo_screenheight(self):
+        return 768
+
+    def winfo_exists(self):
+        return self.exists
+
+    def grab_current(self):
+        return self.shared["grab"]
+
+    def grab_set(self):
+        self.events.append(("grab_set",))
+        self.shared["grab"] = self
+
+    def grab_release(self):
+        self.events.append(("grab_release",))
+        self.shared["grab"] = None
+
+    def focus_get(self):
+        return self.shared["focus"]
+
+    def focus_set(self):
+        self.events.append(("focus_set",))
+        self.shared["focus"] = self
+
+    def wait_visibility(self):
+        self.events.append(("wait_visibility",))
+
+    def wait_window(self):
+        self.wait_action()
+
+    def destroy(self):
+        self.events.append(("destroy",))
+        self.exists = False
+
+    def invoke(self):
+        self.options["command"]()
+
+    def clipboard_clear(self):
+        self.shared["clipboard"] = ""
+
+    def clipboard_append(self, text):
+        self.shared["clipboard"] += text
+
+
+@pytest.fixture
+def repair_dialog_stub(tmp_path, monkeypatch):
+    root = _DialogWidget()
+    ttk = SimpleNamespace()
+    tk = SimpleNamespace(TclError=_DialogTclError, ttk=ttk)
+    for module, names in (
+        (tk, ("Toplevel", "Canvas", "Text")),
+        (ttk, ("Frame", "Label", "Scrollbar", "Button", "Separator")),
+    ):
+        for name in names:
+            setattr(
+                module,
+                name,
+                lambda parent, _kind=name, **options: _DialogWidget(
+                    _kind, parent, **options
+                ),
+            )
+    monkeypatch.setitem(sys.modules, "tkinter", tk)
+    review = RegistrationRepairReview(
+        fingerprint="a" * 64,
+        preview=(
+            "Older cached uninstaller is unavailable and will not be run.\n"
+            "UninstallString: '" + "old-path/" * 100 + "' → 'new command'\n"
+            "VippManifestSha256: '" + "b" * 64 + "' → '" + "c" * 64 + "'"
+        ),
+        backup_path=tmp_path / "registration-repairs" / "exact-backup.json",
+        payload=object(),
+        managed_root=tmp_path / "managed" / "cuda13",
+        registered_version="0.16.0a8.dev4",
+        installed_version="0.16.0a8.dev5",
+        old_uninstaller_state="absent",
+    )
+    return gui_module._RegistrationRepairDialog(root, review), root, review
+
+
+def test_repair_dialog_is_compact_with_exact_details_and_pinned_footer(
+    repair_dialog_stub,
+):
+    dialog, root, review = repair_dialog_stub
+    assert not dialog._details_visible
+    assert not dialog._details_panel.visible
+    assert dialog._details.options["state"] == "disabled"
+    assert dialog._details.options["wrap"] == "none"
+    assert dialog._details.content.startswith(review.preview + "\n\n")
+    assert str(review.backup_path) in dialog._details.content
+    assert review.fingerprint in dialog._details.content
+    assert dialog._location.content == str(review.managed_root)
+    assert dialog._location.options["state"] == "disabled"
+    assert dialog._location.options["wrap"] == "char"
+    assert dialog._cancel.options["text"] == "Cancel"
+    assert dialog._cancel.options["default"] == "active"
+    assert dialog._repair.options["text"] == "Repair entry"
+    footer = dialog._repair.parent
+    assert footer.parent is dialog._window
+    assert footer.grid_options["row"] == 2
+    summaries = "\n".join(
+        str(widget.options.get("text", ""))
+        for widget in root.widgets
+        if widget.kind == "Label"
+    )
+    assert review.registered_version in summaries
+    assert review.installed_version in summaries
+    assert "packages, workflows and shortcuts" in summaries
+    assert "still needs your approval" in summaries
+    assert "No older uninstaller will be run" in summaries
+    assert "UninstallString" not in summaries
+    assert review.fingerprint not in summaries
+
+
+def test_repair_dialog_disclosure_copy_and_resize_never_confirm(repair_dialog_stub):
+    dialog, root, review = repair_dialog_stub
+    dialog._toggle_details()
+    assert dialog._details_visible and dialog._details_panel.visible
+    assert dialog._disclosure.options["text"] == "Hide technical details"
+    expanded = [event for event in dialog._window.events if event[0] == "geometry"][-1]
+    assert expanded[1] == ("680x648",)  # capped below the 768px screen
+    dialog._copy_details()
+    assert root.shared["clipboard"] == dialog._details.content
+    assert review.preview in root.shared["clipboard"]
+    dialog._resized(SimpleNamespace(width=440))
+    assert all(label.options["wraplength"] == 396 for label in dialog._wrapped_labels)
+    assert all(label.options["wraplength"] == 175 for label in dialog._version_labels)
+    dialog._toggle_details()
+    assert not dialog._details_visible and not dialog._details_panel.visible
+    assert dialog._result is False
+    assert dialog._window.exists
+
+
+def test_repair_dialog_optional_facts_do_not_require_parsing_or_opaque_payload(
+    repair_dialog_stub,
+):
+    _dialog, root, review = repair_dialog_stub
+
+    class OpaquePayload:
+        def __getattr__(self, name):
+            pytest.fail(f"Read opaque authorization payload: {name}")
+
+    old_review = replace(
+        review,
+        payload=OpaquePayload(),
+        managed_root=None,
+        registered_version="",
+        installed_version="",
+        old_uninstaller_state="",
+    )
+    dialog = gui_module._RegistrationRepairDialog(root, old_review)
+    assert dialog._details.content.startswith(old_review.preview)
+    assert not hasattr(dialog, "_location")
+    assert dialog._version_labels == []
+
+
+def test_repair_dialog_construction_failure_discards_only_its_window(
+    repair_dialog_stub, monkeypatch
+):
+    existing_dialog, root, review = repair_dialog_stub
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("synthetic construction failure")
+
+    monkeypatch.setattr(sys.modules["tkinter"].ttk, "Frame", fail)
+    with pytest.raises(RuntimeError, match="synthetic construction"):
+        gui_module._RegistrationRepairDialog(root, review)
+    toplevels = [widget for widget in root.widgets if widget.kind == "Toplevel"]
+    assert len(toplevels) == 2
+    assert existing_dialog._window.exists
+    assert not toplevels[-1].exists
+
+
+@pytest.mark.parametrize("focus", ["cancel", "repair", "details", "location"])
+def test_repair_dialog_return_only_invokes_the_focused_explicit_button(
+    repair_dialog_stub, focus
+):
+    dialog, root, _review = repair_dialog_stub
+    root.shared["focus"] = getattr(dialog, "_" + focus)
+    assert dialog._return_pressed() == "break"
+    assert dialog._result is (focus == "repair")
+    assert dialog._window.exists is (focus in {"details", "location"})
+
+
+@pytest.mark.parametrize("close", ["escape", "window"])
+def test_repair_dialog_escape_and_window_close_cancel(repair_dialog_stub, close):
+    dialog, _root, _review = repair_dialog_stub
+    callback = (
+        dialog._window.bindings["<Escape>"]
+        if close == "escape"
+        else dialog._window.protocols["WM_DELETE_WINDOW"]
+    )
+    result = callback(None) if close == "escape" else callback()
+    assert result == "break"
+    assert dialog._result is False
+    assert not dialog._window.exists
+
+
+@pytest.mark.parametrize("outcome", ["cancel", "repair", "wait-failure"])
+def test_repair_dialog_show_defaults_cancel_and_always_restores_owned_grab_focus(
+    repair_dialog_stub, outcome
+):
+    dialog, root, _review = repair_dialog_stub
+    prior_grab = _DialogWidget(parent=root)
+    prior_focus = _DialogWidget(parent=root)
+    prior_grab.grab_set()
+    prior_focus.focus_set()
+
+    def finish():
+        assert root.shared["grab"] is dialog._window
+        assert root.shared["focus"] is dialog._cancel
+        if outcome == "wait-failure":
+            raise _DialogTclError("synthetic wait failure")
+        dialog._finish(outcome == "repair")
+
+    dialog._window.wait_action = finish
+    assert dialog.show() is (outcome == "repair")
+    assert not dialog._window.exists
+    assert ("grab_release",) in dialog._window.events
+    assert root.shared["grab"] is prior_grab
+    assert root.shared["focus"] is prior_focus
+
+
+@pytest.mark.parametrize("failure", ["parent-focus", "grab", "visibility"])
+def test_repair_dialog_modal_setup_failure_is_cancel_without_leaked_window(
+    repair_dialog_stub, failure
+):
+    dialog, root, _review = repair_dialog_stub
+
+    def fail():
+        raise _DialogTclError("synthetic modal setup failure")
+
+    if failure == "parent-focus":
+        root.focus_get = fail
+    elif failure == "grab":
+        dialog._window.grab_set = fail
+    else:
+        dialog._window.wait_visibility = fail
+    assert dialog.show() is False
+    assert dialog._result is False
+    assert not dialog._window.exists
+    assert root.shared["grab"] is None
 
 
 def test_close_waits_for_registration_commit_instead_of_interrupting_it():

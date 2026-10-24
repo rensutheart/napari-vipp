@@ -173,6 +173,10 @@ class RegistrationRepairReview:
     preview: str
     backup_path: Path
     payload: object = field(repr=False, compare=False)
+    managed_root: Path | None = None
+    registered_version: str = ""
+    installed_version: str = ""
+    old_uninstaller_state: str = ""
 
     def __post_init__(self) -> None:
         if len(self.fingerprint) != 64 or any(
@@ -186,6 +190,28 @@ class RegistrationRepairReview:
             or self.payload is None
         ):
             raise ValueError("Registration repair needs a preview and backup location.")
+        # Optional display facts are copied from the same ownership-bound
+        # repair plan. Renderers must not parse prose or inspect opaque payloads.
+        if self.managed_root is not None:
+            object.__setattr__(self, "managed_root", Path(self.managed_root))
+        if any(
+            (
+                self.managed_root is not None,
+                self.registered_version,
+                self.installed_version,
+            )
+        ):
+            if (
+                self.managed_root is None
+                or not self.managed_root.is_absolute()
+                or not isinstance(self.registered_version, str)
+                or not self.registered_version.strip()
+                or not isinstance(self.installed_version, str)
+                or not self.installed_version.strip()
+            ):
+                raise ValueError("Registration repair display facts must be complete.")
+        if self.old_uninstaller_state not in {"", "verified-present", "absent"}:
+            raise ValueError("Unknown prior uninstaller display state.")
 
 
 @dataclass(frozen=True, slots=True)

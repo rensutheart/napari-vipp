@@ -365,6 +365,9 @@ def test_registration_conflict_offers_separate_readonly_repair_review(
         prepared.registration_repair.preview
     )
     assert prepared.registration_repair.backup_path == tmp_path / "repair-backup.json"
+    assert prepared.registration_repair.managed_root == prepared.target
+    assert prepared.registration_repair.registered_version == "0.16.0a3"
+    assert prepared.registration_repair.installed_version == "0.16.0a7"
     assert calls == [(prepared.target, tmp_path, repair_backend)]
     assert backend._repair_backend is repair_backend
     assert engine.authorizations == [] and engine.applied == []
@@ -433,7 +436,19 @@ def test_registration_repair_uses_only_separate_typed_helper_backend(
     assert engine.authorizations == [] and engine.applied == []
 
 
-@pytest.mark.parametrize("forged", ["preview", "backup", "track", "fingerprint"])
+@pytest.mark.parametrize(
+    "forged",
+    [
+        "preview",
+        "backup",
+        "track",
+        "fingerprint",
+        "root",
+        "registered",
+        "installed",
+        "old-state",
+    ],
+)
 def test_registration_repair_rejects_misleading_review_before_authorization_or_write(
     tmp_path, monkeypatch, forged
 ):
@@ -447,6 +462,10 @@ def test_registration_repair_rejects_misleading_review_before_authorization_or_w
             "preview": {"preview": "No change, no backup needed."},
             "backup": {"backup_path": tmp_path / "misleading-backup.json"},
             "fingerprint": {"fingerprint": "b" * 64},
+            "root": {"managed_root": tmp_path / "another-installation"},
+            "registered": {"registered_version": "misleading-old-version"},
+            "installed": {"installed_version": "misleading-installed-version"},
+            "old-state": {"old_uninstaller_state": "absent"},
         }
         prepared = replace(
             prepared,

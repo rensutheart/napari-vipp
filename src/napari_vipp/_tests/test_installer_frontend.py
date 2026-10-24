@@ -1054,6 +1054,47 @@ def _registration_blocked(tmp_path):
     )
 
 
+def test_registration_review_has_structured_optional_display_facts(tmp_path):
+    review = RegistrationRepairReview(
+        "a" * 64,
+        "Exact original technical review",
+        tmp_path / "backup.json",
+        object(),
+        managed_root=tmp_path / "owned-installation",
+        registered_version="0.16.0a8.dev4",
+        installed_version="0.16.0a8.dev5",
+        old_uninstaller_state="absent",
+    )
+    assert review.managed_root == tmp_path / "owned-installation"
+    assert review.registered_version == "0.16.0a8.dev4"
+    assert review.installed_version == "0.16.0a8.dev5"
+    assert review.preview == "Exact original technical review"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"managed_root": Path("relative-installation")},
+        {"managed_root": None},
+        {"registered_version": ""},
+        {"installed_version": ""},
+        {"old_uninstaller_state": "unknown"},
+    ],
+)
+def test_registration_review_rejects_incomplete_display_facts(tmp_path, changes):
+    facts = {
+        "managed_root": tmp_path / "owned-installation",
+        "registered_version": "old",
+        "installed_version": "verified",
+        "old_uninstaller_state": "absent",
+    }
+    facts.update(changes)
+    with pytest.raises(ValueError):
+        RegistrationRepairReview(
+            "a" * 64, "Exact review", tmp_path / "backup.json", object(), **facts
+        )
+
+
 def test_registration_repair_is_separately_confirmed_then_rechecks_without_install(
     tmp_path,
 ):

@@ -1,7 +1,7 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev7`; this is not a public release. The earlier
+Development build: `0.16.0a8.dev8`; this is not a public release. The earlier
 `dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
@@ -68,6 +68,13 @@ durable backup before writing. Reject unknown fields/types/subkeys, foreign or
 partial identities and stale confirmation. Recheck the installation after a
 successful repair, without automatically updating or opening VIPP. The repair
 does not rebuild packages or change user workflows.
+
+Confirmation shows a short structured version/location summary with Cancel as
+the default and a separate Repair entry action. Exact registry changes, backup
+path, review fingerprint and historical-uninstaller caveats remain unmodified
+in expandable copyable Technical details. Display facts come from the same
+ownership-bound plan and are reconstituted alongside the exact original review
+before authorization; prose is not parsed and payloads stay opaque to the UI.
 
 The obsolete cached uninstaller may already have been retired. An exact missing
 path is recorded and displayed as missing, not treated as verified old executable

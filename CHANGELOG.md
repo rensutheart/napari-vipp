@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make Windows entry-repair confirmation concise, with explicit Repair entry
+  and Cancel actions and expandable, copyable exact changes/backup details.
+  No packages or workflows are changed and update approval remains separate.
+
 - Give the Windows setup stages solid boundaries and keep the update-method
   selector stationary while reviewing a changed choice. Avoid repeating checks
   for an unchanged choice, and show read-only review activity without misleading

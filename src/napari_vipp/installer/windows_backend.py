@@ -119,6 +119,10 @@ def _registration_repair_review(repair: object) -> RegistrationRepairReview:
         preview=preview,
         backup_path=repair.backup_path,
         payload=repair,
+        managed_root=repair.managed_root,
+        registered_version=repair.registered_version,
+        installed_version=repair.installed_version,
+        old_uninstaller_state=getattr(repair, "old_uninstaller_state", ""),
     )
 
 
