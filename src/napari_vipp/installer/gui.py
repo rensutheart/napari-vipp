@@ -714,6 +714,161 @@ class _RegistrationRepairDialog:
             pass
 
 
+class _DiagnosticsWindow:
+    """An explicitly refreshed, bounded snapshot; never a second live log."""
+
+    def __init__(self, owner: InstallerWindow) -> None:
+        tk, ttk = owner._tk, owner._ttk
+        self._owner = owner
+        self._window = window = tk.Toplevel(owner.root)
+        window.title("VIPP Setup diagnostics")
+        window.transient(owner.root)
+        window.geometry(owner._bounded_geometry(940, 700))
+        window.minsize(460, 320)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(2, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self.close)
+        # Toplevel bindings stop these keys reaching the installer's primary
+        # action. Opening or reading diagnostics never authorizes setup.
+        window.bind("<Escape>", lambda _event: self.close())
+        window.bind("<Return>", lambda _event: "break")
+        heading = ttk.Frame(window, padding=(16, 14, 16, 8))
+        heading.grid(row=0, column=0, sticky="ew")
+        ttk.Label(
+            heading, text="Setup diagnostics", font=("Segoe UI Semibold", 14)
+        ).pack(anchor="w")
+        self._guidance_label = ttk.Label(
+            heading,
+            text=(
+                "A snapshot for reading and copying. It stays still while setup "
+                "continues; select Refresh to capture newer information. "
+                "Nothing is sent anywhere."
+            ),
+            wraplength=780,
+            justify="left",
+        )
+        self._guidance_label.pack(anchor="w", fill="x", pady=(5, 0))
+        self._captured = tk.StringVar()
+        self._captured_label = ttk.Label(
+            window,
+            textvariable=self._captured,
+            padding=(16, 0, 16, 8),
+            wraplength=780,
+            justify="left",
+        )
+        self._captured_label.grid(row=1, column=0, sticky="w")
+        self._notebook = notebook = ttk.Notebook(window)
+        notebook.grid(row=2, column=0, sticky="nsew", padx=16)
+        self._texts = []
+        for title in ("Activity output", "Setup details"):
+            panel = ttk.Frame(notebook)
+            panel.columnconfigure(0, weight=1)
+            panel.rowconfigure(0, weight=1)
+            text = tk.Text(
+                panel,
+                width=1,
+                height=18,
+                wrap="none",
+                font=("Consolas", 10),
+                padx=10,
+                pady=8,
+                state="disabled",
+            )
+            text.grid(row=0, column=0, sticky="nsew")
+            scrollbar = ttk.Scrollbar(panel, orient="vertical", command=text.yview)
+            scrollbar.grid(row=0, column=1, sticky="ns")
+            horizontal = ttk.Scrollbar(panel, orient="horizontal", command=text.xview)
+            horizontal.grid(row=1, column=0, sticky="ew")
+            text.configure(yscrollcommand=scrollbar.set, xscrollcommand=horizontal.set)
+            notebook.add(panel, text=title)
+            self._texts.append(text)
+        self._footer = footer = ttk.Frame(window, padding=(16, 10, 16, 14))
+        footer.grid(row=3, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        footer.columnconfigure(1, weight=1)
+        self._footer_buttons = [
+            ttk.Button(footer, text="Refresh snapshot", command=self.refresh),
+            ttk.Button(footer, text="Copy selected tab", command=self.copy),
+            ttk.Button(
+                footer, text="Open raw setup log", command=owner._open_setup_log
+            ),
+            ttk.Button(footer, text="Close", command=self.close),
+        ]
+        self._footer_columns = 0
+        self._layout_footer(428)
+        window.bind("<Configure>", self._resized)
+        self.refresh()
+        self.focus()
+
+    def focus(self) -> None:
+        # Claim keyboard focus for this owned Toplevel, never leave Return on
+        # the installer's approval/Open button behind this modeless viewer.
+        self._window.focus_set()
+        self._window.after_idle(self._focus_if_open)
+
+    def _focus_if_open(self) -> None:
+        if self._window.winfo_exists():
+            self._window.focus_set()
+
+    def _resized(self, event) -> None:
+        if event.widget is not self._window:
+            return
+        available = max(100, int(event.width) - 32)
+        self._guidance_label.configure(wraplength=available)
+        self._captured_label.configure(wraplength=available)
+        self._layout_footer(available)
+
+    def _layout_footer(self, available: int) -> None:
+        # Two rows on ordinary desktops; at narrow widths or larger text,
+        # stack all actions instead of clipping controls or requiring a scroll.
+        widths = [button.winfo_reqwidth() for button in self._footer_buttons]
+        required = max(widths[0], widths[2]) + max(widths[1], widths[3]) + 12
+        columns = 2 if required <= available else 1
+        if self._footer_columns == columns:
+            return
+        self._footer_columns = columns
+        self._footer.columnconfigure(1, weight=1 if columns == 2 else 0)
+        for index, button in enumerate(self._footer_buttons):
+            button.grid(
+                row=index // columns,
+                column=index % columns,
+                sticky="ew",
+                padx=(0, 8 if columns == 2 and index % 2 == 0 else 0),
+                pady=(0, 6),
+            )
+
+    def refresh(self) -> None:
+        output, details = self._owner._diagnostic_snapshot()
+        for widget, value in zip(self._texts, (output, details), strict=True):
+            _replace_snapshot_text(widget, value)
+        self._captured.set("Captured now · refresh is manual; no automatic scrolling")
+
+    def copy(self) -> None:
+        selected = self._notebook.index(self._notebook.select())
+        self._window.clipboard_clear()
+        self._window.clipboard_append(self._texts[selected].get("1.0", "end-1c"))
+
+    def close(self) -> str:
+        self._window.destroy()
+        self._owner._diagnostics_window = None
+        return "break"
+
+
+def _replace_snapshot_text(widget, text: str) -> None:
+    """Manual refresh preserves the reading line, not a drifting fraction."""
+
+    if widget.get("1.0", "end-1c") == text:
+        return
+    anchor = widget.index("@0,0")
+    horizontal = widget.xview()[0]
+    widget.configure(state="normal")
+    widget.delete("1.0", "end")
+    widget.insert("1.0", text)
+    widget.configure(state="disabled")
+    widget.yview(anchor)
+    widget.xview_moveto(horizontal)
+
+
 class InstallerWindow:
     """Tk renderer around the display-independent installer controller."""
 
@@ -749,6 +904,7 @@ class InstallerWindow:
         self._status = tk.StringVar()
         self._task_heading = tk.StringVar(value="Checking this computer")
         self._task_measurement = tk.StringVar()
+        self._total_elapsed = tk.StringVar()
         self._show_log = tk.BooleanVar(value=False)
         self._activity = tk.StringVar(
             value=_activity_text(
@@ -781,6 +937,9 @@ class InstallerWindow:
         self._last_activity_at = self._stage_started_at
         self._last_elapsed_second = -1
         self._details_text = ""
+        self._diagnostics_window: _DiagnosticsWindow | None = None
+        self._installation_started_at: float | None = None
+        self._installation_stopped_at: float | None = None
         self._installation_started = False
         self._last_install_stage_index: int | None = None
         self._review_controls_visible = True
@@ -841,14 +1000,14 @@ class InstallerWindow:
             font=("Segoe UI", 10),
             foreground="#526576",
             background="#f4f7fb",
-            padding=(10, 6),
+            padding=(0, 3),
         )
         style.configure(
             "VIPP.Stage.Active.TLabel",
             font=("Segoe UI Semibold", 10),
             foreground="#102a43",
-            background="#e8f1f7",
-            padding=(10, 6),
+            background="#f4f7fb",
+            padding=(0, 3),
         )
 
         self._header = tk.Frame(self.root, background="#08151F")
@@ -1006,6 +1165,13 @@ class InstallerWindow:
             wraplength=650,
         )
         self._task_measurement_label.pack(anchor="w", fill="x")
+        self._total_elapsed_label = ttk.Label(
+            progress_panel,
+            textvariable=self._total_elapsed,
+            font=("Segoe UI Semibold", 10),
+            wraplength=650,
+        )
+        self._total_elapsed_label.pack(anchor="w", fill="x", pady=(7, 0))
         self._activity_label = ttk.Label(
             progress_panel,
             textvariable=self._activity,
@@ -1017,8 +1183,7 @@ class InstallerWindow:
         )
         self._activity_label.pack(anchor="w", fill="x", pady=(4, 0))
         self._install_checklist = ttk.Frame(progress_panel, padding=(0, 12, 0, 0))
-        self._install_checklist.columnconfigure(0, weight=1, uniform="phase-list")
-        self._install_checklist.columnconfigure(1, weight=1, uniform="phase-list")
+        self._install_checklist.columnconfigure(0, weight=1)
         self._install_phase_labels = []
         for index, (_key, label) in enumerate(_INSTALLATION_STAGES):
             item = ttk.Label(
@@ -1029,7 +1194,7 @@ class InstallerWindow:
                 padding=(0, 3, 8, 3),
                 anchor="w",
             )
-            item.grid(row=index % 3, column=index // 3, sticky="ew")
+            item.grid(row=index, column=0, sticky="ew")
             self._install_phase_labels.append(item)
 
         self._build_console(outer)
@@ -1083,33 +1248,33 @@ class InstallerWindow:
         )
 
     def _build_setup_stages(self, parent) -> None:
-        """Two noninteractive cells with explicit theme-independent rules."""
+        """A noninteractive breadcrumb, visibly distinct from clickable tabs."""
 
-        border = "#8397aa"
-        self._stage_strip = steps = self._tk.Frame(
-            parent, background=border, borderwidth=0, padx=1, pady=1
-        )
+        self._stage_strip = steps = self._ttk.Frame(parent)
         steps.pack(fill="x", pady=(0, 16))
-        steps.columnconfigure(0, weight=1, uniform="setup-stages")
-        steps.columnconfigure(2, weight=1, uniform="setup-stages")
+        self._ttk.Label(
+            steps, text="Setup steps", font=("Segoe UI", 9), foreground="#526576"
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 3))
         self._review_stage_label = self._ttk.Label(
             steps,
-            text="1  Review (current)",
+            text="● Review",
             style="VIPP.Stage.Active.TLabel",
-            anchor="center",
-            wraplength=260,
+            anchor="w",
         )
-        self._review_stage_label.grid(row=0, column=0, sticky="nsew")
-        self._stage_divider = self._tk.Frame(steps, background=border, width=1)
-        self._stage_divider.grid(row=0, column=1, sticky="ns")
+        self._review_stage_label.grid(row=1, column=0, sticky="w")
+        self._ttk.Label(steps, text="→", padding=(14, 0)).grid(row=1, column=1)
         self._install_stage_label = self._ttk.Label(
             steps,
-            text="2  Installing",
+            text="○ Install",
             style="VIPP.Stage.TLabel",
-            anchor="center",
-            wraplength=260,
+            anchor="w",
         )
-        self._install_stage_label.grid(row=0, column=2, sticky="nsew")
+        self._install_stage_label.grid(row=1, column=2, sticky="w")
+        self._ttk.Label(steps, text="→", padding=(14, 0)).grid(row=1, column=3)
+        self._ready_stage_label = self._ttk.Label(
+            steps, text="○ Ready", style="VIPP.Stage.TLabel", anchor="w"
+        )
+        self._ready_stage_label.grid(row=1, column=4, sticky="w")
 
     def _header_resized(self, event) -> None:
         self._set_header_layout(
@@ -1336,46 +1501,57 @@ class InstallerWindow:
 
         self._open_log = ttk.Button(
             parent,
-            text="Open setup log",
+            text="Open raw setup log",
             command=self._open_setup_log,
             state="disabled",
         )
         self._open_log.grid(row=1, column=1, sticky="e", pady=(8, 0))
 
-        ttk.Separator(parent).grid(
-            row=2,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(12, 8),
+        ttk.Button(
+            parent, text="View diagnostics…", command=self._open_diagnostics
+        ).grid(row=2, column=0, sticky="w", pady=(14, 5))
+        ttk.Label(
+            parent,
+            text=(
+                "Read or copy recent activity and setup details in a larger window. "
+                "Its snapshot changes only when you select Refresh. The raw log "
+                "is a technical event file, not the package-output transcript."
+            ),
+            justify="left",
+            wraplength=650,
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self._raw_log_path = self._tk.StringVar(
+            value="Raw setup log: available after installation starts"
         )
-        details_panel = ttk.Frame(parent)
-        details_panel.grid(row=3, column=0, columnspan=2, sticky="nsew")
-        details_panel.columnconfigure(0, weight=1)
-        details_panel.rowconfigure(0, weight=1)
-        self._details = self._tk.Text(
-            details_panel,
-            height=5,
-            wrap="word",
-            font=("Consolas", 8),
-            relief="flat",
-            background="#ffffff",
-            foreground="#243b53",
-            padx=8,
-            pady=8,
+        self._raw_log_path_label = ttk.Label(
+            parent,
+            textvariable=self._raw_log_path,
+            wraplength=650,
+            justify="left",
+            foreground="#526576",
         )
-        self._details.grid(row=0, column=0, sticky="nsew")
-        details_scrollbar = ttk.Scrollbar(
-            details_panel,
-            orient="vertical",
-            command=self._details.yview,
-        )
-        details_scrollbar.grid(row=0, column=1, sticky="ns")
-        self._details.configure(yscrollcommand=details_scrollbar.set)
-        self._details.configure(state="disabled")
-        self._replace_details(self._rendered_details(self._controller.state))
+        self._raw_log_path_label.grid(row=4, column=0, columnspan=2, sticky="ew")
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(3, weight=1)
+
+    def _open_diagnostics(self) -> None:
+        viewer = getattr(self, "_diagnostics_window", None)
+        if viewer is not None and viewer._window.winfo_exists():
+            viewer._window.lift()
+            viewer.focus()
+            return
+        self._diagnostics_window = _DiagnosticsWindow(self)
+
+    def _diagnostic_snapshot(self) -> tuple[str, str]:
+        output = self._console.get("1.0", "end-1c")
+        # The live Text is already bounded. The extra slice makes that bound
+        # explicit at this presentation boundary as well.
+        output = output[-_CONSOLE_VISIBLE_LIMIT:]
+        state = self._state if self._state is not None else self._controller.state
+        details = self._rendered_details(state)
+        if len(details) > _CONSOLE_VISIBLE_LIMIT:
+            note = "\n[Further setup details omitted from this bounded snapshot.]"
+            details = details[: _CONSOLE_VISIBLE_LIMIT - len(note)] + note
+        return output or "No activity output has been reported yet.", details
 
     def _poll_states(self) -> None:
         latest = None
@@ -1402,6 +1578,7 @@ class InstallerWindow:
         self._last_rendered_phase = phase
         self._state = state
         self._render_setup_stage(state)
+        self._update_installation_clock(state)
         self._record_status(state.status_message)
         self._headline.set(state.headline)
         self._message.set(
@@ -1413,12 +1590,14 @@ class InstallerWindow:
                     else "The installation is verified before it becomes active."
                 )
                 if state.screen is InstallerScreen.WORKING
-                else state.message
+                else self._completion_message(state)
             )
             if self._installation_started
             else _reviewed_message(state, self._selection)
         )
-        self._status.set(state.status_message)
+        self._status.set(
+            "" if state.screen is InstallerScreen.SUCCESS else state.status_message
+        )
         self._render_installation_progress(state)
         self._primary_text.set(state.primary_label)
         self._secondary_text.set(state.secondary_label or "Close")
@@ -1452,8 +1631,14 @@ class InstallerWindow:
                 value=fraction * 100,
             )
         self._render_log_disclosure(state)
-        details = self._rendered_details(state)
-        self._replace_details(details)
+        self._raw_log_path.set(
+            "Raw setup log: "
+            + (
+                str(state.log_path)
+                if state.log_path is not None
+                else "available after installation starts"
+            )
+        )
         if (
             previous_screen is not state.screen
             and state.primary_enabled
@@ -1467,7 +1652,32 @@ class InstallerWindow:
                 InstallerScreen.FAILED,
             }
         ):
-            self.root.after_idle(self._primary.focus_set)
+            self.root.after_idle(self._focus_primary_if_available)
+
+    def _focus_primary_if_available(self) -> None:
+        # Check at idle execution, not only when scheduling: a diagnostics or
+        # consent dialog may have opened in the intervening event turn.
+        if getattr(self, "_repair_dialog_open", False):
+            return
+        viewer = getattr(self, "_diagnostics_window", None)
+        if viewer is not None and viewer._window.winfo_exists():
+            return
+        if self.root.winfo_exists():
+            self._primary.focus_set()
+
+    @staticmethod
+    def _completion_message(state: InstallerViewState) -> str:
+        if state.screen is not InstallerScreen.SUCCESS:
+            return state.message
+        # Keep backend warnings/limits intact; remove only its generic duplicate.
+        message = state.message.strip()
+        if message in {
+            "VIPP is ready.",
+            "VIPP is ready",
+            "Installation completed successfully.",
+        }:
+            return "Select Open VIPP to start, or Close to finish setup."
+        return state.message
 
     def _render_setup_stage(self, state: InstallerViewState) -> None:
         """Show review choices only before approval, never as frozen clutter."""
@@ -1497,29 +1707,43 @@ class InstallerWindow:
         if not installing:
             self._last_install_stage_index = None
         if installing:
-            suffix = (
-                "complete"
-                if state.screen is InstallerScreen.SUCCESS
-                else "stopped"
-                if state.screen in {InstallerScreen.CANCELLED, InstallerScreen.FAILED}
-                else "current"
+            success = state.screen is InstallerScreen.SUCCESS
+            stopped = state.screen in {
+                InstallerScreen.CANCELLED,
+                InstallerScreen.FAILED,
+            }
+            stopping = (
+                state.screen is InstallerScreen.CANCELLING
+                or state.progress_stage == "rolling_back"
             )
             self._review_stage_label.configure(
-                text="1  Review (complete)", style="VIPP.Stage.TLabel"
+                text="✓ Review", style="VIPP.Stage.TLabel"
             )
             self._install_stage_label.configure(
-                text=f"2  Installing ({suffix})", style="VIPP.Stage.Active.TLabel"
+                text="✓ Install"
+                if success
+                else "■ Install stopped"
+                if stopped
+                else "● Stopping safely"
+                if stopping
+                else "● Install",
+                style="VIPP.Stage.TLabel" if success else "VIPP.Stage.Active.TLabel",
+            )
+            self._ready_stage_label.configure(
+                text="✓ Ready" if success else "○ Ready",
+                style="VIPP.Stage.Active.TLabel" if success else "VIPP.Stage.TLabel",
             )
             self._selected_method.set(
                 "Selected method: " + _SELECTED_METHOD_NAMES[state.selected_strategy]
             )
         else:
             self._review_stage_label.configure(
-                text="1  Review (current)", style="VIPP.Stage.Active.TLabel"
+                text="● Review", style="VIPP.Stage.Active.TLabel"
             )
             self._install_stage_label.configure(
-                text="2  Installing", style="VIPP.Stage.TLabel"
+                text="○ Install", style="VIPP.Stage.TLabel"
             )
+            self._ready_stage_label.configure(text="○ Ready", style="VIPP.Stage.TLabel")
 
         show_review = state.screen in _REVIEW_SCREENS
         if show_review != self._review_controls_visible:
@@ -1614,13 +1838,24 @@ class InstallerWindow:
             )
             self._install_checklist.pack_forget()
         self._task_heading.set(heading)
-        self._task_measurement.set(_task_progress_text(state))
+        self._task_measurement.set(
+            ""
+            if state.screen is InstallerScreen.SUCCESS
+            else _task_progress_text(state)
+        )
         self._refresh_activity_summary()
 
     def _refresh_activity_summary(self) -> None:
         state = self._state
         if state is None:
             return
+        total = self._total_elapsed_seconds()
+        if hasattr(self, "_total_elapsed"):
+            self._total_elapsed.set(
+                f"Total installation time: {_format_elapsed(total)}"
+                if total is not None
+                else ""
+            )
         # Timers are secondary and do not turn arbitrary status changes into
         # completed milestones or suggest a predicted time remaining.
         if state.screen in {
@@ -1654,13 +1889,23 @@ class InstallerWindow:
                 f"Phase: {phase}",
                 f"Current activity: {current_activity}",
                 f"Measured task progress: {progress}",
-                f"Elapsed in this phase: {_format_elapsed(self._elapsed_seconds())}",
                 f"Requested computer use: {_LABEL_FOR_TRACK[self._selection.track]}",
                 "Requested update method: "
                 + _LABEL_FOR_STRATEGY[self._selection.update_strategy],
                 f"Desktop shortcut: {shortcut_request}",
             )
         )
+        total = self._total_elapsed_seconds()
+        if total is not None:
+            facts.append(f"Total installation time: {_format_elapsed(total)}")
+        if state.screen in {
+            InstallerScreen.CHECKING,
+            InstallerScreen.WORKING,
+            InstallerScreen.CANCELLING,
+        }:
+            facts.append(
+                f"Elapsed in this phase: {_format_elapsed(self._elapsed_seconds())}"
+            )
         if self._selection.install_root is not None:
             facts.append(f"Requested location: {self._selection.install_root}")
         else:
@@ -1703,6 +1948,27 @@ class InstallerWindow:
         stage_started_at = getattr(self, "_stage_started_at", time.monotonic())
         return max(0, int(time.monotonic() - stage_started_at))
 
+    def _update_installation_clock(self, state: InstallerViewState) -> None:
+        """Use the controller's real approval/terminal times, not render timing."""
+
+        started = getattr(state, "installation_started_at", None)
+        finished = getattr(state, "installation_finished_at", None)
+        if isinstance(started, (int, float)) and not isinstance(started, bool):
+            self._installation_started_at = started
+            self._installation_stopped_at = finished
+        elif not self._installation_started:
+            self._installation_started_at = None
+            self._installation_stopped_at = None
+
+    def _total_elapsed_seconds(self) -> int | None:
+        started = getattr(self, "_installation_started_at", None)
+        if started is None:
+            return None
+        stopped = getattr(self, "_installation_stopped_at", None)
+        return max(
+            0, int((stopped if stopped is not None else time.monotonic()) - started)
+        )
+
     def _refresh_elapsed(self) -> None:
         state = self._state
         if state is None or state.screen not in {
@@ -1744,15 +2010,9 @@ class InstallerWindow:
         return max(0, int(time.monotonic() - last_activity))
 
     def _replace_details(self, details: str) -> None:
-        if details == self._details_text:
-            return
+        # Compatibility for selection edits: cache only. Diagnostics widgets
+        # are snapshots and never get rewritten by background state updates.
         self._details_text = details
-        position = self._details.yview()[0]
-        self._details.configure(state="normal")
-        self._details.delete("1.0", "end")
-        self._details.insert("1.0", details)
-        self._details.configure(state="disabled")
-        self._details.yview_moveto(position)
 
     def _load_brand_image(self):
         try:
@@ -1768,20 +2028,9 @@ class InstallerWindow:
     def _toggle_advanced(self) -> None:
         if self._show_advanced.get():
             self._advanced.pack(fill="both", expand=True, pady=(2, 0))
-            # Let Tk finish the pack/configure cascade before using the final
-            # scroll region.  An idle callback can still run before a themed
-            # widget has reached its requested height on high-DPI Windows.
-            self.root.after(75, self._reveal_advanced_details)
         else:
             self._advanced.pack_forget()
-            self.root.after_idle(lambda: self._content_canvas.yview_moveto(0.0))
-
-    def _reveal_advanced_details(self) -> None:
-        if not self._show_advanced.get():
-            return
-        self.root.update_idletasks()
         self._refresh_scroll_region()
-        self._content_canvas.yview_moveto(1.0)
 
     def _refresh_scroll_region(self) -> None:
         bounds = self._content_canvas.bbox("all")
@@ -1793,7 +2042,7 @@ class InstallerWindow:
         self._refresh_scroll_region()
 
     def _content_mousewheel(self, event):
-        if event.widget in (self._details, getattr(self, "_console", None)):
+        if event.widget in (getattr(self, "_console", None),):
             return None
         delta = int(getattr(event, "delta", 0))
         if delta == 0:
@@ -1833,12 +2082,17 @@ class InstallerWindow:
         if hasattr(self, "_task_heading_label"):
             self._task_heading_label.configure(wraplength=wrap)
             self._task_measurement_label.configure(wraplength=wrap)
+        if hasattr(self, "_total_elapsed_label"):
+            self._total_elapsed_label.configure(wraplength=wrap)
+        if hasattr(self, "_raw_log_path_label"):
+            self._raw_log_path_label.configure(wraplength=wrap)
         for label in (
             getattr(self, "_review_stage_label", None),
             getattr(self, "_install_stage_label", None),
+            getattr(self, "_ready_stage_label", None),
         ):
             if label is not None:
-                label.configure(wraplength=max(120, (wrap - 32) // 2))
+                label.configure(wraplength=max(100, (wrap - 60) // 3))
         self._refresh_scroll_region()
 
     def _toggle_advanced_from_key(self) -> None:
@@ -2083,7 +2337,7 @@ class InstallerWindow:
                 subprocess.Popen(["notepad.exe", str(path)], close_fds=True)
         except (AttributeError, OSError, RuntimeError, ValueError) as exc:
             self._messagebox.showerror(
-                "Open setup log",
+                "Open raw setup log",
                 f"The setup log could not be opened.\n\n{exc}",
                 parent=self.root,
             )

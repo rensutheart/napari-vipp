@@ -8,6 +8,7 @@ no Tk imports so every safety transition can be tested on headless builders.
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -385,6 +386,8 @@ class InstallerViewState:
     progress_completed: int | None = None
     progress_total: int | None = None
     installation_stage: str = ""
+    installation_started_at: float | None = None
+    installation_finished_at: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
@@ -592,6 +595,7 @@ class InstallerController:
                     status_message="Preparing the installation…",
                     progress_stage="preparing",
                     installation_stage="preparing",
+                    installation_started_at=time.monotonic(),
                     technical_details=prepared.technical_details,
                     target_kind=prepared.kind,
                     target=prepared.target,
@@ -920,6 +924,8 @@ class InstallerController:
                         progress_stage="completed",
                         progress_unit=ProgressUnit.STEPS,
                         installation_stage="completed",
+                        installation_started_at=self._state.installation_started_at,
+                        installation_finished_at=time.monotonic(),
                         log_path=outcome.log_path or self._state.log_path,
                         required_free_bytes=prepared.required_free_bytes,
                         temporary_free_bytes=prepared.temporary_free_bytes,
@@ -1013,6 +1019,12 @@ class InstallerController:
                     status_message="Cancellation completed.",
                     progress_stage="cancelled",
                     installation_stage=self._state.installation_stage,
+                    installation_started_at=self._state.installation_started_at,
+                    installation_finished_at=(
+                        time.monotonic()
+                        if self._state.installation_started_at is not None
+                        else None
+                    ),
                     log_path=self._state.log_path,
                     required_free_bytes=(
                         prepared.required_free_bytes if prepared else None
@@ -1061,6 +1073,14 @@ class InstallerController:
                     status_message="Setup stopped before completion.",
                     progress_stage="failed",
                     installation_stage=self._state.installation_stage,
+                    installation_started_at=self._state.installation_started_at,
+                    installation_finished_at=(
+                        self._state.installation_finished_at
+                        if self._state.installation_finished_at is not None
+                        else time.monotonic()
+                        if self._state.installation_started_at is not None
+                        else None
+                    ),
                     log_path=self._state.log_path,
                     required_free_bytes=(
                         selected.required_free_bytes if selected else None

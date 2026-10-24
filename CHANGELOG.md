@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep a total installation timer through all stages and safe cleanup, frozen
+  on completion. Clarify the noninteractive setup steps and single ordered stage
+  list, remove redundant success text, and replace the moving tiny diagnostics
+  box with a larger read-only snapshot viewer with explicit Refresh and clearly
+  separate recent package output from the raw structured setup event log.
+
 - Show all six Windows installation stages and separate measured task progress:
   dependency files checked/copied, verified package artifacts and acceptance
   checks. Keep pip's unreported batch work explicitly indeterminate rather than

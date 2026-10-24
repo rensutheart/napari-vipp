@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from napari_vipp.installer import frontend as frontend_module
 from napari_vipp.installer.frontend import (
     BlockedAction,
     InstallationCancelled,
@@ -331,6 +332,81 @@ def test_cancel_clears_task_counts_but_preserves_last_installation_stage(tmp_pat
     assert controller.state.installation_stage == ""
     assert controller.state.progress_completed is None
     assert controller.state.progress_total is None
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
+def test_installation_clock_begins_at_accepted_approval_and_freezes_at_terminal(
+    tmp_path, monkeypatch, outcome
+):
+    now = [10.0]
+    monkeypatch.setattr(frontend_module.time, "monotonic", lambda: now[0])
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    backend.apply_error = RuntimeError("test failure") if outcome == "failure" else None
+    backend.cancel_apply = outcome == "cancelled"
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    assert controller.state.installation_started_at is None
+    controller.confirm()  # Checking is not permission to start installation.
+    assert controller.state.installation_started_at is None
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.READY
+    now[0] = 25.0
+    controller.confirm()
+    assert controller.state.installation_started_at == 25.0
+    assert controller.state.installation_finished_at is None
+    controller._on_progress(
+        controller._generation,
+        ProgressUpdate("installing", "Copying", 1, 2, ProgressUnit.FILES),
+    )
+    assert controller.state.installation_started_at == 25.0
+    now[0] = 65.0
+    workers.pop(0)()
+    assert (
+        controller.state.screen
+        is {
+            "success": InstallerScreen.SUCCESS,
+            "failure": InstallerScreen.FAILED,
+            "cancelled": InstallerScreen.CANCELLED,
+        }[outcome]
+    )
+    assert controller.state.installation_started_at == 25.0
+    assert controller.state.installation_finished_at == 65.0
+    now[0] = 1000.0
+    controller._on_progress(
+        controller._generation, ProgressUpdate("completed", "Late output")
+    )
+    assert controller.state.installation_finished_at == 65.0
+    if outcome != "success":
+        controller.retry()
+        assert controller.state.installation_started_at is None
+        assert controller.state.installation_finished_at is None
+
+
+def test_post_install_open_error_cannot_extend_completed_installation_clock(
+    tmp_path, monkeypatch
+):
+    now = [10.0]
+    monkeypatch.setattr(frontend_module.time, "monotonic", lambda: now[0])
+    workers = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    now[0] = 40.0
+    workers.pop(0)()
+    now[0] = 1000.0
+    controller._fail("Launch failed", "Test only", RuntimeError("launch only"))
+    assert controller.state.installation_started_at == 10.0
+    assert controller.state.installation_finished_at == 40.0
 
 
 def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):

@@ -34,6 +34,9 @@ The next private progress follow-up shows six transactional phases separately
 from true file/package/check counts, with a collapsed diagnostic log and no
 fabricated subprocess percentage or time estimate. Keep copy/hash/rollback
 semantics and installed environments unchanged during isolated qualification.
+Follow-up UX work adds controller-recorded total elapsed time, a non-tab setup
+breadcrumb and naturally ordered phase list, plus a larger manual-refresh
+diagnostic snapshot so progress updates cannot move the reader's position.
 
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished

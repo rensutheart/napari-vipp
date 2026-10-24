@@ -1,7 +1,7 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev9`; this is not a public release. The earlier
+Development build: `0.16.0a8.dev10`; this is not a public release. The earlier
 `dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
@@ -28,8 +28,8 @@ Keep the method selector before variable-length review/check results so rechecks
 do not move it. Opening the list performs no check; selecting the unchanged value
 is a no-op. A changed value still invalidates and rechecks the exact selection
 before approval is enabled. Review shows one current activity rather than
-marking earlier read-only checks as completed install steps. Stage cells have
-solid shared boundaries and remain descriptive, not navigable tabs.
+marking earlier read-only checks as completed install steps. A compact labelled
+setup breadcrumb remains descriptive, not a set of navigable tabs.
 Avoid a global "no downloads" claim: the copy phase copies compatible current
 versions, while the Fresh route may fetch missing required artifacts. A newer
 dependency on PyPI alone does not make an otherwise eligible fast update upgrade
@@ -47,6 +47,22 @@ hash-locked pip install batch reports its known package total but confirms them
 only after successful process completion; unreported inner work is not guessed.
 Keep the bounded live output collected behind Show installation log, with a
 failure-triggered reveal and ordinary access to the complete setup log.
+
+The total installation clock is controller-owned monotonic metadata. Start it
+only after a valid exact-settings approval, include all worker phases and safe
+rollback, and record a terminal finish time. Coalesced GUI events must not shorten
+it; a later Open error must not extend a completed installation. Retry/checking
+has no installation total until a genuinely new approved attempt. Registration
+repair is separate. Keep the current-stage clock secondary and total duration
+visible on terminal screens without claiming an ETA.
+
+Use a noninteractive Review -> Install -> Ready breadcrumb and one ordered
+six-phase list. Diagnostics are read-only captured snapshots in a larger
+resizable window. Progress/timers do not rewrite a reading surface; manual
+Refresh is explicit. Label bounded recent package stdout/stderr separately from
+the persisted raw JSONL setup event log. No new worker, process, install, repair
+or launch may be triggered by opening, refreshing or closing diagnostics. Keep
+meaningful outcome warnings while removing duplicate generic ready messages.
 
 ## Implementation boundary
 

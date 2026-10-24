@@ -416,6 +416,7 @@ def _staged_window():
     window._selected_method = _Value()
     window._review_stage_label = _Widget()
     window._install_stage_label = _Widget()
+    window._ready_stage_label = _Widget()
     window._content_canvas = _Canvas()
     window._progress = object()
     window._progress_panel = object()
@@ -525,7 +526,7 @@ def test_method_panel_precedes_variable_review_summary_and_returns_there_on_retr
     assert window._method_panel.packs[-1]["before"] is window._headline_label
 
 
-def test_stage_strip_has_solid_outer_rule_and_middle_divider_without_tab_actions():
+def test_setup_breadcrumb_has_three_noninteractive_labels_not_tab_cells():
     class Frame:
         def __init__(self, master, **kwargs):
             self.master = master
@@ -544,31 +545,28 @@ def test_stage_strip_has_solid_outer_rule_and_middle_divider_without_tab_actions
 
     window = object.__new__(InstallerWindow)
     window._tk = SimpleNamespace(Frame=Frame)
-    window._ttk = SimpleNamespace(Label=Frame)
+    window._ttk = SimpleNamespace(Label=Frame, Frame=Frame)
     parent = object()
 
     window._build_setup_stages(parent)
 
     strip = window._stage_strip
-    divider = window._stage_divider
     assert strip.master is parent
-    assert strip.options["background"] == divider.options["background"]
-    assert strip.options["padx"] >= 1
-    assert strip.options["pady"] >= 1
-    assert divider.options["width"] >= 1
-    assert divider.layout == {"row": 0, "column": 1, "sticky": "ns"}
+    assert "borderwidth" not in strip.options
     assert window._review_stage_label.layout == {
-        "row": 0,
+        "row": 1,
         "column": 0,
-        "sticky": "nsew",
+        "sticky": "w",
     }
     assert window._install_stage_label.layout == {
-        "row": 0,
+        "row": 1,
         "column": 2,
-        "sticky": "nsew",
+        "sticky": "w",
     }
+    assert window._ready_stage_label.layout == {"row": 1, "column": 4, "sticky": "w"}
     assert "command" not in window._review_stage_label.options
     assert "command" not in window._install_stage_label.options
+    assert "command" not in window._ready_stage_label.options
 
 
 def test_review_then_installing_hides_choices_without_changing_approval():
@@ -580,8 +578,8 @@ def test_review_then_installing_hides_choices_without_changing_approval():
 
     window._render_setup_stage(ready)
 
-    assert window._review_stage_label.configured[-1]["text"] == "1  Review (current)"
-    assert window._install_stage_label.configured[-1]["text"] == "2  Installing"
+    assert window._review_stage_label.configured[-1]["text"] == "● Review"
+    assert window._install_stage_label.configured[-1]["text"] == "○ Install"
     assert window._method_panel.visible
     assert window._advanced_review.visible
     assert not window._selected_method_label.visible
@@ -594,10 +592,8 @@ def test_review_then_installing_hides_choices_without_changing_approval():
     assert not window._advanced_review.visible
     assert window._selected_method_label.visible
     assert window._selected_method.get() == "Selected method: Incremental update"
-    assert window._review_stage_label.configured[-1]["text"] == "1  Review (complete)"
-    assert (
-        window._install_stage_label.configured[-1]["text"] == "2  Installing (current)"
-    )
+    assert window._review_stage_label.configured[-1]["text"] == "✓ Review"
+    assert window._install_stage_label.configured[-1]["text"] == "● Install"
     assert window._selected_method_label.packs == [
         {"fill": "x", "pady": (0, 12), "before": window._progress_panel}
     ]
@@ -612,15 +608,15 @@ def test_review_then_installing_hides_choices_without_changing_approval():
 
 
 @pytest.mark.parametrize(
-    "screen,suffix",
+    "screen,label",
     [
-        (InstallerScreen.SUCCESS, "complete"),
-        (InstallerScreen.FAILED, "stopped"),
-        (InstallerScreen.CANCELLED, "stopped"),
+        (InstallerScreen.SUCCESS, "✓ Install"),
+        (InstallerScreen.FAILED, "■ Install stopped"),
+        (InstallerScreen.CANCELLED, "■ Install stopped"),
     ],
 )
 def test_terminal_install_results_keep_stage_and_diagnostics_not_review_clutter(
-    screen, suffix
+    screen, label
 ):
     window = _staged_window()
     # The UI queue may coalesce a short WORKING state directly into its result.
@@ -631,8 +627,9 @@ def test_terminal_install_results_keep_stage_and_diagnostics_not_review_clutter(
 
     window._render_setup_stage(state)
 
-    assert window._install_stage_label.configured[-1]["text"] == (
-        f"2  Installing ({suffix})"
+    assert window._install_stage_label.configured[-1]["text"] == label
+    assert window._ready_stage_label.configured[-1]["text"] == (
+        "✓ Ready" if screen is InstallerScreen.SUCCESS else "○ Ready"
     )
     assert not window._method_panel.visible
     assert not window._advanced_review.visible
@@ -662,8 +659,8 @@ def test_registration_only_work_and_cancelled_checks_do_not_claim_installing():
     assert not window._installation_started
     assert not window._selected_method_label.visible
     assert not window._method_panel.visible
-    assert window._review_stage_label.configured[-1]["text"] == "1  Review (current)"
-    assert window._install_stage_label.configured[-1]["text"] == "2  Installing"
+    assert window._review_stage_label.configured[-1]["text"] == "● Review"
+    assert window._install_stage_label.configured[-1]["text"] == "○ Install"
 
     window._render_setup_stage(_state(InstallerScreen.CHECKING))
     window._render_setup_stage(_state(InstallerScreen.CANCELLING))
@@ -1823,8 +1820,10 @@ def test_installer_has_page_and_console_scrollbars_with_fixed_footer():
 
     assert "self._content_scrollbar = ttk.Scrollbar(" in gui_source
     assert "yscrollcommand=self._content_scrollbar.set" in gui_source
-    assert "details_scrollbar = ttk.Scrollbar(" in gui_source
-    assert "yscrollcommand=details_scrollbar.set" in gui_source
+    assert "class _DiagnosticsWindow:" in gui_source
+    assert "Refresh snapshot" in gui_source
+    assert "Open raw setup log" in gui_source
+    assert "height=5," not in gui_source
     assert "self._button_bar = ttk.Frame(main" in gui_source
     assert "self._button_bar = ttk.Frame(outer" not in gui_source
 
@@ -1846,7 +1845,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
     window = object.__new__(InstallerWindow)
     canvas = _Canvas(height=600)
     window._content_canvas = canvas
-    window._details = object()
+    window._console = object()
 
     for delta, steps in (
         (120, -1),
@@ -1863,7 +1862,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
         assert canvas.scrolls[-1] == (steps, "units")
 
     assert (
-        window._content_mousewheel(SimpleNamespace(delta=-120, widget=window._details))
+        window._content_mousewheel(SimpleNamespace(delta=-120, widget=window._console))
         is None
     )
     assert len(canvas.scrolls) == 6
@@ -1875,7 +1874,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
     assert len(canvas.scrolls) == 6
 
 
-def test_advanced_toggle_reveals_panel_without_moving_diagnostic_text():
+def test_advanced_toggle_never_forces_scroll_or_schedules_delayed_reveal():
     class _Flag:
         value = True
 
@@ -1927,17 +1926,14 @@ def test_advanced_toggle_reveals_panel_without_moving_diagnostic_text():
     assert window._advanced.packed
     assert window._details.seen == []
     assert window._content_canvas.moves == []
-    delay, callback = window.root.timed.pop()
-    assert delay == 75
-    callback()
-    assert window._details.seen == []
-    assert window._content_canvas.moves == [1.0]
+    assert window.root.timed == []
+    assert window.root.idle == []
 
     window._show_advanced.value = False
     window._toggle_advanced()
     assert window._advanced.forgotten == 1
-    window.root.idle.pop()()
-    assert window._content_canvas.moves[-1] == 0.0
+    assert window.root.idle == []
+    assert window._content_canvas.moves == []
 
 
 def test_responsive_guidance_wrap_leaves_room_for_frame_padding():
@@ -2066,6 +2062,375 @@ def test_elapsed_refresh_does_not_rewrite_diagnostics_or_console():
     assert "Elapsed in this stage: 2s" in window._activity.get()
 
 
+def test_total_clock_uses_approval_times_across_phases_rollback_and_terminal(
+    monkeypatch,
+):
+    window = object.__new__(InstallerWindow)
+    window._installation_started = True
+    current = [120.0]
+    monkeypatch.setattr(gui_module.time, "monotonic", lambda: current[0])
+    working = replace(
+        _state(InstallerScreen.WORKING),
+        installation_started_at=100.0,
+        progress_stage="preparing",
+    )
+    window._update_installation_clock(working)
+    assert window._total_elapsed_seconds() == 20
+    for now, phase in [(130.0, "installing"), (150.0, "rolling_back")]:
+        current[0] = now
+        window._update_installation_clock(replace(working, progress_stage=phase))
+        assert window._total_elapsed_seconds() == now - 100
+    terminal = replace(
+        working, screen=InstallerScreen.CANCELLED, installation_finished_at=175.0
+    )
+    current[0] = 250.0
+    window._update_installation_clock(terminal)
+    assert window._total_elapsed_seconds() == 75
+    current[0] = 400.0
+    assert window._total_elapsed_seconds() == 75
+    # Retry checks are not another install; fresh approval gets a new clock.
+    window._installation_started = False
+    window._update_installation_clock(_state(InstallerScreen.CHECKING))
+    assert window._total_elapsed_seconds() is None
+    window._installation_started = True
+    window._update_installation_clock(replace(working, installation_started_at=380.0))
+    assert window._total_elapsed_seconds() == 20
+
+
+@pytest.mark.parametrize("screen", [InstallerScreen.SUCCESS, InstallerScreen.FAILED])
+def test_total_clock_freezes_even_when_first_render_is_terminal(screen, monkeypatch):
+    window = object.__new__(InstallerWindow)
+    window._installation_started = True
+    monkeypatch.setattr(gui_module.time, "monotonic", lambda: 999.0)
+    window._update_installation_clock(
+        replace(
+            _state(screen), installation_started_at=50.0, installation_finished_at=89.0
+        )
+    )
+    window._state = _state(screen)
+    window._activity = _Value("old phase time")
+    window._total_elapsed = _Value()
+    window._refresh_activity_summary()
+    assert window._total_elapsed.get() == "Total installation time: 39s"
+    assert window._activity.get() == ""
+
+
+def test_registration_only_repair_never_starts_installation_clock():
+    window = object.__new__(InstallerWindow)
+    window._installation_started = False
+    window._update_installation_clock(
+        replace(
+            _state(InstallerScreen.WORKING), progress_stage="repairing_registration"
+        )
+    )
+    assert window._total_elapsed_seconds() is None
+
+
+def test_success_summary_removes_only_generic_duplicate_and_preserves_limits():
+    state = replace(_state(InstallerScreen.SUCCESS), message="VIPP is ready.")
+    assert InstallerWindow._completion_message(state) == (
+        "Select Open VIPP to start, or Close to finish setup."
+    )
+    for message in [
+        "VIPP is ready. A shortcut could not be created; use the launcher.",
+        "Previous-version cleanup needs attention. Nothing else was removed.",
+    ]:
+        assert (
+            InstallerWindow._completion_message(replace(state, message=message))
+            == message
+        )
+
+
+class _SnapshotText:
+    def __init__(self, content=""):
+        self.content = content
+        self.reading_line = "24.0"
+        self.horizontal = 0.2
+        self.replacements = 0
+        self.state = "disabled"
+
+    def get(self, start, end):
+        assert (start, end) == ("1.0", "end-1c")
+        return self.content
+
+    def index(self, index):
+        assert index == "@0,0"
+        return self.reading_line
+
+    def xview(self):
+        return self.horizontal, 0.6
+
+    def configure(self, *, state):
+        self.state = state
+
+    def delete(self, start, end):
+        assert (start, end) == ("1.0", "end")
+        self.content = ""
+        self.replacements += 1
+
+    def insert(self, index, text):
+        assert index == "1.0"
+        self.content = text
+
+    def yview(self, index):
+        self.reading_line = index
+
+    def xview_moveto(self, fraction):
+        self.horizontal = fraction
+
+
+def test_manual_snapshot_refresh_preserves_line_and_skips_identical_text():
+    text = _SnapshotText("old content")
+    gui_module._replace_snapshot_text(text, "old content")
+    assert text.replacements == 0
+    gui_module._replace_snapshot_text(text, "new\n" * 200)
+    assert text.replacements == 1
+    assert text.reading_line == "24.0"
+    assert text.horizontal == 0.2
+    assert text.state == "disabled"
+
+
+def test_diagnostics_snapshot_is_bounded_and_does_not_read_raw_log(tmp_path):
+    window = object.__new__(InstallerWindow)
+    window._state = replace(
+        _state(InstallerScreen.WORKING), log_path=tmp_path / "absent.jsonl"
+    )
+    window._console = _SnapshotText("a" * (gui_module._CONSOLE_VISIBLE_LIMIT + 8))
+    window._rendered_details = lambda _: "d" * (gui_module._CONSOLE_VISIBLE_LIMIT + 50)
+    output, details = window._diagnostic_snapshot()
+    assert len(output) == gui_module._CONSOLE_VISIBLE_LIMIT
+    assert len(details) == gui_module._CONSOLE_VISIBLE_LIMIT
+    assert details.endswith(
+        "[Further setup details omitted from this bounded snapshot.]"
+    )
+    assert not window._state.log_path.exists()
+
+
+def test_viewer_updates_only_on_explicit_refresh_and_destroys_only_owned_window():
+    owner = SimpleNamespace(
+        _diagnostic_snapshot=lambda: ("first output", "first details")
+    )
+    viewer = object.__new__(gui_module._DiagnosticsWindow)
+    viewer._owner = owner
+    viewer._texts = [_SnapshotText(), _SnapshotText()]
+    viewer._captured = _Value()
+    viewer._window = SimpleNamespace(destroy=lambda: closed.append("viewer only"))
+    owner._diagnostics_window = viewer
+    viewer.refresh()
+    assert [text.content for text in viewer._texts] == ["first output", "first details"]
+    owner._diagnostic_snapshot = lambda: ("later output", "later details")
+    assert [text.content for text in viewer._texts] == ["first output", "first details"]
+    viewer.refresh()
+    assert [text.content for text in viewer._texts] == ["later output", "later details"]
+    closed = []
+    assert viewer.close() == "break"
+    assert closed == ["viewer only"]
+    assert owner._diagnostics_window is None
+
+
+def test_live_detail_cache_never_rewrites_open_viewer_or_scrolls():
+    window = object.__new__(InstallerWindow)
+    viewer = SimpleNamespace(_texts=[_SnapshotText("the selected snapshot")])
+    window._diagnostics_window = viewer
+    window._replace_details("new progress data")
+    assert viewer._texts[0].content == "the selected snapshot"
+    assert viewer._texts[0].replacements == 0
+
+
+def test_existing_diagnostics_window_is_reused_without_implicit_refresh(monkeypatch):
+    window = object.__new__(InstallerWindow)
+    events = []
+    window._diagnostics_window = SimpleNamespace(
+        _window=SimpleNamespace(
+            winfo_exists=lambda: True, lift=lambda: events.append("lift")
+        ),
+        refresh=lambda: pytest.fail("Reopening silently replaced the reading snapshot"),
+        focus=lambda: events.append("focus"),
+    )
+    monkeypatch.setattr(
+        gui_module, "_DiagnosticsWindow", lambda _: pytest.fail("Duplicate viewer")
+    )
+    window._open_diagnostics()
+    assert events == ["lift", "focus"]
+
+
+def test_diagnostics_copy_copies_only_selected_snapshot_tab():
+    viewer = object.__new__(gui_module._DiagnosticsWindow)
+    viewer._notebook = SimpleNamespace(select=lambda: "details", index=lambda _: 1)
+    viewer._texts = [_SnapshotText("activity output"), _SnapshotText("setup details")]
+    clipboard = []
+    viewer._window = SimpleNamespace(
+        clipboard_clear=lambda: clipboard.clear(), clipboard_append=clipboard.append
+    )
+    viewer.copy()
+    assert clipboard == ["setup details"]
+
+
+def test_diagnostics_footer_wraps_at_large_text_and_header_tracks_window_width():
+    class Button:
+        def __init__(self, width):
+            self.width = width
+            self.layouts = []
+
+        def winfo_reqwidth(self):
+            return self.width
+
+        def grid(self, **options):
+            self.layouts.append(options)
+
+    viewer = object.__new__(gui_module._DiagnosticsWindow)
+    viewer._footer_buttons = [Button(width) for width in [160, 170, 180, 80]]
+    viewer._footer_columns = 0
+    configured = []
+    viewer._footer = SimpleNamespace(
+        columnconfigure=lambda *args, **kwargs: configured.append((args, kwargs))
+    )
+    viewer._layout_footer(428)
+    assert viewer._footer_columns == 2
+    assert [
+        (button.layouts[-1]["row"], button.layouts[-1]["column"])
+        for button in viewer._footer_buttons
+    ] == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    # The same narrow width must accommodate larger requested native fonts.
+    for button in viewer._footer_buttons:
+        button.width *= 2
+    viewer._window = object()
+    viewer._guidance_label = _Widget()
+    viewer._captured_label = _Widget()
+    viewer._resized(SimpleNamespace(widget=viewer._window, width=460))
+    assert viewer._footer_columns == 1
+    assert [
+        (button.layouts[-1]["row"], button.layouts[-1]["column"])
+        for button in viewer._footer_buttons
+    ] == [(0, 0), (1, 0), (2, 0), (3, 0)]
+    assert configured[-1] == ((1,), {"weight": 0})
+    assert viewer._guidance_label.configured[-1]["wraplength"] == 428
+    assert viewer._captured_label.configured[-1]["wraplength"] == 428
+    before = len(viewer._guidance_label.configured)
+    viewer._resized(SimpleNamespace(widget=object(), width=800))
+    assert len(viewer._guidance_label.configured) == before
+
+
+def test_diagnostics_constructor_keeps_real_guidance_widget_and_blocks_parent_return():
+    class Widget(_SnapshotText):
+        def __init__(self, parent, **options):
+            super().__init__()
+            self.parent = parent
+            self.options = options
+            self.bindings = {}
+            self.focus_calls = 0
+            self.idle_callbacks = []
+
+        def __getattr__(self, name):
+            if name in {
+                "title",
+                "transient",
+                "geometry",
+                "minsize",
+                "columnconfigure",
+                "rowconfigure",
+                "protocol",
+                "grid",
+                "add",
+                "set",
+            }:
+                return lambda *args, **kwargs: None
+            raise AttributeError(name)
+
+        def pack(self, **options):
+            # Real Tk geometry managers return None, not the widget.
+            return None
+
+        def bind(self, event, callback):
+            self.bindings[event] = callback
+
+        def winfo_reqwidth(self):
+            return 140
+
+        def focus_set(self):
+            self.focus_calls += 1
+
+        def after_idle(self, callback):
+            self.idle_callbacks.append(callback)
+
+        def winfo_exists(self):
+            return True
+
+        def configure(self, **options):
+            self.options.update(options)
+            if "state" in options:
+                self.state = options["state"]
+
+    owner = SimpleNamespace(
+        root=object(),
+        _bounded_geometry=lambda *_: "940x700",
+        _diagnostic_snapshot=lambda: ("snapshot activity", "snapshot details"),
+        _open_setup_log=lambda: pytest.fail("Constructor opened raw log"),
+        _tk=SimpleNamespace(Toplevel=Widget, Text=Widget, StringVar=_Value),
+        _ttk=SimpleNamespace(
+            Frame=Widget, Label=Widget, Notebook=Widget, Scrollbar=Widget, Button=Widget
+        ),
+    )
+    viewer = gui_module._DiagnosticsWindow(owner)
+    assert isinstance(viewer._guidance_label, Widget)
+    assert viewer._guidance_label.options["text"].startswith("A snapshot for reading")
+    assert [text.content for text in viewer._texts] == [
+        "snapshot activity",
+        "snapshot details",
+    ]
+    assert all(text.state == "disabled" for text in viewer._texts)
+    assert viewer._window.bindings["<Return>"](None) == "break"
+    assert viewer._window.focus_calls == 1
+    viewer._window.idle_callbacks.pop()()
+    assert viewer._window.focus_calls == 2
+    viewer._window.bindings["<Configure>"](
+        SimpleNamespace(widget=viewer._window, width=460)
+    )
+    assert viewer._guidance_label.options["wraplength"] == 428
+
+
+def test_deferred_primary_focus_checks_dialog_ownership_when_callback_runs():
+    window = object.__new__(InstallerWindow)
+    focused = []
+    window.root = SimpleNamespace(winfo_exists=lambda: True)
+    window._primary = SimpleNamespace(focus_set=lambda: focused.append("primary"))
+    window._diagnostics_window = None
+    deferred_callback = window._focus_primary_if_available
+    # The viewer opened after the terminal render scheduled this callback.
+    window._diagnostics_window = SimpleNamespace(
+        _window=SimpleNamespace(winfo_exists=lambda: True)
+    )
+    deferred_callback()
+    assert focused == []
+    window._diagnostics_window = None
+    window._repair_dialog_open = True
+    deferred_callback()
+    assert focused == []
+    window._repair_dialog_open = False
+    deferred_callback()
+    assert focused == ["primary"]
+    source = Path(gui_module.__file__).read_text(encoding="utf-8")
+    assert "self.root.after_idle(self._focus_primary_if_available)" in source
+    assert "self.root.after_idle(self._primary.focus_set)" not in source
+
+
+@pytest.mark.parametrize(
+    "screen,phase",
+    [
+        (InstallerScreen.CANCELLING, "installing"),
+        (InstallerScreen.WORKING, "rolling_back"),
+    ],
+)
+def test_cancellation_breadcrumb_does_not_claim_already_stopped(screen, phase):
+    window = _staged_window()
+    window._installation_started = True
+    window._render_setup_stage(
+        replace(_state(screen, kind=TargetKind.UPDATE), progress_stage=phase)
+    )
+    assert window._install_stage_label.configured[-1]["text"] == "● Stopping safely"
+    assert window._ready_stage_label.configured[-1]["text"] == "○ Ready"
+
+
 @pytest.fixture
 def tk_log_window():
     tk = pytest.importorskip("tkinter")
@@ -2138,19 +2503,21 @@ def test_live_console_trim_keeps_reading_anchor_and_bounds_memory(
 def test_diagnostic_changes_preserve_scroll_and_skip_identical_text(tk_log_window):
     window, root = tk_log_window
     details = "\n".join(f"diagnostic {i}" for i in range(100))
-    window._replace_details(details)
+    gui_module._replace_snapshot_text(window._details, details)
     root.update()
     window._details.yview_moveto(0.4)
     root.update()
-    position = window._details.yview()[0]
+    position = window._details.index("@0,0")
     window._details.tag_add("sel", "40.0", "40.end")
     selected = window._details.tag_ranges("sel")
-    window._replace_details(details)
+    gui_module._replace_snapshot_text(window._details, details)
     assert window._details.tag_ranges("sel") == selected
-    assert window._details.yview()[0] == pytest.approx(position)
-    window._replace_details(details.replace("diagnostic", "information"))
+    assert window._details.index("@0,0") == position
+    gui_module._replace_snapshot_text(
+        window._details, details.replace("diagnostic", "information")
+    )
     root.update()
-    assert window._details.yview()[0] == pytest.approx(position, abs=0.002)
+    assert window._details.index("@0,0") == position
 
 
 def test_complete_setup_window_streams_without_advanced_details(
