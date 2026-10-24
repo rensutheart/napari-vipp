@@ -14,6 +14,14 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
+Approved 2026-10-24 follow-up adds a distinct true app-only in-place route;
+Automatic prefers it only after a replacement has installed an app-use lease
+protocol. Replacement retains the existing dependency-copy behavior; Fresh
+resolves an independent environment. Require exact app rollback/recovery,
+closed-app exclusion and disposable Windows tests. See
+[in-place implementation](inplace-installer-plan.md). No public release or
+mutation of current installations is implied by private qualification.
+
 Approved development, 2026-10-23: [incremental installer](incremental-installer-plan.md)
 with incremental/fresh choice, lightweight initial checks and verified reusable
 downloads (issue 85). Qualify both paths in disposable roots before building a

@@ -510,7 +510,10 @@ class WindowsInstallerBackend:
                 plan.discovery.filesystem.target, str(exc)
             ) from exc
         except PreparationError as exc:
-            if selection.update_strategy is not UpdateStrategy.INCREMENTAL:
+            if selection.update_strategy not in {
+                UpdateStrategy.INCREMENTAL,
+                UpdateStrategy.IN_PLACE,
+            }:
                 raise
             return PreparedInstall(
                 kind=TargetKind.BLOCKED,
@@ -520,11 +523,11 @@ class WindowsInstallerBackend:
                 plain_summary=str(exc),
                 technical_details=_join_details(plan.to_json(), str(exc)),
                 reason=(
-                    "Incremental update was not approved. Choose Automatic or "
+                    "The selected update method was not approved. Choose Automatic or "
                     "Fresh installation to review another method; nothing has "
                     "been installed."
                 ),
-                selected_strategy=UpdateStrategy.INCREMENTAL,
+                selected_strategy=selection.update_strategy,
                 strategy_reason=str(exc),
             )
         self._check_cancelled(cancellation)
@@ -1353,7 +1356,8 @@ def _prepared_for_transaction(
         temporary_free_bytes=default_temporary_free_bytes(plan.request.track),
         size_estimate=(
             None
-            if selected_strategy is UpdateStrategy.INCREMENTAL
+            if selected_strategy
+            in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}
             else default_install_size_estimate(plan.request.track)
         ),
         launcher=Path(launcher) if launcher is not None else None,

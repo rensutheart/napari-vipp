@@ -26,9 +26,10 @@ class ComputeTrack(StrEnum):
 
 
 class UpdateStrategy(StrEnum):
-    """Reuse verified installed dependencies, or resolve a fresh replacement."""
+    """Choose app-only mutation, a copied replacement, or a fresh environment."""
 
     AUTO = "auto"
+    IN_PLACE = "in_place"
     INCREMENTAL = "incremental"
     FRESH = "fresh"
 

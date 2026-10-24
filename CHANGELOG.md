@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Distinguish true VIPP-only in-place updates from copied replacements and
+  fresh environments. Prefer in-place automatically only for compatible owned
+  Windows installations with coordinated app-use protection; legacy builds
+  need one replacement first. Keep dependencies and launchers in place, bind
+  a small app-only rollback journal, and block startup until commit or recovery.
+  Dependency/runtime/protocol changes still require a replacement or Fresh.
+
 - Compare installer versions using Python package version ordering, so numeric
   development releases such as dev10 correctly follow dev9; keep genuine
   downgrade and unrecognized-version protection. Unify setup typography,

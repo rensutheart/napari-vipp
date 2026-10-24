@@ -41,22 +41,21 @@ _TRACK_LABELS = {
 }
 _LABEL_FOR_TRACK = {value: key for key, value in _TRACK_LABELS.items()}
 _STRATEGY_LABELS = {
-    "Automatic — reuse compatible packages": UpdateStrategy.AUTO,
-    "Incremental update only": UpdateStrategy.INCREMENTAL,
+    "Automatic — fastest safe method": UpdateStrategy.AUTO,
+    "In-place update — change VIPP only": UpdateStrategy.IN_PLACE,
+    "Replacement update — copy existing packages": UpdateStrategy.INCREMENTAL,
     "Fresh installation": UpdateStrategy.FRESH,
 }
 _LABEL_FOR_STRATEGY = {value: key for key, value in _STRATEGY_LABELS.items()}
-_SELECTED_METHOD_NAMES = {
-    UpdateStrategy.AUTO: "Automatic",
-    UpdateStrategy.INCREMENTAL: "Incremental update",
-    UpdateStrategy.FRESH: "Fresh installation",
-}
+_SELECTED_METHOD_NAMES = _LABEL_FOR_STRATEGY
 _UPDATE_METHOD_HELP = (
-    "Automatic keeps compatible installed dependency versions. If this "
-    "VIPP update requires different versions, it uses Fresh. Fresh "
-    "resolves required versions, reuses verified cached downloads and "
-    "downloads missing packages. Both methods stage a separate copy "
-    "and need temporary disk space."
+    "Automatic uses In-place when safe, otherwise Replacement or Fresh. "
+    "In-place changes VIPP only; dependencies must be compatible and VIPP "
+    "must be closed. Older installations may need one Replacement update "
+    "first to add the app-use safety check.\n\n"
+    "Replacement copies compatible installed packages into a separate "
+    "environment. Fresh resolves all required versions. Verified cached "
+    "downloads are reused; missing packages are downloaded as needed."
 )
 _REVIEW_SCREENS = frozenset(
     {
@@ -434,15 +433,26 @@ def _size_review_text(state: InstallerViewState) -> str:
     """Keep estimates visibly separate from enforced free-space thresholds."""
 
     estimate = state.size_estimate
-    if estimate is None:
+    in_place = state.selected_strategy is UpdateStrategy.IN_PLACE
+    if estimate is None and not in_place and state.required_free_bytes is None:
         return ""
-    lines = [
-        "Approximate sizes (estimates, not enforced limits):",
-        "Download (typical Fresh, before cache reuse; not a measured "
-        f"Incremental transfer): {_format_size(estimate.download_bytes)}",
-        f"Installed: {_format_size(estimate.installed_bytes)}",
-        f"Peak temporary working space: {_format_size(estimate.peak_temporary_bytes)}",
-    ]
+    lines = []
+    if in_place:
+        lines.append(
+            "In-place package scope: VIPP only. Existing dependencies are not "
+            "copied or upgraded."
+        )
+    elif estimate is not None:
+        lines.extend(
+            (
+                "Approximate sizes (estimates, not enforced limits):",
+                "Download (typical Fresh, before cache reuse; not a measured "
+                f"update transfer): {_format_size(estimate.download_bytes)}",
+                f"Installed: {_format_size(estimate.installed_bytes)}",
+                "Peak temporary working space: "
+                f"{_format_size(estimate.peak_temporary_bytes)}",
+            )
+        )
     if state.required_free_bytes is not None:
         minimum = (
             "Required minimum free space (enforced): "
@@ -565,6 +575,21 @@ def _reviewed_message(
         for part in (state.message.strip(), review, method, _size_review_text(state))
         if part
     )
+
+
+def _working_message(state: InstallerViewState) -> str:
+    """Explain the selected write scope without implying a replacement copy."""
+
+    if state.selected_strategy is UpdateStrategy.IN_PLACE:
+        return (
+            "Updating VIPP only in the current environment. Existing "
+            "dependencies stay unchanged. Keep VIPP closed until setup finishes."
+        )
+    if state.target_kind in {TargetKind.UPDATE, TargetKind.REPAIR}:
+        return (
+            "The previous version stays available until the replacement passes checks."
+        )
+    return "The installation is verified before it becomes active."
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1755,12 +1780,7 @@ class InstallerWindow:
         self._headline.set(state.headline)
         self._message.set(
             (
-                (
-                    "The previous version stays available until the replacement "
-                    "passes checks."
-                    if state.target_kind in {TargetKind.UPDATE, TargetKind.REPAIR}
-                    else "The installation is verified before it becomes active."
-                )
+                _working_message(state)
                 if state.screen is InstallerScreen.WORKING
                 else self._completion_message(state)
             )

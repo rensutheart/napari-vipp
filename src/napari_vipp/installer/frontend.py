@@ -574,7 +574,11 @@ class InstallerController:
                 TargetKind.REPAIR: "Repairing",
             }[prepared.kind]
             working_message = (
-                "Staging a new VIPP copy with current compatible dependency versions. "
+                "Updating VIPP in the current environment. Existing dependencies stay "
+                "unchanged; keep VIPP closed until checks finish."
+                if prepared.selected_strategy is UpdateStrategy.IN_PLACE
+                else "Staging a new VIPP copy with current compatible "
+                "dependency versions. "
                 "This still needs temporary disk space; the previous installation "
                 "stays available until checks pass."
                 if prepared.selected_strategy is UpdateStrategy.INCREMENTAL

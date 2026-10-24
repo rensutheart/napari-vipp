@@ -300,7 +300,7 @@ def test_auto_retains_eligible_dependency_versions_without_checking_latest(
     monkeypatch.setattr(
         incremental,
         "assess_incremental",
-        lambda *_args, **_kwargs: SimpleNamespace(
+        lambda *_args, **_kwargs: incremental.ReusePlan(
             eligible=True,
             reason="Current versions satisfy this VIPP update.",
             packages=(current,),

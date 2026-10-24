@@ -515,6 +515,7 @@ class CommandRunner(Protocol):
         cancellation: object | None = None,
         env: Mapping[str, str] | None = None,
         cwd: Path | None = None,
+        before_resume: Callable[[int], None] | None = None,
     ) -> CommandResult: ...
 
 
@@ -541,7 +542,10 @@ class SubprocessCommandRunner:
         env: Mapping[str, str] | None = None,
         cwd: Path | None = None,
         output: CommandOutputCallback | None = None,
+        before_resume: Callable[[int], None] | None = None,
     ) -> CommandResult:
+        if before_resume is not None and os.name != "nt":
+            raise InstallerEngineError("Suspended acceptance requires Windows.")
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -564,6 +568,8 @@ class SubprocessCommandRunner:
             if os.name == "nt":
                 try:
                     job = _WindowsKillOnCloseJob(process)
+                    if before_resume is not None:
+                        before_resume(process.pid)
                     _resume_windows_process(process.pid)
                 except Exception:
                     _cancel_process(process)
@@ -1040,6 +1046,11 @@ class ManagedInstallerEngine:
                 validate_build_target_identity(
                     managed_root, expected_wheel_sha256, state_root=state_root
                 )
+            from napari_vipp.installer.inplace_execution import recover_if_inplace
+
+            inplace_recovery = recover_if_inplace(self, journal, managed_root)
+            if inplace_recovery is not None:
+                return inplace_recovery
             return _recover_transaction_journal(
                 journal,
                 managed_root=managed_root,
@@ -1086,7 +1097,14 @@ class ManagedInstallerEngine:
             0,
             3,
         )
-        inspection = self.inspect(plan, exhaustive=resolve)
+        # In-place validates changed app paths plus metadata separately. A full
+        # dependency tree walk is only useful for replacement/fresh routes.
+        inspection = self.inspect(
+            plan,
+            exhaustive=resolve
+            and plan.request.update_strategy
+            not in {UpdateStrategy.AUTO, UpdateStrategy.IN_PLACE},
+        )
         _validate_snapshot_binding(plan, inspection)
         if inspection.kind is ManagedTargetKind.CURRENT and repair:
             inspection = replace(
@@ -1203,6 +1221,23 @@ class ManagedInstallerEngine:
                 strategy_reason = reuse_plan.reason
                 if reuse_plan.eligible:
                     selected_strategy = UpdateStrategy.INCREMENTAL
+                    if requested_strategy in {
+                        UpdateStrategy.AUTO,
+                        UpdateStrategy.IN_PLACE,
+                    }:
+                        from napari_vipp.installer.inplace import assess_inplace
+
+                        in_place = assess_inplace(reuse_plan)
+                        if in_place.eligible:
+                            selected_strategy = UpdateStrategy.IN_PLACE
+                            reuse_plan = in_place
+                            strategy_reason = in_place.reason
+                        else:
+                            strategy_reason = (
+                                in_place.reason
+                                + " A replacement keeps the current environment "
+                                "unchanged."
+                            )
             else:
                 strategy_reason = (
                     "Incremental update needs a healthy, older managed installation. "
@@ -1213,12 +1248,20 @@ class ManagedInstallerEngine:
                 and selected_strategy is not UpdateStrategy.INCREMENTAL
             ):
                 raise PreparationError(strategy_reason + " Choose Fresh installation.")
+            if (
+                requested_strategy is UpdateStrategy.IN_PLACE
+                and selected_strategy is not UpdateStrategy.IN_PLACE
+            ):
+                raise PreparationError(
+                    strategy_reason + " Choose Replacement or Fresh installation."
+                )
         _emit(
             progress,
             ProgressStage.RESOLVING,
             (
                 "Reviewing compatible installed dependencies…"
-                if selected_strategy is UpdateStrategy.INCREMENTAL
+                if selected_strategy
+                in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}
                 else "Resolving fresh packages from PyPI…"
                 if resolve
                 else "Local checks finished. Package resolution starts after Update."
@@ -1226,7 +1269,7 @@ class ManagedInstallerEngine:
             1,
             3,
         )
-        if selected_strategy is UpdateStrategy.INCREMENTAL:
+        if selected_strategy in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}:
             packages = tuple(
                 sorted(
                     (
@@ -1237,7 +1280,15 @@ class ManagedInstallerEngine:
                                 f"reuse://installed/{p.name}",
                                 p.sha256,
                             )
-                            for p in reuse_plan.packages
+                            for p in (
+                                tuple(
+                                    p
+                                    for p in inspection.record.packages
+                                    if p.normalized_name != "napari-vipp"
+                                )
+                                if selected_strategy is UpdateStrategy.IN_PLACE
+                                else reuse_plan.packages
+                            )
                         ),
                         ResolvedPackage(
                             plan.release.distribution,
@@ -1304,7 +1355,8 @@ class ManagedInstallerEngine:
             selected_strategy=selected_strategy,
             reuse_fingerprint=(
                 getattr(reuse_plan, "fingerprint", "")
-                if selected_strategy is UpdateStrategy.INCREMENTAL
+                if selected_strategy
+                in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}
                 else ""
             ),
             deferred_resolution=not resolve
@@ -1330,7 +1382,8 @@ class ManagedInstallerEngine:
             selected_strategy=selected_strategy,
             strategy_reason=strategy_reason,
             reuse_plan=reuse_plan
-            if selected_strategy is UpdateStrategy.INCREMENTAL
+            if selected_strategy
+            in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}
             else None,
             deferred_resolution=not resolve
             and selected_strategy is UpdateStrategy.FRESH,
@@ -1441,16 +1494,22 @@ class ManagedInstallerEngine:
                 cancellation=cancellation,
             )
         for package in prepared.packages:
-            if (
-                prepared.selected_strategy is UpdateStrategy.INCREMENTAL
-                and package.source_url.startswith("reuse://installed/")
-            ):
+            if prepared.selected_strategy in {
+                UpdateStrategy.INCREMENTAL,
+                UpdateStrategy.IN_PLACE,
+            } and package.source_url.startswith("reuse://installed/"):
                 continue
             _validate_artifact_url(
                 package.source_url,
                 package_name=package.name,
                 release=prepared.plan.release,
                 approved_hosts=self._approved_artifact_hosts,
+            )
+        if prepared.selected_strategy is UpdateStrategy.IN_PLACE:
+            from napari_vipp.installer.inplace_execution import apply_inplace
+
+            return apply_inplace(
+                self, prepared, progress=progress, cancellation=cancellation
             )
         state_root = self._selected_state_root(prepared.target)
         _assert_direct_path(state_root, "installer state")
@@ -1882,6 +1941,11 @@ class ManagedInstallerEngine:
                     old_record.installation_id if old_record is not None else run_id
                 )
                 created_at = old_record.created_at if old_record is not None else now
+                # A legacy prefix needs one replacement before launch and update
+                # processes can coordinate safely. Never retrofit a live prefix.
+                from napari_vipp._runtime_lease import install_capability
+
+                install_capability(candidate, prepared.target, installation_id)
                 retired = _retired_environments(old_record, retained_retired)
                 if prepared.persistent_setup_path is not None:
                     from napari_vipp.installer.uninstall import (

@@ -479,6 +479,71 @@ def test_review_displays_requested_method_selected_method_and_fallback_reason():
     assert reason in message
 
 
+def test_method_labels_distinguish_three_write_scopes_without_changing_legacy_value():
+    labels = gui_module._STRATEGY_LABELS
+    assert labels == {
+        "Automatic — fastest safe method": UpdateStrategy.AUTO,
+        "In-place update — change VIPP only": UpdateStrategy.IN_PLACE,
+        "Replacement update — copy existing packages": UpdateStrategy.INCREMENTAL,
+        "Fresh installation": UpdateStrategy.FRESH,
+    }
+    assert UpdateStrategy.INCREMENTAL.value == "incremental"
+    assert gui_module._SELECTED_METHOD_NAMES == gui_module._LABEL_FOR_STRATEGY
+
+
+def test_legacy_app_use_fallback_reason_is_visible_with_exact_selected_method():
+    reason = (
+        "This older installation needs one Replacement update "
+        "to add the app-use interlock."
+    )
+    state = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.INCREMENTAL,
+        strategy_reason=reason,
+    )
+    message = _reviewed_message(state, InstallerSelection())
+    assert "Update method requested: Automatic — fastest safe method" in message
+    assert "Selected method: Replacement update — copy existing packages" in message
+    assert reason in message
+    assert "Selected method: In-place" not in message
+
+
+def test_in_place_working_copy_never_promises_a_separate_replacement():
+    state = replace(
+        _state(InstallerScreen.WORKING, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.IN_PLACE,
+    )
+    message = gui_module._working_message(state)
+    assert "Updating VIPP only in the current environment" in message
+    assert "Existing dependencies stay unchanged" in message
+    assert "Keep VIPP closed until setup finishes" in message
+    assert "replacement" not in message
+    assert "previous version stays available" not in message
+    for strategy in [UpdateStrategy.INCREMENTAL, UpdateStrategy.FRESH]:
+        assert "replacement passes checks" in gui_module._working_message(
+            replace(state, selected_strategy=strategy)
+        )
+
+
+def test_in_place_review_omits_fresh_estimates_but_keeps_enforced_space_thresholds():
+    state = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.IN_PLACE,
+        strategy_reason="The current app-use interlock and dependencies were verified.",
+        size_estimate=InstallSizeEstimate(2 * 1024**3, 5 * 1024**3, 7 * 1024**3),
+        required_free_bytes=512 * 1024**2,
+        temporary_free_bytes=256 * 1024**2,
+    )
+    message = _reviewed_message(state, InstallerSelection())
+    assert "Selected method: In-place update — change VIPP only" in message
+    assert state.strategy_reason in message
+    assert "Existing dependencies are not copied or upgraded" in message
+    assert "typical Fresh" not in message
+    assert "5 GiB" not in message and "7 GiB" not in message
+    assert "Required minimum free space (enforced): 512 MiB" in message
+    assert "256 MiB on every drive" in message
+
+
 def test_method_choice_invalidates_then_rechecks_without_applying():
     window = object.__new__(InstallerWindow)
     window._selection = InstallerSelection()
@@ -744,7 +809,10 @@ def test_review_then_installing_hides_choices_without_changing_approval():
     assert not window._method_panel.visible
     assert not window._advanced_review.visible
     assert window._selected_method_label.visible
-    assert window._selected_method.get() == "Selected method: Incremental update"
+    assert (
+        window._selected_method.get()
+        == "Selected method: Replacement update — copy existing packages"
+    )
     assert window._review_stage_label.configured[-1]["text"] == "✓ Review"
     assert window._install_stage_label.configured[-1]["text"] == "● Install"
     assert window._selected_method_label.packs == [
@@ -838,16 +906,23 @@ def test_preapproval_current_and_blocked_states_keep_method_choices(screen):
 
 
 def test_method_help_explains_compatible_versions_and_verified_cache():
+    help_text = gui_module._UPDATE_METHOD_HELP
     assert (
-        "keeps compatible installed dependency versions"
-        in gui_module._UPDATE_METHOD_HELP
+        "Automatic uses In-place when safe, otherwise Replacement or Fresh" in help_text
     )
+    assert "In-place changes VIPP only" in help_text
+    assert "dependencies must be compatible and VIPP must be closed" in help_text
+    assert "Older installations may need one Replacement update first" in help_text
+    assert "app-use safety check" in help_text
     assert (
-        "requires different versions, it uses Fresh" in gui_module._UPDATE_METHOD_HELP
+        "Replacement copies compatible installed packages into a separate environment"
+        in help_text
     )
-    assert "reuses verified cached downloads" in gui_module._UPDATE_METHOD_HELP
-    assert "downloads missing packages" in gui_module._UPDATE_METHOD_HELP
+    assert "Fresh resolves all required versions" in help_text
+    assert "Verified cached downloads are reused" in help_text
+    assert "missing packages are downloaded as needed" in help_text
     assert "newest" not in gui_module._UPDATE_METHOD_HELP
+    assert "no downloads" not in gui_module._UPDATE_METHOD_HELP
     assert gui_module._PHASE_LABELS["installing"] == "Installing required components"
 
 
@@ -873,7 +948,7 @@ def test_update_method_control_is_built_outside_collapsed_advanced_panel(monkeyp
         assert window._strategy_control.master is not window._advanced
         assert window._advanced.winfo_manager() == ""
         assert window._show_advanced.get() is False
-        assert window._update_strategy.get() == "Automatic — reuse compatible packages"
+        assert window._update_strategy.get() == "Automatic — fastest safe method"
         assert controller.calls == [("start", InstallerSelection())]
     finally:
         root.destroy()
@@ -1523,7 +1598,7 @@ def test_use_default_switches_existing_environment_to_fixed_managed_route(
     window._existing_label = _Widget()
     window._install_root = _Value("")
     window._track = _Value("Recommended automatically")
-    window._update_strategy = _Value("Automatic — reuse compatible packages")
+    window._update_strategy = _Value("Automatic — fastest safe method")
     window._desktop_shortcut = _Value(True)
     window._selection = InstallerSelection(existing_python=existing_python)
     window._controller = _Controller()
@@ -1672,7 +1747,7 @@ def test_size_review_separates_approximate_estimates_from_enforced_minimums():
 
     assert "Approximate sizes (estimates, not enforced limits)" in rendered
     assert "Download (typical Fresh, before cache reuse" in rendered
-    assert "not a measured Incremental transfer): 1.5 GiB" in rendered
+    assert "not a measured update transfer): 1.5 GiB" in rendered
     assert "Installed: 5 GiB" in rendered
     assert "Peak temporary working space: 7 GiB" in rendered
     assert "Required minimum free space (enforced): 15 GiB" in rendered
