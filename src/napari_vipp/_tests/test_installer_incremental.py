@@ -272,6 +272,88 @@ def test_unsafe_record_escape_is_rejected_before_copy(source):
     assert not plan.eligible
 
 
+@pytest.mark.parametrize("alias_first", [False, True])
+def test_redundant_unhashed_windows_self_record_row_is_not_payload(source, alias_first):
+    record, release, python, site = source
+    path = site / "dependency-1.2.dist-info/RECORD"
+    canonical = path.read_bytes()
+    alias = b"dependency-1.2.dist-info\\RECORD,,\n"
+    original = alias + canonical if alias_first else canonical + alias
+    path.write_bytes(original)
+    plan = assess_incremental(record, release, python)
+    assert plan.eligible, plan.reason
+    package = next(item for item in plan.packages if item.name == "dependency")
+    assert (
+        dict(package.metadata_hashes)["RECORD"] == hashlib.sha256(original).hexdigest()
+    )
+    assert [item.path for item in package.files if item.kind == "record"] == [
+        "dependency-1.2.dist-info/RECORD"
+    ]
+    target = _candidate(record)
+    copy_reused_packages(plan, target)
+    assert path.read_bytes() == original
+    rows = _record_rows(target / "Lib/site-packages/dependency-1.2.dist-info/RECORD")
+    assert [row for row in rows if row[0].endswith("RECORD")] == [
+        ["dependency-1.2.dist-info/RECORD", "", ""]
+    ]
+    assert not any("\\" in row[0] for row in rows)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "second-alias",
+        "hash-alias",
+        "size-alias",
+        "no-canonical",
+        "two-canonical",
+        "other-backslash",
+        "foreign-self",
+        "wrong-case",
+    ],
+)
+def test_self_record_exception_does_not_relax_any_payload_or_alias_guard(
+    source, damage
+):
+    record, release, python, site = source
+    path = site / "dependency-1.2.dist-info/RECORD"
+    rows = _record_rows(path)
+    alias = ["dependency-1.2.dist-info\\RECORD", "", ""]
+    if damage == "hash-alias":
+        alias[1] = _digest(b"untrusted payload claim")
+    elif damage == "size-alias":
+        alias[2] = "0"
+    elif damage == "no-canonical":
+        rows = [row for row in rows if row[0] != "dependency-1.2.dist-info/RECORD"]
+    elif damage == "two-canonical":
+        rows.append(["dependency-1.2.dist-info/RECORD", "", ""])
+    elif damage == "other-backslash":
+        alias[0] = "dependency-1.2.dist-info\\METADATA"
+    elif damage == "foreign-self":
+        alias[0] = "foreign-1.0.dist-info\\RECORD"
+    elif damage == "wrong-case":
+        alias[0] = "dependency-1.2.dist-info\\record"
+    rows.append(alias)
+    if damage == "second-alias":
+        rows.append(alias)
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+    assert not assess_incremental(record, release, python).eligible
+
+
+def test_added_legacy_self_alias_still_invalidates_an_existing_metadata_review(source):
+    record, release, python, site = source
+    plan = assess_incremental(record, release, python)
+    path = site / "dependency-1.2.dist-info/RECORD"
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write("dependency-1.2.dist-info\\RECORD,,\n")
+    fresh = assess_incremental(record, release, python)
+    assert fresh.eligible, fresh.reason
+    assert fresh.fingerprint != plan.fingerprint
+    with pytest.raises(IncrementalReuseError, match="changed after review"):
+        copy_reused_packages(plan, _candidate(record))
+
+
 @pytest.mark.parametrize(
     "damage", ["no-hash", "non-entry-script", "bad-direct-metadata"]
 )

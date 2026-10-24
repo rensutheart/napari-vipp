@@ -245,10 +245,20 @@ def _record_files(
     data: bytes, dist_info: str, entries: tuple[ReuseEntryPoint, ...]
 ) -> tuple[ReuseFile, ...]:
     result, seen = [], set()
+    self_alias_seen = False
     script_names = {value.name.casefold() for value in entries}
     for row in csv.reader(io.StringIO(data.decode("utf-8"), newline="")):
         _require(len(row) == 3 and row[0], "Invalid installed RECORD row.")
         name, digest, size_text = row
+        # Some Windows wheels include this redundant, non-payload self row.
+        # Keep the canonical self row mandatory; never normalize payload paths.
+        if name == dist_info + "\\RECORD":
+            _require(
+                not self_alias_seen and not digest and not size_text,
+                "Invalid duplicate self-referential RECORD alias.",
+            )
+            self_alias_seen = True
+            continue
         _require(
             "\\" not in name
             and ":" not in name

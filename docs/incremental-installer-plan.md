@@ -1,8 +1,8 @@
 # Incremental Windows installer (unreleased)
 
 User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
-Development build: `0.16.0a8.dev2`; this is not a public release. The earlier
-`dev1` artifact remains retained as incremental/fresh qualification evidence.
+Development build: `0.16.0a8.dev3`; this is not a public release. The earlier
+`dev1`/`dev2` artifacts and failed trials remain retained as qualification evidence.
 
 ## Routes and consent
 
