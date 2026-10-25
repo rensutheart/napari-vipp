@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 from napari_vipp.core.io import MICROSCOPE_FILE_FILTER
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_interpretation import AxisInterpretationControl
+from napari_vipp.ui.design import SPACE_SM, SPACE_XS, content_width, type_style
 from napari_vipp.ui.file_sources import (
     SourceLoadPhase,
     SourceLoadProgress,
@@ -134,6 +135,13 @@ class _ResettableSpinBoxMixin:
     """Add a parameter-default action without replacing standard edit actions."""
 
     _default_value: float | int | None = None
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange) and getattr(
+            self, "_vipp_metric_entry", False
+        ):
+            _fit_numeric_entry(self)
 
     def setDefaultValue(self, value: float | int) -> None:  # noqa: N802
         self._default_value = value
@@ -244,6 +252,22 @@ def _configure_numeric_spin_box(box: QSpinBox | QDoubleSpinBox) -> None:
     editor = box.lineEdit()
     editor.setAlignment(Qt.AlignCenter)
     editor.setTextMargins(0, 0, 0, 0)
+    _fit_numeric_entry(box)
+
+
+def _fit_numeric_entry(box: QSpinBox | QDoubleSpinBox) -> None:
+    """Fit native range/precision chrome and the actual current display text."""
+    if getattr(box, "_vipp_metric_entry_sizing", False):
+        return
+    box._vipp_metric_entry = True
+    box._vipp_metric_entry_sizing = True
+    try:
+        box.setMinimumWidth(0)
+        box.setMinimumWidth(
+            max(70, box.sizeHint().width(), content_width(box, box.text(), padding=24))
+        )
+    finally:
+        box._vipp_metric_entry_sizing = False
 
 
 class ParameterControl(QWidget):
@@ -273,7 +297,6 @@ class ParameterControl(QWidget):
         if getattr(spec, "odd_only", False):
             self.value_box.setToolTip("Odd whole numbers only (for example 3, 5, 7).")
         _configure_numeric_spin_box(self.value_box)
-        self.value_box.setMinimumWidth(74)
         slider_height = max(int(self.slider.sizeHint().height()), 14)
         self.slider.setMinimumHeight(slider_height)
         self.setMinimumHeight(
@@ -332,7 +355,8 @@ class ParameterControl(QWidget):
                         self._to_slider(bounds.minimum), self._to_slider(bounds.maximum)
                     )
                     self.slider.setSingleStep(
-                        1 if getattr(self.spec, "odd_only", False)
+                        1
+                        if getattr(self.spec, "odd_only", False)
                         else max(int(bounds.step), 1)
                     )
                 self.slider.setValue(self._bounded_slider_value(current))
@@ -354,6 +378,7 @@ class ParameterControl(QWidget):
                 self.slider.setValue(self._bounded_slider_value(current))
                 self.value_box.setValue(float(current))
 
+        _fit_numeric_entry(self.value_box)
         if emit:
             self.valueChanged.emit(self.value())
 
@@ -411,13 +436,9 @@ class ParameterControl(QWidget):
             span = maximum - minimum
             fraction = float(np.clip(value, 0, 1000)) / 1000.0
             if minimum > 0.0 and span > 0.0:
-                mapped = minimum * np.exp(
-                    fraction * np.log(maximum / minimum)
-                )
+                mapped = minimum * np.exp(fraction * np.log(maximum / minimum))
             else:
-                mapped = minimum + np.expm1(
-                    fraction * np.log1p(max(span, 0.0))
-                )
+                mapped = minimum + np.expm1(fraction * np.log1p(max(span, 0.0)))
             if self._is_integer and getattr(self.spec, "odd_only", False):
                 return self._odd_slider_value(mapped)
             return int(round(mapped)) if self._is_integer else mapped
@@ -533,7 +554,6 @@ class NumericEntryControl(QWidget):
             self.value_box.setDecimals(bounds.decimals)
         self.value_box.setDefaultValue(spec.default)
         _configure_numeric_spin_box(self.value_box)
-        self.value_box.setMinimumWidth(100)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -574,6 +594,7 @@ class NumericEntryControl(QWidget):
                 self.value_box.setRange(float(minimum), float(maximum))
                 self.value_box.setSingleStep(float(bounds.step))
                 self.value_box.setValue(current)
+        _fit_numeric_entry(self.value_box)
         if emit:
             self.valueChanged.emit(self.value())
 
@@ -780,9 +801,7 @@ class BoolControl(QWidget):
         if label_height < 0:
             label_height = self.inline_label.sizeHint().height()
         return (
-            margins.top()
-            + margins.bottom()
-            + max(label_height, checkbox_hint.height())
+            margins.top() + margins.bottom() + max(label_height, checkbox_hint.height())
         )
 
     def value(self):
@@ -829,7 +848,7 @@ class SourceLoadStatusControl(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setTextVisible(True)
         self.cancel_button = QPushButton("Cancel load")
-        self.cancel_button.setMaximumWidth(104)
+        self.cancel_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
 
         progress_row = QHBoxLayout()
         progress_row.setContentsMargins(0, 0, 0, 0)
@@ -941,9 +960,7 @@ class SourceLoadStatusControl(QWidget):
         self._cancel_requested_for = run_id
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText("Cancelling…")
-        self.label.setText(
-            "Cancelling source load at the next safe I/O checkpoint…"
-        )
+        self.label.setText("Cancelling source load at the next safe I/O checkpoint…")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFormat("Cancelling")
         self.cancelRequested.emit(run_id)
@@ -1001,9 +1018,9 @@ class ImageSourceControl(QWidget):
         self.sample_combo = QComboBox()
         self.path_edit = QLineEdit()
         self.path_button = QPushButton("File...")
-        self.path_button.setMaximumWidth(64)
+        self.path_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.zarr_button = QPushButton("Zarr...")
-        self.zarr_button.setMaximumWidth(64)
+        self.zarr_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.series_combo = QComboBox()
         self.binding_combo = QComboBox()
         self.binding_combo.addItems(["single item", "collection"])
@@ -1028,9 +1045,10 @@ class ImageSourceControl(QWidget):
         self.reader_support.retryRequested.connect(self.sourceReaderRetryRequested.emit)
         self._memory_repair_presentation = ImageSourceMemoryRepairPresentation()
         self.memory_repair_panel = QWidget()
+        self.memory_repair_panel.setObjectName("VippSourceMemoryRepair")
         memory_repair_layout = QVBoxLayout(self.memory_repair_panel)
-        memory_repair_layout.setContentsMargins(8, 6, 8, 6)
-        memory_repair_layout.setSpacing(6)
+        memory_repair_layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        memory_repair_layout.setSpacing(SPACE_SM)
         self.memory_repair_label = QLabel()
         self.memory_repair_label.setWordWrap(True)
         self.memory_repair_label.setMinimumWidth(0)
@@ -1040,7 +1058,9 @@ class ImageSourceControl(QWidget):
         )
         self.memory_repair_button = QPushButton("Add fitted Crop Stack")
         self.memory_repair_dismiss_button = QPushButton("Dismiss")
-        self.memory_repair_dismiss_button.setMaximumWidth(70)
+        self.memory_repair_dismiss_button.setSizePolicy(
+            QSizePolicy.Maximum, QSizePolicy.Fixed
+        )
         memory_repair_actions = QWidget()
         memory_repair_actions.setMinimumWidth(0)
         memory_repair_actions.setSizePolicy(
@@ -1049,7 +1069,7 @@ class ImageSourceControl(QWidget):
         )
         memory_repair_actions_layout = QHBoxLayout(memory_repair_actions)
         memory_repair_actions_layout.setContentsMargins(0, 0, 0, 0)
-        memory_repair_actions_layout.setSpacing(6)
+        memory_repair_actions_layout.setSpacing(SPACE_SM)
         memory_repair_actions_layout.addWidget(self.memory_repair_button, 1)
         memory_repair_actions_layout.addWidget(self.memory_repair_dismiss_button)
         memory_repair_layout.addWidget(self.memory_repair_label)
@@ -1064,9 +1084,9 @@ class ImageSourceControl(QWidget):
         self.resolution_panel = QWidget()
         resolution_layout = QVBoxLayout(self.resolution_panel)
         resolution_layout.setContentsMargins(0, 0, 0, 0)
-        resolution_layout.setSpacing(4)
+        resolution_layout.setSpacing(SPACE_XS)
         self.resolution_heading_label = QLabel("Resolution")
-        self.resolution_heading_label.setStyleSheet("font-weight: 600;")
+        self.resolution_heading_label.setStyleSheet(type_style(self, "section"))
         self.analysis_resolution_label = QLabel()
         self.analysis_resolution_label.setWordWrap(True)
         self.pyramid_levels_label = QLabel()
@@ -1197,24 +1217,16 @@ class ImageSourceControl(QWidget):
         self.viewer_display_combo.currentIndexChanged.connect(
             self._on_viewer_display_changed
         )
-        self.preview_reload_button.clicked.connect(
-            self.previewReloadRequested.emit
-        )
-        self.memory_repair_button.clicked.connect(
-            self.sourceCropRepairRequested.emit
-        )
-        self.memory_repair_dismiss_button.clicked.connect(
-            self._dismiss_memory_repair
-        )
+        self.preview_reload_button.clicked.connect(self.previewReloadRequested.emit)
+        self.memory_repair_button.clicked.connect(self.sourceCropRepairRequested.emit)
+        self.memory_repair_dismiss_button.clicked.connect(self._dismiss_memory_repair)
         self._apply_theme_style()
 
     def set_compact_form_mode(self, compact: bool) -> None:
         """Stack source labels above fields without rebuilding any controls."""
 
         compact = bool(compact)
-        self.form_layout.setFieldGrowthPolicy(
-            QFormLayout.AllNonFixedFieldsGrow
-        )
+        self.form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         current_policy = self.form_layout.rowWrapPolicy()
         if compact:
             if current_policy != QFormLayout.WrapAllRows:
@@ -1254,6 +1266,8 @@ class ImageSourceControl(QWidget):
         if not self._applying_theme_style and event.type() in (
             QEvent.PaletteChange,
             QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
         ):
             self._apply_theme_style()
 
@@ -1274,9 +1288,7 @@ class ImageSourceControl(QWidget):
         try:
             parent = self.parentWidget()
             palette = (
-                QWidget.palette(parent)
-                if parent is not None
-                else QWidget.palette(self)
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
             )
             colors = theme_colors(palette)
             resolution_parent = self.resolution_panel.parentWidget()
@@ -1286,15 +1298,14 @@ class ImageSourceControl(QWidget):
                 else QWidget.palette(self.resolution_panel)
             )
             resolution_colors = theme_colors(resolution_palette)
-            self.source_summary.setStyleSheet(
-                f"color: {colors.muted_text.name()};"
-            )
+            self.resolution_heading_label.setStyleSheet(type_style(self, "section"))
+            self.source_summary.setStyleSheet(f"color: {colors.muted_text.name()};")
             self.pyramid_levels_label.setStyleSheet(
                 f"color: {resolution_colors.muted_text.name()};"
             )
             warning = colors.warning
             self.memory_repair_panel.setStyleSheet(
-                "QWidget {"
+                "QWidget#VippSourceMemoryRepair {"
                 f" background: {warning.surface.name()};"
                 f" border: 1px solid {warning.border.name()};"
                 " border-radius: 4px;"
@@ -1341,9 +1352,7 @@ class ImageSourceControl(QWidget):
         if not isinstance(host, QWidget):
             raise TypeError("source representation host must be a QWidget")
         if host.layout() is None:
-            raise ValueError(
-                "source representation host must already have a layout"
-            )
+            raise ValueError("source representation host must already have a layout")
         ancestor: QWidget | None = host
         while ancestor is not None:
             if ancestor is self.resolution_panel:
@@ -1585,9 +1594,7 @@ class ImageSourceControl(QWidget):
         """Show derived resolution facts without changing ``value()``."""
 
         if not isinstance(presentation, ImageSourceResolutionPresentation):
-            raise TypeError(
-                "presentation must be an ImageSourceResolutionPresentation"
-            )
+            raise TypeError("presentation must be an ImageSourceResolutionPresentation")
         self._resolution_presentation = presentation
         shape = _shape_text(presentation.analysis_shape)
         axes = str(presentation.analysis_axes).strip()
@@ -1595,9 +1602,7 @@ class ImageSourceControl(QWidget):
         analysis_text = f"Level 0 · {axis_prefix}{shape} · fixed processing data"
         if presentation.analysis_window_bounds:
             axis_names = (
-                tuple(axes)
-                if len(axes) == len(presentation.analysis_shape)
-                else ()
+                tuple(axes) if len(axes) == len(presentation.analysis_shape) else ()
             )
             cropped_bounds = tuple(
                 (index, int(start), int(stop))
@@ -1611,8 +1616,7 @@ class ImageSourceControl(QWidget):
                 if int(start) != 0 or int(stop) != int(size)
             )
             bounds_text = ", ".join(
-                f"{axis_names[index] if axis_names else f'axis {index}'} "
-                f"{start}:{stop}"
+                f"{axis_names[index] if axis_names else f'axis {index}'} {start}:{stop}"
                 for index, start, stop in cropped_bounds
             )
             if not bounds_text:
@@ -1633,8 +1637,7 @@ class ImageSourceControl(QWidget):
         viewer_choice = str(presentation.viewer_choice).strip().casefold()
         requested_level = (
             viewer_choice.partition(":")[2]
-            if viewer_choice.startswith("preview:")
-            and viewer_choice != "preview:auto"
+            if viewer_choice.startswith("preview:") and viewer_choice != "preview:auto"
             else ""
         )
         detail = str(presentation.preview_detail).strip()
@@ -1680,8 +1683,7 @@ class ImageSourceControl(QWidget):
                     start=1,
                 ):
                     self.viewer_display_combo.addItem(
-                        f"Presentation preview — L{level} · "
-                        f"{_shape_text(level_shape)}",
+                        f"Presentation preview — L{level} · {_shape_text(level_shape)}",
                         f"preview:{level}",
                     )
             selected = self.viewer_display_combo.findData(viewer_choice)

@@ -29,6 +29,7 @@ from napari_vipp.core.metadata import ImageState
 from napari_vipp.core.pipeline import EXECUTION_READY
 from napari_vipp.core.preview import normalize_thumbnail_with_colormap
 from napari_vipp.core.tables import is_table_data
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.inspector import InspectorSection
 from napari_vipp.ui.palette_roles import theme_colors
@@ -179,6 +180,7 @@ class DetectionResultsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self.setWindowTitle("Inspect detections")
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_WindowPropagation, True)
@@ -343,7 +345,8 @@ class DetectionResultsDialog(QDialog):
             self.status_label.setText(
                 f"Result limit reached: showing {metadata.returned_count:,} of "
                 f"{metadata.accepted_count:,} accepted detections."
-                if metadata.truncated else ""
+                if metadata.truncated
+                else ""
             )
             self.status_label.setVisible(metadata.truncated)
             self._preview_memory_error = False

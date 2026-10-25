@@ -8,6 +8,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from enum import IntEnum
@@ -265,32 +266,8 @@ def _run_removal_with_progress(
 ) -> UninstallResult:
     """Keep Tk responsive while the verified removal runs in one worker."""
 
-    import tkinter as tk
-    from tkinter import ttk
-
-    window = tk.Toplevel(root)  # type: ignore[arg-type]
-    window.title("Removing VIPP…")
-    window.resizable(False, False)
-    window.protocol("WM_DELETE_WINDOW", lambda: None)
-
-    frame = ttk.Frame(window, padding=(28, 24))
-    frame.pack(fill="both", expand=True)
-    ttk.Label(
-        frame,
-        text="Removing VIPP…",
-        font=("Segoe UI", 12, "bold"),
-    ).pack(anchor="w")
-    ttk.Label(
-        frame,
-        text=(
-            "VIPP is removing only the program files and shortcuts created "
-            "by VIPP Setup. This can take a few minutes."
-        ),
-        wraplength=390,
-        justify="left",
-    ).pack(anchor="w", pady=(8, 18))
-    progress = ttk.Progressbar(frame, mode="indeterminate", length=390)
-    progress.pack(fill="x")
+    window, progress, elapsed = _build_removal_progress(root)
+    started = time.monotonic()
     progress.start(12)
 
     outcomes: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
@@ -311,6 +288,7 @@ def _run_removal_with_progress(
     finished: list[tuple[bool, object]] = []
 
     def finish_when_ready() -> None:
+        elapsed.configure(text=_removal_elapsed(time.monotonic() - started))
         try:
             finished.append(outcomes.get_nowait())
         except queue.Empty:
@@ -334,6 +312,73 @@ def _run_removal_with_progress(
     if not succeeded:
         raise cast(BaseException, value)
     return cast(UninstallResult, value)
+
+
+def _removal_elapsed(seconds: float) -> str:
+    minutes, seconds = divmod(max(0, int(seconds)), 60)
+    return f"Total elapsed: {minutes}m {seconds:02}s"
+
+
+def _build_removal_progress(root):
+    """Build presentation only; used separately by inert UI previews."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    from napari_vipp.installer.gui import _configure_design_system
+
+    _configure_design_system(root)
+    window = tk.Toplevel(root)
+    window.title("Removing VIPP…")
+    window.resizable(True, True)
+    window.protocol("WM_DELETE_WINDOW", lambda: None)
+    width = min(600, max(320, window.winfo_screenwidth() - 48))
+    window.geometry(f"{width}x260")
+    frame = ttk.Frame(window, padding=(24, 24))
+    frame.pack(fill="both", expand=True)
+    ttk.Label(frame, text="Removing VIPP…", font="VippHeadline").pack(anchor="w")
+    description = ttk.Label(
+        frame,
+        text=(
+            "Removing only the program files and shortcuts created by VIPP Setup. "
+            "Your images and analysis files are not being removed."
+        ),
+        justify="left",
+        wraplength=width - 48,
+    )
+    description.pack(anchor="w", fill="x", pady=(8, 16))
+    progress = ttk.Progressbar(frame, mode="indeterminate")
+    progress.pack(fill="x")
+    elapsed = ttk.Label(frame, text=_removal_elapsed(0), style="VIPP.Section.TLabel")
+    elapsed.pack(anchor="w", pady=(12, 4))
+    note = ttk.Label(
+        frame,
+        text=(
+            "This operation does not report a measurable total. "
+            "Please keep this window open."
+        ),
+        style="VIPP.Muted.TLabel",
+        wraplength=width - 48,
+        justify="left",
+    )
+    note.pack(anchor="w", fill="x")
+    frame.update_idletasks()
+    height = min(
+        max(260, frame.winfo_reqheight() + 24), window.winfo_screenheight() - 48
+    )
+    window.geometry(f"{width}x{height}")
+    window.minsize(min(width, 360), min(height, 220))
+
+    def reflow(event):
+        if event.widget is window:
+            wrap = max(160, event.width - 48)
+            description.configure(wraplength=wrap)
+            note.configure(wraplength=wrap)
+
+    window.bind(
+        "<Configure>",
+        reflow,
+    )
+    return window, progress, elapsed
 
 
 def format_incomplete_result(result: UninstallResult) -> str:

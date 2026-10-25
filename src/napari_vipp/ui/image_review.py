@@ -51,6 +51,7 @@ from napari_vipp.core.review_images import (
     validate_review_settings,
 )
 from napari_vipp.ui.controls import FlexibleDoubleSpinBox
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.iconography import interface_icon
 from napari_vipp.ui.image_review_rendering import (
     add_mask_review_layer,
@@ -405,6 +406,7 @@ class ImageReviewWindow(QMainWindow):
             if image.kind == "mask" and image.spatial_ndim == 3
         }
         super().__init__(parent, Qt.Window)
+        install_window_policy(self, profile="workspace")
         self.setWindowTitle("VIPP · Review Images")
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.resize(1280, 800)

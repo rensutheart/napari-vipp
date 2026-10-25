@@ -177,6 +177,64 @@ def test_relative_image_binding_survives_changed_working_directory(
     assert widget._last_pipeline_source_signature is None
 
 
+def test_recovery_partial_failure_uses_warning_channel_without_losing_details(
+    recovery_dialog, qtbot
+):
+    case = recovery_dialog
+    warnings = []
+    case.controller.announce_warning = warnings.append
+    case.state.restore_failures.add("checkpoint-1")
+    controls = _dialog_controls(case)
+    controls.all.click()
+    qtbot.mouseClick(controls.recover, Qt.LeftButton)
+    assert len(warnings) == 1
+    assert "Recovered 2 sessions" in warnings[0]
+    assert "1 selected session" in warnings[0]
+    assert "remain available" in warnings[0]
+    assert case.messages == []
+    assert controls.choices.count() == 1
+    assert controls.choices.item(0).checkState() == Qt.Checked
+
+
+def test_recovery_success_remains_an_ordinary_message(recovery_dialog, qtbot):
+    case = recovery_dialog
+    warnings = []
+    case.controller.announce_warning = warnings.append
+    controls = _dialog_controls(case)
+    controls.choices.item(0).setCheckState(Qt.Checked)
+    qtbot.mouseClick(controls.recover, Qt.LeftButton)
+    assert warnings == []
+    assert len(case.messages) == 1
+    assert "new unsaved tabs" in case.messages[0]
+    assert controls.dialog._vipp_window_policy.profile == "chooser"
+    assert not controls.recover.autoDefault() and not controls.recover.isDefault()
+
+
+def test_recovery_unavailable_uses_optional_warning_callback(
+    qtbot, tmp_path, monkeypatch
+):
+    def unavailable(_):
+        raise PermissionError("Synthetic unavailable directory")
+
+    monkeypatch.setattr(recovery_ui, "RecoveryStore", unavailable)
+    monkeypatch.setattr(recovery_ui, "recovery_root", lambda: tmp_path / "not-created")
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    warnings, messages = [], []
+    controller = recovery_ui.WorkflowRecoveryController(
+        parent,
+        capture=lambda: ([], ""),
+        restore=lambda _: None,
+        announce=messages.append,
+        announce_warning=warnings.append,
+    )
+    controller.show_recovery()
+    assert warnings == ["Recovery unavailable · choose another recovery folder"]
+    assert messages == []
+    assert not (tmp_path / "not-created").exists()
+    controller.close()
+
+
 def test_opened_recovery_not_duplicated_when_bookkeeping_fails(
     recovery_widget, tmp_path, monkeypatch
 ):

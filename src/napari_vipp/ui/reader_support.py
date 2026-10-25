@@ -25,6 +25,7 @@ from napari_vipp.core.reader_support import (
     reader_spec,
 )
 from napari_vipp.reader_setup import launch_setup, python_executable
+from napari_vipp.ui.design import apply_text_role
 from napari_vipp.ui.palette_roles import palette_is_dark, theme_colors
 
 READER_HELP = (
@@ -168,6 +169,7 @@ def _label(text=""):
     label.setWordWrap(True)
     label.setMinimumWidth(0)
     label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    apply_text_role(label, "body")
     return label
 
 
@@ -204,9 +206,13 @@ class _ReaderRow(_ReaderStatusLabel):
             "broken": colors.error,
         }.get(state)
         color = (
-            (tone.accent if palette_is_dark(palette)
-             and state not in {"missing", "incompatible"} else tone.foreground)
-            if tone else colors.text
+            (
+                tone.accent
+                if palette_is_dark(palette) and state not in {"missing", "incompatible"}
+                else tone.foreground
+            )
+            if tone
+            else colors.text
         )
         name = {
             "ready": "Reader loads",
@@ -217,15 +223,19 @@ class _ReaderRow(_ReaderStatusLabel):
             "unchecked": "Not checked",
         }[state]
         detail = (
-            "Checking reader loading…" if checking
-            else status.detail if status
-            else "Optional reader" if self.spec.optional else "Included reader"
+            "Checking reader loading…"
+            if checking
+            else status.detail
+            if status
+            else "Optional reader"
+            if self.spec.optional
+            else "Included reader"
         )
         self.setText(
             f'<b style="color: {colors.text.name()}">{escape(self.spec.name)}</b>'
             f' · <span style="color: {color.name()}">{escape(name)}</span><br>'
             f'<span style="color: {colors.muted_text.name()}">'
-            f'{escape(detail).replace(chr(10), "<br>")}</span>'
+            f"{escape(detail).replace(chr(10), '<br>')}</span>"
         )
         self.setAccessibleName(f"{self.spec.name}: {name}. {detail}")
 
@@ -248,7 +258,7 @@ class ReaderSupportControl(QWidget):
         self._lifetime = {"closed": False}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
         layout.setAlignment(Qt.AlignTop)
         self.failure = QWidget()
         self.failure.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -270,6 +280,10 @@ class ReaderSupportControl(QWidget):
         self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.toggle.setArrowType(Qt.RightArrow)
         self.toggle.setCheckable(True)
+        self.toggle.setToolTip(
+            "Expand to check reader loading if needed and show cached results. "
+            "This never installs packages or opens an image."
+        )
         self.toggle.toggled.connect(self._toggle)
         layout.addWidget(self.toggle)
         self.content = QWidget()
@@ -282,7 +296,9 @@ class ReaderSupportControl(QWidget):
             _label(
                 "Reader availability for this VIPP session, shared by all "
                 "Image Source nodes. Results are cached; recheck after changes.\n"
-                "Checks test reader loading, not the current image."
+                "Opening this section starts any missing checks. "
+                "Checks test reader loading, not the current image; "
+                "they do not install packages."
             )
         )
         self.rows = {}
@@ -442,8 +458,10 @@ class ReaderSupportControl(QWidget):
                 state not in {"ready", "unchecked"} and key != active
             )
         self.check_all.setText(
-            "Checking reader support…" if active
-            else "Recheck reader support" if self.statuses
+            "Checking reader support…"
+            if active
+            else "Recheck reader support"
+            if self.statuses
             else "Check reader support"
         )
         self.check_all.setEnabled(active is None)

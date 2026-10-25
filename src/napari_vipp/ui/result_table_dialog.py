@@ -38,6 +38,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.tables import TableData, save_table_output
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.table_display import (
@@ -440,6 +441,7 @@ class _ResultTableView:
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setWindowTitle("Result table")
         if isinstance(self, QDialog):
+            install_window_policy(self, profile="workspace")
             self.setWindowModality(Qt.NonModal)
             self.setSizeGripEnabled(True)
             self.setMinimumSize(420, 280)
@@ -491,7 +493,7 @@ class _ResultTableView:
         horizontal_header.setSectionResizeMode(QHeaderView.Interactive)
         horizontal_header.setMinimumSectionSize(70)
         horizontal_header.setDefaultSectionSize(160)
-        self.table_view.verticalHeader().setDefaultSectionSize(24)
+        self._refresh_table_metrics()
 
         self.export_note = QLabel(_EXPORT_NOTE, self)
         self.export_note.setWordWrap(True)
@@ -541,6 +543,8 @@ class _ResultTableView:
 
         horizontal_header.sectionClicked.connect(self._sort_by_header)
         self.result_action_button.clicked.connect(self.recalculationRequested.emit)
+        self.result_action_button.setAutoDefault(False)
+        self.result_action_button.setDefault(False)
         self.export_button.clicked.connect(self.request_export)
         self.close_button.clicked.connect(self.close)
         self.refresh_theme()
@@ -882,6 +886,17 @@ class _ResultTableView:
         finally:
             self._theme_refresh_in_progress = False
 
+    def _refresh_table_metrics(self) -> None:
+        """Scale row geometry from the effective font, without measuring data."""
+        if not hasattr(self, "table_view"):
+            return
+        header = self.table_view.verticalHeader()
+        header.setDefaultSectionSize(
+            max(24, self.table_view.fontMetrics().height() + 12)
+        )
+        self.table_view.horizontalHeader().updateGeometry()
+        self.table_view.viewport().update()
+
     def changeEvent(self, event: QEvent) -> None:  # noqa: N802
         super().changeEvent(event)
         if event.type() in {
@@ -890,6 +905,12 @@ class _ResultTableView:
             QEvent.StyleChange,
         }:
             self.refresh_theme()
+        if event.type() in {
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+        }:
+            self._refresh_table_metrics()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._cancel_active_sort()

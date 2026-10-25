@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.ui.axis_controls import _control_signal_blockers
+from napari_vipp.ui.design import SPACE_SM, SPACE_XS, content_width, type_style
 from napari_vipp.ui.palette_roles import custom_paint_colors
 from napari_vipp.ui.sliders import VippSlider
 
@@ -44,9 +45,10 @@ class ViewDimAxisControl(QWidget):
         super().__init__(parent)
         self._axis: ViewDimAxis | None = None
         self._syncing = False
+        self._applying_palette_styles = False
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(SPACE_XS)
 
         self.label = QLabel("")
         self.label.setMinimumWidth(18)
@@ -70,15 +72,48 @@ class ViewDimAxisControl(QWidget):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
-        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+        ) and hasattr(self, "range_label"):
             self._apply_palette_styles()
+            self._fit_axis_metrics()
 
     def _apply_palette_styles(self) -> None:
+        if self._applying_palette_styles:
+            return
+        self._applying_palette_styles = True
         colors = custom_paint_colors(self.palette())
-        self.label.setStyleSheet(
-            f"font-weight: 650; color: {colors.text.name()};"
+        try:
+            self.label.setStyleSheet(
+                f"{type_style(self.label, 'section')} color: {colors.text.name()};"
+            )
+            self.range_label.setStyleSheet(
+                f"{type_style(self.range_label, 'secondary')}"
+                f" color: {colors.muted_text.name()};"
+            )
+        finally:
+            self._applying_palette_styles = False
+
+    def _fit_axis_metrics(self) -> None:
+        if self._axis is None:
+            return
+        maximum = max(int(self._axis.size) - 1, 0)
+        self.spin.setMinimumWidth(0)
+        self.spin.setMinimumWidth(
+            max(
+                self.spin.minimumSizeHint().width(),
+                content_width(self.spin, str(maximum), padding=24),
+            )
         )
-        self.range_label.setStyleSheet(f"color: {colors.muted_text.name()};")
+        self.label.setMinimumWidth(max(18, self.label.sizeHint().width()))
+        self.range_label.setMinimumWidth(self.range_label.sizeHint().width())
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if isinstance(parent, ViewDimsBar):
+            parent.sync_responsive_mode()
 
     def set_axis(self, axis: ViewDimAxis) -> None:
         self._axis = axis
@@ -91,6 +126,7 @@ class ViewDimAxisControl(QWidget):
             self.spin.setRange(0, maximum)
             self.spin.setValue(int(np.clip(axis.value, 0, maximum)))
             self.range_label.setText(f"/{maximum}")
+        self._fit_axis_metrics()
         self.setToolTip(f"{axis.name} axis, {int(axis.size)} positions")
 
     def set_display_mode(self, mode: str) -> None:
@@ -123,14 +159,15 @@ class ViewDimsBar(QWidget):
         self._axes: tuple[ViewDimAxis, ...] = ()
         self._controls: list[ViewDimAxisControl] = []
         self._responsive_mode: str | None = None
+        self._responsive_in_progress = False
         self._applying_palette_styles = False
 
         self.setObjectName("ViewDimsBar")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(6, 3, 6, 3)
-        self._layout.setSpacing(6)
+        self._layout.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        self._layout.setSpacing(SPACE_SM)
 
         self.title_label = QLabel("View dims")
         self._layout.addWidget(self.title_label)
@@ -150,8 +187,14 @@ class ViewDimsBar(QWidget):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
-        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange):
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+        ) and hasattr(self, "title_label"):
             self._apply_palette_styles()
+            self.sync_responsive_mode()
 
     def _apply_palette_styles(self) -> None:
         if self._applying_palette_styles:
@@ -163,13 +206,14 @@ class ViewDimsBar(QWidget):
                 "#ViewDimsBar {"
                 f" background: {colors.alternate_surface.name()};"
                 f" border: 1px solid {colors.border.name()};"
-                " border-radius: 5px;"
+                " border-radius: 4px;"
                 " padding: 2px;"
                 "}"
             )
             if hasattr(self, "title_label"):
                 self.title_label.setStyleSheet(
-                    f"font-weight: 650; color: {colors.text.name()};"
+                    f"{type_style(self.title_label, 'section')}"
+                    f" color: {colors.text.name()};"
                 )
         finally:
             self._applying_palette_styles = False
@@ -180,9 +224,6 @@ class ViewDimsBar(QWidget):
         self._ensure_control_count(len(self._axes))
         for control, axis in zip(self._controls, self._axes, strict=False):
             control.set_axis(axis)
-            control.setVisible(True)
-        for control in self._controls[len(self._axes) :]:
-            control.setVisible(False)
         self.sync_responsive_mode()
 
     def resizeEvent(self, event):  # noqa: N802
@@ -190,8 +231,15 @@ class ViewDimsBar(QWidget):
         self.sync_responsive_mode()
 
     def sync_responsive_mode(self) -> None:
-        if not self._axes:
+        if not self._axes or self._responsive_in_progress:
             return
+        self._responsive_in_progress = True
+        try:
+            self._update_responsive_mode()
+        finally:
+            self._responsive_in_progress = False
+
+    def _update_responsive_mode(self) -> None:
         width = max(int(self.width()), 1)
         parent = self.parentWidget()
         if parent is not None:
@@ -201,6 +249,7 @@ class ViewDimsBar(QWidget):
             return max(
                 int(widget.minimumWidth()),
                 int(widget.minimumSizeHint().width()),
+                int(widget.sizeHint().width()),
                 0,
             )
 
@@ -240,8 +289,8 @@ class ViewDimsBar(QWidget):
             mode = "compact"
         else:
             mode = "menu"
-        if mode == self._responsive_mode:
-            return
+        # Reapply the complete visibility state even if the mode name stayed
+        # the same: a refreshed axis or font must not revive hidden sliders.
         self._responsive_mode = mode
         self.title_label.setVisible(mode != "menu")
         for control in self._controls:
@@ -266,8 +315,8 @@ class ViewDimsBar(QWidget):
             return
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        layout.setSpacing(SPACE_SM)
         for axis in self._axes:
             control = ViewDimAxisControl(container)
             control.set_axis(axis)

@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp._theme import category_foreground, palette_is_dark
 from napari_vipp.core.operation_search import operation_search_aliases
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.example_chooser import ExampleWorkflowDialog
 from napari_vipp.ui.palette_roles import blend_colors, custom_paint_colors
@@ -80,6 +81,7 @@ class ConnectionInsertDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        install_window_policy(self, profile="chooser")
         self.setWindowTitle("Insert node on connection")
         self.resize(620, 460)
         self._candidates = candidates
@@ -89,11 +91,13 @@ class ConnectionInsertDialog(QDialog):
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search compatible nodes")
+        self.search.setAccessibleName("Search compatible nodes")
         self.search.setClearButtonEnabled(True)
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Node", "Insertion", "Category"])
+        self.tree.setAccessibleName("Compatible nodes")
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         _apply_subtle_alternating_rows(self.tree, self.palette())
@@ -103,16 +107,17 @@ class ConnectionInsertDialog(QDialog):
         self.tree.itemDoubleClicked.connect(self._accept_item)
         self.tree.itemSelectionChanged.connect(self._sync_button_state)
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.ok_button = self.buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setText("Insert node")
         self.ok_button.setEnabled(False)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Choose a compatible node to insert on this wire."))
+        description = QLabel("Choose a compatible node to insert on this wire.")
+        description.setWordWrap(True)
+        layout.addWidget(description)
         layout.addWidget(self.search)
         layout.addWidget(self.tree, 1)
         layout.addWidget(self.buttons)
@@ -253,6 +258,7 @@ class ConnectionInsertMappingDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        install_window_policy(self, profile="chooser")
         self.setWindowTitle("Choose insert ports")
         self.resize(560, 360)
         self._mappings = list(mappings)
@@ -265,6 +271,7 @@ class ConnectionInsertMappingDialog(QDialog):
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Upstream input", "Downstream output", "Mapping"])
+        self.tree.setAccessibleName("Compatible port mappings")
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         _apply_subtle_alternating_rows(self.tree, self.palette())
@@ -273,26 +280,28 @@ class ConnectionInsertMappingDialog(QDialog):
         self.tree.itemDoubleClicked.connect(self._accept_item)
         self.tree.itemSelectionChanged.connect(self._sync_button_state)
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.ok_button = self.buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setText("Use mapping")
         self.ok_button.setEnabled(False)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                f"Choose how '{node_title}' should connect "
-                f"'{source_title}' to '{target_title}'."
-            )
+        description = QLabel(
+            f"Choose how '{node_title}' should connect "
+            f"'{source_title}' to '{target_title}'."
         )
+        description.setWordWrap(True)
+        layout.addWidget(description)
         if axis_choices:
             axis_row = QHBoxLayout()
             axis_row.setContentsMargins(0, 0, 0, 0)
-            axis_row.addWidget(QLabel("Axis"))
+            axis_label = QLabel("Axis")
+            axis_row.addWidget(axis_label)
             self.axis_combo = QComboBox()
+            self.axis_combo.setAccessibleName("Insertion axis")
+            axis_label.setBuddy(self.axis_combo)
             for value, label in axis_choices:
                 self.axis_combo.addItem(label, value)
             self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
@@ -361,8 +370,6 @@ class ConnectionInsertMappingDialog(QDialog):
             self.accept()
 
 
-
-
 @dataclass(frozen=True)
 class TunnelSummary:
     name: str
@@ -388,6 +395,7 @@ class TunnelManagerDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_window_policy(self, profile="chooser")
         self._rows: tuple[TunnelSummary, ...] = ()
         self.setWindowTitle("VIPP Tunnels")
         self.resize(740, 320)
@@ -398,9 +406,11 @@ class TunnelManagerDialog(QDialog):
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter tunnels, sources, or subscribers")
+        self.filter_edit.setAccessibleName("Filter tunnels, sources, or subscribers")
         layout.addWidget(self.filter_edit)
 
         self.table = QTableWidget(0, 5)
+        self.table.setAccessibleName("Named tunnels and subscribers")
         self.table.setHorizontalHeaderLabels(
             ["Tunnel", "Source", "Type", "Subscribers", "Subscriber nodes"],
         )
@@ -419,6 +429,14 @@ class TunnelManagerDialog(QDialog):
         self.rename_button = QPushButton("Rename...")
         self.delete_button = QPushButton("Delete")
         self.delete_button.setToolTip("Remove the tunnel and clear its subscribers.")
+        for button in (
+            self.focus_button,
+            self.reveal_button,
+            self.rename_button,
+            self.delete_button,
+        ):
+            button.setAutoDefault(False)
+            button.setDefault(False)
         button_row.addWidget(self.focus_button)
         button_row.addWidget(self.reveal_button)
         button_row.addStretch(1)

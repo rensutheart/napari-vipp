@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.pipeline import OperationSpec
+from napari_vipp.ui.design import SPACE_SM, SPACE_XS, apply_text_role, type_style
 from napari_vipp.ui.iconography import interface_icon
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -32,10 +33,14 @@ TRACKING_RESULTS_SECTION = "tracking_results"
 COLOCALIZATION_SECTION = "colocalization"
 LABEL_DISTRIBUTION_SECTION = "label_distribution"
 FILTER_RESULT_SECTION = "filter_result"
-OBJECT_FILTER_OPERATION_IDS = frozenset({
-    "remove_small_objects", "clear_border_objects", "filter_labels_by_volume",
-    "filter_labels_by_property",
-})
+OBJECT_FILTER_OPERATION_IDS = frozenset(
+    {
+        "remove_small_objects",
+        "clear_border_objects",
+        "filter_labels_by_volume",
+        "filter_labels_by_property",
+    }
+)
 MASK_SUMMARY_SECTION = "mask_summary"
 TABLE_RESULTS_SECTION = "table_results"
 HISTOGRAMS_SECTION = "histograms"
@@ -201,7 +206,8 @@ class _MinimumHeightConstraint(QObject):
                 # Maximum-size-policy sections otherwise cap wrapped content at
                 # its width-independent size hint, even when Qt knows its HFW.
                 height = max(
-                    height, self._layout.totalHeightForWidth(parent.width()),
+                    height,
+                    self._layout.totalHeightForWidth(parent.width()),
                 )
             if parent.minimumHeight() != height:
                 parent.setMinimumHeight(height)
@@ -243,13 +249,15 @@ def constrain_layout_minimum_height(layout: QLayout) -> None:
         return
     parent = layout.parentWidget()
     layout._vipp_minimum_height_state = (
-        layout.sizeConstraint(), parent.minimumSize(),
+        layout.sizeConstraint(),
+        parent.minimumSize(),
     )
     native = _independent_layout_constraints_available(layout)
     if native:
         layout.setSizeConstraints(QLayout.SetNoConstraint, QLayout.SetMinimumSize)
     parent._vipp_minimum_height_constraint = _MinimumHeightConstraint(
-        layout, native=native,
+        layout,
+        native=native,
     )
 
 
@@ -386,9 +394,7 @@ def inspector_profile(
     is_source = operation_id == "input"
     is_writer = operation_id in _WRITER_OPERATION_IDS
     is_multi_output = bool(spec.is_multi_output)
-    declared_output_types = frozenset(
-        port.output_type for port in spec.output_ports
-    )
+    declared_output_types = frozenset(port.output_type for port in spec.output_ports)
     output_type = str(effective_output_type or spec.output_type)
     is_table = (
         output_type == "table"
@@ -439,9 +445,13 @@ def inspector_profile(
             primary.append(OUTPUT_SELECTOR_SECTION)
 
         if operation_id == "estimate_registration":
-            primary.extend((
-                NEXT_STEP_SECTION, TABLE_RESULTS_SECTION, REGISTRATION_RESULTS_SECTION,
-            ))
+            primary.extend(
+                (
+                    NEXT_STEP_SECTION,
+                    TABLE_RESULTS_SECTION,
+                    REGISTRATION_RESULTS_SECTION,
+                )
+            )
             distribution_kind = "none"
         elif operation_id == "template_match":
             primary.extend((DETECTION_NEXT_STEP_SECTION, HISTOGRAMS_SECTION))
@@ -450,7 +460,9 @@ def inspector_profile(
             primary.extend((DETECTION_RESULTS_SECTION, TABLE_RESULTS_SECTION))
             distribution_kind = "table"
         elif operation_id in {
-            "detect_spots_per_frame", "build_tracks", "measure_objects",
+            "detect_spots_per_frame",
+            "build_tracks",
+            "measure_objects",
             "measure_objects_intensity",
         }:
             primary.extend((TRACKING_RESULTS_SECTION, TABLE_RESULTS_SECTION))
@@ -534,9 +546,7 @@ def inspector_profile(
             distribution_kind = "mask_occupancy"
         else:
             primary.append(HISTOGRAMS_SECTION)
-            distribution_kind = (
-                "runtime" if spec.output_type == "any" else "intensity"
-            )
+            distribution_kind = "runtime" if spec.output_type == "any" else "intensity"
 
     if operation_id in OBJECT_FILTER_OPERATION_IDS:
         # Keep the input distribution beside its tuning parameters; the
@@ -697,8 +707,8 @@ class InspectorSection(QWidget):
         self.header.setCursor(Qt.PointingHandCursor)
         self.header.setAttribute(Qt.WA_Hover, True)
         header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(6, 1, 4, 1)
-        header_layout.setSpacing(6)
+        header_layout.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_XS, SPACE_XS)
+        header_layout.setSpacing(SPACE_SM)
 
         self.title_button = _InspectorSectionTitleButton(self.header)
         self.title_button.setObjectName("InspectorSectionTitle")
@@ -752,6 +762,7 @@ class InspectorSection(QWidget):
         self.content_widget = QWidget(self)
         self.content_widget.setObjectName("InspectorSectionContent")
         self.content_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        apply_text_role(self.content_widget, "body")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -799,9 +810,7 @@ class InspectorSection(QWidget):
         self.content_widget.setMinimumHeight(
             max(int(minimum_content_height), 0) if busy else 0
         )
-        self.setAccessibleDescription(
-            f"{self._title} is loading" if busy else ""
-        )
+        self.setAccessibleDescription(f"{self._title} is loading" if busy else "")
 
     def isBusy(self) -> bool:  # noqa: N802 - Qt-compatible API
         return self.busy_indicator.isBusy()
@@ -865,10 +874,7 @@ class InspectorSection(QWidget):
             return "eye"
         if "reader support" in title:
             return "chip"
-        if any(
-            word in title
-            for word in ("parameter", "measurement", "setting")
-        ):
+        if any(word in title for word in ("parameter", "measurement", "setting")):
             return "sliders"
         return "nodes"
 
@@ -907,7 +913,7 @@ class InspectorSection(QWidget):
         style_sheet = (
             "QWidget#InspectorSection {"
             f" border: 1px solid {colors.border.name()};"
-            " border-radius: 5px;"
+            " border-radius: 4px;"
             "}"
             "QFrame#InspectorSectionHeader {"
             f" background: {colors.alternate_surface.name()};"
@@ -921,7 +927,7 @@ class InspectorSection(QWidget):
             f" color: {colors.text.name()};"
             " background: transparent; border: none;"
             " padding: 5px 3px; text-align: left;"
-            " font-weight: 600;"
+            f" {type_style(self.title_button, 'section')}"
             "}"
             "QToolButton#InspectorSectionToggle {"
             f" color: {colors.text.name()};"
@@ -930,7 +936,7 @@ class InspectorSection(QWidget):
             "QLabel#InspectorSectionSummary {"
             f" color: {colors.muted_text.name()};"
             " background: transparent; border: none;"
-            " padding: 0; font-size: 10px;"
+            f" padding: 0; {type_style(self.summary_label, 'caption')}"
             "}"
             "QWidget#InspectorSectionContent { border: none; }"
         )
@@ -950,6 +956,8 @@ class InspectorSection(QWidget):
             QEvent.PaletteChange,
             QEvent.ApplicationPaletteChange,
             QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
         }:
             self.refresh_theme()
 

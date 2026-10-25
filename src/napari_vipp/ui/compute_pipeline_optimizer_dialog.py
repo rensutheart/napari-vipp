@@ -37,6 +37,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationSelectionBasis,
     PipelineOptimizationTimeoutReport,
 )
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -281,6 +282,7 @@ class PipelineOptimizerDialog(QDialog):
         node_titles: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self.setWindowTitle("Find fastest pipeline")
         self.setWindowModality(Qt.WindowModal)
         self.setMinimumSize(860, 480)

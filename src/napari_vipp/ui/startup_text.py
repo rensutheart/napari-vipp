@@ -154,9 +154,10 @@ class PreparedText(QWidget):
 class PreparedStatusLabel(QLabel):
     """Keep normal label semantics and phase colours with portable Inter outlines."""
 
-    def __init__(self, face: PreparedTypeface, text: str) -> None:
+    def __init__(self, face: PreparedTypeface, text: str, *, pixels: int = 14) -> None:
         super().__init__(text)
         self._face = face
+        self._pixels = pixels
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -164,7 +165,7 @@ class PreparedStatusLabel(QLabel):
             painter,
             self.rect(),
             self.text(),
-            pixels=14,
+            pixels=self._pixels,
             style="status",
             color=self.palette().color(QPalette.WindowText),
             alignment=self.alignment(),

@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.ui.design import install_window_policy, type_style
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.examples import EXAMPLE_WORKFLOWS, ExampleWorkflowSpec
 from napari_vipp.ui.palette_roles import blend_colors, theme_colors
@@ -64,6 +65,7 @@ class ExampleWorkflowDialog(QDialog):
 
     def __init__(self, parent=None, examples=EXAMPLE_WORKFLOWS):
         super().__init__(parent)
+        install_window_policy(self, profile="chooser")
         self._examples: tuple[ExampleWorkflowSpec, ...] = tuple(examples)
         self._selected_example_id = ""
         self.setWindowTitle("Open VIPP Example")
@@ -131,11 +133,6 @@ class ExampleWorkflowDialog(QDialog):
         self.category_label = self._label()
         detail.addWidget(self.category_label)
         self.title_label = self._label()
-        title_font = self.font()
-        self._title_size = max(16, title_font.pointSizeF() * 1.6)
-        title_font.setPointSizeF(self._title_size)
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
         detail.addWidget(self.title_label)
         self.details_label = self._label()
         detail.addWidget(self.details_label)
@@ -304,9 +301,7 @@ class ExampleWorkflowDialog(QDialog):
             label.setStyleSheet(f"color: {colors.muted_text.name()};")
         self.category_label.setStyleSheet(f"color: {colors.info.foreground.name()};")
         # Napari's inherited QLabel font rule overrides setFont alone.
-        self.title_label.setStyleSheet(
-            f"font-size: {self._title_size}pt; font-weight: bold;"
-        )
+        self.title_label.setStyleSheet(type_style(self.title_label, "title"))
         self.open_button.setStyleSheet(
             f"QPushButton {{ border: 1px solid {colors.info.accent.name()};"
             " padding: 7px 14px; font-weight: bold; }"
@@ -317,10 +312,17 @@ class ExampleWorkflowDialog(QDialog):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
-        if event.type() in (QEvent.PaletteChange, QEvent.StyleChange) and hasattr(
-            self, "open_button"
-        ):
+        if event.type() in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+        ) and hasattr(self, "open_button"):
             self._apply_theme()
+            self.filter_edit.setMinimumHeight(
+                self.filter_edit.fontMetrics().height() + 16
+            )
+            self.tree.doItemsLayout()
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)

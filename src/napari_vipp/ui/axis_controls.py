@@ -28,7 +28,14 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.ui.bulk_selection import BulkSelectionControls
-from napari_vipp.ui.controls import _configure_numeric_spin_box
+from napari_vipp.ui.controls import _configure_numeric_spin_box, _fit_numeric_entry
+from napari_vipp.ui.design import (
+    SPACE_SM,
+    SPACE_XS,
+    content_width,
+    preview_height,
+    type_style,
+)
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.sliders import SliderColors, VippSlider, slider_colors
 
@@ -249,11 +256,10 @@ class AxisSelectionRow(QWidget):
         for widget in (self.start_box, self.end_box, self.index_slider, self.index_box):
             widget.setRange(0, maximum)
         for box in (self.start_box, self.end_box, self.index_box):
-            box.setFixedWidth(58)
-            box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            _fit_numeric_entry(box)
+            box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         self.range_panel = QWidget()
-        self.range_panel.setFixedHeight(58)
         range_layout = QVBoxLayout(self.range_panel)
         range_layout.setContentsMargins(0, 2, 0, 4)
         range_layout.setSpacing(2)
@@ -276,7 +282,6 @@ class AxisSelectionRow(QWidget):
         range_layout.addLayout(range_value_line)
 
         self.remove_panel = QWidget()
-        self.remove_panel.setFixedHeight(58)
         remove_layout = QVBoxLayout(self.remove_panel)
         remove_layout.setContentsMargins(0, 2, 0, 4)
         remove_layout.setSpacing(2)
@@ -305,8 +310,8 @@ class AxisSelectionRow(QWidget):
         header.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, SPACE_XS, 0, SPACE_SM)
+        layout.setSpacing(SPACE_XS)
         layout.addLayout(header)
         layout.addWidget(self.range_panel)
         layout.addWidget(self.remove_panel)
@@ -393,8 +398,8 @@ class AxisSelectionRow(QWidget):
         button.setText(text)
         button.setToolTip(tooltip)
         button.setCheckable(True)
-        button.setMinimumHeight(24)
-        button.setMinimumWidth(58)
+        button.setMinimumHeight(button.sizeHint().height())
+        button.setMinimumWidth(content_width(button, text, padding=24))
         return button
 
     def _refresh_mode_styles(self) -> None:
@@ -421,11 +426,17 @@ class AxisSelectionRow(QWidget):
         try:
             parent = self.parentWidget()
             palette = (
-                QWidget.palette(parent)
-                if parent is not None
-                else QWidget.palette(self)
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
             )
             colors = theme_colors(palette)
+            for box in (self.start_box, self.end_box, self.index_box):
+                _fit_numeric_entry(box)
+            panel_height = max(
+                self.range_panel.layout().totalSizeHint().height(),
+                self.remove_panel.layout().totalSizeHint().height(),
+            )
+            self.range_panel.setMinimumHeight(panel_height)
+            self.remove_panel.setMinimumHeight(panel_height)
             button_style = (
                 "QToolButton {"
                 f" border: 1px solid {colors.border.name()};"
@@ -520,7 +531,7 @@ class AxisSliceControl(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(7)
         title = QLabel("Slice axes")
-        title.setStyleSheet("font-weight: 600;")
+        title.setStyleSheet(type_style(self, "section"))
         layout.addWidget(title)
         self._row_layout = QVBoxLayout()
         self._row_layout.setContentsMargins(0, 0, 0, 0)
@@ -778,7 +789,7 @@ class ReorderAxesControl(QWidget):
         layout.setSpacing(7)
 
         self.title_label = QLabel("Output axis order")
-        self.title_label.setStyleSheet("font-weight: 600;")
+        self.title_label.setStyleSheet(type_style(self, "section"))
         layout.addWidget(self.title_label)
 
         self.hint_label = QLabel("Drag axes up or down. The top item becomes axis 0.")
@@ -888,7 +899,11 @@ class ReorderAxesControl(QWidget):
             if self.list_widget.count():
                 self.list_widget.setCurrentRow(0)
         height = 28 * max(self.list_widget.count(), 1) + 8
-        self.list_widget.setMinimumHeight(min(max(height, 92), 220))
+        maximum = preview_height(self.list_widget)
+        self.list_widget.setMinimumHeight(
+            min(max(height, preview_height(self.list_widget, rows=3)), maximum)
+        )
+        self.list_widget.setMaximumHeight(maximum)
 
     def _ordered_options(self) -> list[AxisSliceOption]:
         by_index = {option.index: option for option in self._options}
@@ -945,21 +960,17 @@ class ReorderAxesControl(QWidget):
         try:
             parent = self.parentWidget()
             palette = (
-                QWidget.palette(parent)
-                if parent is not None
-                else QWidget.palette(self)
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
             )
             colors = theme_colors(palette)
             self.title_label.setStyleSheet(
-                f"font-weight: 600; color: {colors.text.name()};"
+                f"{type_style(self, 'section')} color: {colors.text.name()};"
             )
             self.hint_label.setStyleSheet(f"color: {colors.muted_text.name()};")
             self.warning_label.setStyleSheet(
                 f"color: {colors.warning.foreground.name()};"
             )
-            self.serialized_label.setStyleSheet(
-                f"color: {colors.muted_text.name()};"
-            )
+            self.serialized_label.setStyleSheet(f"color: {colors.muted_text.name()};")
         finally:
             self._applying_theme_style = False
 
@@ -1043,7 +1054,7 @@ class SelectTableColumnsControl(QWidget):
         layout.setSpacing(7)
 
         self.title_label = QLabel("Columns to keep")
-        self.title_label.setStyleSheet("font-weight: 600;")
+        self.title_label.setStyleSheet(type_style(self, "section"))
         layout.addWidget(self.title_label)
 
         self.hint_label = QLabel(
@@ -1072,8 +1083,8 @@ class SelectTableColumnsControl(QWidget):
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.list_widget.setAlternatingRowColors(True)
-        self.list_widget.setMinimumHeight(130)
-        self.list_widget.setMaximumHeight(260)
+        self.list_widget.setMinimumHeight(preview_height(self.list_widget, rows=5))
+        self.list_widget.setMaximumHeight(preview_height(self.list_widget))
         self.list_widget.orderChanged.connect(self._emit_value_changed)
         self.list_widget.gestureStarted.connect(self.gestureStarted.emit)
         self.list_widget.gestureFinished.connect(self.gestureFinished.emit)
@@ -1246,18 +1257,14 @@ class SelectTableColumnsControl(QWidget):
         try:
             parent = self.parentWidget()
             palette = (
-                QWidget.palette(parent)
-                if parent is not None
-                else QWidget.palette(self)
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
             )
             colors = theme_colors(palette)
             self.title_label.setStyleSheet(
-                f"font-weight: 600; color: {colors.text.name()};"
+                f"{type_style(self, 'section')} color: {colors.text.name()};"
             )
             self.hint_label.setStyleSheet(f"color: {colors.muted_text.name()};")
-            self.summary_label.setStyleSheet(
-                f"color: {colors.muted_text.name()};"
-            )
+            self.summary_label.setStyleSheet(f"color: {colors.muted_text.name()};")
             # Napari can style Base/Text without updating AlternateBase. Bind
             # every list surface to the same normalized theme colors so dark
             # themes never inherit white alternating rows from the OS palette.

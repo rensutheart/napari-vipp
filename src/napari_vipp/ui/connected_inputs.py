@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.transforms import TransformState, is_transform_data
+from napari_vipp.ui.design import SPACE_SM, SPACE_XS, type_style
 from napari_vipp.ui.iconography import data_type_icon
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -64,10 +65,7 @@ def _physical_sampling_summary(state) -> str:
         if unit.casefold() in {"", "pixel", "pixels", "px"}:
             continue
         display_unit = _PHYSICAL_UNIT_LABELS.get(unit.casefold(), unit)
-        label = str(
-            getattr(axis, "short_label", "")
-            or getattr(axis, "name", "axis")
-        )
+        label = str(getattr(axis, "short_label", "") or getattr(axis, "name", "axis"))
         try:
             scale = f"{float(getattr(axis, 'scale', 1.0)):.6g}"
         except (TypeError, ValueError):
@@ -94,8 +92,7 @@ def connected_input_scientific_summary(data, state) -> str:
     if row_count is not None and column_count is not None:
         parts = [f"{int(row_count):,} rows", f"{int(column_count):,} fields"]
         table_kind = str(
-            getattr(table_source, "table_kind", "")
-            or getattr(table_source, "kind", "")
+            getattr(table_source, "table_kind", "") or getattr(table_source, "kind", "")
         ).strip()
         if table_kind and table_kind.casefold() != "table":
             parts.append(table_kind)
@@ -126,9 +123,7 @@ def connected_input_scientific_summary(data, state) -> str:
             else f"Shape: {dimensions}"
         )
     if dtype_name:
-        parts.append(
-            f"{dtype_name} ({bit_depth})" if bit_depth else dtype_name
-        )
+        parts.append(f"{dtype_name} ({bit_depth})" if bit_depth else dtype_name)
     sampling = _physical_sampling_summary(state)
     if sampling:
         parts.append(sampling)
@@ -178,8 +173,8 @@ class ConnectedInputRow(QFrame):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(7)
+        layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        layout.setSpacing(SPACE_SM)
 
         self.icon_label = QLabel(self)
         self.icon_label.setObjectName("InspectorConnectedInputIcon")
@@ -188,7 +183,7 @@ class ConnectedInputRow(QFrame):
         layout.addWidget(self.icon_label, 0, Qt.AlignTop)
 
         text_layout = QVBoxLayout()
-        text_layout.setSpacing(1)
+        text_layout.setSpacing(SPACE_XS)
 
         self.role_label = QLabel(binding.port_label, self)
         self.role_label.setObjectName("InspectorConnectedInputRole")
@@ -261,7 +256,7 @@ class ConnectedInputsCard(QFrame):
         self.title_label = QLabel("Connected inputs", self)
         self.title_label.setObjectName("InspectorConnectedInputsTitle")
         self.title_label.setTextFormat(Qt.PlainText)
-        self.title_label.setContentsMargins(8, 5, 8, 3)
+        self.title_label.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_XS)
         card_layout.addWidget(self.title_label)
 
         self.form_layout = QFormLayout()
@@ -312,32 +307,31 @@ class ConnectedInputsCard(QFrame):
             colors = theme_colors(palette)
             self.setStyleSheet(
                 "QFrame#InspectorConnectedInputs {"
-                f" background: {colors.info.surface.name()};"
-                f" border: 1px solid {colors.info.border.name()};"
-                f" border-left: 3px solid {colors.info.accent.name()};"
+                f" background: {colors.alternate_surface.name()};"
+                f" border: 1px solid {colors.border.name()};"
                 " border-radius: 4px;"
                 "}"
                 "QLabel#InspectorConnectedInputsTitle {"
                 f" color: {colors.text.name()};"
-                " font-size: 10px; font-weight: 600;"
+                f" {type_style(self.title_label, 'section')}"
                 "}"
                 "QFrame#InspectorConnectedInputRow {"
                 " background: transparent; border: none;"
                 "}"
-                "QFrame#InspectorConnectedInputRow[hasDivider=\"true\"] {"
+                'QFrame#InspectorConnectedInputRow[hasDivider="true"] {'
                 f" border-top: 1px solid {colors.border.name()};"
                 "}"
                 "QLabel#InspectorConnectedInputRole {"
                 f" color: {colors.text.name()};"
-                " background: transparent;"
+                f" background: transparent; {type_style(self, 'section')}"
                 "}"
                 "QLabel#InspectorConnectedInputSource {"
                 f" color: {colors.text.name()};"
-                " background: transparent; font-size: 11px;"
+                f" background: transparent; {type_style(self, 'body')}"
                 "}"
                 "QLabel#InspectorConnectedInputScientific {"
                 f" color: {colors.text.name()};"
-                " background: transparent; font-size: 11px;"
+                f" background: transparent; {type_style(self, 'body')}"
                 "}"
                 "QLabel#InspectorConnectedInputIcon {"
                 " background: transparent;"
@@ -353,6 +347,9 @@ class ConnectedInputsCard(QFrame):
         if event.type() in {
             QEvent.ApplicationPaletteChange,
             QEvent.PaletteChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
         }:
             self.refresh_theme()
 

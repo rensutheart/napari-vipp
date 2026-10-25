@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from qtpy.QtGui import QColor, QPalette
-from qtpy.QtWidgets import QWidget
+from qtpy.QtGui import QColor, QFont, QPalette
+from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from napari_vipp import _widget
 from napari_vipp.ui.view_dims import (
@@ -90,6 +90,57 @@ def test_view_dimensions_use_menu_before_compact_controls_overlap(qtbot):
     assert all(control.isHidden() for control in bar._controls)
 
 
+def test_large_font_narrow_view_dimensions_keep_all_axes_in_the_full_menu(qtbot):
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    parent.setFont(QFont("Arial", 16))
+    layout = QVBoxLayout(parent)
+    bar = ViewDimsBar()
+    bar.setMaximumWidth(360)
+    layout.addWidget(bar)
+    axes = (
+        ViewDimAxis("time", "T", step_axis=0, size=12, value=3),
+        ViewDimAxis("depth", "Z", step_axis=1, size=1024, value=512),
+        ViewDimAxis("channel", "C", step_axis=2, size=4, value=0),
+    )
+    emitted = []
+    bar.value_changed.connect(lambda *value: emitted.append(value))
+    bar.set_axes(axes)
+    parent.resize(950, 250)
+    parent.show()
+
+    for points in (16, 9, 16):
+        parent.setFont(QFont("Arial", points))
+        # Repeated presentation refreshes must not re-show any inline control
+        # while the complete menu fallback is still the selected mode.
+        bar.set_axes(axes)
+        bar.set_axes(axes)
+        qtbot.waitUntil(lambda: bar._responsive_mode == "menu")
+        assert all(control.isHidden() for control in bar._controls)
+        assert bar.title_label.isHidden()
+        assert not bar.menu_button.isHidden()
+        assert bar.menu_button.width() >= bar.menu_button.minimumSizeHint().width()
+
+    bar._populate_menu()
+    controls = bar.menu.actions()[0].defaultWidget().findChildren(ViewDimAxisControl)
+    assert len(controls) == 3
+    assert [control.spin.value() for control in controls] == [3, 512, 0]
+    assert [control.spin.maximum() for control in controls] == [11, 1023, 3]
+    assert [control.range_label.text() for control in controls] == [
+        "/11",
+        "/1023",
+        "/3",
+    ]
+    assert all(not control.slider.isHidden() for control in controls)
+    assert all(
+        control.spin.minimumWidth()
+        >= control.spin.fontMetrics().horizontalAdvance(str(control.spin.maximum()))
+        + 24
+        for control in controls
+    )
+    assert emitted == []
+
+
 def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
     palette = QPalette()
     palette.setColor(QPalette.Base, QColor(base))
@@ -104,9 +155,7 @@ def test_view_dimension_controls_follow_runtime_palette_changes(qtbot):
     qtbot.addWidget(control)
     qtbot.addWidget(bar)
 
-    light = _theme_palette(
-        base="#ffffff", alternate="#f2f4f7", text="#111827"
-    )
+    light = _theme_palette(base="#ffffff", alternate="#f2f4f7", text="#111827")
     control.setPalette(light)
     bar.setPalette(light)
 
@@ -114,9 +163,7 @@ def test_view_dimension_controls_follow_runtime_palette_changes(qtbot):
     assert "#f2f4f7" in bar.styleSheet()
     assert "#111827" in bar.title_label.styleSheet()
 
-    dark = _theme_palette(
-        base="#111827", alternate="#1f2937", text="#f8fafc"
-    )
+    dark = _theme_palette(base="#111827", alternate="#1f2937", text="#f8fafc")
     control.setPalette(dark)
     bar.setPalette(dark)
 

@@ -166,8 +166,8 @@ def test_value_preserving_nodes_do_not_show_duplicate_before_after_distributions
 @pytest.mark.parametrize(
     ("source_operation", "dtype", "expected_kind", "save_label"),
     (
-        ("binary_threshold", bool, "mask", "Save mask…"),
-        ("label_connected_components", np.int32, "labels", "Save labels…"),
+        ("binary_threshold", bool, "mask", "Export mask…"),
+        ("label_connected_components", np.int32, "labels", "Export labels…"),
     ),
 )
 def test_select_axis_slice_honors_effective_mask_or_label_type_end_to_end(

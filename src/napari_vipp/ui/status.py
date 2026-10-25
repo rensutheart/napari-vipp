@@ -16,6 +16,13 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp.ui.design import (
+    SPACE_SM,
+    SPACE_XS,
+    apply_text_role,
+    install_window_policy,
+    type_style,
+)
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import SemanticToneColors, theme_colors
 
@@ -116,6 +123,8 @@ class StatusMessageStrip(QLabel):
         if not self._applying_theme_style and event.type() in (
             QEvent.PaletteChange,
             QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
         ):
             self._apply_theme_style()
 
@@ -145,13 +154,15 @@ class StatusMessageStrip(QLabel):
                     f" border: 1px solid {tone.border.name()};"
                     f" border-left: 4px solid {tone.accent.name()};"
                     " border-radius: 4px;"
-                    " padding: 6px 8px;"
-                    " font-weight: 600;"
+                    f" padding: {SPACE_XS}px {SPACE_SM}px;"
+                    f" {type_style(self, 'body')} font-weight: 600;"
                 )
             elif self._severity is MessageSeverity.NEUTRAL:
                 style = (
                     f"color: {colors.muted_text.name()};"
-                    " background: transparent; border: none; padding: 3px 7px;"
+                    " background: transparent; border: none;"
+                    f" padding: {SPACE_XS}px {SPACE_SM}px;"
+                    f" {type_style(self, 'body')}"
                 )
             else:
                 tone = self._semantic_tone(colors)
@@ -160,7 +171,7 @@ class StatusMessageStrip(QLabel):
                     " background: transparent;"
                     " border: none;"
                     f" border-left: 3px solid {tone.accent.name()};"
-                    " padding: 3px 7px;"
+                    f" padding: {SPACE_XS}px {SPACE_SM}px; {type_style(self, 'body')}"
                 )
             self.setStyleSheet(style)
         finally:
@@ -228,9 +239,13 @@ class StatusMessageActions(QWidget):
             dialog = QDialog(self)
             dialog.setWindowTitle("VIPP message details")
             dialog.resize(680, 400)
+            install_window_policy(dialog, "chooser")
             layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+            layout.setSpacing(SPACE_SM)
             details = QPlainTextEdit(dialog)
             details.setReadOnly(True)
+            apply_text_role(details, "code")
             details.setAccessibleName("Technical message; select text to copy")
             layout.addWidget(details, 1)
             buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)

@@ -38,6 +38,8 @@ from qtpy.QtWidgets import (
 
 from napari_vipp.core.compute import canonical_digest
 from napari_vipp.core.workflow_recovery import RecoveryStore
+from napari_vipp.ui.design import apply_text_role, install_window_policy
+from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 
 RECOVERY_ROOT_ENV = "VIPP_WORKFLOW_RECOVERY_ROOT"
 _SESSION_TITLE = Qt.UserRole + 1
@@ -227,9 +229,10 @@ class _Save(QRunnable):
 class WorkflowRecoveryController(QObject):
     """Capture on Qt's thread; write stable detached documents on one worker."""
 
-    def __init__(self, parent, *, capture, restore, announce):
+    def __init__(self, parent, *, capture, restore, announce, announce_warning=None):
         super().__init__(parent)
         self.capture, self.restore, self.announce = capture, restore, announce
+        self.announce_warning = announce_warning or announce
         self.store = None
         self.pending_recovery = False
         self.summary = "Recovery is starting…"
@@ -311,7 +314,7 @@ class WorkflowRecoveryController(QObject):
         if error:
             self.summary = error
             self._pending = True
-            self.announce(error)
+            self.announce_warning(error)
         else:
             self.last_checkpoint = result
             self._digest = self._submitted_digest
@@ -355,7 +358,7 @@ class WorkflowRecoveryController(QObject):
 
     def show_recovery(self, *, quiet=False):
         if self.store is None:
-            self.announce(self.summary)
+            self.announce_warning(self.summary)
             return
         try:
             checkpoints = [
@@ -364,12 +367,12 @@ class WorkflowRecoveryController(QObject):
                 if checkpoint.checkpoint_id not in self._restored
             ]
         except Exception:
-            self.announce(
+            self.announce_warning(
                 "Recovery copies could not be checked. Check the recovery folder."
             )
             return
         if self.store.issues:
-            self.announce(
+            self.announce_warning(
                 "Some recovery copies could not be verified. "
                 "They were kept unchanged in the recovery folder."
             )
@@ -381,19 +384,14 @@ class WorkflowRecoveryController(QObject):
             self._dialog.raise_()
             return
         dialog = QDialog(self.parent())
+        install_window_policy(dialog, profile="chooser")
         dialog.setWindowTitle("Recover interrupted workflows")
         dialog.resize(740, 540)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(24, 24, 24, 20)
         layout.setSpacing(12)
         heading = QLabel("Pick up where you left off")
-        heading_font = heading.font()
-        heading_font.setBold(True)
-        heading_font.setPointSizeF(heading_font.pointSizeF() * 1.3)
-        heading.setFont(heading_font)
-        heading.setStyleSheet(
-            f"font-size: {heading_font.pointSizeF():g}pt; font-weight: 600;"
-        )
+        apply_text_role(heading, "title")
         heading.setWordWrap(True)
         layout.addWidget(heading)
         description = QLabel(
@@ -477,8 +475,8 @@ class WorkflowRecoveryController(QObject):
         recover.setStyleSheet("font-weight: 600; padding: 6px 12px;")
         actions.addWidget(discard)
         actions.addStretch()
-        actions.addWidget(later)
-        actions.addWidget(recover)
+        discard.setProperty("vippActionRole", "destructive")
+        add_dialog_buttons(actions, actions=(recover,), dismiss=later)
         layout.addLayout(actions)
         processing = False
 
@@ -544,7 +542,7 @@ class WorkflowRecoveryController(QObject):
             if opened:
                 self.changed()
             if retained:
-                self.announce(
+                self.announce_warning(
                     f"Recovered tabs are open from {counted(opened, 'session')}. "
                     "Recovery bookkeeping could not be confirmed for "
                     f"{counted(retained, 'session')}. "
@@ -558,7 +556,7 @@ class WorkflowRecoveryController(QObject):
                     )
                 )
             elif failed:
-                self.announce(
+                self.announce_warning(
                     f"Recovered {counted(opened, 'session')}. "
                     f"{counted(len(failed), 'selected session')} could not be "
                     "recovered and remain available; "
@@ -608,7 +606,7 @@ class WorkflowRecoveryController(QObject):
                 choices.takeItem(choices.row(item))
             dismissed = counted(count - len(failed), "recovery copy", "recovery copies")
             unconfirmed = counted(len(failed), "selected copy", "selected copies")
-            self.announce(
+            (self.announce_warning if failed else self.announce)(
                 f"Discarded {dismissed}. "
                 "Ordinary saved workflow files are unchanged."
                 + (
@@ -639,7 +637,7 @@ class WorkflowRecoveryController(QObject):
             return
         self.checkpoint_now("recovery folder changed")
         if not self._pool.waitForDone(5000):
-            self.announce(
+            self.announce_warning(
                 "Wait for the recovery write to finish before changing folders."
             )
             return
@@ -652,7 +650,7 @@ class WorkflowRecoveryController(QObject):
         except Exception:
             if "replacement" in locals():
                 replacement.close(clean=False)
-            self.announce(
+            self.announce_warning(
                 "That recovery folder is unavailable. The current folder is kept."
             )
             return
@@ -668,7 +666,9 @@ class WorkflowRecoveryController(QObject):
             except Exception:
                 # New protection is already durable. A stale old copy is safer
                 # than losing either copy because cleanup failed.
-                self.announce("Recovery folder changed; an older copy was retained.")
+                self.announce_warning(
+                    "Recovery folder changed; an older copy was retained."
+                )
         settings = QSettings("napari-vipp", "napari-vipp")
         settings.setValue("workflow/recovery-root-v1", str(Path(selected).absolute()))
         settings.sync()

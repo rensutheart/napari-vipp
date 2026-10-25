@@ -45,7 +45,7 @@ from napari_vipp.ui.batch_override_widgets import (
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
 from napari_vipp.ui.bulk_selection import BulkSelectionControls
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
-from napari_vipp.ui.palette_roles import custom_paint_colors, palette_is_dark
+from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
 
@@ -260,12 +260,8 @@ class BatchParameterOverrideEditor(QWidget):
                 "Parameter overrides stay unchanged."
             ),
         )
-        self.select_matching_button = (
-            self.sample_selection_controls.select_all_button
-        )
-        self.clear_selection_button = (
-            self.sample_selection_controls.deselect_all_button
-        )
+        self.select_matching_button = self.sample_selection_controls.select_all_button
+        self.clear_selection_button = self.sample_selection_controls.deselect_all_button
         self.reset_selected_button = ToolbarCommandButton("Reset selected…")
         self.reset_selected_button.setToolTip(
             "Restore every parameter override for the checked samples to its "
@@ -366,8 +362,10 @@ class BatchParameterOverrideEditor(QWidget):
         """Keep complete command labels usable when the editor becomes narrow."""
         if not hasattr(self, "selection_layout"):
             return
-        mode = "wide" if self.width() >= 1000 else (
-            "medium" if self.width() >= 680 else "narrow"
+        mode = (
+            "wide"
+            if self.width() >= 1000
+            else ("medium" if self.width() >= 680 else "narrow")
         )
         if mode == self._selection_layout_mode:
             return
@@ -408,10 +406,25 @@ class BatchParameterOverrideEditor(QWidget):
             )
         self.help_label.setStyleSheet(f"color: {colors.muted_text.name()};")
         if self._status_tone == "error":
-            color = "#fca5a5" if palette_is_dark(self.palette()) else "#b91c1c"
+            color = theme_colors(self.palette()).error.foreground.name()
         else:
             color = colors.muted_text.name()
         self.status_label.setStyleSheet(f"color: {color};")
+        for editor in self._editors.values():
+            self._style_editor(editor)
+
+    @staticmethod
+    def _style_editor(editor):
+        colors = theme_colors(editor.palette())
+        editor.setStyleSheet(
+            "QLineEdit {"
+            f"border: 1px solid {colors.error.foreground.name()};"
+            "border-radius: 3px; padding: 2px; }"
+            "QLineEdit:focus {"
+            f"border: 2px solid {colors.error.accent.name()}; }}"
+            if editor.property("vippInvalid")
+            else ""
+        )
 
     @property
     def configured(self) -> bool:
@@ -742,9 +755,7 @@ class BatchParameterOverrideEditor(QWidget):
             self.table.horizontalHeader().setMinimumSectionSize(120)
             self.table.horizontalHeader().setStretchLastSection(False)
             self.table.setColumnWidth(0, 220)
-            header_metrics = QFontMetrics(
-                self.table.horizontalHeader().line_fonts()[1]
-            )
+            header_metrics = QFontMetrics(self.table.horizontalHeader().line_fonts()[1])
             for column, binding in enumerate(self._visible_parameters, 1):
                 header_item = self.table.horizontalHeaderItem(column)
                 header_item.setToolTip(header_item.text())
@@ -1418,7 +1429,8 @@ class BatchParameterOverrideEditor(QWidget):
         parameters = {binding.key: binding for binding in self._parameters}
         first_error = ""
         for editor in self._editors.values():
-            editor.setStyleSheet("")
+            editor.setProperty("vippInvalid", False)
+            self._style_editor(editor)
         for key, text in self._values.items():
             error = ""
             try:
@@ -1428,7 +1440,8 @@ class BatchParameterOverrideEditor(QWidget):
             if error:
                 editor = self._editors.get(key)
                 if editor is not None:
-                    editor.setStyleSheet("QLineEdit { border: 1px solid #ef4444; }")
+                    editor.setProperty("vippInvalid", True)
+                    self._style_editor(editor)
                 if not first_error:
                     source = self._sources[self._source_positions[key[0]]]
                     first_error = f"{source.label}: {error}"

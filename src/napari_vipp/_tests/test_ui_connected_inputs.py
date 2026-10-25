@@ -100,7 +100,8 @@ def test_connected_inputs_card_is_theme_safe_and_describes_empty_ports(qtbot):
         card.refresh_theme(palette)
         colors = theme_colors(palette)
         style = card.styleSheet()
-        assert colors.info.surface.name() in style
+        assert colors.alternate_surface.name() in style
+        assert colors.border.name() in style
         assert colors.text.name() in style
         assert not row.icon_label.pixmap().isNull()
         card.set_bindings([replace(row.binding)])
@@ -134,13 +135,16 @@ def test_unchanged_bindings_retain_rows_without_relayout_or_retheme(qtbot, monke
     assert card.rows == [row]
 
 
-@pytest.mark.parametrize("change", [
-    {"source_title": "Renamed source"},
-    {"source_port_label": "Ch 2"},
-    {"scientific_summary": "TYX: 8 × 72 × 96"},
-    {"port_label": "Reference series"},
-    {"input_type": "mask_or_labels"},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"source_title": "Renamed source"},
+        {"source_port_label": "Ch 2"},
+        {"scientific_summary": "TYX: 8 × 72 × 96"},
+        {"port_label": "Reference series"},
+        {"input_type": "mask_or_labels"},
+    ],
+)
 def test_changed_binding_context_is_not_suppressed(qtbot, change):
     card = ConnectedInputsCard()
     qtbot.addWidget(card)

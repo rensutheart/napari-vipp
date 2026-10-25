@@ -37,6 +37,7 @@ from qtpy.QtWidgets import (
 from napari_vipp._graph import OPERATION_MIME
 from napari_vipp.core.operation_search import operation_search_aliases
 from napari_vipp.core.pipeline import OperationSpec
+from napari_vipp.ui.design import SPACE_SM, apply_text_role
 from napari_vipp.ui.iconography import (
     category_icon,
     interface_icon,
@@ -410,13 +411,14 @@ class _NodePalettePopup(QFrame):
         self._search_edit: QLineEdit | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        layout.setSpacing(SPACE_SM)
         header = QHBoxLayout()
         self.title_label = QLabel("Nodes")
         title_font = self.title_label.font()
         title_font.setBold(True)
         self.title_label.setFont(title_font)
+        apply_text_role(self.title_label, "section")
         header.addWidget(self.title_label, 1)
         self.close_button = QToolButton()
         self.close_button.setAutoRaise(True)
@@ -588,7 +590,7 @@ class _NodeCategoryRail(QWidget):
         button.setAutoRaise(True)
         button.setToolButtonStyle(Qt.ToolButtonIconOnly)
         button.setIconSize(QSize(20, 20))
-        button.setFixedHeight(36)
+        button.setMinimumHeight(max(36, button.fontMetrics().height() + SPACE_SM * 2))
         button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         button.setAccessibleName(accessible_name)
         button.setToolTip(tooltip)
@@ -641,13 +643,14 @@ class NodeLibraryPanel(QWidget):
 
         self.expanded_page = QWidget()
         expanded_layout = QVBoxLayout(self.expanded_page)
-        expanded_layout.setContentsMargins(4, 4, 4, 4)
-        expanded_layout.setSpacing(4)
+        expanded_layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        expanded_layout.setSpacing(SPACE_SM)
         header = QHBoxLayout()
         self.title_label = QLabel("Nodes")
         title_font = self.title_label.font()
         title_font.setBold(True)
         self.title_label.setFont(title_font)
+        apply_text_role(self.title_label, "section")
         header.addWidget(self.title_label, 1)
         self.collapse_button = SidePanelToggleButton("left")
         self.collapse_button.set_expanded(True)

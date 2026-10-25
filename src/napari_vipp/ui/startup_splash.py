@@ -24,6 +24,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -36,6 +37,7 @@ from napari_vipp.startup import (
     StartupPhase,
     StartupSnapshot,
 )
+from napari_vipp.ui.design import body_point_size, type_style
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.startup_text import (
     PreparedStatusLabel,
@@ -243,13 +245,24 @@ class StartupSplash(QWidget):
 
     def _build_ui(self, version: str) -> None:
         accent = self.profile_spec.accent
+        secondary_type = type_style(self, "secondary")
+        body_type = type_style(self, "body")
+        self._status_pixels = max(
+            14, round(body_point_size(self) * self.logicalDpiY() / 72)
+        )
+        # The immutable first frame remains 640x390. Once ordinary controls are
+        # ready, allow a readable error state instead of clipping inside it.
+        self.setMaximumSize(16777215, 16777215)
+        self.setMinimumSize(0, 0)
         self.setStyleSheet(
             "QWidget#VippStandaloneSplash { background: #08151F; "
             "border: 1px solid #334155; }"
+            "QWidget#VippSplashContent, QWidget#VippSplashViewport, "
+            "QScrollArea#VippSplashScroll { background: #08151F; border: none; }"
             "QLabel { color: #F8FAFC; background: transparent; }"
             "QFrame#VippProfileBadge { background: #111E2A; "
             f"border: 1px solid {accent}; border-radius: 11px; }}"
-            f"QLabel#VippProfileText {{ color: {accent}; font-size: 10px; "
+            f"QLabel#VippProfileText {{ color: {accent}; {secondary_type} "
             "font-weight: 700; }"
             "QProgressBar { background: #172432; border: 1px solid #334155; "
             "border-radius: 6px; min-height: 12px; max-height: 12px; }"
@@ -265,9 +278,22 @@ class StartupSplash(QWidget):
             f"QToolButton#VippSplashMinimize:focus {{ border-color: {accent}; }}"
         )
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(42, 22, 42, 24)
-        root.setSpacing(10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 16)
+        outer.setSpacing(12)
+        content = QWidget()
+        content.setObjectName("VippSplashContent")
+        root = QVBoxLayout(content)
+        root.setContentsMargins(42, 22, 42, 8)
+        root.setSpacing(12)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setObjectName("VippSplashScroll")
+        self.content_scroll.viewport().setObjectName("VippSplashViewport")
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_scroll.setWidget(content)
+        outer.addWidget(self.content_scroll, 1)
 
         self.logo_label = QLabel()
         self.logo_label.setAlignment(Qt.AlignCenter)
@@ -290,7 +316,7 @@ class StartupSplash(QWidget):
         identity = QHBoxLayout()
         identity.addStretch(1)
         self.version_label = QLabel(f"VIPP {version}")
-        self.version_label.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        self.version_label.setStyleSheet(f"color: #B2BECE; {secondary_type}")
         identity.addWidget(self.version_label)
         # The installed application has one identity: VIPP. Only an explicit
         # diagnostic CLI override needs a mode badge; Auto is the normal path.
@@ -310,14 +336,18 @@ class StartupSplash(QWidget):
         root.addLayout(identity)
 
         self.status_label = (
-            PreparedStatusLabel(self._prepared_typeface, STARTUP_STAGES[0].message)
+            PreparedStatusLabel(
+                self._prepared_typeface,
+                STARTUP_STAGES[0].message,
+                pixels=self._status_pixels,
+            )
             if self._prepared_typeface is not None
             else QLabel(STARTUP_STAGES[0].message)
         )
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(
-            "font-size: 14px; font-weight: 500; color: #F8FAFC;"
+            f"font-size: {self._status_pixels}px; font-weight: 500; color: #F8FAFC;"
         )
         root.addWidget(self.status_label)
 
@@ -329,11 +359,11 @@ class StartupSplash(QWidget):
 
         stats = QHBoxLayout()
         self.stage_label = QLabel("Step 0 of 6")
-        self.stage_label.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.stage_label.setStyleSheet(f"color: #B2BECE; {secondary_type}")
         stats.addWidget(self.stage_label)
         stats.addStretch(1)
         self.elapsed_label = QLabel("Elapsed 0:00")
-        self.elapsed_label.setStyleSheet("color: #94A3B8; font-size: 11px;")
+        self.elapsed_label.setStyleSheet(f"color: #B2BECE; {secondary_type}")
         stats.addWidget(self.elapsed_label)
         root.addLayout(stats)
 
@@ -342,7 +372,7 @@ class StartupSplash(QWidget):
         )
         self.profile_description.setAlignment(Qt.AlignCenter)
         self.profile_description.setWordWrap(True)
-        self.profile_description.setStyleSheet("color: #A8B7C8; font-size: 10px;")
+        self.profile_description.setStyleSheet(f"color: #B2BECE; {secondary_type}")
         root.addWidget(self.profile_description)
         self.profile_description.setVisible(explicit_profile)
 
@@ -350,11 +380,12 @@ class StartupSplash(QWidget):
         self.detail_label.setAlignment(Qt.AlignCenter)
         self.detail_label.setWordWrap(True)
         self.detail_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.detail_label.setStyleSheet("color: #FCA5A5; font-size: 10px;")
+        self.detail_label.setStyleSheet(f"color: #FCA5A5; {body_type}")
         self.detail_label.hide()
         root.addWidget(self.detail_label)
 
         actions = QHBoxLayout()
+        actions.setContentsMargins(24, 0, 24, 0)
         actions.addStretch(1)
         self.keep_waiting_button = QPushButton("Keep waiting")
         self.keep_waiting_button.clicked.connect(self.keep_waiting_requested)
@@ -371,7 +402,7 @@ class StartupSplash(QWidget):
             actions, actions=(self.open_log_button,), dismiss=self.close_button
         )
         actions.addStretch(1)
-        root.addLayout(actions)
+        outer.addLayout(actions)
 
         self.keep_waiting_button.hide()
         self.hide_button.hide()
@@ -381,8 +412,9 @@ class StartupSplash(QWidget):
         self.note_label = QLabel(self._startup_note())
         self.note_label.setAlignment(Qt.AlignCenter)
         self.note_label.setWordWrap(True)
-        self.note_label.setStyleSheet("color: #64748B; font-size: 10px;")
-        root.addWidget(self.note_label)
+        self.note_label.setStyleSheet(f"color: #B2BECE; {secondary_type}")
+        self.note_label.setContentsMargins(24, 0, 24, 0)
+        outer.addWidget(self.note_label)
 
         # Decorative content is part of the drag surface; diagnostic text stays
         # selectable and action buttons keep their ordinary mouse handling.
@@ -403,6 +435,19 @@ class StartupSplash(QWidget):
         self.minimize_button.setFixedSize(28, 28)
         self.minimize_button.move(self.width() - 38, 10)
         self.minimize_button.clicked.connect(self.showMinimized)
+        self._fit_full_ui()
+
+    def _fit_full_ui(self):
+        """Keep actions reachable; only the descriptive body may scroll."""
+        screen = self.screen() or QApplication.primaryScreen()
+        available = (
+            screen.availableGeometry() if screen is not None else QRect(0, 0, 800, 600)
+        )
+        width = min(max(640, self.width()), max(1, available.width() - 32))
+        height = min(max(430, self.height()), max(1, available.height() - 32))
+        self.resize(width, height)
+        if hasattr(self, "minimize_button"):
+            self.minimize_button.move(self.width() - 38, 10)
 
     def _startup_note(self) -> str:
         return {
@@ -479,8 +524,10 @@ class StartupSplash(QWidget):
         self.detail_label.setVisible(failed and bool(snapshot.error))
         self.detail_label.setText(snapshot.error)
         self.status_label.setStyleSheet(
-            f"font-size: 14px; font-weight: 500; color: {status_color};"
+            f"font-size: {self._status_pixels}px; font-weight: 500;"
+            f" color: {status_color};"
         )
+        self._fit_full_ui()
 
     def update_elapsed(self, seconds: float) -> None:
         """Display stable elapsed time without implying synthetic progress."""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from qtpy.QtGui import QPalette
 
+from napari_vipp.ui.design import type_style
 from napari_vipp.ui.iconography import interface_icon
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton
@@ -35,7 +36,9 @@ class SetupDisclosureButton(ToolbarCommandButton):
         self.setAccessibleName(f"{action} {self.text().lower()}")
 
 
-def setup_stylesheet(palette: QPalette, *, dialog_name: str, tone: str) -> str:
+def setup_stylesheet(
+    palette: QPalette, *, dialog_name: str, tone: str, font_widget
+) -> str:
     """Build matching setup chrome without owning a dialog or its state.
 
     Apply this to the content scroll area and footer, not the root dialog: a
@@ -65,9 +68,9 @@ def setup_stylesheet(palette: QPalette, *, dialog_name: str, tone: str) -> str:
             border: 1px solid {colors.border.name()}; border-radius: 9px;
         }}
         QFrame#ComputeStatusCard {{ border-left: 3px solid {border}; }}
-        QLabel#ComputeWindowHeading {{ font-size: 21px; font-weight: 650; }}
-        QLabel#ComputeStatusHeading {{ font-size: 17px; font-weight: 650; }}
-        QLabel#ComputeSectionTitle {{ font-weight: 600; }}
+        QLabel#ComputeWindowHeading {{ {type_style(font_widget, "title")} }}
+        QLabel#ComputeStatusHeading {{ {type_style(font_widget, "section")} }}
+        QLabel#ComputeSectionTitle {{ {type_style(font_widget, "section")} }}
         {root} QLabel#ComputeMuted,
         {root} QLabel#ComputePlatform {{
             color: {colors.muted_text.name()};
@@ -109,11 +112,11 @@ def setup_stylesheet(palette: QPalette, *, dialog_name: str, tone: str) -> str:
         }}
         {root} QProgressBar {{
             background: {colors.alternate_surface.name()};
-            border: none; border-radius: 2px;
+            border: 1px solid {colors.border.name()}; border-radius: 4px;
             color: {colors.text.name()}; text-align: center;
         }}
         {root} QProgressBar::chunk {{
-            background: {colors.info.accent.name()}; border-radius: 2px;
+            background: {colors.info.accent.name()}; border-radius: 3px;
         }}
         QFrame#ComputeFooter {{
             background: {colors.raised_surface.name()};

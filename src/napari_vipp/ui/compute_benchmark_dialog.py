@@ -39,6 +39,7 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     NodeBenchmarkUnavailable,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -115,9 +116,7 @@ class NodeBenchmarkWorker(QRunnable):
                 def track_benchmark_record(record) -> None:
                     digest = str(getattr(record.key, "digest", record.key))
                     first_write = digest not in measured_record_rollbacks
-                    previous = (
-                        original_store_get(record.key) if first_write else None
-                    )
+                    previous = original_store_get(record.key) if first_write else None
                     original_store_put(record)
                     if first_write:
                         measured_record_rollbacks[digest] = (
@@ -325,6 +324,7 @@ class NodeBenchmarkDialog(QDialog):
 
     def __init__(self, node_title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self.setWindowTitle(f"Benchmark node · {node_title}")
         self.setWindowModality(Qt.WindowModal)
         self.setMinimumSize(700, 380)
@@ -350,6 +350,7 @@ class NodeBenchmarkDialog(QDialog):
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_table = QTableWidget(0, 5)
+        self.result_table.setAccessibleName("Benchmark timings and parity evidence")
         self.result_table.setHorizontalHeaderLabels(
             ("Implementation", "Warm median", "CPU speedup", "Parity", "Peak memory")
         )
@@ -579,11 +580,7 @@ class NodeBenchmarkDialog(QDialog):
             self._applying_result_style = False
 
     def _apply_result(self) -> None:
-        if (
-            self._shutdown
-            or self._outcome is None
-            or self._outcome.result is None
-        ):
+        if self._shutdown or self._outcome is None or self._outcome.result is None:
             return
         self.apply_requested.emit(self._outcome.result)
 

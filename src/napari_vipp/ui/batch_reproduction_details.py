@@ -16,11 +16,14 @@ from qtpy.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 from napari_vipp.core.reproduction import ReproductionCheck, versions_match
+from napari_vipp.ui.design import install_window_policy, type_style
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import theme_colors
 
@@ -88,7 +91,11 @@ class ReproductionCheckDetailsDialog(QDialog):
             action = "Review batch setup"
             self.review_target = "setup"
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.body = QWidget()
+        layout = QVBoxLayout(self.body)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
         self.status_panel = QFrame()
@@ -183,9 +190,18 @@ class ReproductionCheckDetailsDialog(QDialog):
             "InputCheckQuiet",
         )
         layout.addWidget(self.disclaimer)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setWidget(self.body)
+        outer.addWidget(self.scroll_area, 1)
         self.footer_rule = QFrame()
         self.footer_rule.setFixedHeight(1)
-        layout.addWidget(self.footer_rule)
+        outer.addWidget(self.footer_rule)
+        self.footer = QWidget()
+        footer_layout = QVBoxLayout(self.footer)
+        footer_layout.setContentsMargins(20, 12, 20, 12)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         self.close_button = buttons.button(QDialogButtonBox.Close)
         self.close_button.setAutoDefault(False)
@@ -197,10 +213,15 @@ class ReproductionCheckDetailsDialog(QDialog):
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        footer_layout.addWidget(buttons)
+        outer.addWidget(self.footer)
         self.ensurePolished()
         self.refresh_theme()
-        self.resize(620, self.sizeHint().height())
+        content_height = layout.totalHeightForWidth(620)
+        self.resize(
+            620, min(680, max(300, content_height + self.footer.sizeHint().height()))
+        )
+        install_window_policy(self, profile="chooser")
 
     @staticmethod
     def _add_metric(layout: QHBoxLayout, count: int, caption: str) -> QLabel:
@@ -241,15 +262,15 @@ class ReproductionCheckDetailsDialog(QDialog):
                 f"border-left: 3px solid {tone.accent.name()}; }}"
                 "QLabel#InputCheckHeading {"
                 f"color: {tone.foreground.name()}; background: transparent;"
-                "font-size: 14pt; font-weight: 600; }"
+                f"{type_style(self, 'section')} }}"
                 "QLabel#InputCheckSummary {"
                 f"color: {colors.text.name()}; background: transparent; }}"
                 "QFrame#InputCheckMetric {"
                 f"background: {colors.alternate_surface.name()}; border-radius: 6px; }}"
                 "QFrame#InputCheckMetric QLabel {"
                 f"color: {colors.text.name()}; background: transparent; }}"
-                "QLabel#InputCheckCount {font-size: 16pt; font-weight: 600;}"
-                "QLabel#InputCheckSubheading {font-weight: 600;}"
+                f"QLabel#InputCheckCount {{{type_style(self, 'title')}}}"
+                f"QLabel#InputCheckSubheading {{{type_style(self, 'section')}}}"
                 "QLabel#InputCheckVersion {"
                 f"color: {version_tone.foreground.name()}; }}"
                 "QLabel#InputCheckQuiet {"
@@ -258,7 +279,7 @@ class ReproductionCheckDetailsDialog(QDialog):
                 f"background: {colors.alternate_surface.name()};"
                 f"color: {colors.text.name()};"
                 f"border: 1px solid {colors.border.name()};"
-                "border-radius: 4px; padding: 3px; font-size: 9pt; }"
+                f"border-radius: 4px; padding: 4px; {type_style(self, 'body')} }}"
                 "QPushButton#InputCheckReview {"
                 f"background: {colors.info.surface.name()};"
                 f"color: {colors.info.foreground.name()};"
@@ -282,13 +303,15 @@ class ReproductionCheckDetailsDialog(QDialog):
                 max(24, self.problem_list.sizeHintForRow(index)) + 8
                 for index in range(self.problem_list.count())
             )
-            self.problem_list.setFixedHeight(min(150, max(48, height + 10)))
+            row_height = self.problem_list.fontMetrics().lineSpacing() + 12
+            self.problem_list.setFixedHeight(
+                min(6 * row_height, max(2 * row_height, height + 12))
+            )
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self.refresh_theme()
         self._fit_problems()
-        self.resize(self.width(), self.layout().totalHeightForWidth(self.width()))
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -299,7 +322,13 @@ class ReproductionCheckDetailsDialog(QDialog):
         if (
             hasattr(self, "footer_rule")
             and not getattr(self, "_applying_theme", False)
-            and event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange)
+            and event.type()
+            in (
+                QEvent.PaletteChange,
+                QEvent.ApplicationPaletteChange,
+                QEvent.FontChange,
+                QEvent.ApplicationFontChange,
+            )
         ):
             # Let Qt finish applying the new palette before styling its children.
             QTimer.singleShot(0, self.refresh_theme)

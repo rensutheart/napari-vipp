@@ -148,10 +148,7 @@ def test_representative_nodes_render_semantic_sections_in_order(qtbot):
         widget.mask_summary_section,
     )
     assert widget.histograms_section.title() == "Histograms"
-    assert (
-        widget.histograms_section.summary_label.text()
-        == "Intensity → binary mask"
-    )
+    assert widget.histograms_section.summary_label.text() == "Intensity → binary mask"
     assert widget.parameter_group.summary_label.text() == "3 values"
     assert widget.mask_summary_section.title() == "Mask summary"
     assert not widget.rescale_input_histogram_group.isHidden()
@@ -186,9 +183,7 @@ def test_representative_nodes_render_semantic_sections_in_order(qtbot):
         widget.histograms_section,
     )
     assert widget.parameter_group.title() == "Colocalization"
-    assert widget.histograms_section.summary_label.text() == (
-        "Channel 1 + channel 2"
-    )
+    assert widget.histograms_section.summary_label.text() == ("Channel 1 + channel 2")
 
     _select(widget, "input")
     _assert_visible_order(
@@ -198,9 +193,7 @@ def test_representative_nodes_render_semantic_sections_in_order(qtbot):
     )
     assert widget.source_representation_section.isHidden()
     assert widget.parameter_group.title() == "Source & data representations"
-    assert widget.histograms_section.summary_label.text() == (
-        "Source data · Level 0"
-    )
+    assert widget.histograms_section.summary_label.text() == ("Source data · Level 0")
     assert widget.histogram_plot._title == "Source data"
 
     _select(widget, writer.id)
@@ -266,12 +259,8 @@ def test_connected_inputs_are_read_only_and_threshold_guidance_is_visible(qtbot)
     assert any("Image Source" in row.source_label.text() for row in rows)
     assert any("out" in row.source_label.text() for row in rows)
     rows_by_role = {row.role_label.text(): row for row in rows}
-    assert "ZYX: 2 × 8 × 10" in (
-        rows_by_role["Labels"].scientific_label.text()
-    )
-    assert "uint32 (32-bit integer)" in (
-        rows_by_role["Labels"].scientific_label.text()
-    )
+    assert "ZYX: 2 × 8 × 10" in (rows_by_role["Labels"].scientific_label.text())
+    assert "uint32 (32-bit integer)" in (rows_by_role["Labels"].scientific_label.text())
     assert "uint16 (16-bit integer)" in (
         rows_by_role["Intensity image"].scientific_label.text()
     )
@@ -355,8 +344,8 @@ def test_stale_measurement_keeps_rows_and_offers_local_recalculation(qtbot):
     calls = []
     crop_draft_commits = []
     widget.run_pipeline = lambda *args, **kwargs: calls.append((args, kwargs))
-    widget._commit_crop_draft = lambda *, schedule_run: (
-        crop_draft_commits.append(schedule_run)
+    widget._commit_crop_draft = lambda *, schedule_run: crop_draft_commits.append(
+        schedule_run
     )
     widget.pipeline.node_execution_states[measurements.id] = EXECUTION_STALE
     widget._sync_execution_ui()
@@ -384,16 +373,11 @@ def test_stale_measurement_keeps_rows_and_offers_local_recalculation(qtbot):
 
     assert crop_draft_commits == [False]
     assert calls == [((), {"manual_node_ids": {measurements.id}})]
-    assert (
-        widget.pipeline.node_execution_states[measurements.id]
-        == EXECUTION_RUNNING
-    )
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_RUNNING
     assert widget.table_preview.rowCount() == 2
     assert widget.table_calculate_button.text() == "Calculating…"
     assert not widget.table_calculate_button.isEnabled()
-    assert (
-        widget.table_calculate_button.property("attentionRequired") is False
-    )
+    assert widget.table_calculate_button.property("attentionRequired") is False
     assert widget.table_calculate_button.styleSheet() == ""
     assert "previous cached result" in dialog.result_status_label.text().lower()
     assert dialog.result_action_button.text() == "Calculating…"
@@ -414,10 +398,7 @@ def test_uncalculated_table_result_action_uses_selected_node_calculation(qtbot):
     widget.table_calculate_button.click()
 
     assert calls == [((), {"manual_node_ids": {measurements.id}})]
-    assert (
-        widget.pipeline.node_execution_states[measurements.id]
-        == EXECUTION_RUNNING
-    )
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_RUNNING
 
 
 def test_calculated_measurement_shows_quality_metadata_and_real_history(qtbot):
@@ -538,13 +519,13 @@ def test_source_writer_and_result_actions_are_contextual(qtbot):
     assert not widget.pin_button.isHidden()
     assert widget.pin_button.text() == "Pin source"
     assert not widget.save_button.isHidden()
-    assert widget.save_button.text() == "Save source…"
+    assert widget.save_button.text() == "Export source…"
     assert widget.save_button.isEnabled()
 
     _select(widget, threshold.id)
     assert not widget.pin_button.isHidden()
     assert widget.pin_button.text() == "Pin node"
-    assert widget.save_button.text() == "Save mask…"
+    assert widget.save_button.text() == "Export mask…"
     assert widget.save_button.isEnabled()
 
     _select(widget, measurements.id)
@@ -733,7 +714,7 @@ def test_colocalization_threshold_scrub_preserves_inspector_allocation(qtbot):
                 "result remains live.",
             ),
             (160.0, "Exact colocalized count: 1,000/8,000 (12.5%)."),
-            ):
+        ):
             widget._on_colocalization_scatter_threshold_changed(1, threshold)
             plot.set_pending_thresholds(
                 threshold_1=threshold,
@@ -746,9 +727,10 @@ def test_colocalization_threshold_scrub_preserves_inspector_allocation(qtbot):
             qtbot.wait(10)
 
             assert plot._threshold_1 == threshold
-            assert widget.pipeline.nodes[coloc.id].params[
-                "channel_1_threshold"
-            ] == threshold
+            assert (
+                widget.pipeline.nodes[coloc.id].params["channel_1_threshold"]
+                == threshold
+            )
             assert widget._colocalization_inspector_sync_deferred
             after = allocation_snapshot()
             assert after == before
@@ -772,7 +754,13 @@ def test_colocalization_threshold_scrub_preserves_inspector_allocation(qtbot):
 @pytest.mark.parametrize("theme", ("dark", "light"))
 @pytest.mark.parametrize("font_size", (10, 14))
 def test_reader_support_is_a_separate_scrollable_system_section(
-    qtbot, qapp, monkeypatch, tmp_path, width, theme, font_size,
+    qtbot,
+    qapp,
+    monkeypatch,
+    tmp_path,
+    width,
+    theme,
+    font_size,
 ):
     from napari._qt.qt_resources import get_stylesheet
     from qtpy.QtCore import QCoreApplication, QEvent
@@ -795,9 +783,14 @@ def test_reader_support_is_a_separate_scrollable_system_section(
         _select(widget, "input")
         control = widget._parameter_widgets["image_source"]
         # Switch the UI to a file source without initiating I/O in this layout test.
-        control.set_options([], [], value={
-            "source_mode": "file path", "file_path": "example.oir",
-        })
+        control.set_options(
+            [],
+            [],
+            value={
+                "source_mode": "file path",
+                "file_path": "example.oir",
+            },
+        )
         widget._sync_inspector_presentation()
         widget._sync_parameter_form_height()
         info = control.reader_support
@@ -825,10 +818,13 @@ def test_reader_support_is_a_separate_scrollable_system_section(
             "The native library could not load. Retry or open Reader help.",
         )
         for index, spec in enumerate(READERS):
-            info._show_status(ReaderStatus(
-                spec.key, ("ready", "missing", "broken")[index % 3],
-                details[index % 3],
-            ))
+            info._show_status(
+                ReaderStatus(
+                    spec.key,
+                    ("ready", "missing", "broken")[index % 3],
+                    details[index % 3],
+                )
+            )
         qapp.processEvents()
         assert len(checks) == 1
         assert widget.parameter_form_widget.height() == parameter_height
@@ -841,23 +837,29 @@ def test_reader_support_is_a_separate_scrollable_system_section(
         # the missing-reader warning uses readable yellow foreground text,
         # while loaded/failed states use bright accents on dark backgrounds.
         from napari_vipp.ui.palette_roles import theme_colors
+
         tones = theme_colors(info.palette())
         for key, tone in (
-            ("tiff", tones.success), ("czi", tones.warning), ("lif", tones.error),
+            ("tiff", tones.success),
+            ("czi", tones.warning),
+            ("lif", tones.error),
         ):
-            color = (
-                tone.accent if theme == "dark" and key != "czi"
-                else tone.foreground
-            )
-            assert f'color: {color.name()}' in info.rows[key].text()
+            color = tone.accent if theme == "dark" and key != "czi" else tone.foreground
+            assert f"color: {color.name()}" in info.rows[key].text()
         panel.ensureWidgetVisible(info.help)
+
         def help_is_reachable():
             panel.ensureWidgetVisible(info.help)
-            return panel.viewport().rect().contains(
-                info.help.mapTo(panel.viewport(), info.help.rect().bottomRight())
+            return (
+                panel.viewport()
+                .rect()
+                .contains(
+                    info.help.mapTo(panel.viewport(), info.help.rect().bottomRight())
+                )
             )
 
         qtbot.waitUntil(help_is_reachable, timeout=2000)
+
         def rows_are_separated():
             labels = list(info.rows.values())
             return all(
@@ -872,8 +874,10 @@ def test_reader_support_is_a_separate_scrollable_system_section(
         qtbot.wait(50)
         panel.viewport().repaint()
         panel.repaint()
-        assert panel.viewport().rect().contains(
-            info.help.mapTo(panel.viewport(), info.help.rect().bottomRight())
+        assert (
+            panel.viewport()
+            .rect()
+            .contains(info.help.mapTo(panel.viewport(), info.help.rect().bottomRight()))
         )
         assert panel.grab().save(str(tmp_path / "reader-section.png"))
 
@@ -884,11 +888,13 @@ def test_reader_support_is_a_separate_scrollable_system_section(
         assert not info.isHidden() and not info.failure.isHidden()
         assert not info.failure_action.isHidden()
         assert widget.parameter_form_widget.height() > parameter_height
-        qtbot.waitUntil(lambda: widget.parameter_form_widget.rect().contains(
-            info.retry.mapTo(
-                widget.parameter_form_widget, info.retry.rect().bottomRight()
+        qtbot.waitUntil(
+            lambda: widget.parameter_form_widget.rect().contains(
+                info.retry.mapTo(
+                    widget.parameter_form_widget, info.retry.rect().bottomRight()
+                )
             )
-        ))
+        )
         info.set_source("another.oir", "")
         assert info.isHidden()
 
@@ -904,7 +910,8 @@ def test_reader_support_is_a_separate_scrollable_system_section(
 
 
 def test_reader_support_follows_all_image_sources_with_session_cached_results(
-    qtbot, monkeypatch,
+    qtbot,
+    monkeypatch,
 ):
     from napari_vipp.core.reader_support import READERS, ReaderStatus
     from napari_vipp.ui.reader_support import ReaderSupportControl
@@ -1069,4 +1076,4 @@ def test_multi_output_selector_changes_display_only_not_graph_connections(qtbot)
     assert widget.pipeline.nodes[split.id].params["preview_channel"] == 1
     assert _connection_snapshot(widget) == connections_before
     assert not widget.save_button.isHidden()
-    assert widget.save_button.text() == "Save image…"
+    assert widget.save_button.text() == "Export image…"

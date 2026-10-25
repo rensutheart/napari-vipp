@@ -13,9 +13,11 @@ from qtpy.QtWidgets import (
     QLabel,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSizePolicy,
     QStyle,
     QVBoxLayout,
+    QWidget,
 )
 
 from napari_vipp.core.reproducibility_install import (
@@ -23,7 +25,9 @@ from napari_vipp.core.reproducibility_install import (
     installation_guidance,
 )
 from napari_vipp.core.reproduction import versions_match
+from napari_vipp.ui.design import install_window_policy, type_style
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
+from napari_vipp.ui.inspector import constrain_layout_minimum_height
 from napari_vipp.ui.palette_roles import blend_colors, theme_colors
 
 
@@ -121,6 +125,7 @@ class ReproductionChoiceDialog(QDialog):
 
     def __init__(self, recorded_version: str, current_version: str, parent=None):
         super().__init__(parent)
+        install_window_policy(self, profile="compact")
         # A dialog is a window: opt into the host's font/palette propagation.
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setWindowTitle("Open reproducibility workflow")
@@ -135,15 +140,15 @@ class ReproductionChoiceDialog(QDialog):
         self._versions_known = versions_match(
             recorded_version, recorded_version
         ) and versions_match(current_version, current_version)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.body = QWidget()
+        layout = QVBoxLayout(self.body)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
         self.heading = _label("Choose how to use this workflow", bold=True)
         self.heading.setObjectName("ReproductionHeading")
-        font = self.heading.font()
-        font.setPointSizeF(max(10, font.pointSizeF()) + 2)
-        self._heading_point_size = font.pointSizeF()
-        self.heading.setFont(font)
         layout.addWidget(self.heading)
 
         self.reproduce_card = _ChoiceCard(
@@ -244,9 +249,20 @@ class ReproductionChoiceDialog(QDialog):
         self.release_help.setFont(quiet_font)
         layout.addWidget(self.disclaimer)
 
+        constrain_layout_minimum_height(layout)
+        self.body_scroll = QScrollArea()
+        self.body_scroll.setFrameShape(QFrame.NoFrame)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body_scroll.setWidget(self.body)
+        outer.addWidget(self.body_scroll, 1)
+
         self.footer_rule = QFrame()
         self.footer_rule.setFixedHeight(1)
-        layout.addWidget(self.footer_rule)
+        outer.addWidget(self.footer_rule)
+        self.footer = QWidget()
+        footer_layout = QVBoxLayout(self.footer)
+        footer_layout.setContentsMargins(20, 12, 20, 12)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
         self.open_button = buttons.addButton(
             "Continue to batch setup", QDialogButtonBox.AcceptRole
@@ -260,14 +276,16 @@ class ReproductionChoiceDialog(QDialog):
         buttons.button(QDialogButtonBox.Cancel).setAutoDefault(False)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
-        layout.addWidget(buttons)
+        footer_layout.addWidget(buttons)
+        outer.addWidget(self.footer)
         self.reproduce_radio.toggled.connect(self._refresh)
         self.new_data_radio.toggled.connect(self._refresh)
         self.override_checkbox.toggled.connect(self._refresh)
         self.ensurePolished()
         self._refresh()
-        # Content sets the height; no large, empty stretch below the decision.
-        self.resize(640, self.sizeHint().height())
+        # Only the explanatory body scrolls; approval remains a fixed footer.
+        height = layout.totalHeightForWidth(640)
+        self.resize(640, min(680, max(360, height + self.footer.sizeHint().height())))
 
     @property
     def mode(self):
@@ -327,8 +345,7 @@ class ReproductionChoiceDialog(QDialog):
             highlight_text = colors.info.foreground
             hover = blend_colors(highlight, colors.info.accent, 0.15)
             self.setStyleSheet(
-                "QLabel#ReproductionHeading {"
-                f"font-size: {self._heading_point_size:g}pt; font-weight: 600; }}"
+                "QLabel#ReproductionHeading {" + type_style(self.heading, "title") + "}"
                 "QFrame#ReproductionVersionPanel {"
                 f"background: {tone.surface.name()}; border-radius: 7px;"
                 f"border-left: 3px solid {tone.accent.name()}; }}"
@@ -339,7 +356,8 @@ class ReproductionChoiceDialog(QDialog):
                 f"color: {tone.foreground.name()}; font-weight: 600; }}"
                 "QLabel#ReproductionQuietText, "
                 "QFrame#ReproductionVersionPanel QLabel#ReproductionQuietText {"
-                f"color: {colors.muted_text.name()}; background: transparent; }}"
+                f"color: {colors.muted_text.name()}; background: transparent;"
+                f"{type_style(self.disclaimer, 'secondary')} }}"
                 "QPushButton#ReproductionHelpLink {"
                 f"color: {colors.text.name()}; background: transparent;"
                 "border: none; padding: 2px 0; text-align: left;"
@@ -368,6 +386,9 @@ class ReproductionChoiceDialog(QDialog):
         if hasattr(self, "footer_rule") and event.type() in (
             QEvent.PaletteChange,
             QEvent.ApplicationPaletteChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
         ):
             self.refresh_theme()
 

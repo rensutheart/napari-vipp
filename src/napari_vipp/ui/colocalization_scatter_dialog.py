@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from qtpy.QtCore import QPoint, QSignalBlocker, Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, QPoint, QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtGui import QImage, QPainter
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -14,19 +14,23 @@ from qtpy.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from napari_vipp.ui.controls import _configure_numeric_spin_box
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+from napari_vipp.ui.inspector import constrain_layout_minimum_height
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_COLORMAPS,
@@ -55,6 +59,7 @@ class ColocalizationScatterDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self.setWindowTitle("Colocalization Scatter Plot")
         self.setSizeGripEnabled(True)
         self.resize(980, 900)
@@ -135,26 +140,40 @@ class ColocalizationScatterDialog(QDialog):
         )
         settings_group = QGroupBox("Scatter display", self)
         settings_layout = QGridLayout(settings_group)
-        settings_layout.addWidget(QLabel("Colormap", self), 0, 0)
+        colormap_label = QLabel("Colormap", self)
+        colormap_label.setBuddy(self.colormap_combo)
+        settings_layout.addWidget(colormap_label, 0, 0)
         settings_layout.addWidget(self.colormap_combo, 0, 1)
-        settings_layout.addWidget(QLabel("Density bins per axis", self), 0, 2)
+        density_label = QLabel("Density bins per axis", self)
+        density_label.setBuddy(self.density_bins_spin)
+        settings_layout.addWidget(density_label, 0, 2)
         settings_layout.addWidget(self.density_bins_spin, 0, 3)
         settings_layout.addWidget(self.log_density_checkbox, 0, 4)
-        settings_layout.addWidget(
-            QLabel("Populated range percentile", self),
-            1,
-            0,
-        )
+        range_label = QLabel("Populated range percentile", self)
+        range_label.setBuddy(self.populated_range_spin)
+        settings_layout.addWidget(range_label, 1, 0)
         settings_layout.addWidget(self.populated_range_spin, 1, 1)
         settings_layout.addWidget(self.zoom_to_data_checkbox, 1, 2)
         settings_layout.addWidget(self.equal_axes_checkbox, 1, 3)
-        settings_layout.addWidget(QLabel("Export size", self), 2, 0)
+        export_label = QLabel("Export size", self)
+        export_label.setBuddy(self.export_size_spin)
+        settings_layout.addWidget(export_label, 2, 0)
         settings_layout.addWidget(self.export_size_spin, 2, 1)
         self.axis_range_label = QLabel("View ranges unavailable.", self)
         self.axis_range_label.setWordWrap(True)
         self.axis_range_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         settings_layout.addWidget(self.axis_range_label, 2, 2, 1, 3)
         settings_layout.setColumnStretch(4, 1)
+        self._settings_layout = settings_layout
+        self._settings_group = settings_group
+        self._settings_pairs = (
+            (colormap_label, self.colormap_combo),
+            (density_label, self.density_bins_spin),
+            (range_label, self.populated_range_spin),
+            (export_label, self.export_size_spin),
+        )
+        self._settings_compact = None
+        self._reflowing_settings = False
         self.summary_label = QLabel("No scatter density is available.", self)
         self.summary_label.setWordWrap(True)
         self.summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -179,9 +198,20 @@ class ColocalizationScatterDialog(QDialog):
         )
 
         layout = QVBoxLayout(self)
-        layout.addWidget(settings_group)
-        layout.addWidget(self.plot, 1)
-        layout.addWidget(self.summary_label)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addWidget(settings_group)
+        body_layout.addWidget(self.plot, 1)
+        body_layout.addWidget(self.summary_label)
+        constrain_layout_minimum_height(body_layout)
+        self.body_scroll = QScrollArea()
+        self.body_scroll.setFrameShape(QFrame.NoFrame)
+        self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body_scroll.setWidget(body)
+        self.body_scroll.viewport().installEventFilter(self)
+        layout.addWidget(self.body_scroll, 1)
         layout.addLayout(button_row)
 
         self._density_counts: np.ndarray | None = None
@@ -223,6 +253,93 @@ class ColocalizationScatterDialog(QDialog):
         self.equal_axes_checkbox.toggled.connect(self._on_equal_axes_changed)
         self.export_button.clicked.connect(self.request_export)
         self.close_button.clicked.connect(self.close)
+        self._reflow_settings()
+
+    def _reflow_settings(self):
+        """Keep display controls legible; never change their values or the plot."""
+        if not hasattr(self, "_settings_pairs") or self._reflowing_settings:
+            return
+        self._reflowing_settings = True
+        try:
+            pairs = self._settings_pairs
+            # Measure the expanded grid independently of its current placement.
+            required = (
+                max(pairs[i][0].sizeHint().width() for i in (0, 2, 3))
+                + max(pairs[i][1].minimumSizeHint().width() for i in (0, 2, 3))
+                + max(
+                    pairs[1][0].sizeHint().width(),
+                    self.zoom_to_data_checkbox.sizeHint().width(),
+                )
+                + max(
+                    pairs[1][1].minimumSizeHint().width(),
+                    self.equal_axes_checkbox.sizeHint().width(),
+                )
+                + self.log_density_checkbox.sizeHint().width()
+                + 4 * max(8, self._settings_layout.horizontalSpacing())
+                + 32
+            )
+            available = (
+                self.body_scroll.viewport().width()
+                if self.isVisible()
+                else self.width() - 32
+            )
+            compact = available < required
+            if compact == self._settings_compact:
+                return
+            self._settings_compact = compact
+            grid = self._settings_layout
+            while grid.count():
+                grid.takeAt(0)
+            for column in range(5):
+                grid.setColumnStretch(column, 0)
+            if compact:
+                for row, (label, control) in enumerate(pairs):
+                    grid.addWidget(label, row, 0)
+                    grid.addWidget(control, row, 1)
+                for row, checkbox in enumerate(
+                    (
+                        self.log_density_checkbox,
+                        self.zoom_to_data_checkbox,
+                        self.equal_axes_checkbox,
+                    ),
+                    start=4,
+                ):
+                    grid.addWidget(checkbox, row, 0, 1, 2)
+                grid.addWidget(self.axis_range_label, 7, 0, 1, 2)
+                grid.setColumnStretch(1, 1)
+            else:
+                for (label, control), row, column in (
+                    (pairs[0], 0, 0),
+                    (pairs[1], 0, 2),
+                    (pairs[2], 1, 0),
+                    (pairs[3], 2, 0),
+                ):
+                    grid.addWidget(label, row, column)
+                    grid.addWidget(control, row, column + 1)
+                grid.addWidget(self.log_density_checkbox, 0, 4)
+                grid.addWidget(self.zoom_to_data_checkbox, 1, 2)
+                grid.addWidget(self.equal_axes_checkbox, 1, 3)
+                grid.addWidget(self.axis_range_label, 2, 2, 1, 3)
+                grid.setColumnStretch(4, 1)
+            grid.invalidate()
+        finally:
+            self._reflowing_settings = False
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if hasattr(self, "body_scroll") and watched is self.body_scroll.viewport():
+            if event.type() == QEvent.Resize:
+                self._reflow_settings()
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.FontChange,
+            QEvent.StyleChange,
+            QEvent.ApplicationFontChange,
+        ):
+            self._settings_compact = None
+            self._reflow_settings()
 
     @property
     def density_bins(self) -> int:

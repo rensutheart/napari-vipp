@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Unify application headings, body text and control sizing around the current
+  UI font. Fit dialogs to the available screen on first show without resetting
+  later user resizing; scale numeric fields, table rows and bounded previews
+  with their content. Keep inspector wrapping and native layout reservations.
+  Apply consistent action/close/stop roles and keep recovery warnings visible.
+  Setup and reader screens separate review information from logs, show honest
+  measured progress and retain total as well as phase elapsed time. These are
+  presentation changes; scientific calculations and approval/safety rules stay
+  unchanged.
+
 - Choose interrupted workflow sessions with visible checkboxes, readable dates
   and workflow counts. Click a row to choose just one; check boxes to combine
   several, with Select all, Clear selection and live counts. Confirm discard

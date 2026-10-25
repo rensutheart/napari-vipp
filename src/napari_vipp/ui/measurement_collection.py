@@ -41,6 +41,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
+from napari_vipp.ui.design import install_window_policy, type_style
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
@@ -75,7 +76,7 @@ def _label(text="", *, bold=False):
 
 def _short_text(value, maximum=240):
     text = str(value)
-    return text if len(text) <= maximum else text[:maximum - 1] + "…"
+    return text if len(text) <= maximum else text[: maximum - 1] + "…"
 
 
 def _basename(path):
@@ -125,6 +126,7 @@ class _ExportOptionsDialog(QDialog):
     def __init__(self, parent=None):
         self._options_ready = False
         super().__init__(parent)
+        install_window_policy(self, profile="compact")
         self.setWindowTitle("Export reviewed results")
         self.setMinimumWidth(460)
         self.resize(570, 340)
@@ -162,14 +164,13 @@ class _ExportOptionsDialog(QDialog):
             self.setFont(font)
             family = font.family().replace("'", "\\'")
             size = (
-                f"{font.pointSizeF():g}pt" if font.pointSizeF() > 0
+                f"{font.pointSizeF():g}pt"
+                if font.pointSizeF() > 0
                 else f"{font.pixelSize()}px"
             )
             for kind in (QLabel, QComboBox, QCheckBox, QPushButton):
                 for widget in self.findChildren(kind):
-                    widget.setStyleSheet(
-                        f"font-family: '{family}'; font-size: {size};"
-                    )
+                    widget.setStyleSheet(f"font-family: '{family}'; font-size: {size};")
         self._options_ready = True
         self.ensurePolished()
         self._fit_content_height()
@@ -181,16 +182,16 @@ class _ExportOptionsDialog(QDialog):
             "One workbook with Measurements, Image summary and About this collection "
             "sheets. Images with no measurements remain in the summary, not in "
             "the measurement rows."
-            if workbook else
-            "One row per measurement, ready for Excel or other analysis software. "
+            if workbook
+            else "One row per measurement, ready for Excel or other analysis software. "
             "The optional companion summary uses the same file format. Without it, "
             "images with no measurements and excluded images are absent from the table."
         )
         self.format_note.setText(
             "Excel has its own numeric precision. Save a VIPP collection when exact "
             "VIPP values and types must be retained."
-            if workbook else
-            "CSV/TSV do not store VIPP types or units. Spreadsheet apps may "
+            if workbook
+            else "CSV/TSV do not store VIPP types or units. Spreadsheet apps may "
             "reinterpret text or IDs; use Excel workbook to keep text cells literal."
         )
         if self._options_ready:
@@ -257,7 +258,8 @@ def _inspect(request, cancellation, progress):
         if cancellation.is_set():
             return outputs, None, ()
         fields = tuple(
-            (field, value) for field in _ANNOTATIONS
+            (field, value)
+            for field in _ANNOTATIONS
             if (value := _preserved_annotation(item, field, cancellation)) is not None
         )
         if fields:
@@ -287,7 +289,9 @@ def _save(request, cancellation, progress):
     if cancellation.is_set():
         return None
     save_measurement_collection(
-        collection, request.path, cancellation=cancellation,
+        collection,
+        request.path,
+        cancellation=cancellation,
         expected_destination_revision=request.destination_revision,
     )
     return request.path
@@ -301,7 +305,8 @@ def _export(request, cancellation, progress):
     if cancellation.is_set():
         return None
     return export_measurement_collection(
-        collection, request.path,
+        collection,
+        request.path,
         format=request.export_format,
         include_image_summary=request.include_summary,
         overwrite=request.overwrite,
@@ -330,7 +335,9 @@ def _review(request, cancellation, progress):
         collection.provenance["output_node_id"], collection.table.name, ""
     )
     preview = MeasurementPreview(
-        output, collection.items, collection.provenance["run_id"],
+        output,
+        collection.items,
+        collection.provenance["run_id"],
         collection.provenance["manifest_sha256"],
         collection.provenance["workflow_sha256"],
     )
@@ -387,17 +394,19 @@ class _CollectionWorker(QThread):
         self.cancellation = threading.Event()
 
     def _progress(self, current, total, message):
-        self.progressed.emit((
-            self.task_id, self.generation, current, total, str(message)
-        ))
+        self.progressed.emit(
+            (self.task_id, self.generation, current, total, str(message))
+        )
 
     def run(self):
         value, error = None, ""
         try:
             if not self.cancellation.is_set():
                 operation = {
-                    "save": _save, "export": _export,
-                    "review": _review, "inspect": _inspect,
+                    "save": _save,
+                    "export": _export,
+                    "review": _review,
+                    "inspect": _inspect,
                 }[self.kind]
                 value = operation(self.request, self.cancellation, self._progress)
         except Exception as exc:
@@ -405,10 +414,17 @@ class _CollectionWorker(QThread):
         # A completed atomic save wins over cancellation arriving after commit.
         committed = self.kind in {"save", "export"} and value is not None and not error
         cancelled = self.cancellation.is_set() and not committed
-        self.completed.emit(_Reply(
-            self.task_id, self.generation, self.kind,
-            None if cancelled else value, error, cancelled, self.request.open_workflow,
-        ))
+        self.completed.emit(
+            _Reply(
+                self.task_id,
+                self.generation,
+                self.kind,
+                None if cancelled else value,
+                error,
+                cancelled,
+                self.request.open_workflow,
+            )
+        )
 
 
 class _CollectionTasks(QObject):
@@ -469,7 +485,8 @@ def _preserved_annotation(item, field, cancellation=None):
     if table is None:
         return None
     columns = [
-        index for index, column in enumerate(table.columns)
+        index
+        for index, column in enumerate(table.columns)
         if column.casefold() == field
     ]
     if not columns:
@@ -492,8 +509,14 @@ def _preserved_annotation(item, field, cancellation=None):
 class _CollectionModel(QAbstractTableModel):
     changed = Signal()
     HEADERS = (
-        "Include", "Image item", "Result", "Rows", "Source",
-        "Condition", "Sample", "Replicate",
+        "Include",
+        "Image item",
+        "Result",
+        "Rows",
+        "Source",
+        "Condition",
+        "Sample",
+        "Replicate",
     )
 
     def __init__(self, parent=None):
@@ -509,7 +532,8 @@ class _CollectionModel(QAbstractTableModel):
         self.items = preview.items if preview is not None else ()
         self.included = (
             {item.key for item in self.items if item.status in _READY}
-            if included_ids is None else set(included_ids)
+            if included_ids is None
+            else set(included_ids)
         )
         self.annotations = {}
         self.preserved = {key: dict(fields) for key, fields in preserved}
@@ -564,7 +588,8 @@ class _CollectionModel(QAbstractTableModel):
         field = _ANNOTATIONS[column - 5]
         preserved = self.preserved.get(item.key, {}).get(field)
         return (
-            preserved if preserved is not None
+            preserved
+            if preserved is not None
             else self.annotations.get(item.key, {}).get(field, "")
         )
 
@@ -620,12 +645,17 @@ class MeasurementCollectionDialog(QDialog):
     collectionSaved = Signal(str)
 
     def __init__(
-        self, manifest: str | Path, parent=None, *,
-        _review_only=False, _expected_sha256="",
+        self,
+        manifest: str | Path,
+        parent=None,
+        *,
+        _review_only=False,
+        _expected_sha256="",
     ):
         self._ready = False
         self._requested_font = None
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self.manifest = str(manifest)
         self._review_only = _review_only
         self._expected_sha256 = _expected_sha256
@@ -658,7 +688,9 @@ class MeasurementCollectionDialog(QDialog):
         chooser.addWidget(self.output_label)
         self.output_combo = QComboBox()
         self.output_combo.setMinimumWidth(0)
-        self.output_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.output_combo.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
         self.output_combo.setMinimumContentsLength(12)
         self.output_combo.setAccessibleName("Saved measurement output")
         self.output_combo.currentIndexChanged.connect(self._output_changed)
@@ -745,9 +777,7 @@ class MeasurementCollectionDialog(QDialog):
         )
         layout.addWidget(self.open_workflow_check)
         footer = QHBoxLayout()
-        self.footer_hint = _label(
-            "Export CSV, TSV or Excel, or save a VIPP snapshot."
-        )
+        self.footer_hint = _label("Export CSV, TSV or Excel, or save a VIPP snapshot.")
         layout.addWidget(self.footer_hint)
         self.cancel_work_button = QPushButton("Cancel check")
         self.cancel_work_button.setAutoDefault(False)
@@ -786,10 +816,17 @@ class MeasurementCollectionDialog(QDialog):
             )
             self.footer_hint.setText("Read-only review of the saved collection.")
             for widget in (
-                self.output_label, self.output_combo, self.inspect_button,
-                self.annotation_help, self.field_combo, self.annotation_edit,
-                self.apply_button, self.exclusions_check, self.save_button,
-                self.export_button, self.open_workflow_check,
+                self.output_label,
+                self.output_combo,
+                self.inspect_button,
+                self.annotation_help,
+                self.field_combo,
+                self.annotation_edit,
+                self.apply_button,
+                self.exclusions_check,
+                self.save_button,
+                self.export_button,
+                self.open_workflow_check,
             ):
                 widget.hide()
         self._ready = True
@@ -812,23 +849,30 @@ class MeasurementCollectionDialog(QDialog):
         apply_batch_table_style(self.table, self.palette(), font=font)
         family = font.family().replace("'", "\\'")
         size = (
-            f"{font.pointSizeF():g}pt" if font.pointSizeF() > 0
+            f"{font.pointSizeF():g}pt"
+            if font.pointSizeF() > 0
             else f"{font.pixelSize()}px"
         )
         # Napari's broad QWidget stylesheet otherwise overrides widget fonts,
         # leaving labels tiny while the table correctly follows the user font.
         font_rule = f"font-family: '{family}'; font-size: {size};"
-        self.table.horizontalHeader().setStyleSheet(
-            font_rule + "font-weight: bold;"
-        )
+        self.table.horizontalHeader().setStyleSheet(font_rule + "font-weight: bold;")
         for widget_type in (QLabel, QPushButton, QComboBox, QLineEdit, QCheckBox):
             for widget in self.findChildren(widget_type):
                 weight = (
-                    "font-weight: bold;" if widget in (
-                        self.title_label, self.status_label,
-                    ) else "font-weight: normal;"
+                    "font-weight: bold;"
+                    if widget
+                    in (
+                        self.title_label,
+                        self.status_label,
+                    )
+                    else "font-weight: normal;"
                 )
-                widget.setStyleSheet(font_rule + weight)
+                widget.setStyleSheet(
+                    font_rule + type_style(widget, "title")
+                    if widget is self.title_label
+                    else font_rule + weight
+                )
         metric = QFontMetrics(font)
         self.table.verticalHeader().setDefaultSectionSize(metric.height() + 16)
         header_height = max(
@@ -853,7 +897,12 @@ class MeasurementCollectionDialog(QDialog):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
-        if self._ready and event.type() in (QEvent.PaletteChange, QEvent.FontChange):
+        if self._ready and event.type() in (
+            QEvent.PaletteChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+        ):
             self._apply_theme()
 
     def _status(self, title, detail="", tone="info"):
@@ -880,33 +929,35 @@ class MeasurementCollectionDialog(QDialog):
             return False
         if self._review_only:
             self._status("Opening the saved collection…")
-            self._start("review", _Request(
-                self.manifest, expected_sha256=self._expected_sha256
-            ))
+            self._start(
+                "review", _Request(self.manifest, expected_sha256=self._expected_sha256)
+            )
             return True
         defaults = {item.key for item in self.model.items if item.status in _READY}
         if (
-            (self.model.annotations or self.model.included != defaults)
-            and not self._confirm_discard()
-        ):
+            self.model.annotations or self.model.included != defaults
+        ) and not self._confirm_discard():
             return False
         self.preview = None
         self.model.set_preview(None)
         self._status(
             "Checking saved tables…", "Only table files and the batch record are read."
         )
-        self._start("inspect", _Request(
-            self.manifest, self.output_combo.currentData()
-        ))
+        self._start("inspect", _Request(self.manifest, self.output_combo.currentData()))
         return True
 
     def _confirm_discard(self):
-        return QMessageBox.question(
-            self, "Check files again?",
-            "Checking files again resets your image selection and the annotations "
-            "you added in this dialog. Saved metadata is unchanged. Continue?",
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) == QMessageBox.Yes
+        return (
+            QMessageBox.question(
+                self,
+                "Check files again?",
+                "Checking files again resets your image selection and the annotations "
+                "you added in this dialog. Saved metadata is unchanged. Continue?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            == QMessageBox.Yes
+        )
 
     def _output_changed(self):
         if self._ready and self._task_id is None:
@@ -931,7 +982,8 @@ class MeasurementCollectionDialog(QDialog):
     @Slot(object)
     def _completed(self, reply):
         if (
-            self._closed or reply.task_id != self._task_id
+            self._closed
+            or reply.task_id != self._task_id
             or reply.generation != self._generation
         ):
             return
@@ -956,7 +1008,9 @@ class MeasurementCollectionDialog(QDialog):
             names = ", ".join(_basename(path) for path in reply.value.paths)
             notes = "\n".join(reply.value.notes)
             self._status(
-                "Results exported", f"Saved {names}.", "success",
+                "Results exported",
+                f"Saved {names}.",
+                "success",
             )
             self.progress_label.setToolTip(
                 "\n".join(str(path) for path in reply.value.paths)
@@ -984,7 +1038,8 @@ class MeasurementCollectionDialog(QDialog):
             if self.preview is None:
                 self._status(
                     "No saved measurement output",
-                    "This batch record has no table output to collect.", "warning",
+                    "This batch record has no table output to collect.",
+                    "warning",
                 )
             elif self._review_only:
                 self._status(
@@ -998,7 +1053,8 @@ class MeasurementCollectionDialog(QDialog):
                 self._status(
                     "Review the collection" if issues else "Saved tables checked",
                     f"{issues:,} images need attention. Select a row for details."
-                    if issues else "Choose images and add optional annotations below.",
+                    if issues
+                    else "Choose images and add optional annotations below.",
                     "warning" if issues else "success",
                 )
         self._update_actions()
@@ -1028,8 +1084,8 @@ class MeasurementCollectionDialog(QDialog):
             self.item_detail.setToolTip("")
             self.item_detail.setText(
                 "Select an image for recorded file-check details."
-                if self._review_only else
-                "Select an image for file-check details. Double-click a blank "
+                if self._review_only
+                else "Select an image for file-check details. Double-click a blank "
                 "annotation cell to edit it."
             )
         self._update_actions()
@@ -1039,9 +1095,9 @@ class MeasurementCollectionDialog(QDialog):
             return
         field = self.field_combo.currentData()
         value = self.annotation_edit.text().strip()
-        selected = sorted({
-            index.row() for index in self.table.selectionModel().selectedRows()
-        })
+        selected = sorted(
+            {index.row() for index in self.table.selectionModel().selectedRows()}
+        )
         targets, protected, conflicts = [], 0, 0
         for row in selected:
             item = self.model.items[row]
@@ -1053,18 +1109,27 @@ class MeasurementCollectionDialog(QDialog):
             old = self.model.annotations.get(item.key, {}).get(field, "")
             conflicts += bool(old and old != value)
             targets.append(row)
-        if conflicts and QMessageBox.question(
-            self, "Replace added annotations?",
-            f"{conflicts:,} selected images already have a different {field} "
-            "added in this dialog. Replace those values? Saved metadata is kept.",
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) != QMessageBox.Yes:
+        if (
+            conflicts
+            and QMessageBox.question(
+                self,
+                "Replace added annotations?",
+                f"{conflicts:,} selected images already have a different {field} "
+                "added in this dialog. Replace those values? Saved metadata is kept.",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            != QMessageBox.Yes
+        ):
             return
         self.model.apply_annotations(targets, field, value)
         self.item_detail.setText(
             f"{field.title()} applied to {len(targets):,} images."
-            + (f" Existing metadata kept for {protected:,} images."
-               if protected else "")
+            + (
+                f" Existing metadata kept for {protected:,} images."
+                if protected
+                else ""
+            )
         )
 
     def _review_changed(self):
@@ -1072,7 +1137,8 @@ class MeasurementCollectionDialog(QDialog):
         included = len(self.model.included)
         excluded = len(self.model.items) - included
         rows = sum(
-            item.row_count or 0 for item in self.model.items
+            item.row_count or 0
+            for item in self.model.items
             if item.key in self.model.included
         )
         empty = sum(
@@ -1081,8 +1147,12 @@ class MeasurementCollectionDialog(QDialog):
         )
         self.review_label.setText(
             f"{included:,} images included · {excluded:,} excluded · {rows:,} rows"
-            + (f" · {empty:,} successful {'image' if empty == 1 else 'images'} "
-               "with no rows" if empty else "")
+            + (
+                f" · {empty:,} successful {'image' if empty == 1 else 'images'} "
+                "with no rows"
+                if empty
+                else ""
+            )
         )
         self.exclusions_check.setVisible(bool(excluded) and not self._review_only)
         self._update_actions()
@@ -1102,7 +1172,9 @@ class MeasurementCollectionDialog(QDialog):
         self.open_workflow_check.setEnabled(not busy)
         excluded = len(self.model.items) - len(self.model.included)
         self.save_button.setEnabled(
-            not busy and not self._review_only and self.preview is not None
+            not busy
+            and not self._review_only
+            and self.preview is not None
             and bool(self.model.included)
             and (not excluded or self.exclusions_check.isChecked())
         )
@@ -1114,7 +1186,8 @@ class MeasurementCollectionDialog(QDialog):
         if not self.save_button.isEnabled():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save measurement collection",
+            self,
+            "Save measurement collection",
             str(Path(self.manifest).parent / "measurement-results.vipp-results.json"),
             "VIPP measurement collection (*.vipp-results.json)",
             options=QFileDialog.DontConfirmOverwrite,
@@ -1132,14 +1205,21 @@ class MeasurementCollectionDialog(QDialog):
         except (OSError, ValueError) as exc:
             self._status("Choose a valid collection filename", str(exc), "warning")
             return
-        if revision is not None and QMessageBox.question(
-            self, "Replace measurement collection?",
-            f"A file already exists at {path}. Replace it with this collection?",
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) != QMessageBox.Yes:
+        if (
+            revision is not None
+            and QMessageBox.question(
+                self,
+                "Replace measurement collection?",
+                f"A file already exists at {path}. Replace it with this collection?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            != QMessageBox.Yes
+        ):
             return
         request = self._reviewed_request(
-            path, open_workflow=self.open_workflow_check.isChecked(),
+            path,
+            open_workflow=self.open_workflow_check.isChecked(),
             destination_revision=revision,
         )
         self._status("Saving the VIPP collection…")
@@ -1157,9 +1237,11 @@ class MeasurementCollectionDialog(QDialog):
             "xlsx": "Excel workbook (*.xlsx)",
         }
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export reviewed measurement results",
+            self,
+            "Export reviewed measurement results",
             str(Path(self.manifest).parent / f"measurement-results.{choice.format}"),
-            filters[choice.format], options=QFileDialog.DontConfirmOverwrite,
+            filters[choice.format],
+            options=QFileDialog.DontConfirmOverwrite,
         )
         if not path:
             return
@@ -1170,21 +1252,30 @@ class MeasurementCollectionDialog(QDialog):
             self._status("Choose a valid export filename", str(exc), "warning")
             return
         existing = [
-            target for target, revision in zip(targets, revisions, strict=True)
+            target
+            for target, revision in zip(targets, revisions, strict=True)
             if revision is not None
         ]
-        if existing and QMessageBox.question(
-            self, "Replace exported results?",
-            "This export will write:\n"
-            + "\n".join(str(target) for target in targets)
-            + "\n\nThese existing files will be replaced:\n"
-            + "\n".join(str(target) for target in existing),
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
-        ) != QMessageBox.Yes:
+        if (
+            existing
+            and QMessageBox.question(
+                self,
+                "Replace exported results?",
+                "This export will write:\n"
+                + "\n".join(str(target) for target in targets)
+                + "\n\nThese existing files will be replaced:\n"
+                + "\n".join(str(target) for target in existing),
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            != QMessageBox.Yes
+        ):
             return
         request = self._reviewed_request(
-            str(targets[0]), export_format=choice.format,
-            include_summary=choice.include_summary, overwrite=bool(existing),
+            str(targets[0]),
+            export_format=choice.format,
+            include_summary=choice.include_summary,
+            overwrite=bool(existing),
             export_destination_revisions=revisions,
         )
         self._status("Exporting reviewed results…")

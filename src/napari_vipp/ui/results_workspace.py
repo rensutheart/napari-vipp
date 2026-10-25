@@ -55,6 +55,7 @@ from napari_vipp.core.result_plots import (
 from napari_vipp.core.statistics import StatisticsRecipe
 from napari_vipp.core.tables import TableData
 from napari_vipp.ui.bulk_selection import BulkSelectionControls
+from napari_vipp.ui.design import apply_text_role, install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.iconography import interface_icon, palette_branch_color
 from napari_vipp.ui.palette_roles import theme_colors
@@ -278,6 +279,7 @@ class ResultsWorkspaceDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self._window_controls = WorkspaceWindowController(self)
         self.setObjectName("VippResultsWorkspace")
         self.setWindowTitle("Results Workspace — VIPP")
@@ -326,9 +328,7 @@ class ResultsWorkspaceDialog(QDialog):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
         title = _label("Results Workspace", bold=True)
-        font = title.font()
-        font.setPointSize(font.pointSize() + 3)
-        title.setFont(font)
+        apply_text_role(title, "title")
         heading_row = QHBoxLayout()
         heading_row.addWidget(title, 1)
         self.source_label = _label("Connect a measurement table to get started.")
@@ -990,9 +990,7 @@ class ResultsWorkspaceDialog(QDialog):
         )
         if self.plotted_panel.minimumHeight() != minimum_table_height:
             self.plotted_panel.setMinimumHeight(minimum_table_height)
-        table_height = max(
-            minimum_table_height, 96, min(180, round(available * 0.25))
-        )
+        table_height = max(minimum_table_height, 96, min(180, round(available * 0.25)))
         if self.plotted_panel.maximumHeight() != table_height:
             self.plotted_panel.setMaximumHeight(table_height)
         if self.point_label.toolTip():
