@@ -19,10 +19,10 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from email.parser import BytesParser
 from pathlib import Path
 
 from napari_vipp import _runtime_lease as rt
+from napari_vipp.installer import incremental as reuse
 from napari_vipp.installer.ownership import (
     OwnershipRecord,
     OwnershipState,
@@ -45,6 +45,8 @@ MAX_CONTROL_BYTES = 2 * 1024**2
 MAX_PROCESSES = 8192
 MAX_RELEVANT = 256
 MAX_NATIVE_FILES = 4096
+MAX_STARTUP_FILE_BYTES = 64 * 1024
+MAX_DISTRIBUTION_METADATA_BYTES = 16 * 1024**2
 
 
 class LegacyInPlaceError(RuntimeError):
@@ -98,9 +100,17 @@ def _direct(path: Path, *, file: bool = False):
     return info
 
 
-def _read(path: Path, limit: int = 65536) -> bytes:
+def _read(
+    path: Path,
+    limit: int = MAX_STARTUP_FILE_BYTES,
+    *,
+    kind: str = "startup/control file",
+) -> bytes:
     before = _direct(path, file=True)
-    _require(before.st_size <= limit, "Oversized startup/control file.")
+    _require(
+        before.st_size <= limit,
+        f"Oversized {kind}: {path} ({before.st_size} bytes; limit {limit} bytes).",
+    )
     with path.open("rb") as stream:
         raw = stream.read(limit + 1)
     after = _direct(path, file=True)
@@ -108,9 +118,14 @@ def _read(path: Path, limit: int = 65536) -> bytes:
         len(raw) == before.st_size
         and (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
         == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
-        "Startup/control file changed while inspected.",
+        f"The {kind} changed while inspected: {path}",
     )
     return raw
+
+
+def _read_distribution_metadata(path: Path) -> bytes:
+    """Distribution descriptions/RECORDs are not executable startup controls."""
+    return _read(path, MAX_DISTRIBUTION_METADATA_BYTES, kind="distribution metadata")
 
 
 def _encoded(value: object) -> bytes:
@@ -175,14 +190,22 @@ def _claims(
     for index, info in enumerate(site.glob("*.dist-info")):
         _require(index < 512, "Too many distribution metadata directories.")
         _direct(info)
-        metadata = BytesParser().parsebytes(_read(info / "METADATA"))
+        metadata_path = info / "METADATA"
+        try:
+            metadata = reuse._metadata(_read_distribution_metadata(metadata_path))
+        except (ValueError, RuntimeError) as error:
+            raise LegacyInPlaceError(
+                f"Invalid distribution metadata: {metadata_path}: {error}"
+            ) from error
         owner = str(metadata.get("Name", "")).replace("_", "-").casefold()
         if owned_names is not None and owner not in owned_names:
             continue
         record = info / "RECORD"
         if not record.exists():
             continue
-        for row in csv.reader(io.StringIO(_read(record, 16 * 1024**2).decode("utf-8"))):
+        for row in csv.reader(
+            io.StringIO(_read_distribution_metadata(record).decode("utf-8"))
+        ):
             _require(len(row) == 3, "Invalid startup-file ownership metadata.")
             name = row[0].replace("\\", "/")
             if "/" not in name and (

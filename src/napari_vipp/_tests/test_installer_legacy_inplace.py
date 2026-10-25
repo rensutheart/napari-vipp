@@ -140,6 +140,267 @@ def test_legacy_first_use_is_not_a_mandatory_copy_and_is_readonly(managed):
     )
 
 
+def _sized_distribution_metadata(size, *, name="fonttools", version="1.0"):
+    header = (
+        f"Metadata-Version: 2.3\nName: {name}\nVersion: {version}\n"
+        "Requires-Python: >=3.12\n\n"
+    ).encode()
+    assert size >= len(header)
+    description = b"Synthetic font package description; no installed data is read.\n"
+    needed = size - len(header)
+    return header + (description * (needed // len(description) + 1))[:needed]
+
+
+def _owned_sized_metadata(managed, size):
+    record, _ = managed
+    site = record.environment_root / "Lib/site-packages"
+    relative = "fonttools-1.0.dist-info/METADATA"
+    package = _distribution(
+        site,
+        "fonttools",
+        "1.0",
+        files={
+            relative: _sized_distribution_metadata(size),
+            "fontTools/__init__.py": b"# inert synthetic package; never imported\n",
+        },
+    )
+    updated = replace(record, packages=(*record.packages, package))
+    write_ownership_record(record.managed_root, updated)
+    return (updated, managed[1]), site / relative
+
+
+def _file_hashes(root):
+    return {
+        path.relative_to(root).as_posix(): (
+            path.stat().st_size,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_actual_fonttools_sized_metadata_passes_readonly_startup_ownership(managed):
+    # Exact size supplied by root's read-only diagnosis, not host-file contents.
+    owned, metadata = _owned_sized_metadata(managed, 139_805)
+    assert metadata.stat().st_size == 139_805 > 64 * 1024
+    before = _file_hashes(owned[0].managed_root)
+    plan = _plan(owned)
+    assert plan.record == owned[0]
+    assert plan.startup == ()
+    assert _file_hashes(owned[0].managed_root) == before
+    assert not (owned[0].environment_root / rt.DIRECTORY).exists()
+
+
+def test_distribution_metadata_exact_16_mib_limit_passes_without_mutation(managed):
+    owned, metadata = _owned_sized_metadata(managed, 16 * 1024**2)
+    assert metadata.stat().st_size == 16 * 1024**2
+    before = _file_hashes(owned[0].managed_root)
+    assert _plan(owned).record == owned[0]
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+def test_oversized_distribution_metadata_has_category_and_exact_path(managed):
+    owned, metadata = _owned_sized_metadata(managed, 16 * 1024**2 + 1)
+    before = _file_hashes(owned[0].managed_root)
+    with pytest.raises(legacy.LegacyInPlaceError) as caught:
+        _plan(owned)
+    message = str(caught.value)
+    assert "distribution metadata" in message.casefold()
+    assert str(metadata) in message
+    assert str(16 * 1024**2 + 1) in message
+    assert str(16 * 1024**2) in message
+    assert _file_hashes(owned[0].managed_root) == before
+    assert not (owned[0].environment_root / rt.DIRECTORY).exists()
+
+
+def _owned_startup_files(managed, name, files):
+    record, _ = managed
+    site = record.environment_root / "Lib/site-packages"
+    package = _distribution(site, name, "1.0", files=files)
+    updated = replace(record, packages=(*record.packages, package))
+    write_ownership_record(record.managed_root, updated)
+    return updated, managed[1]
+
+
+@pytest.mark.parametrize("filename", ["METADATA", "RECORD"])
+def test_distribution_metadata_over_limit_identifies_each_metadata_file(
+    managed, filename
+):
+    owned, metadata = _owned_sized_metadata(managed, 139_805)
+    target = metadata.with_name(filename)
+    target.write_bytes(b"x" * (16 * 1024**2 + 1))
+    before = _file_hashes(owned[0].managed_root)
+    with pytest.raises(legacy.LegacyInPlaceError) as caught:
+        _plan(owned)
+    message = str(caught.value)
+    assert "distribution metadata" in message.casefold()
+    assert str(target) in message
+    assert str(16 * 1024**2 + 1) in message
+    assert str(16 * 1024**2) in message
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+@pytest.mark.parametrize("kind", ["pth", "bootstrap"])
+@pytest.mark.parametrize("size", [64 * 1024, 64 * 1024 + 1])
+def test_large_metadata_does_not_raise_startup_or_bootstrap_size_caps(
+    managed, kind, size
+):
+    owned, _ = _owned_sized_metadata(managed, 139_805)
+    content = b"#" + b"x" * (size - 2) + b"\n"
+    if kind == "pth":
+        target_name = "owned.pth"
+        owned = _owned_startup_files(owned, "startupfixture", {target_name: content})
+    else:
+        target_name = "pywin32_bootstrap.py"
+        owned = _owned_startup_files(
+            owned,
+            "pywin32",
+            {"pywin32.pth": b"import pywin32_bootstrap\n", target_name: content},
+        )
+    target = owned[0].environment_root / "Lib/site-packages" / target_name
+    before = _file_hashes(owned[0].managed_root)
+    if size == 64 * 1024:
+        assert _plan(owned).record == owned[0]
+    else:
+        with pytest.raises(legacy.LegacyInPlaceError) as caught:
+            _plan(owned)
+        message = str(caught.value)
+        assert "startup/control file" in message.casefold()
+        assert str(target) in message
+        assert str(size) in message and str(64 * 1024) in message
+    assert _file_hashes(owned[0].managed_root) == before
+    assert not (owned[0].environment_root / rt.DIRECTORY).exists()
+
+
+@pytest.mark.parametrize("size", [16_384, 16_385])
+def test_runtime_control_documents_keep_their_smaller_original_cap(managed, size):
+    record, _ = managed
+    assert rt._MAX_DOCUMENT == 16_384
+    state = record.environment_root / rt.DIRECTORY
+    state.mkdir()
+    target = state / "gate.lock"
+    target.write_bytes(b"x" * size)
+    before = _file_hashes(record.managed_root)
+    if size == 16_384:
+        snapshot = legacy._control_snapshot(state)
+        assert [name for name, _ in snapshot] == ["gate.lock"]
+    else:
+        with pytest.raises(legacy.LegacyInPlaceError) as caught:
+            legacy._control_snapshot(state)
+        message = str(caught.value)
+        assert "control file" in message.casefold()
+        assert str(target) in message
+        assert str(size) in message and str(16_384) in message
+    assert _file_hashes(record.managed_root) == before
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_name",
+        "missing_version",
+        "duplicate_name",
+        "duplicate_version",
+        "invalid_version",
+    ],
+)
+def test_malformed_distribution_identity_is_still_refused_without_repair(
+    managed, damage
+):
+    record, _ = managed
+    site = record.environment_root / "Lib/site-packages"
+    headers = {"Metadata-Version": ["2.3"], "Name": ["fonttools"], "Version": ["1.0"]}
+    if damage == "missing_name":
+        del headers["Name"]
+    elif damage == "missing_version":
+        del headers["Version"]
+    elif damage == "duplicate_name":
+        headers["Name"].append("different-product")
+    elif damage == "duplicate_version":
+        headers["Version"].append("2.0")
+    else:
+        headers["Version"] = ["not a version!"]
+    raw = (
+        "".join(
+            f"{name}: {value}\n" for name, values in headers.items() for value in values
+        )
+        + "\n"
+    ).encode()
+    relative = "fonttools-1.0.dist-info/METADATA"
+    owned = _owned_startup_files(managed, "fonttools", {relative: raw})
+    metadata = site / relative
+    before = _file_hashes(record.managed_root)
+    with pytest.raises(legacy.LegacyInPlaceError) as caught:
+        _plan(owned)
+    assert "distribution metadata" in str(caught.value).casefold()
+    assert str(metadata) in str(caught.value)
+    assert _file_hashes(record.managed_root) == before
+
+
+def test_metadata_size_fix_does_not_allow_unowned_or_modified_startup_files(managed):
+    owned, _ = _owned_sized_metadata(managed, 139_805)
+    valid = b"# valid owned startup data\n"
+    owned = _owned_startup_files(owned, "startupfixture", {"owned.pth": valid})
+    site = owned[0].environment_root / "Lib/site-packages"
+    assert _plan(owned).record == owned[0]
+    target = site / "owned.pth"
+    target.write_bytes(valid.replace(b"valid", b"other"))
+    before = _file_hashes(owned[0].managed_root)
+    with pytest.raises(legacy.LegacyInPlaceError, match="startup file changed"):
+        _plan(owned)
+    assert _file_hashes(owned[0].managed_root) == before
+    # Restore the valid owned file, then add an independently unowned one.
+    target.write_bytes(valid)
+    foreign = site / "foreign.pth"
+    foreign.write_bytes(b"# unowned startup file must stay blocked\n")
+    before = _file_hashes(owned[0].managed_root)
+    with pytest.raises(legacy.LegacyInPlaceError, match="unowned interpreter startup"):
+        _plan(owned)
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+def test_large_metadata_does_not_bypass_overlapping_startup_ownership(managed):
+    owned, _ = _owned_sized_metadata(managed, 139_805)
+    content = {"same.pth": b"# byte-identical but claimed by two distributions\n"}
+    owned = _owned_startup_files(owned, "first-owner", content)
+    owned = _owned_startup_files(owned, "second-owner", content)
+    before = _file_hashes(owned[0].managed_root)
+    with pytest.raises(
+        legacy.LegacyInPlaceError, match="Overlapping startup-file ownership"
+    ):
+        _plan(owned)
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+def test_distribution_metadata_change_during_read_is_refused_without_mutation(
+    managed, monkeypatch
+):
+    owned, metadata = _owned_sized_metadata(managed, 139_805)
+    direct = legacy._direct
+    observations = []
+
+    def changed(path, **kwargs):
+        if Path(path) == metadata:
+            observations.append(path)
+            if len(observations) == 2:
+                status = metadata.stat()
+                os.utime(
+                    metadata,
+                    ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000),
+                )
+        return direct(path, **kwargs)
+
+    monkeypatch.setattr(legacy, "_direct", changed)
+    before = _file_hashes(owned[0].managed_root)
+    with pytest.raises(legacy.LegacyInPlaceError) as caught:
+        _plan(owned)
+    assert len(observations) == 2
+    assert "changed while inspected" in str(caught.value)
+    assert str(metadata) in str(caught.value)
+    assert _file_hashes(owned[0].managed_root) == before
+
+
 def test_plan_round_trip_allows_exact_committed_owner_pointer(managed):
     plan = _plan(managed)
     new_owner = replace(plan.record, version="1.0a2", updated_at="after")
