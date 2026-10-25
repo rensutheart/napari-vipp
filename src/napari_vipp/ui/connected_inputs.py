@@ -6,7 +6,7 @@ import html
 from dataclasses import dataclass
 
 import numpy as np
-from qtpy.QtCore import QEvent, Qt
+from qtpy.QtCore import QEvent, Qt, QTimer
 from qtpy.QtGui import QFont, QPalette
 from qtpy.QtWidgets import (
     QApplication,
@@ -20,8 +20,12 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.transforms import TransformState, is_transform_data
-from napari_vipp.ui.design import SPACE_SM, SPACE_XS, type_style
+from napari_vipp.ui.design import SPACE_SM, SPACE_XS, _font_host, type_style
 from napari_vipp.ui.iconography import data_type_icon
+from napari_vipp.ui.inspector import (
+    constrain_layout_minimum_height,
+    release_layout_minimum_height,
+)
 from napari_vipp.ui.palette_roles import theme_colors
 
 _PHYSICAL_UNIT_LABELS = {
@@ -173,8 +177,8 @@ class ConnectedInputRow(QFrame):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
-        layout.setSpacing(SPACE_SM)
+        layout.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        layout.setSpacing(SPACE_XS)
 
         self.icon_label = QLabel(self)
         self.icon_label.setObjectName("InspectorConnectedInputIcon")
@@ -183,7 +187,9 @@ class ConnectedInputRow(QFrame):
         layout.addWidget(self.icon_label, 0, Qt.AlignTop)
 
         text_layout = QVBoxLayout()
-        text_layout.setSpacing(SPACE_XS)
+        # These are three lines of one binding, not separate form fields.
+        # Keep full host-sized scientific text; save space in the gaps instead.
+        text_layout.setSpacing(SPACE_XS // 2)
 
         self.role_label = QLabel(binding.port_label, self)
         self.role_label.setObjectName("InspectorConnectedInputRole")
@@ -228,6 +234,7 @@ class ConnectedInputRow(QFrame):
             accessible_summary += f"; {binding.scientific_summary}"
         self.setAccessibleName(accessible_summary)
         self._refresh_icon()
+        constrain_layout_minimum_height(layout)
 
     def _refresh_icon(self, palette=None) -> None:
         icon = data_type_icon(
@@ -244,6 +251,11 @@ class ConnectedInputsCard(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._theme_refresh_in_progress = False
+        self._observed_font_host = None
+        self._font_refresh_timer = QTimer(self)
+        self._font_refresh_timer.setSingleShot(True)
+        self._font_refresh_timer.timeout.connect(self._refresh_host_font)
+        self.installEventFilter(self)
         self.rows: list[ConnectedInputRow] = []
         self.setObjectName("InspectorConnectedInputs")
         self.setAccessibleName("Connected node inputs")
@@ -256,7 +268,7 @@ class ConnectedInputsCard(QFrame):
         self.title_label = QLabel("Connected inputs", self)
         self.title_label.setObjectName("InspectorConnectedInputsTitle")
         self.title_label.setTextFormat(Qt.PlainText)
-        self.title_label.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_XS)
+        self.title_label.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
         card_layout.addWidget(self.title_label)
 
         self.form_layout = QFormLayout()
@@ -266,13 +278,62 @@ class ConnectedInputsCard(QFrame):
         self.form_layout.setRowWrapPolicy(QFormLayout.DontWrapRows)
         card_layout.addLayout(self.form_layout)
         self.refresh_theme()
+        self._observe_font_host()
+
+    def _observe_font_host(self) -> None:
+        host = _font_host(self)
+        if host is self._observed_font_host:
+            return
+        if self._observed_font_host is not None:
+            try:
+                self._observed_font_host.removeEventFilter(self)
+            except RuntimeError:
+                # Reparenting can outlive the old host's native QObject.
+                pass
+        self._observed_font_host = host
+        if host is not None:
+            host.installEventFilter(self)
+
+    def _queue_host_font_refresh(self) -> None:
+        if (
+            not self._theme_refresh_in_progress
+            and not self._font_refresh_timer.isActive()
+        ):
+            self._font_refresh_timer.start(0)
+
+    def _refresh_host_font(self) -> None:
+        self._observe_font_host()
+        self.refresh_theme()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.ParentChange and (
+            watched is self or watched is self._observed_font_host
+        ):
+            self._observe_font_host()
+            self._queue_host_font_refresh()
+        elif watched is self._observed_font_host and event.type() in {
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+        }:
+            # A styled card need not inherit its host's FontChange. Observe
+            # the same unroled authority used by the shared type resolver.
+            self._queue_host_font_refresh()
+        return super().eventFilter(watched, event)
 
     def set_bindings(self, bindings: list[ConnectedInputBinding]) -> None:
+        if not bindings:
+            # This persistent card is also reused by nodes without graph-input
+            # context. Retire its queued ancestor commit before emptying it so
+            # old registration geometry cannot relayout an unrelated form.
+            release_layout_minimum_height(self.layout())
         # Parameter edits often refresh presentation twice without changing
         # any graph input. Removing/recreating these rows briefly collapses
         # the card and moves the controls in a scrolled inspector.
         if tuple(row.binding for row in self.rows) == tuple(bindings):
             self.setVisible(bool(bindings))
+            if bindings:
+                constrain_layout_minimum_height(self.layout())
             return
         while self.form_layout.rowCount():
             self.form_layout.removeRow(0)
@@ -287,6 +348,8 @@ class ConnectedInputsCard(QFrame):
             self.form_layout.addRow(row)
         self.setVisible(bool(bindings))
         self.refresh_theme()
+        if bindings:
+            constrain_layout_minimum_height(self.layout())
 
     def refresh_theme(self, palette: QPalette | None = None) -> None:
         if self._theme_refresh_in_progress:
@@ -313,7 +376,7 @@ class ConnectedInputsCard(QFrame):
                 "}"
                 "QLabel#InspectorConnectedInputsTitle {"
                 f" color: {colors.text.name()};"
-                f" {type_style(self.title_label, 'section')}"
+                f" {type_style(self.title_label, 'body')} font-weight: 700;"
                 "}"
                 "QFrame#InspectorConnectedInputRow {"
                 " background: transparent; border: none;"
@@ -323,7 +386,8 @@ class ConnectedInputsCard(QFrame):
                 "}"
                 "QLabel#InspectorConnectedInputRole {"
                 f" color: {colors.text.name()};"
-                f" background: transparent; {type_style(self, 'section')}"
+                f" background: transparent; {type_style(self, 'body')}"
+                " font-weight: 600;"
                 "}"
                 "QLabel#InspectorConnectedInputSource {"
                 f" color: {colors.text.name()};"
@@ -347,11 +411,14 @@ class ConnectedInputsCard(QFrame):
         if event.type() in {
             QEvent.ApplicationPaletteChange,
             QEvent.PaletteChange,
+        }:
+            self.refresh_theme()
+        elif event.type() in {
             QEvent.FontChange,
             QEvent.ApplicationFontChange,
             QEvent.StyleChange,
         }:
-            self.refresh_theme()
+            self._queue_host_font_refresh()
 
 
 __all__ = [

@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, replace
 
 import numpy as np
-from qtpy.QtCore import QEvent, QLocale, QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QEvent, QLocale, QRect, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QAction, QValidator
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -22,6 +22,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOptionSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -262,6 +264,25 @@ def _fit_numeric_entry(box: QSpinBox | QDoubleSpinBox) -> None:
     box._vipp_metric_entry = True
     box._vipp_metric_entry_sizing = True
     try:
+        if box.property("vippCompactParameterEntry"):
+            # Qt's range-based sizeHint and napari's 70px *content* minimum
+            # make short slider entries needlessly wide. Use a shared compact
+            # text allowance plus actual native button/frame chrome instead.
+            # A long current value still grows the entry, without changing its
+            # range, precision or any scientific value.
+            option = QStyleOptionSpinBox()
+            box.initStyleOption(option)
+            option.rect = QRect(0, 0, 512, max(box.height(), box.sizeHint().height()))
+            editor = box.style().subControlRect(
+                QStyle.CC_SpinBox, option, QStyle.SC_SpinBoxEditField, box
+            )
+            chrome = max(0, option.rect.width() - editor.width())
+            text_width = max(
+                box.fontMetrics().horizontalAdvance("-0.000"),
+                box.fontMetrics().horizontalAdvance(box.text()),
+            )
+            box.setFixedWidth(max(70, text_width + chrome + SPACE_SM))
+            return
         box.setMinimumWidth(0)
         box.setMinimumWidth(
             max(70, box.sizeHint().width(), content_width(box, box.text(), padding=24))
@@ -293,6 +314,8 @@ class ParameterControl(QWidget):
         else:
             self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
+        self.value_box.setProperty("vippCompactParameterEntry", True)
+        self.value_box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.value_box.setDefaultValue(spec.default)
         if getattr(spec, "odd_only", False):
             self.value_box.setToolTip("Odd whole numbers only (for example 3, 5, 7).")
@@ -386,9 +409,11 @@ class ParameterControl(QWidget):
         mapped = self._from_slider(value)
         with QSignalBlocker(self.value_box):
             self.value_box.setValue(mapped)
+        _fit_numeric_entry(self.value_box)
         self.valueChanged.emit(self.value())
 
     def _on_box_changed(self, value) -> None:
+        _fit_numeric_entry(self.value_box)
         if self._bounds.expandable and not self._value_in_slider_bounds(value):
             self.set_bounds(self._bounds, value, emit=False)
             self.valueChanged.emit(self.value())

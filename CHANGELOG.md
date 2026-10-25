@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep slider number fields compact and consistent when inspector rows wrap,
+  expanding only for a longer current value. Make connected-input summaries
+  denser with a clearer heading, and improve recovery checkbox contrast in
+  light and dark themes without changing selection or recovery behavior.
+
 - Unify application headings, body text and control sizing around the current
   UI font. Fit dialogs to the available screen on first show without resetting
   later user resizing; scale numeric fields, table rows and bounded previews

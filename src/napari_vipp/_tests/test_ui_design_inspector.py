@@ -64,7 +64,12 @@ def test_numeric_control_metrics_grow_but_value_bounds_and_precision_do_not(
     control.setFont(font)
     qtbot.waitUntil(lambda: box.minimumWidth() > width)
     assert box.minimumWidth() >= content_width(box, box.text(), padding=24)
-    assert box.minimumWidth() >= box.sizeHint().width()
+    if control_type is ParameterControl:
+        # Slider entries fit the current value, not every possible range value;
+        # their fixed compact width must not stretch when the form wraps.
+        assert box.minimumWidth() == box.maximumWidth()
+    else:
+        assert box.minimumWidth() >= box.sizeHint().width()
     assert (control.value(), box.minimum(), box.maximum(), box.singleStep()) == original
 
 

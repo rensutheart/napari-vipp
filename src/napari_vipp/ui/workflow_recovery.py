@@ -8,8 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 from qtpy.QtCore import (
+    QEvent,
     QObject,
     QPersistentModelIndex,
+    QRectF,
     QRunnable,
     QSettings,
     QSize,
@@ -19,7 +21,7 @@ from qtpy.QtCore import (
     QTimer,
     Signal,
 )
-from qtpy.QtGui import QFontMetrics, QPalette
+from qtpy.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPalette, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -40,6 +42,7 @@ from napari_vipp.core.compute import canonical_digest
 from napari_vipp.core.workflow_recovery import RecoveryStore
 from napari_vipp.ui.design import apply_text_role, install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+from napari_vipp.ui.palette_roles import blend_colors
 
 RECOVERY_ROOT_ENV = "VIPP_WORKFLOW_RECOVERY_ROOT"
 _SESSION_TITLE = Qt.UserRole + 1
@@ -47,7 +50,7 @@ _SESSION_DETAILS = Qt.UserRole + 2
 
 
 class _RecoverySessionDelegate(QStyledItemDelegate):
-    """Keep native accessible checkboxes with a readable two-line session row."""
+    """Keep native checkbox semantics/geometry with readable two-line rows."""
 
     def style_option(self, index):
         option = QStyleOptionViewItem()
@@ -60,11 +63,42 @@ class _RecoverySessionDelegate(QStyledItemDelegate):
         option = QStyleOptionViewItem(option)
         self.initStyleOption(option, index)
         style = option.widget.style()
+        check_rect = style.subElementRect(
+            QStyle.SE_ItemViewItemCheckIndicator, option, option.widget
+        )
         text_rect = style.subElementRect(
             QStyle.SE_ItemViewItemText, option, option.widget
         ).adjusted(8, 0, -12, 0)
+        focused = bool(option.state & QStyle.State_HasFocus)
+        option.state &= ~QStyle.State_HasFocus
+        option.features &= ~QStyleOptionViewItem.HasCheckIndicator
         option.text = ""
         style.drawControl(QStyle.CE_ItemViewItem, option, painter, option.widget)
+        surface, foreground = self.parent().contrast_colors()
+        enabled = bool(option.state & QStyle.State_Enabled)
+        if not enabled:
+            foreground = blend_colors(surface, foreground, 0.5)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        box = QRectF(check_rect).adjusted(0.75, 0.75, -0.75, -0.75)
+        checked = option.checkState == Qt.Checked
+        painter.setPen(QPen(foreground, 1.5))
+        painter.setBrush(foreground if checked else surface)
+        painter.drawRoundedRect(box, 2, 2)
+        if checked:
+            mark = QPainterPath()
+            mark.moveTo(box.left() + box.width() * 0.22, box.top() + box.height() * 0.5)
+            mark.lineTo(
+                box.left() + box.width() * 0.43, box.top() + box.height() * 0.72
+            )
+            mark.lineTo(box.left() + box.width() * 0.8, box.top() + box.height() * 0.27)
+            painter.setPen(QPen(surface, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawPath(mark)
+        if focused and enabled:
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(foreground, 1.5, Qt.DotLine))
+            painter.drawRoundedRect(QRectF(option.rect).adjusted(2, 1, -2, -1), 3, 3)
+        painter.restore()
         painter.save()
         painter.setClipRect(text_rect)
         title_font = option.font
@@ -127,6 +161,49 @@ class _RecoverySessions(QListWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._pressed = None
+        self._refreshing_contrast = False
+        self.setObjectName("recoverySessions")
+        self.refresh_contrast()
+
+    def contrast_colors(self):
+        """Use the dialog surface, not napari's lighter input-control Base."""
+        host = self.parentWidget() or self
+        palette = host.palette()
+        return (
+            QColor(palette.color(QPalette.Window)),
+            QColor(palette.color(QPalette.WindowText)),
+        )
+
+    def refresh_contrast(self):
+        if self._refreshing_contrast:
+            return
+        self._refreshing_contrast = True
+        try:
+            surface, text = self.contrast_colors()
+            border = blend_colors(surface, text, 0.35)
+            self.setStyleSheet(
+                "QListWidget#recoverySessions {"
+                f"background-color: {surface.name()}; color: {text.name()};"
+                f"border: 1px solid {border.name()};"
+                "border-radius: 4px; padding: 6px; }"
+                "QListWidget#recoverySessions::item { background: transparent; }"
+            )
+            self.viewport().update()
+        finally:
+            self._refreshing_contrast = False
+
+    def showEvent(self, event):
+        self.refresh_contrast()
+        super().showEvent(event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in {
+            QEvent.PaletteChange,
+            QEvent.ApplicationPaletteChange,
+            QEvent.StyleChange,
+        } and hasattr(self, "_refreshing_contrast"):
+            self.refresh_contrast()
 
     def check_indicator_rect(self, index):
         option = self.itemDelegate().style_option(index)
@@ -425,7 +502,6 @@ class WorkflowRecoveryController(QObject):
         choices = _RecoverySessions()
         choices.setObjectName("recoverySessions")
         choices.setAccessibleName("Interrupted workflow sessions")
-        choices.setStyleSheet("QListWidget#recoverySessions { padding: 6px; }")
         choices.setAccessibleDescription(
             "Click a row to choose only that session. Check boxes to choose several. "
             "Use arrow keys to move and Space to toggle the focused session."
