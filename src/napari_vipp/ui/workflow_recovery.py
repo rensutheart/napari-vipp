@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from qtpy.QtCore import (
     QObject,
+    QPersistentModelIndex,
     QRunnable,
     QSettings,
+    QSize,
     QStandardPaths,
     Qt,
     QThreadPool,
     QTimer,
     Signal,
 )
+from qtpy.QtGui import QFontMetrics, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -26,6 +30,9 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
 )
 
@@ -33,6 +40,154 @@ from napari_vipp.core.compute import canonical_digest
 from napari_vipp.core.workflow_recovery import RecoveryStore
 
 RECOVERY_ROOT_ENV = "VIPP_WORKFLOW_RECOVERY_ROOT"
+_SESSION_TITLE = Qt.UserRole + 1
+_SESSION_DETAILS = Qt.UserRole + 2
+
+
+class _RecoverySessionDelegate(QStyledItemDelegate):
+    """Keep native accessible checkboxes with a readable two-line session row."""
+
+    def style_option(self, index):
+        option = QStyleOptionViewItem()
+        option.initFrom(self.parent())
+        self.initStyleOption(option, index)
+        option.rect = self.parent().visualRect(index)
+        return option
+
+    def paint(self, painter, option, index):
+        option = QStyleOptionViewItem(option)
+        self.initStyleOption(option, index)
+        style = option.widget.style()
+        text_rect = style.subElementRect(
+            QStyle.SE_ItemViewItemText, option, option.widget
+        ).adjusted(8, 0, -12, 0)
+        option.text = ""
+        style.drawControl(QStyle.CE_ItemViewItem, option, painter, option.widget)
+        painter.save()
+        painter.setClipRect(text_rect)
+        title_font = option.font
+        title_font.setBold(True)
+        title_metrics = QFontMetrics(title_font)
+        details_metrics = QFontMetrics(option.font)
+        height = title_metrics.height() + details_metrics.height() + 4
+        top = text_rect.center().y() - height // 2
+        group = (
+            QPalette.Active
+            if option.state & QStyle.State_Enabled
+            else QPalette.Disabled
+        )
+        painter.setPen(option.palette.color(group, QPalette.Text))
+        painter.setFont(title_font)
+        painter.drawText(
+            text_rect.left(),
+            top + title_metrics.ascent(),
+            title_metrics.elidedText(
+                index.data(_SESSION_TITLE), Qt.ElideRight, text_rect.width()
+            ),
+        )
+        secondary = option.palette.color(group, QPalette.Text)
+        secondary.setAlpha(190)
+        painter.setPen(secondary)
+        painter.setFont(option.font)
+        painter.drawText(
+            text_rect.left(),
+            top + title_metrics.height() + 4 + details_metrics.ascent(),
+            details_metrics.elidedText(
+                index.data(_SESSION_DETAILS), Qt.ElideRight, text_rect.width()
+            ),
+        )
+        painter.restore()
+        if index.row() + 1 < index.model().rowCount():
+            painter.save()
+            separator = option.palette.color(group, QPalette.Text)
+            separator.setAlpha(35)
+            painter.setPen(separator)
+            painter.drawLine(
+                option.rect.left() + 10,
+                option.rect.bottom(),
+                option.rect.right() - 10,
+                option.rect.bottom(),
+            )
+            painter.restore()
+
+    def sizeHint(self, option, index):
+        return QSize(0, QFontMetrics(option.font).height() * 2 + 28)
+
+
+class _RecoverySessions(QListWidget):
+    """Row clicks choose one; native checkbox/Space toggles choose several."""
+
+    def __init__(self):
+        super().__init__()
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+        self.setItemDelegate(_RecoverySessionDelegate(self))
+        self.setUniformItemSizes(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._pressed = None
+
+    def check_indicator_rect(self, index):
+        option = self.itemDelegate().style_option(index)
+        return self.style().subElementRect(
+            QStyle.SE_ItemViewItemCheckIndicator, option, self
+        )
+
+    def set_checked(self, checked):
+        for row in range(self.count()):
+            self.item(row).setCheckState(Qt.Checked if checked else Qt.Unchecked)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return super().mousePressEvent(event)
+        self._pressed = None
+        index = self.indexAt(event.pos())
+        if self.isEnabled() and index.isValid():
+            self.setFocus(Qt.MouseFocusReason)
+            self.setCurrentIndex(index)
+            self._pressed = (
+                QPersistentModelIndex(index),
+                self.check_indicator_rect(index).contains(event.pos()),
+            )
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return super().mouseReleaseEvent(event)
+        pressed, self._pressed = self._pressed, None
+        index = self.indexAt(event.pos())
+        if (
+            self.isEnabled()
+            and pressed
+            and pressed[0].isValid()
+            and index.isValid()
+            and pressed[0] == index
+        ):
+            on_checkbox = self.check_indicator_rect(index).contains(event.pos())
+            if on_checkbox == pressed[1]:
+                item = self.itemFromIndex(index)
+                if on_checkbox:
+                    item.setCheckState(
+                        Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked
+                    )
+                else:
+                    self.set_checked(False)
+                    item.setCheckState(Qt.Checked)
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        # A second click still only chooses; it never starts recovery.
+        self.mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Space and self.currentItem() is not None:
+            if not event.isAutoRepeat():
+                item = self.currentItem()
+                item.setCheckState(
+                    Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked
+                )
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
 
 def recovery_root():
@@ -227,56 +382,103 @@ class WorkflowRecoveryController(QObject):
             return
         dialog = QDialog(self.parent())
         dialog.setWindowTitle("Recover interrupted workflows")
-        dialog.resize(700, 420)
+        dialog.resize(740, 540)
         layout = QVBoxLayout(dialog)
-        heading = QLabel(
-            "VIPP found working copies from an interrupted session. "
-            "Recover opens new unsaved tabs; original files stay untouched. "
-            "Automatic previews are rebuilt. Manual steps and file-writing "
-            "nodes stay paused; nothing is sent to an assistant."
+        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setSpacing(12)
+        heading = QLabel("Pick up where you left off")
+        heading_font = heading.font()
+        heading_font.setBold(True)
+        heading_font.setPointSizeF(heading_font.pointSizeF() * 1.3)
+        heading.setFont(heading_font)
+        heading.setStyleSheet(
+            f"font-size: {heading_font.pointSizeF():g}pt; font-weight: 600;"
         )
         heading.setWordWrap(True)
         layout.addWidget(heading)
+        description = QLabel(
+            "Choose interrupted sessions to open their workflows as new, unsaved tabs. "
+            "Your original files stay untouched."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
         hint = QLabel(
-            "Select several sessions with Ctrl-click (Command-click on macOS), "
-            "or a range with Shift-click."
+            "Click a row to choose just one session. "
+            "Use the checkboxes to choose several."
         )
         hint.setWordWrap(True)
-        layout.addWidget(hint)
         selection_tools = QHBoxLayout()
         selection_summary = QLabel()
         selection_summary.setObjectName("recoverySelectionSummary")
+        summary_font = selection_summary.font()
+        summary_font.setBold(True)
+        selection_summary.setFont(summary_font)
         select_all = QPushButton("Select all")
         select_all.setObjectName("recoverySelectAll")
         clear_selection = QPushButton("Clear selection")
         clear_selection.setObjectName("recoveryClearSelection")
+        select_all.setAutoDefault(False)
+        clear_selection.setAutoDefault(False)
         selection_tools.addWidget(selection_summary)
         selection_tools.addStretch()
         selection_tools.addWidget(select_all)
         selection_tools.addWidget(clear_selection)
         layout.addLayout(selection_tools)
-        choices = QListWidget()
+        choices = _RecoverySessions()
         choices.setObjectName("recoverySessions")
         choices.setAccessibleName("Interrupted workflow sessions")
-        choices.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        choices.setStyleSheet("QListWidget#recoverySessions { padding: 6px; }")
+        choices.setAccessibleDescription(
+            "Click a row to choose only that session. Check boxes to choose several. "
+            "Use arrow keys to move and Space to toggle the focused session."
+        )
         for index, checkpoint in enumerate(checkpoints):
-            titles = ", ".join(tab["title"] for tab in checkpoint.tabs)
-            suffix = " · previous valid copy" if checkpoint.fallback_used else ""
-            item = QListWidgetItem(f"{checkpoint.created_utc}{suffix}\n{titles}")
+            titles = " · ".join(tab["title"] for tab in checkpoint.tabs)
+            tab_count = len(checkpoint.tabs)
+            try:
+                when = datetime.fromisoformat(checkpoint.created_utc).astimezone()
+                date = when.strftime("%d %b %Y, %H:%M")
+            except (ValueError, TypeError, OverflowError):
+                date = checkpoint.created_utc
+            details = (
+                f"{date} · {tab_count} workflow {'tab' if tab_count == 1 else 'tabs'}"
+            )
+            if checkpoint.fallback_used:
+                details += " · Previous valid copy"
+            item = QListWidgetItem(f"{titles}\n{details}")
             item.setData(Qt.UserRole, index)
+            item.setData(_SESSION_TITLE, titles)
+            item.setData(_SESSION_DETAILS, details)
+            item.setFlags(
+                Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable
+            )
+            item.setCheckState(Qt.Unchecked)
+            item.setToolTip(f"{titles}\n{details}\nSaved: {checkpoint.created_utc}")
             choices.addItem(item)
         choices.setCurrentRow(0)
         layout.addWidget(choices, 1)
+        layout.addWidget(hint)
+        safety = QLabel(
+            "Automatic previews rebuild when a recovered tab is active. "
+            "Manual steps and file-writing nodes stay paused; "
+            "nothing is sent to an assistant."
+        )
+        safety.setWordWrap(True)
+        layout.addWidget(safety)
+        layout.addSpacing(4)
         actions = QHBoxLayout()
         recover = QPushButton("Recover selected")
         recover.setObjectName("recoverSelected")
         later = QPushButton("Keep for later")
         discard = QPushButton("Discard selected recovery…")
         discard.setObjectName("discardSelectedRecovery")
-        actions.addWidget(recover)
+        for button in (recover, discard, later):
+            button.setAutoDefault(False)
+        recover.setStyleSheet("font-weight: 600; padding: 6px 12px;")
         actions.addWidget(discard)
         actions.addStretch()
         actions.addWidget(later)
+        actions.addWidget(recover)
         layout.addLayout(actions)
         processing = False
 
@@ -287,11 +489,12 @@ class WorkflowRecoveryController(QObject):
             # Items retain their checkpoint identity as successful rows disappear.
             return [
                 (item, checkpoints[item.data(Qt.UserRole)])
-                for item in sorted(choices.selectedItems(), key=choices.row)
+                for row in range(choices.count())
+                if (item := choices.item(row)).checkState() == Qt.Checked
             ]
 
         def refresh():
-            count = len(choices.selectedItems())
+            count = len(selected())
             selection_summary.setText(f"{count} of {choices.count()} sessions selected")
             recover.setText(f"Recover selected ({count})")
             discard.setText(f"Discard selected ({count})…")
@@ -304,11 +507,10 @@ class WorkflowRecoveryController(QObject):
 
         def finish(failed):
             nonlocal processing
-            # takeItem can select an adjacent row. Never turn an unselected copy
-            # into an implied next action after the batch completes.
-            choices.clearSelection()
+            # Focus moving to a neighbor never authorizes another recovery.
+            choices.set_checked(False)
             for item in failed:
-                item.setSelected(True)
+                item.setCheckState(Qt.Checked)
             processing = False
             refresh()
             if choices.count() == 0:
@@ -384,9 +586,10 @@ class WorkflowRecoveryController(QObject):
                 QMessageBox.question(
                     dialog,
                     f"Discard {count} recovery {noun}?",
-                    f"The {counted(count, 'selected interrupted session')} "
-                    "will no longer be offered for recovery. "
-                    "Your ordinary saved workflow files are not changed.",
+                    f"Discard the recovery {noun} for "
+                    f"{counted(count, 'selected session')}? "
+                    "You won't be able to recover them here. "
+                    "Your saved workflow files stay untouched.",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
@@ -417,9 +620,9 @@ class WorkflowRecoveryController(QObject):
             )
             finish(failed)
 
-        choices.itemSelectionChanged.connect(refresh)
-        select_all.clicked.connect(choices.selectAll)
-        clear_selection.clicked.connect(choices.clearSelection)
+        choices.itemChanged.connect(refresh)
+        select_all.clicked.connect(lambda: choices.set_checked(True))
+        clear_selection.clicked.connect(lambda: choices.set_checked(False))
         recover.clicked.connect(apply)
         discard.clicked.connect(remove)
         later.clicked.connect(dialog.reject)

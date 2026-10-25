@@ -1,13 +1,14 @@
 """Recovery rebuilds safe previews without writing files or granting authority."""
 
-import sys
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from napari.components import ViewerModel
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QCoreApplication, QEvent, Qt
+from qtpy.QtGui import QKeyEvent
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QLabel,
@@ -200,6 +201,8 @@ def test_opened_recovery_not_duplicated_when_bookkeeping_fails(
         if b.text().startswith("Recover selected")
     )
     before = len(widget._workflow_tabs)
+    choices = dialog.findChild(QListWidget, "recoverySessions")
+    choices.item(0).setCheckState(Qt.Checked)
     button.click()
     assert len(widget._workflow_tabs) == before + 1
     assert "Recovered tabs are open" in widget.status_label.text()
@@ -424,29 +427,51 @@ def _dialog_controls(case):
     )
 
 
-def _select_rows(choices, rows):
-    choices.clearSelection()
+def _check_rows(choices, rows):
+    for row in range(choices.count()):
+        choices.item(row).setCheckState(Qt.Unchecked)
     for row in rows:
-        choices.item(row).setSelected(True)
+        choices.item(row).setCheckState(Qt.Checked)
 
 
-def _selected_rows(choices):
-    return sorted(index.row() for index in choices.selectedIndexes())
+def _checked_rows(choices):
+    return [
+        row
+        for row in range(choices.count())
+        if choices.item(row).checkState() == Qt.Checked
+    ]
+
+
+def _check_indicator_rect(choices, row):
+    return choices.check_indicator_rect(choices.model().index(row, 0))
 
 
 def test_recovery_selection_counts_select_all_clear_and_no_selection(recovery_dialog):
     case = recovery_dialog
     controls = _dialog_controls(case)
-    assert controls.choices.selectionMode() == QAbstractItemView.ExtendedSelection
-    assert _selected_rows(controls.choices) == [0]
+    assert controls.choices.selectionMode() == QAbstractItemView.NoSelection
+    assert all(
+        controls.choices.item(row).flags() & Qt.ItemIsUserCheckable
+        for row in range(controls.choices.count())
+    )
+    for row, checkpoint in enumerate(case.checkpoints):
+        item = controls.choices.item(row)
+        assert checkpoint.tabs[0]["title"] in item.text()
+        assert "1 workflow tab" in item.text()
+        assert checkpoint.created_utc in item.toolTip()
+    assert "Space" in controls.choices.accessibleDescription()
+    assert _checked_rows(controls.choices) == []
+    assert controls.summary.text() == "0 of 3 sessions selected"
+    assert not controls.recover.isEnabled() and not controls.discard.isEnabled()
+    _check_rows(controls.choices, [0])
     assert controls.summary.text() == "1 of 3 sessions selected"
     assert "(1)" in controls.recover.text() and "(1)" in controls.discard.text()
     controls.all.click()
-    assert _selected_rows(controls.choices) == [0, 1, 2]
+    assert _checked_rows(controls.choices) == [0, 1, 2]
     assert controls.summary.text() == "3 of 3 sessions selected"
     assert "(3)" in controls.recover.text() and "(3)" in controls.discard.text()
     controls.clear.click()
-    assert _selected_rows(controls.choices) == []
+    assert _checked_rows(controls.choices) == []
     assert controls.summary.text() == "0 of 3 sessions selected"
     assert controls.recover.text() == "Recover selected (0)"
     assert controls.discard.text() == "Discard selected (0)…"
@@ -457,38 +482,160 @@ def test_recovery_selection_counts_select_all_clear_and_no_selection(recovery_di
     assert case.controller._dialog is controls.dialog
 
 
-def test_recovery_control_and_shift_multiselection_work_through_qt(
+@pytest.mark.parametrize("direction", [Qt.LeftToRight, Qt.RightToLeft])
+def test_recovery_checkbox_click_adds_but_body_click_selects_only_that_session(
+    qtbot, recovery_dialog, direction
+):
+    controls = _dialog_controls(recovery_dialog)
+    choices = controls.choices
+    choices.setLayoutDirection(direction)
+    qtbot.waitUntil(lambda: choices.visualItemRect(choices.item(2)).isValid())
+    first_indicator = _check_indicator_rect(choices, 0)
+    third_indicator = _check_indicator_rect(choices, 2)
+    assert first_indicator.isValid() and third_indicator.isValid()
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=first_indicator.center(),
+    )
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=third_indicator.center(),
+    )
+    assert _checked_rows(choices) == [0, 2]
+    assert controls.summary.text() == "2 of 3 sessions selected"
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=first_indicator.center(),
+    )
+    assert _checked_rows(choices) == [2]
+    body = choices.visualItemRect(choices.item(1)).center()
+    assert not _check_indicator_rect(choices, 1).contains(body)
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=body,
+    )
+    assert _checked_rows(choices) == [1]
+    assert choices.currentRow() == 1
+    assert controls.summary.text() == "1 of 3 sessions selected"
+    qtbot.mouseClick(choices.viewport(), Qt.LeftButton, pos=body)
+    assert _checked_rows(choices) == [1]
+
+
+@pytest.mark.parametrize(
+    ("press_row", "press_checkbox", "release_row", "release_checkbox"),
+    [
+        (0, True, 0, False),
+        (0, False, 0, True),
+        (0, True, 1, True),
+        (0, False, 1, False),
+    ],
+)
+def test_recovery_press_release_must_match_row_and_checkbox_region(
+    qtbot, recovery_dialog, press_row, press_checkbox, release_row, release_checkbox
+):
+    controls = _dialog_controls(recovery_dialog)
+    choices = controls.choices
+    _check_rows(choices, [2])
+
+    def position(row, checkbox):
+        rect = (
+            _check_indicator_rect(choices, row)
+            if checkbox
+            else choices.visualItemRect(choices.item(row))
+        )
+        assert rect.isValid()
+        return rect.center()
+
+    qtbot.mousePress(
+        choices.viewport(), Qt.LeftButton, pos=position(press_row, press_checkbox)
+    )
+    qtbot.mouseRelease(
+        choices.viewport(), Qt.LeftButton, pos=position(release_row, release_checkbox)
+    )
+    assert _checked_rows(choices) == [2]
+    assert recovery_dialog.events == []
+
+
+def test_recovery_double_click_and_return_never_start_recovery(qtbot, recovery_dialog):
+    controls = _dialog_controls(recovery_dialog)
+    choices = controls.choices
+    qtbot.mouseDClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=choices.visualItemRect(choices.item(0)).center(),
+    )
+    qtbot.keyClick(choices, Qt.Key_Return)
+    assert recovery_dialog.events == []
+    assert recovery_dialog.controller._dialog is controls.dialog
+
+
+@pytest.mark.parametrize("removed_row", [0, 2])
+def test_recovery_removed_pressed_row_cannot_check_another_row_on_release(
+    qtbot, recovery_dialog, removed_row
+):
+    controls = _dialog_controls(recovery_dialog)
+    choices = controls.choices
+    _check_rows(choices, [1])
+    position = _check_indicator_rect(choices, removed_row).center()
+    qtbot.mousePress(choices.viewport(), Qt.LeftButton, pos=position)
+    removed = choices.takeItem(removed_row)
+    assert removed is not None
+    # Removing the last row makes the release index invalid too; removing the
+    # first puts a different, still checked session under the release position.
+    if removed_row == 2:
+        assert not choices.indexAt(position).isValid()
+    qtbot.mouseRelease(choices.viewport(), Qt.LeftButton, pos=position)
+    assert [choices.item(row).data(Qt.UserRole) for row in _checked_rows(choices)] == [
+        1
+    ]
+    assert recovery_dialog.events == []
+
+
+def test_recovery_keyboard_space_toggles_and_arrow_focus_preserves_other_checks(
     qtbot, recovery_dialog
 ):
     controls = _dialog_controls(recovery_dialog)
     choices = controls.choices
-    qtbot.waitUntil(lambda: choices.visualItemRect(choices.item(2)).isValid())
-    modifier = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
-    qtbot.mouseClick(
-        choices.viewport(),
-        Qt.LeftButton,
-        pos=choices.visualItemRect(choices.item(0)).center(),
-    )
-    qtbot.mouseClick(
-        choices.viewport(),
-        Qt.LeftButton,
-        modifier=modifier,
-        pos=choices.visualItemRect(choices.item(2)).center(),
-    )
-    assert _selected_rows(choices) == [0, 2]
-    controls.clear.click()
-    qtbot.mouseClick(
-        choices.viewport(),
-        Qt.LeftButton,
-        pos=choices.visualItemRect(choices.item(0)).center(),
-    )
-    qtbot.mouseClick(
-        choices.viewport(),
-        Qt.LeftButton,
-        modifier=Qt.ShiftModifier,
-        pos=choices.visualItemRect(choices.item(2)).center(),
-    )
-    assert _selected_rows(choices) == [0, 1, 2]
+    choices.setCurrentRow(0)
+    choices.setFocus()
+    assert _checked_rows(choices) == []
+    qtbot.keyClick(choices, Qt.Key_Space)
+    assert _checked_rows(choices) == [0]
+    qtbot.keyClick(choices, Qt.Key_Down)
+    assert choices.currentRow() == 1
+    assert _checked_rows(choices) == [0]
+    qtbot.keyClick(choices, Qt.Key_Space)
+    assert _checked_rows(choices) == [0, 1]
+    qtbot.keyClick(choices, Qt.Key_Up)
+    assert choices.currentRow() == 0
+    assert _checked_rows(choices) == [0, 1]
+    qtbot.keyClick(choices, Qt.Key_Space)
+    assert _checked_rows(choices) == [1]
+    assert controls.summary.text() == "1 of 3 sessions selected"
+
+
+def test_recovery_held_space_does_not_repeat_checkbox_toggles(recovery_dialog, qtbot):
+    controls = _dialog_controls(recovery_dialog)
+    choices = controls.choices
+    _check_rows(choices, [1])
+    choices.setCurrentRow(0)
+
+    def repeated_space():
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, " ", True, 1)
+        assert event.isAutoRepeat()
+        QCoreApplication.sendEvent(choices, event)
+
+    repeated_space()
+    assert _checked_rows(choices) == [1]
+    qtbot.keyClick(choices, Qt.Key_Space)
+    assert _checked_rows(choices) == [0, 1]
+    repeated_space()
+    assert _checked_rows(choices) == [0, 1]
+    assert recovery_dialog.events == []
 
 
 @pytest.mark.parametrize("rows", [[1], [2, 0]])
@@ -497,7 +644,7 @@ def test_selected_recovery_uses_display_order_and_durable_per_item_boundaries(
 ):
     case = recovery_dialog
     controls = _dialog_controls(case)
-    _select_rows(controls.choices, rows)
+    _check_rows(controls.choices, rows)
     controls.recover.click()
     expected = [case.checkpoints[index].checkpoint_id for index in sorted(rows)]
     assert case.events == [
@@ -508,7 +655,7 @@ def test_selected_recovery_uses_display_order_and_durable_per_item_boundaries(
     assert case.controller._restored == set(expected)
     assert case.durable == set(expected)
     assert controls.choices.count() == 3 - len(rows)
-    assert _selected_rows(controls.choices) == []
+    assert _checked_rows(controls.choices) == []
     assert not controls.recover.isEnabled() and not controls.discard.isEnabled()
     assert case.controller._dialog is controls.dialog
 
@@ -543,7 +690,7 @@ def test_partial_restore_failure_retries_only_failed_rows(
         ("checkpoint", "checkpoint-2"),
         ("mark", "checkpoint-2"),
     ]
-    assert controls.choices.count() == 1 and _selected_rows(controls.choices) == [0]
+    assert controls.choices.count() == 1 and _checked_rows(controls.choices) == [0]
     assert case.controller._restored == {"checkpoint-0", "checkpoint-2"}
     case.state.restore_failures.clear()
     controls.recover.click()
@@ -569,10 +716,10 @@ def test_opened_batch_items_are_never_restored_twice_after_bookkeeping_failure(
         else case.store.mark_failures
     )
     failures.add(failed)
-    _select_rows(controls.choices, [0, 1])
+    _check_rows(controls.choices, [0, 1])
     controls.recover.click()
     assert case.controller._restored == {"checkpoint-0", "checkpoint-1"}
-    assert controls.choices.count() == 1 and _selected_rows(controls.choices) == []
+    assert controls.choices.count() == 1 and _checked_rows(controls.choices) == []
     assert failed in {p.checkpoint_id for p in case.store.pending}
     assert any("Recovered tabs are open" in message for message in case.messages)
     if failure == "checkpoint":
@@ -593,6 +740,7 @@ def test_recovery_actions_are_disabled_and_reentrant_clicks_do_not_duplicate(
 ):
     case = recovery_dialog
     controls = _dialog_controls(case)
+    _check_rows(controls.choices, [0])
 
     def during_restore():
         assert not controls.choices.isEnabled()
@@ -616,7 +764,7 @@ def test_discard_selection_asks_once_with_count_and_defaults_to_no(
 ):
     case = recovery_dialog
     controls = _dialog_controls(case)
-    _select_rows(controls.choices, [0, 2])
+    _check_rows(controls.choices, [0, 2])
     questions = []
 
     def question(*args, **kwargs):
@@ -628,6 +776,11 @@ def test_discard_selection_asks_once_with_count_and_defaults_to_no(
     assert len(questions) == 1
     args, kwargs = questions[0]
     assert "2" in args[2]
+    assert len(args[2].splitlines()) <= 3
+    assert len(args[2]) < 300
+    assert (args[3] if len(args) > 3 else kwargs["buttons"]) == (
+        QMessageBox.Yes | QMessageBox.No
+    )
     assert (
         kwargs.get("defaultButton", args[4] if len(args) > 4 else None)
         == QMessageBox.No
@@ -644,20 +797,20 @@ def test_partial_discard_failure_keeps_failure_and_unselected_rows_for_retry(
 ):
     case = recovery_dialog
     controls = _dialog_controls(case)
-    _select_rows(controls.choices, [0, 1])
+    _check_rows(controls.choices, [0, 1])
     case.store.dismiss_failures.add("checkpoint-1")
     monkeypatch.setattr(
         recovery_ui.QMessageBox, "question", lambda *args: QMessageBox.Yes
     )
     controls.discard.click()
     assert case.events == [("dismiss", "checkpoint-0"), ("dismiss", "checkpoint-1")]
-    assert controls.choices.count() == 2 and _selected_rows(controls.choices) == [0]
+    assert controls.choices.count() == 2 and _checked_rows(controls.choices) == [0]
     assert "Synthetic session 1" in controls.choices.item(0).text()
     assert "Synthetic session 2" in controls.choices.item(1).text()
     case.store.dismiss_failures.clear()
     controls.discard.click()
     assert case.events[-1] == ("dismiss", "checkpoint-1")
-    assert controls.choices.count() == 1 and _selected_rows(controls.choices) == []
+    assert controls.choices.count() == 1 and _checked_rows(controls.choices) == []
 
 
 def test_discard_batch_blocks_reentrancy_and_reenables_remaining_controls(
@@ -665,7 +818,7 @@ def test_discard_batch_blocks_reentrancy_and_reenables_remaining_controls(
 ):
     case = recovery_dialog
     controls = _dialog_controls(case)
-    _select_rows(controls.choices, [0, 1])
+    _check_rows(controls.choices, [0, 1])
     questions = []
 
     def question(*args):
@@ -690,7 +843,7 @@ def test_discard_batch_blocks_reentrancy_and_reenables_remaining_controls(
     assert case.events == [("dismiss", "checkpoint-0"), ("dismiss", "checkpoint-1")]
     assert controls.choices.count() == 1
     assert controls.choices.isEnabled() and controls.all.isEnabled()
-    assert _selected_rows(controls.choices) == []
+    assert _checked_rows(controls.choices) == []
 
 
 def test_no_recovery_dialog_is_created_when_no_interrupted_sessions_remain(
@@ -741,6 +894,11 @@ def test_two_real_recovery_copies_open_unsaved_with_safe_independent_previews(
         widget._workflow_tabs.current.mark_saved(original)
         original_bytes[original] = original.read_bytes()
         tabs, active = widget._capture_recovery_workspace()
+        assert len(tabs) == 1
+        companion = deepcopy(tabs[0])
+        companion["tab_id"] = f"companion-tab-{index}"
+        companion["title"] = f"Companion workflow {index}"
+        tabs.append(companion)
         crashed = RecoveryStore(controller.store.root)
         checkpoint = crashed.checkpoint(tabs, active)
         crashed.close(clean=False)
@@ -755,13 +913,22 @@ def test_two_real_recovery_copies_open_unsaved_with_safe_independent_previews(
     dialog.findChild(QPushButton, "recoverySelectAll").click()
     dialog.findChild(QPushButton, "recoverSelected").click()
     qtbot.waitUntil(lambda: controller._dialog is None, timeout=15_000)
-    assert len(widget._workflow_tabs) == 3
+    assert len(widget._workflow_tabs) == 5
     assert checkpoint_ids <= controller._restored
     assert controller.store.recoverable() == []
     _wait_for_recovery_preview(widget, qtbot)
     sessions = [
         session for session in widget._workflow_tabs if session is not original_session
     ]
+    assert len(sessions) == 4
+    for original in expected:
+        assert (
+            sum(
+                session.runtime_cache["_recovery_original_path"] == original
+                for session in sessions
+            )
+            == 2
+        )
     for session in sessions:
         assert widget._activate_workflow_tab(
             widget._workflow_tabs.index_of(session.session_id), check_safety=True

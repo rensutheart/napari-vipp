@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- Select multiple interrupted workflow sessions for recovery or confirmed
-  discard, with Select all, Clear selection and live counts. Keep unselected
+- Choose interrupted workflow sessions with visible checkboxes, readable dates
+  and workflow counts. Click a row to choose just one; check boxes to combine
+  several, with Select all, Clear selection and live counts. Confirm discard
+  once, with No as the default. Keep unselected
   copies and failed recoveries available; protect each recovered workspace
   before marking its original working copy as recovered.
 
