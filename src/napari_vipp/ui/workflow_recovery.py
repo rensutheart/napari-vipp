@@ -11,16 +11,19 @@ from qtpy.QtCore import (
     QRunnable,
     QSettings,
     QStandardPaths,
+    Qt,
     QThreadPool,
     QTimer,
     Signal,
 )
 from qtpy.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -224,7 +227,7 @@ class WorkflowRecoveryController(QObject):
             return
         dialog = QDialog(self.parent())
         dialog.setWindowTitle("Recover interrupted workflows")
-        dialog.resize(640, 340)
+        dialog.resize(700, 420)
         layout = QVBoxLayout(dialog)
         heading = QLabel(
             "VIPP found working copies from an interrupted session. "
@@ -234,72 +237,195 @@ class WorkflowRecoveryController(QObject):
         )
         heading.setWordWrap(True)
         layout.addWidget(heading)
+        hint = QLabel(
+            "Select several sessions with Ctrl-click (Command-click on macOS), "
+            "or a range with Shift-click."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        selection_tools = QHBoxLayout()
+        selection_summary = QLabel()
+        selection_summary.setObjectName("recoverySelectionSummary")
+        select_all = QPushButton("Select all")
+        select_all.setObjectName("recoverySelectAll")
+        clear_selection = QPushButton("Clear selection")
+        clear_selection.setObjectName("recoveryClearSelection")
+        selection_tools.addWidget(selection_summary)
+        selection_tools.addStretch()
+        selection_tools.addWidget(select_all)
+        selection_tools.addWidget(clear_selection)
+        layout.addLayout(selection_tools)
         choices = QListWidget()
-        for checkpoint in checkpoints:
+        choices.setObjectName("recoverySessions")
+        choices.setAccessibleName("Interrupted workflow sessions")
+        choices.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        for index, checkpoint in enumerate(checkpoints):
             titles = ", ".join(tab["title"] for tab in checkpoint.tabs)
             suffix = " · previous valid copy" if checkpoint.fallback_used else ""
-            choices.addItem(f"{checkpoint.created_utc}{suffix}\n{titles}")
+            item = QListWidgetItem(f"{checkpoint.created_utc}{suffix}\n{titles}")
+            item.setData(Qt.UserRole, index)
+            choices.addItem(item)
         choices.setCurrentRow(0)
         layout.addWidget(choices, 1)
         actions = QHBoxLayout()
         recover = QPushButton("Recover selected")
+        recover.setObjectName("recoverSelected")
         later = QPushButton("Keep for later")
         discard = QPushButton("Discard selected recovery…")
+        discard.setObjectName("discardSelectedRecovery")
         actions.addWidget(recover)
         actions.addWidget(discard)
         actions.addStretch()
         actions.addWidget(later)
         layout.addLayout(actions)
+        processing = False
+
+        def counted(count, singular, plural=None):
+            return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+        def selected():
+            # Items retain their checkpoint identity as successful rows disappear.
+            return [
+                (item, checkpoints[item.data(Qt.UserRole)])
+                for item in sorted(choices.selectedItems(), key=choices.row)
+            ]
+
+        def refresh():
+            count = len(choices.selectedItems())
+            selection_summary.setText(f"{count} of {choices.count()} sessions selected")
+            recover.setText(f"Recover selected ({count})")
+            discard.setText(f"Discard selected ({count})…")
+            recover.setEnabled(bool(count) and not processing)
+            discard.setEnabled(bool(count) and not processing)
+            select_all.setEnabled(count < choices.count() and not processing)
+            clear_selection.setEnabled(bool(count) and not processing)
+            choices.setEnabled(not processing)
+            later.setEnabled(not processing)
+
+        def finish(failed):
+            nonlocal processing
+            # takeItem can select an adjacent row. Never turn an unselected copy
+            # into an implied next action after the batch completes.
+            choices.clearSelection()
+            for item in failed:
+                item.setSelected(True)
+            processing = False
+            refresh()
+            if choices.count() == 0:
+                dialog.accept()
 
         def apply():
-            index = choices.currentRow()
-            if not 0 <= index < len(checkpoints):
+            nonlocal processing
+            batch = selected()
+            if processing or not batch:
                 return
-            checkpoint = checkpoints[index]
-            try:
-                self.restore(checkpoint)
-            except Exception:
+            processing = True
+            refresh()
+            opened, retained = 0, 0
+            failed = []
+            # Stay in this Qt callback: queued automatic previews cannot start
+            # halfway through opening the other selected workspaces.
+            for item, checkpoint in batch:
+                try:
+                    self.restore(checkpoint)
+                except Exception:
+                    failed.append(item)
+                    continue
+                opened += 1
+                self._restored.add(checkpoint.checkpoint_id)
+                try:
+                    self.checkpoint_now("recovered workspace", required=True)
+                    self.store.mark_recovered(checkpoint.checkpoint_id)
+                except Exception:
+                    retained += 1
+                choices.takeItem(choices.row(item))
+            if opened:
+                self.changed()
+            if retained:
                 self.announce(
-                    "Recovery did not finish. The recovery copy was kept; "
+                    f"Recovered tabs are open from {counted(opened, 'session')}. "
+                    "Recovery bookkeeping could not be confirmed for "
+                    f"{counted(retained, 'session')}. "
+                    "Save the recovered workflows to protect your edits."
+                    + (
+                        f" {counted(len(failed), 'selected session')} could not be "
+                        "recovered and remain available; wait for current work "
+                        "to stop and try again."
+                        if failed
+                        else ""
+                    )
+                )
+            elif failed:
+                self.announce(
+                    f"Recovered {counted(opened, 'session')}. "
+                    f"{counted(len(failed), 'selected session')} could not be "
+                    "recovered and remain available; "
                     "wait for current work to stop and try again."
                 )
-                return
-            self._restored.add(checkpoint.checkpoint_id)
-            try:
-                self.checkpoint_now("recovered workspace", required=True)
-                self.store.mark_recovered(checkpoint.checkpoint_id)
-            except Exception:
+            else:
                 self.announce(
-                    "Recovered tabs are open. Their previous recovery copy was "
-                    "kept because the new checkpoint could not be confirmed. "
-                    "Save the recovered workflows to protect your edits."
+                    f"Recovered {counted(opened, 'session')} into new unsaved tabs. "
+                    "Original files are unchanged. Automatic previews rebuild "
+                    "when a recovered tab is active; manual steps and "
+                    "file-writing nodes stay paused."
                 )
-            self.changed()
-            dialog.accept()
+            finish(failed)
 
         def remove():
-            index = choices.currentRow()
-            if not 0 <= index < len(checkpoints):
+            nonlocal processing
+            batch = selected()
+            if processing or not batch:
                 return
+            count = len(batch)
+            noun = "copy" if count == 1 else "copies"
+            processing = True
+            refresh()
             if (
                 QMessageBox.question(
                     dialog,
-                    "Discard recovery copy?",
-                    "Stop offering this interrupted session for recovery? "
+                    f"Discard {count} recovery {noun}?",
+                    f"The {counted(count, 'selected interrupted session')} "
+                    "will no longer be offered for recovery. "
                     "Your ordinary saved workflow files are not changed.",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
-                == QMessageBox.Yes
+                != QMessageBox.Yes
             ):
-                self.store.dismiss(checkpoints[index].checkpoint_id)
-                dialog.accept()
+                processing = False
+                refresh()
+                return
+            failed = []
+            for item, checkpoint in batch:
+                try:
+                    self.store.dismiss(checkpoint.checkpoint_id)
+                except Exception:
+                    failed.append(item)
+                    continue
+                choices.takeItem(choices.row(item))
+            dismissed = counted(count - len(failed), "recovery copy", "recovery copies")
+            unconfirmed = counted(len(failed), "selected copy", "selected copies")
+            self.announce(
+                f"Discarded {dismissed}. "
+                "Ordinary saved workflow files are unchanged."
+                + (
+                    f" Discard could not be confirmed for {unconfirmed}; "
+                    "these remain listed. Check the recovery folder before retrying."
+                    if failed
+                    else ""
+                )
+            )
+            finish(failed)
 
+        choices.itemSelectionChanged.connect(refresh)
+        select_all.clicked.connect(choices.selectAll)
+        clear_selection.clicked.connect(choices.clearSelection)
         recover.clicked.connect(apply)
         discard.clicked.connect(remove)
         later.clicked.connect(dialog.reject)
         dialog.finished.connect(lambda *_: setattr(self, "_dialog", None))
         self._dialog = dialog
+        refresh()
         dialog.show()
 
     def choose_folder(self):

@@ -1,16 +1,28 @@
 """Recovery rebuilds safe previews without writing files or granting authority."""
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from napari.components import ViewerModel
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import (
+    QAbstractItemView,
+    QLabel,
+    QListWidget,
+    QMessageBox,
+    QPushButton,
+    QWidget,
+)
 
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.compute import ComputeMode
 from napari_vipp.core.pipeline import EXECUTION_READY
 from napari_vipp.core.workflow import save_workflow
 from napari_vipp.core.workflow_recovery import RecoveryStore
+from napari_vipp.ui import workflow_recovery as recovery_ui
 
 
 @pytest.fixture
@@ -38,9 +50,11 @@ def _edit(widget, threshold=0.63):
 
 def _wait_for_recovery_preview(widget, qtbot):
     qtbot.waitUntil(
-        lambda: not widget._recovery_preview_pending
-        and widget._active_source_load_id is None
-        and widget._active_pipeline_run_id is None,
+        lambda: (
+            not widget._recovery_preview_pending
+            and widget._active_source_load_id is None
+            and widget._active_pipeline_run_id is None
+        ),
         timeout=15_000,
     )
 
@@ -181,7 +195,9 @@ def test_opened_recovery_not_duplicated_when_bookkeeping_fails(
     from qtpy.QtWidgets import QPushButton
 
     button = next(
-        b for b in dialog.findChildren(QPushButton) if b.text() == "Recover selected"
+        b
+        for b in dialog.findChildren(QPushButton)
+        if b.text().startswith("Recover selected")
     )
     before = len(widget._workflow_tabs)
     button.click()
@@ -300,6 +316,480 @@ def test_portable_recipe_recovery_keeps_original_bindings_and_source_proofs(
     assert source.read_bytes() == before_source
     assert dataset.read_bytes() == before_dataset
     assert not (moved / "results").exists()
+
+
+class _RecoveryDialogStore:
+    issues = ()
+
+    def __init__(self, checkpoints, events, durable):
+        self.pending = list(checkpoints)
+        self.events, self.durable = events, durable
+        self.dismiss_failures = set()
+        self.mark_failures = set()
+        self.on_dismiss = None
+
+    def recoverable(self):
+        return list(self.pending)
+
+    def mark_recovered(self, checkpoint_id):
+        assert checkpoint_id in self.durable
+        self.events.append(("mark", checkpoint_id))
+        if checkpoint_id in self.mark_failures:
+            raise PermissionError("injected mark failure")
+        self.pending = [p for p in self.pending if p.checkpoint_id != checkpoint_id]
+
+    def dismiss(self, checkpoint_id):
+        self.events.append(("dismiss", checkpoint_id))
+        if self.on_dismiss:
+            self.on_dismiss()
+        if checkpoint_id in self.dismiss_failures:
+            raise PermissionError("injected dismissal failure")
+        self.pending = [p for p in self.pending if p.checkpoint_id != checkpoint_id]
+
+    def close(self, **kwargs):
+        pass
+
+
+@pytest.fixture
+def recovery_dialog(qtbot, tmp_path, monkeypatch):
+    """Controller/UI only: no recovery directory is read or written."""
+    checkpoints = [
+        SimpleNamespace(
+            checkpoint_id=f"checkpoint-{index}",
+            tabs=[{"title": f"Synthetic session {index}"}],
+            created_utc=f"2026-10-25T12:00:0{index}Z",
+            fallback_used=False,
+        )
+        for index in range(3)
+    ]
+    events, durable, messages = [], set(), []
+    store = _RecoveryDialogStore(checkpoints, events, durable)
+    monkeypatch.setattr(recovery_ui, "RecoveryStore", lambda _: store)
+    monkeypatch.setattr(recovery_ui, "recovery_root", lambda: tmp_path / "unused-store")
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    state = SimpleNamespace(
+        restore_failures=set(), checkpoint_failures=set(), last=None, on_restore=None
+    )
+
+    def restore(checkpoint):
+        identifier = checkpoint.checkpoint_id
+        events.append(("restore", identifier))
+        if state.on_restore:
+            state.on_restore()
+        if identifier in state.restore_failures:
+            raise ValueError("injected restore failure")
+        state.last = identifier
+
+    controller = recovery_ui.WorkflowRecoveryController(
+        parent, capture=lambda: ([], ""), restore=restore, announce=messages.append
+    )
+    controller.periodic.stop()
+
+    def checkpoint(reason, *, required=False):
+        assert required and reason == "recovered workspace"
+        assert state.last in controller._restored
+        events.append(("checkpoint", state.last))
+        if state.last in state.checkpoint_failures:
+            raise PermissionError("injected durable checkpoint failure")
+        durable.add(state.last)
+        return SimpleNamespace(created_utc="durable synthetic checkpoint")
+
+    monkeypatch.setattr(controller, "checkpoint_now", checkpoint)
+    monkeypatch.setattr(controller, "changed", lambda: None)
+    controller.show_recovery()
+    yield SimpleNamespace(
+        controller=controller,
+        store=store,
+        events=events,
+        durable=durable,
+        messages=messages,
+        checkpoints=checkpoints,
+        state=state,
+    )
+    controller.close()
+
+
+def _dialog_controls(case):
+    dialog = case.controller._dialog
+    assert dialog is not None
+    return SimpleNamespace(
+        dialog=dialog,
+        choices=dialog.findChild(QListWidget, "recoverySessions"),
+        recover=dialog.findChild(QPushButton, "recoverSelected"),
+        discard=dialog.findChild(QPushButton, "discardSelectedRecovery"),
+        all=dialog.findChild(QPushButton, "recoverySelectAll"),
+        clear=dialog.findChild(QPushButton, "recoveryClearSelection"),
+        summary=dialog.findChild(QLabel, "recoverySelectionSummary"),
+    )
+
+
+def _select_rows(choices, rows):
+    choices.clearSelection()
+    for row in rows:
+        choices.item(row).setSelected(True)
+
+
+def _selected_rows(choices):
+    return sorted(index.row() for index in choices.selectedIndexes())
+
+
+def test_recovery_selection_counts_select_all_clear_and_no_selection(recovery_dialog):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    assert controls.choices.selectionMode() == QAbstractItemView.ExtendedSelection
+    assert _selected_rows(controls.choices) == [0]
+    assert controls.summary.text() == "1 of 3 sessions selected"
+    assert "(1)" in controls.recover.text() and "(1)" in controls.discard.text()
+    controls.all.click()
+    assert _selected_rows(controls.choices) == [0, 1, 2]
+    assert controls.summary.text() == "3 of 3 sessions selected"
+    assert "(3)" in controls.recover.text() and "(3)" in controls.discard.text()
+    controls.clear.click()
+    assert _selected_rows(controls.choices) == []
+    assert controls.summary.text() == "0 of 3 sessions selected"
+    assert controls.recover.text() == "Recover selected (0)"
+    assert controls.discard.text() == "Discard selected (0)…"
+    assert not controls.recover.isEnabled() and not controls.discard.isEnabled()
+    controls.recover.click()
+    controls.discard.click()
+    assert case.events == []
+    assert case.controller._dialog is controls.dialog
+
+
+def test_recovery_control_and_shift_multiselection_work_through_qt(
+    qtbot, recovery_dialog
+):
+    controls = _dialog_controls(recovery_dialog)
+    choices = controls.choices
+    qtbot.waitUntil(lambda: choices.visualItemRect(choices.item(2)).isValid())
+    modifier = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=choices.visualItemRect(choices.item(0)).center(),
+    )
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        modifier=modifier,
+        pos=choices.visualItemRect(choices.item(2)).center(),
+    )
+    assert _selected_rows(choices) == [0, 2]
+    controls.clear.click()
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        pos=choices.visualItemRect(choices.item(0)).center(),
+    )
+    qtbot.mouseClick(
+        choices.viewport(),
+        Qt.LeftButton,
+        modifier=Qt.ShiftModifier,
+        pos=choices.visualItemRect(choices.item(2)).center(),
+    )
+    assert _selected_rows(choices) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("rows", [[1], [2, 0]])
+def test_selected_recovery_uses_display_order_and_durable_per_item_boundaries(
+    recovery_dialog, rows
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    _select_rows(controls.choices, rows)
+    controls.recover.click()
+    expected = [case.checkpoints[index].checkpoint_id for index in sorted(rows)]
+    assert case.events == [
+        (kind, identifier)
+        for identifier in expected
+        for kind in ("restore", "checkpoint", "mark")
+    ]
+    assert case.controller._restored == set(expected)
+    assert case.durable == set(expected)
+    assert controls.choices.count() == 3 - len(rows)
+    assert _selected_rows(controls.choices) == []
+    assert not controls.recover.isEnabled() and not controls.discard.isEnabled()
+    assert case.controller._dialog is controls.dialog
+
+
+def test_recover_all_closes_only_after_every_selected_session_is_protected(
+    recovery_dialog,
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    controls.all.click()
+    controls.recover.click()
+    assert case.controller._dialog is None
+    assert case.durable == {p.checkpoint_id for p in case.checkpoints}
+    assert case.store.pending == []
+
+
+def test_partial_restore_failure_retries_only_failed_rows(
+    recovery_dialog,
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    failed = case.checkpoints[1].checkpoint_id
+    case.state.restore_failures.add(failed)
+    controls.all.click()
+    controls.recover.click()
+    assert case.events == [
+        ("restore", "checkpoint-0"),
+        ("checkpoint", "checkpoint-0"),
+        ("mark", "checkpoint-0"),
+        ("restore", failed),
+        ("restore", "checkpoint-2"),
+        ("checkpoint", "checkpoint-2"),
+        ("mark", "checkpoint-2"),
+    ]
+    assert controls.choices.count() == 1 and _selected_rows(controls.choices) == [0]
+    assert case.controller._restored == {"checkpoint-0", "checkpoint-2"}
+    case.state.restore_failures.clear()
+    controls.recover.click()
+    assert case.controller._dialog is None
+    assert [identifier for kind, identifier in case.events if kind == "restore"] == [
+        "checkpoint-0",
+        failed,
+        "checkpoint-2",
+        failed,
+    ]
+
+
+@pytest.mark.parametrize("failure", ["checkpoint", "mark"])
+def test_opened_batch_items_are_never_restored_twice_after_bookkeeping_failure(
+    recovery_dialog, failure
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    failed = case.checkpoints[0].checkpoint_id
+    failures = (
+        case.state.checkpoint_failures
+        if failure == "checkpoint"
+        else case.store.mark_failures
+    )
+    failures.add(failed)
+    _select_rows(controls.choices, [0, 1])
+    controls.recover.click()
+    assert case.controller._restored == {"checkpoint-0", "checkpoint-1"}
+    assert controls.choices.count() == 1 and _selected_rows(controls.choices) == []
+    assert failed in {p.checkpoint_id for p in case.store.pending}
+    assert any("Recovered tabs are open" in message for message in case.messages)
+    if failure == "checkpoint":
+        assert ("mark", failed) not in case.events
+    controls.dialog.reject()
+    case.controller.show_recovery()
+    reopened = _dialog_controls(case)
+    assert reopened.choices.count() == 1
+    assert "Synthetic session 2" in reopened.choices.item(0).text()
+    assert [identifier for kind, identifier in case.events if kind == "restore"] == [
+        "checkpoint-0",
+        "checkpoint-1",
+    ]
+
+
+def test_recovery_actions_are_disabled_and_reentrant_clicks_do_not_duplicate(
+    recovery_dialog,
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+
+    def during_restore():
+        assert not controls.choices.isEnabled()
+        for button in controls.dialog.findChildren(QPushButton):
+            assert not button.isEnabled()
+        controls.recover.clicked.emit(False)
+        controls.discard.clicked.emit(False)
+
+    case.state.on_restore = during_restore
+    controls.recover.click()
+    assert case.events == [
+        ("restore", "checkpoint-0"),
+        ("checkpoint", "checkpoint-0"),
+        ("mark", "checkpoint-0"),
+    ]
+
+
+@pytest.mark.parametrize("approve", [False, True])
+def test_discard_selection_asks_once_with_count_and_defaults_to_no(
+    recovery_dialog, monkeypatch, approve
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    _select_rows(controls.choices, [0, 2])
+    questions = []
+
+    def question(*args, **kwargs):
+        questions.append((args, kwargs))
+        return QMessageBox.Yes if approve else QMessageBox.No
+
+    monkeypatch.setattr(recovery_ui.QMessageBox, "question", question)
+    controls.discard.click()
+    assert len(questions) == 1
+    args, kwargs = questions[0]
+    assert "2" in args[2]
+    assert (
+        kwargs.get("defaultButton", args[4] if len(args) > 4 else None)
+        == QMessageBox.No
+    )
+    assert case.events == (
+        [("dismiss", "checkpoint-0"), ("dismiss", "checkpoint-2")] if approve else []
+    )
+    assert controls.choices.count() == (1 if approve else 3)
+    assert case.controller._restored == set()
+
+
+def test_partial_discard_failure_keeps_failure_and_unselected_rows_for_retry(
+    recovery_dialog, monkeypatch
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    _select_rows(controls.choices, [0, 1])
+    case.store.dismiss_failures.add("checkpoint-1")
+    monkeypatch.setattr(
+        recovery_ui.QMessageBox, "question", lambda *args: QMessageBox.Yes
+    )
+    controls.discard.click()
+    assert case.events == [("dismiss", "checkpoint-0"), ("dismiss", "checkpoint-1")]
+    assert controls.choices.count() == 2 and _selected_rows(controls.choices) == [0]
+    assert "Synthetic session 1" in controls.choices.item(0).text()
+    assert "Synthetic session 2" in controls.choices.item(1).text()
+    case.store.dismiss_failures.clear()
+    controls.discard.click()
+    assert case.events[-1] == ("dismiss", "checkpoint-1")
+    assert controls.choices.count() == 1 and _selected_rows(controls.choices) == []
+
+
+def test_discard_batch_blocks_reentrancy_and_reenables_remaining_controls(
+    recovery_dialog, monkeypatch
+):
+    case = recovery_dialog
+    controls = _dialog_controls(case)
+    _select_rows(controls.choices, [0, 1])
+    questions = []
+
+    def question(*args):
+        questions.append(args)
+        assert not controls.choices.isEnabled()
+        assert all(
+            not button.isEnabled()
+            for button in controls.dialog.findChildren(QPushButton)
+        )
+        controls.discard.clicked.emit(False)
+        return QMessageBox.Yes
+
+    def during_dismiss():
+        assert not controls.choices.isEnabled()
+        controls.recover.clicked.emit(False)
+        controls.discard.clicked.emit(False)
+
+    case.store.on_dismiss = during_dismiss
+    monkeypatch.setattr(recovery_ui.QMessageBox, "question", question)
+    controls.discard.click()
+    assert len(questions) == 1
+    assert case.events == [("dismiss", "checkpoint-0"), ("dismiss", "checkpoint-1")]
+    assert controls.choices.count() == 1
+    assert controls.choices.isEnabled() and controls.all.isEnabled()
+    assert _selected_rows(controls.choices) == []
+
+
+def test_no_recovery_dialog_is_created_when_no_interrupted_sessions_remain(
+    recovery_dialog,
+):
+    case = recovery_dialog
+    _dialog_controls(case).dialog.reject()
+    case.store.pending.clear()
+    case.controller.show_recovery()
+    assert case.controller._dialog is None
+    assert case.events == []
+    assert (
+        case.messages[-1] == "No interrupted VIPP workflows are waiting for recovery."
+    )
+
+
+def test_two_real_recovery_copies_open_unsaved_with_safe_independent_previews(
+    recovery_widget, qtbot, tmp_path, monkeypatch
+):
+    widget = recovery_widget
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    node = _edit(widget)
+    manual = widget.pipeline.add_node("intensity_histogram")
+    widget.pipeline.set_node_auto_recalculate(manual.id, True)
+    assert widget.pipeline.connect(node.id, manual.id).success
+    writer = widget.pipeline.add_node("save_output")
+    assert widget.pipeline.connect(node.id, writer.id).success
+    controller = widget._workflow_recovery
+    original_bytes, source_bytes, expected = {}, {}, {}
+    checkpoint_ids = set()
+    for index, threshold in enumerate((0.25, 0.75)):
+        source = tmp_path / "data" / f"source-{index}.npy"
+        data = np.linspace(0, 1, 64, dtype=np.float32).reshape(8, 8) + index
+        np.save(source, data)
+        source_bytes[source] = source.read_bytes()
+        widget.pipeline.nodes["input"].params.update(
+            source_mode="file path", file_path=f"data/{source.name}"
+        )
+        widget.pipeline.nodes[node.id].params["threshold"] = threshold
+        destination = tmp_path / f"must-not-write-{index}.npy"
+        widget.pipeline.nodes[writer.id].params.update(
+            enabled="on", path=str(destination)
+        )
+        widget._build_graph_from_pipeline()
+        widget._sync_current_workflow_tab_state()
+        original = save_workflow(tmp_path / f"workflow-{index}.json", widget.pipeline)
+        widget._workflow_tabs.current.mark_saved(original)
+        original_bytes[original] = original.read_bytes()
+        tabs, active = widget._capture_recovery_workspace()
+        crashed = RecoveryStore(controller.store.root)
+        checkpoint = crashed.checkpoint(tabs, active)
+        crashed.close(clean=False)
+        checkpoint_ids.add(checkpoint.checkpoint_id)
+        expected[str(original)] = (source, data, threshold, destination)
+    original_session = widget._workflow_tabs.current
+    controller.show_recovery()
+    dialog = controller._dialog
+    assert dialog is not None
+    choices = dialog.findChild(QListWidget, "recoverySessions")
+    assert choices.count() == 2
+    dialog.findChild(QPushButton, "recoverySelectAll").click()
+    dialog.findChild(QPushButton, "recoverSelected").click()
+    qtbot.waitUntil(lambda: controller._dialog is None, timeout=15_000)
+    assert len(widget._workflow_tabs) == 3
+    assert checkpoint_ids <= controller._restored
+    assert controller.store.recoverable() == []
+    _wait_for_recovery_preview(widget, qtbot)
+    sessions = [
+        session for session in widget._workflow_tabs if session is not original_session
+    ]
+    for session in sessions:
+        assert widget._activate_workflow_tab(
+            widget._workflow_tabs.index_of(session.session_id), check_safety=True
+        )
+        _wait_for_recovery_preview(widget, qtbot)
+        source, data, threshold, destination = expected[
+            session.runtime_cache["_recovery_original_path"]
+        ]
+        assert (
+            session.path is None
+            and session.dirty
+            and session.title.startswith("Recovered")
+        )
+        assert Path(widget.pipeline.nodes["input"].params["file_path"]) == source
+        np.testing.assert_array_equal(widget.pipeline.outputs["input"], data)
+        np.testing.assert_array_equal(
+            widget.pipeline.outputs[node.id], data > threshold
+        )
+        assert not session.history.can_undo
+        for paused in (manual.id, writer.id):
+            assert paused not in widget.pipeline.completed_node_ids
+            assert widget.pipeline.outputs.get(paused) is None
+            assert widget.pipeline.node_execution_states[paused] != EXECUTION_READY
+        assert widget.pipeline.nodes[manual.id].params["_vipp_auto_recalculate"] is True
+        assert widget.pipeline.nodes[writer.id].params["enabled"] == "on"
+        assert not destination.exists()
+    assert all(path.read_bytes() == raw for path, raw in original_bytes.items())
+    assert all(path.read_bytes() == raw for path, raw in source_bytes.items())
 
 
 def test_new_relative_recipe_bindings_are_frozen_before_cwd_changes(

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Select multiple interrupted workflow sessions for recovery or confirmed
+  discard, with Select all, Clear selection and live counts. Keep unselected
+  copies and failed recoveries available; protect each recovered workspace
+  before marking its original working copy as recovered.
+
 - Correct the development installer's startup-ownership check so ordinary
   distribution metadata is not subjected to the smaller startup/control-file
   limit. Keep startup safety bounds and ownership checks; identify the exact
