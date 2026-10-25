@@ -185,7 +185,7 @@ def _control_snapshot(state: Path) -> tuple[tuple[str, str], ...]:
 def _claims(
     site: Path, owned_names: set[str] | None
 ) -> dict[str, tuple[str, str, str]]:
-    """Read only RECORD metadata for ownership of immediate startup files."""
+    """Read RECORD ownership of immediate controls and known bootstrap sources."""
     claims = {}
     for index, info in enumerate(site.glob("*.dist-info")):
         _require(index < 512, "Too many distribution metadata directories.")
@@ -208,14 +208,67 @@ def _claims(
         ):
             _require(len(row) == 3, "Invalid startup-file ownership metadata.")
             name = row[0].replace("\\", "/")
-            if "/" not in name and (
-                name.casefold().endswith(".pth") or name == "pywin32_bootstrap.py"
-            ):
+            if (
+                "/" not in name and name.casefold().endswith(".pth")
+            ) or name.casefold() in {
+                "pywin32_bootstrap.py",
+                "win32/lib/pywin32_bootstrap.py",
+            }:
                 _require(
                     name.casefold() not in claims, "Overlapping startup-file ownership."
                 )
                 claims[name.casefold()] = (row[1], row[2], owner)
     return claims
+
+
+def _owned_pywin32_bootstrap(
+    site: Path,
+    search_paths: list[Path],
+    claims: dict[str, tuple[str, str, str]],
+) -> None:
+    """Inspect, never import, the one reachable owned source at this .pth line."""
+    candidates, scanned = [], 0
+    for directory in search_paths:
+        _direct(directory)
+        _require(directory.is_dir(), "A bootstrap search path is not a directory.")
+        for path in directory.iterdir():
+            scanned += 1
+            _require(scanned <= 16384, "Too many bootstrap search-directory entries.")
+            name = path.name.casefold()
+            if name == "pywin32_bootstrap.py":
+                candidates.append(path)
+            elif name == "pywin32_bootstrap" or (
+                name.startswith("pywin32_bootstrap.")
+                and name.endswith((".pyc", ".pyd", ".so"))
+            ):
+                raise LegacyInPlaceError(
+                    "An unsupported or shadowing pywin32 bootstrap was preserved: "
+                    f"{path}"
+                )
+    _require(
+        len(candidates) == 1,
+        "The pywin32 bootstrap is missing or ambiguous at its startup import.",
+    )
+    path = candidates[0]
+    _require(_inside(path, site), "The pywin32 bootstrap escaped site-packages.")
+    relative = path.relative_to(site).as_posix().casefold()
+    _require(
+        relative in {"pywin32_bootstrap.py", "win32/lib/pywin32_bootstrap.py"},
+        "The pywin32 bootstrap has an unsupported startup location.",
+    )
+    bootstrap = _read(path)
+    claim = claims.get(relative)
+    _require(
+        claim is not None
+        and claim[2] == "pywin32"
+        and claim[1] == str(len(bootstrap))
+        and claim[0]
+        == "sha256="
+        + base64.urlsafe_b64encode(hashlib.sha256(bootstrap).digest())
+        .rstrip(b"=")
+        .decode(),
+        "The owned pywin32 bootstrap module changed or is unknown.",
+    )
 
 
 def validate_startup_files(
@@ -232,6 +285,7 @@ def validate_startup_files(
             "Custom interpreter startup code needs a replacement update.",
         )
     claims, result = _claims(site, owned_names), []
+    search_paths, search_keys = [site], {_key(site)}
     for index, path in enumerate(sorted(site.glob("*.pth"), key=lambda p: p.name)):
         _require(index < 128, "Too many interpreter startup files.")
         raw = _read(path)
@@ -261,6 +315,7 @@ def validate_startup_files(
                 "An interpreter startup file changed.",
             )
             for line in raw.decode("utf-8-sig").splitlines():
+                line = line.rstrip()
                 if not line.strip() or line.startswith("#"):
                     continue
                 if line.startswith(("import ", "import\t")):
@@ -269,26 +324,27 @@ def validate_startup_files(
                         "Unrecognized executable interpreter startup code "
                         "needs a replacement update.",
                     )
-                    bootstrap = _read(site / "pywin32_bootstrap.py")
-                    bootstrap_claim = claims.get("pywin32_bootstrap.py")
-                    _require(
-                        bootstrap_claim is not None
-                        and bootstrap_claim[2] == "pywin32"
-                        and bootstrap_claim[1] == str(len(bootstrap))
-                        and bootstrap_claim[0]
-                        == "sha256="
-                        + base64.urlsafe_b64encode(hashlib.sha256(bootstrap).digest())
-                        .rstrip(b"=")
-                        .decode(),
-                        "The owned pywin32 startup module changed or is unknown.",
-                    )
+                    _owned_pywin32_bootstrap(site, search_paths, claims)
                 else:
-                    candidate = Path(os.path.abspath(site / line.strip()))
+                    # CPython preserves leading spaces in .pth path entries;
+                    # they must not be silently converted into another path.
+                    candidate = Path(os.path.abspath(site / line))
                     _require(
                         _inside(candidate, environment),
                         "An external .pth path prevents in-place updating.",
                     )
                     _direct(candidate)
+                    _require(
+                        candidate.is_dir(),
+                        "A file/zip interpreter search path needs Replacement/Fresh.",
+                    )
+                    if _key(candidate) not in search_keys:
+                        _require(
+                            len(search_paths) < 512,
+                            "Too many interpreter startup search directories.",
+                        )
+                        search_paths.append(candidate)
+                        search_keys.add(_key(candidate))
         result.append((path.name, _sha(raw)))
     return tuple(result)
 

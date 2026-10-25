@@ -6,6 +6,8 @@
   distribution metadata is not subjected to the smaller startup/control-file
   limit. Keep startup safety bounds and ownership checks; identify the exact
   file, category and byte limit when validation refuses an update.
+  Recognize the owned standard PyWin32 startup-helper location without
+  executing it, and refuse shadowed or unverified helpers.
 
 - Distinguish changed-package in-place updates from copied replacements and
   fresh environments. In-place can retain compatible dependency versions and

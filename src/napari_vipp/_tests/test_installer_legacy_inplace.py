@@ -7,7 +7,9 @@ loads scientific/native payloads, touches registration, or closes a process.
 from __future__ import annotations
 
 import builtins
+import csv
 import hashlib
+import io
 import json
 import os
 import uuid
@@ -453,6 +455,160 @@ def test_exact_owned_pywin32_startup_is_allowed_but_modification_is_not(managed)
     assert legacy.assess_first_use(record).eligible
     (site / "pywin32_bootstrap.py").write_text("raise RuntimeError('changed')\n")
     assert not legacy.assess_first_use(record).eligible
+
+
+def _standard_pywin32_layout(
+    managed, *, pth=None, bootstrap=None, additional_files=None
+):
+    record, _ = managed
+    site = record.environment_root / "Lib/site-packages"
+    (site / "pythonwin").mkdir()
+    if bootstrap is None:
+        description = (
+            b"# Synthetic standard pywin32 bootstrap; never imported or executed.\n"
+        )
+        bootstrap = (description * (772 // len(description) + 1))[:772]
+    if pth is None:
+        pth = (
+            b"# Standard Windows pywin32 startup search paths\n"
+            b"win32\nwin32\\lib\npythonwin\nimport pywin32_bootstrap\n"
+        )
+    content = {"pywin32.pth": pth, "win32/lib/pywin32_bootstrap.py": bootstrap}
+    content.update(additional_files or {})
+    package = _distribution(
+        site,
+        "pywin32",
+        "312",
+        files=content,
+    )
+    updated = replace(record, packages=(*record.packages, package))
+    write_ownership_record(record.managed_root, updated)
+    return (updated, managed[1]), site, site / "win32/lib/pywin32_bootstrap.py"
+
+
+def test_standard_nested_pywin32_layout_is_owned_and_readonly_without_import(
+    managed, monkeypatch
+):
+    owned, site, bootstrap = _standard_pywin32_layout(managed)
+    assert bootstrap.stat().st_size == 772
+    assert not (site / "pywin32_bootstrap.py").exists()
+    original_import = builtins.__import__
+
+    def forbid_bootstrap_import(name, *args, **kwargs):
+        if name == "pywin32_bootstrap":
+            pytest.fail("Startup validation must never import the installed bootstrap")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", forbid_bootstrap_import)
+    before = _file_hashes(owned[0].managed_root)
+    plan = _plan(owned)
+    assert plan.record == owned[0]
+    assert [name for name, _ in plan.startup] == ["pywin32.pth"]
+    assert _file_hashes(owned[0].managed_root) == before
+    assert not (owned[0].environment_root / rt.DIRECTORY).exists()
+
+
+def _drop_pywin32_bootstrap_claim(site):
+    record = site / "pywin32-312.dist-info/RECORD"
+    rows = list(csv.reader(io.StringIO(record.read_text(encoding="utf-8"))))
+    kept = [row for row in rows if row[0] != "win32/lib/pywin32_bootstrap.py"]
+    assert len(kept) == len(rows) - 1
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(kept)
+    record.write_text(output.getvalue(), encoding="utf-8", newline="")
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "modified", "unowned", "wrong_owner", "oversized"]
+)
+def test_nested_pywin32_bootstrap_requires_exact_owned_small_source(managed, damage):
+    oversized = b"#" + b"x" * (64 * 1024) if damage == "oversized" else None
+    owned, site, bootstrap = _standard_pywin32_layout(managed, bootstrap=oversized)
+    if damage == "missing":
+        bootstrap.unlink()
+    elif damage == "modified":
+        bootstrap.write_bytes(b"# changed after RECORD\n".ljust(772, b"x"))
+    elif damage in {"unowned", "wrong_owner"}:
+        _drop_pywin32_bootstrap_claim(site)
+        if damage == "wrong_owner":
+            owned = _owned_startup_files(
+                owned,
+                "another-owner",
+                {"win32/lib/pywin32_bootstrap.py": bootstrap.read_bytes()},
+            )
+    before = _file_hashes(owned[0].managed_root)
+    result = legacy.assess_first_use(owned[0])
+    assert not result.eligible and not result.running
+    assert "bootstrap" in result.reason.casefold()
+    assert _file_hashes(owned[0].managed_root) == before
+    assert not (owned[0].environment_root / rt.DIRECTORY).exists()
+
+
+@pytest.mark.parametrize(
+    "pth",
+    [
+        b"win32\nimport pywin32_bootstrap\nwin32\\lib\npythonwin\n",
+        b"win32\npythonwin\nimport pywin32_bootstrap\n",
+    ],
+)
+def test_nested_bootstrap_path_must_be_added_before_its_import_line(managed, pth):
+    owned, _, _ = _standard_pywin32_layout(managed, pth=pth)
+    before = _file_hashes(owned[0].managed_root)
+    result = legacy.assess_first_use(owned[0])
+    assert not result.eligible and not result.running
+    assert "bootstrap" in result.reason.casefold()
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+@pytest.mark.parametrize("root", ["", "win32"])
+@pytest.mark.parametrize(
+    "shadow",
+    [
+        "pywin32_bootstrap.py",
+        "PYWIN32_BOOTSTRAP.PY",
+        "pywin32_bootstrap.pyc",
+        "pywin32_bootstrap.cp312-win_amd64.pyd",
+        "pywin32_bootstrap/__init__.py",
+    ],
+)
+def test_foreign_bootstrap_shadows_in_site_or_earlier_pth_path_are_refused(
+    managed, root, shadow
+):
+    owned, site, _ = _standard_pywin32_layout(managed)
+    target = site / root / shadow
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"foreign shadow fixture; never imported")
+    before = _file_hashes(owned[0].managed_root)
+    result = legacy.assess_first_use(owned[0])
+    assert not result.eligible and not result.running
+    assert "bootstrap" in result.reason.casefold()
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+def test_two_pywin32_owned_bootstrap_sources_are_still_ambiguous(managed):
+    owned, _, _ = _standard_pywin32_layout(
+        managed,
+        additional_files={
+            "pywin32_bootstrap.py": b"# second correctly claimed source\n"
+        },
+    )
+    before = _file_hashes(owned[0].managed_root)
+    result = legacy.assess_first_use(owned[0])
+    assert not result.eligible and not result.running
+    assert "bootstrap" in result.reason.casefold()
+    assert _file_hashes(owned[0].managed_root) == before
+
+
+def test_pywin32_search_path_must_be_a_direct_environment_directory(managed):
+    owned, _, _ = _standard_pywin32_layout(
+        managed,
+        pth=b"private-archive.zip\nwin32\\lib\nimport pywin32_bootstrap\n",
+        additional_files={"private-archive.zip": b"not a ZIP; never opened"},
+    )
+    before = _file_hashes(owned[0].managed_root)
+    result = legacy.assess_first_use(owned[0])
+    assert not result.eligible and not result.running
+    assert _file_hashes(owned[0].managed_root) == before
 
 
 def test_guard_refusal_is_system_exit_not_a_swallowed_site_exception(monkeypatch):
