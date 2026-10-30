@@ -670,6 +670,11 @@ Dependency admission follows these rules:
    device probes, scientific parity, and operation-level value are shown
    on every Windows/Linux target where VIPP would advertise that provider.
 
+The [Apple GPU functionality proposal](apple-gpu-functionality-proposal.md)
+adds a proposed operation list and staged existing-library feasibility plan to
+the Apple investigation below. It does not qualify an Apple provider or change
+the current runtime/dependency matrix.
+
 Current provider audit:
 
 | Library/runtime | Windows | Linux | macOS | Plan decision |
