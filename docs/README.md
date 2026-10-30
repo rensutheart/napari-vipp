@@ -65,6 +65,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Apple GPU functionality proposal](apple-gpu-functionality-proposal.md):
+  selected existing nodes, existing-library candidates, staged feasibility,
+  scientific admission and real-Mac performance evidence; proposed only.
 - [Tracking implementation](tracking-implementation.md): bounded one-to-one
   linking, calibrated observation evidence, ambiguity/gap review and limits.
 - [Synthetic tracking evidence](tracking-synthetic-evidence.md): independent
