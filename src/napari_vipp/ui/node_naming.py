@@ -2,7 +2,7 @@
 
 from html import escape
 
-from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -17,87 +17,8 @@ from napari_vipp.core.node_names import MAX_NODE_NAME_LENGTH
 from napari_vipp.ui.node_labels import NodePresentation
 
 
-class _SettingsSummary(QLabel):
-    """Wrap live settings without shrinking the same node's control positions."""
-
-    def __init__(self):
-        super().__init__()
-        self._height_envelope: dict[int, int] = {}
-        self._height_context = None
-        self.setTextFormat(Qt.PlainText)
-        self.setWordWrap(True)
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-
-    def set_summary(self, text: str):
-        if self.text() != text:
-            self.setText(text)
-        self.setToolTip(f"<qt>{escape(text)}</qt>" if text else "")
-        self.setAccessibleDescription(text)
-        self.setVisible(bool(text))
-
-    def reset_height_envelope(self):
-        """Release presentation-only space when its node or layout changes."""
-        self._height_envelope.clear()
-        self._height_context = None
-        self.updateGeometry()
-
-    def _sync_height_context(self):
-        margins = self.contentsMargins()
-        context = (
-            self.font().toString(),
-            self.fontMetrics().height(),
-            self.style().objectName(),
-            self.styleSheet(),
-            self.margin(),
-            self.indent(),
-            margins.left(),
-            margins.top(),
-            margins.right(),
-            margins.bottom(),
-        )
-        if context != self._height_context:
-            self._height_envelope.clear()
-            self._height_context = context
-
-    def heightForWidth(self, width):  # noqa: N802
-        self._sync_height_context()
-        required = int(super().heightForWidth(width))
-        if required < 0:
-            return required
-        # Changing 1000 to 1 can remove a wrapped line on some system fonts.
-        # Keep that readable space while tuning this node, but still let a
-        # genuinely longer summary grow. Widths are cached separately because
-        # Qt can measure several candidate widths during one layout pass.
-        reserved = max(required, self._height_envelope.get(int(width), 0))
-        self._height_envelope[int(width)] = reserved
-        return reserved
-
-    def minimumSizeHint(self):  # noqa: N802
-        hint = super().minimumSizeHint()
-        # QLabel's one-line minimum must stay independent of its current
-        # width. Promoting a narrow-width reservation into this global minimum
-        # can clamp an owner's next resize before it gets the wider geometry.
-        # The readable, width-specific reservation belongs in heightForWidth.
-        return QSize(0, hint.height())
-
-    def resizeEvent(self, event):  # noqa: N802
-        super().resizeEvent(event)
-        if event.size().width() != event.oldSize().width():
-            self.reset_height_envelope()
-
-    def changeEvent(self, event):  # noqa: N802
-        super().changeEvent(event)
-        if hasattr(self, "_height_envelope") and event.type() in {
-            QEvent.FontChange,
-            QEvent.ApplicationFontChange,
-            QEvent.StyleChange,
-        }:
-            self.reset_height_envelope()
-
-
 class NodeNameEditor(QWidget):
-    """Keep a user-authored name separate from the live operation summary.
+    """Keep the editable name separate from the operation and its details.
 
     The owner must call :meth:`commit_pending` before changing the selected
     node or workflow session, while the old node still owns its edit. Passive
@@ -107,6 +28,7 @@ class NodeNameEditor(QWidget):
     """
 
     name_committed = Signal(str, str)
+    details_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -135,9 +57,13 @@ class NodeNameEditor(QWidget):
         self.operation_label.setWordWrap(True)
         self.operation_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.operation_label.setMinimumWidth(0)
-        layout.addWidget(self.operation_label)
-        self.summary_label = _SettingsSummary()
-        layout.addWidget(self.summary_label)
+        operation_row = QHBoxLayout()
+        operation_row.addWidget(self.operation_label, 1)
+        self.details_button = QPushButton("Node details…")
+        self.details_button.setToolTip("View this node's configured settings and JSON")
+        self.details_button.clicked.connect(self._request_details)
+        operation_row.addWidget(self.details_button)
+        layout.addLayout(operation_row)
         self.name_edit.textEdited.connect(self._edited)
         self.name_edit.editingFinished.connect(self._commit)
         self.reset_button.clicked.connect(self._reset)
@@ -163,10 +89,12 @@ class NodeNameEditor(QWidget):
             self.name_edit.setModified(False)
             self.name_committed.emit(self._node_id, "")
 
+    def _request_details(self):
+        if self._node_id:
+            self.details_requested.emit(self._node_id)
+
     def set_node(self, node_id: str, custom_name: str, presentation: NodePresentation):
         changed_node = self._node_id != node_id
-        if changed_node:
-            self.summary_label.reset_height_envelope()
         self._node_id = node_id
         # Background result refreshes must not erase a name being typed.
         if changed_node or not (
@@ -184,13 +112,11 @@ class NodeNameEditor(QWidget):
         )
         self.reset_button.setEnabled(bool(custom_name or self.name_edit.text()))
         self.operation_label.setText(f"Operation: {presentation.operation}")
-        self.summary_label.set_summary(presentation.summary)
         self.operation_label.setToolTip(f"Node ID: {node_id}")
         self.show()
 
     def clear(self):
         self._node_id = self._editing_node_id = ""
-        self.summary_label.reset_height_envelope()
         self.name_edit.clear()
         self.name_edit.setModified(False)
         self.hide()

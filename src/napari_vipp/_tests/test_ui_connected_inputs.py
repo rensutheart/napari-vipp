@@ -13,6 +13,7 @@ from napari_vipp.core.tables import TableState
 from napari_vipp.ui.connected_inputs import (
     ConnectedInputBinding,
     ConnectedInputsCard,
+    InputMetadataSection,
     connected_input_scientific_summary,
 )
 from napari_vipp.ui.palette_roles import theme_colors
@@ -43,6 +44,7 @@ def test_connected_inputs_card_keeps_each_role_paired_with_its_source(qtbot):
                 "labels",
                 "Filter Labels By Volume",
                 "out",
+                source_port_is_implicit=True,
             ),
             ConnectedInputBinding(
                 "Intensity image",
@@ -61,8 +63,8 @@ def test_connected_inputs_card_keeps_each_role_paired_with_its_source(qtbot):
         "Intensity image",
     ]
     assert [row.source_label.text() for row in card.rows] == [
-        "Filter Labels By Volume · out",
-        "Split Channels · Ch 3",
+        "From: Filter Labels By Volume",
+        "From: Split Channels · Output: Ch 3",
     ]
     for index, row in enumerate(card.rows):
         item = card.form_layout.itemAt(
@@ -75,7 +77,7 @@ def test_connected_inputs_card_keeps_each_role_paired_with_its_source(qtbot):
         assert row.source_label.wordWrap()
         assert row.source_label.textInteractionFlags() & Qt.TextSelectableByMouse
         assert not row.icon_label.pixmap().isNull()
-        assert row.role_label.text() in row.accessibleName()
+        assert row.accessibleName().startswith(f"Input: {row.role_label.text()}; ")
         # Keep one genuinely uniform card surface: the text is laid out
         # directly in the row rather than inside a second QWidget surface.
         assert all(
@@ -118,7 +120,7 @@ def test_unchanged_bindings_retain_rows_without_relayout_or_retheme(qtbot, monke
     card = ConnectedInputsCard()
     qtbot.addWidget(card)
     binding = ConnectedInputBinding(
-        "Time series", "image", "Channel", "out", "TYX: 7 × 72 × 96"
+        "Time series", "image", "Channel", "out"
     )
     card.set_bindings([binding])
     row = card.rows[0]
@@ -140,7 +142,7 @@ def test_unchanged_bindings_retain_rows_without_relayout_or_retheme(qtbot, monke
     [
         {"source_title": "Renamed source"},
         {"source_port_label": "Ch 2"},
-        {"scientific_summary": "TYX: 8 × 72 × 96"},
+        {"source_port_is_implicit": True},
         {"port_label": "Reference series"},
         {"input_type": "mask_or_labels"},
     ],
@@ -149,7 +151,7 @@ def test_changed_binding_context_is_not_suppressed(qtbot, change):
     card = ConnectedInputsCard()
     qtbot.addWidget(card)
     binding = ConnectedInputBinding(
-        "Time series", "image", "Channel", "out", "TYX: 7 × 72 × 96"
+        "Time series", "image", "Channel", "out"
     )
     card.set_bindings([binding])
     updated = replace(binding, **change)
@@ -157,7 +159,6 @@ def test_changed_binding_context_is_not_suppressed(qtbot, change):
     assert card.rows[0].binding == updated
     assert card.rows[0].role_label.text() == updated.port_label
     assert card.rows[0].source_label.text() == updated.source_summary
-    assert card.rows[0].scientific_label.text() == updated.scientific_summary
 
 
 def test_connected_input_text_and_tooltips_treat_metadata_as_plain_text(qtbot):
@@ -178,8 +179,20 @@ def test_connected_input_text_and_tooltips_treat_metadata_as_plain_text(qtbot):
     assert row.role_label.textFormat() == Qt.PlainText
     assert row.source_label.textFormat() == Qt.PlainText
     assert row.role_label.text() == "Signal <required>"
-    assert row.source_label.text() == "Source <b>literal</b> · Ch <3>"
+    assert row.source_label.text() == "From: Source <b>literal</b> · Output: Ch <3>"
     assert "&lt;b&gt;literal&lt;/b&gt;" in row.toolTip()
+    assert "Input: Signal &lt;required&gt;<br>From:" in row.toolTip()
+    assert "Output: Ch &lt;3&gt;" in row.toolTip()
+
+
+def test_out_name_stays_visible_when_not_known_to_be_the_default(qtbot):
+    card = ConnectedInputsCard()
+    qtbot.addWidget(card)
+    card.set_bindings([ConnectedInputBinding("Image", "image", "Two outputs", "out")])
+
+    row = card.rows[0]
+    assert row.source_label.text() == "From: Two outputs · Output: out"
+    assert "Output: out" in row.accessibleName()
 
 
 def test_connected_input_scientific_summary_reports_grid_depth_and_sampling():
@@ -212,3 +225,33 @@ def test_connected_input_scientific_summary_uses_table_dimensions():
     assert connected_input_scientific_summary(None, state) == (
         "184 rows · 14 fields · object measurements"
     )
+
+
+def test_input_metadata_is_collapsed_and_does_not_keep_old_details(qtbot):
+    section = InputMetadataSection()
+    qtbot.addWidget(section)
+    assert section.isHidden()
+    assert not section.isExpanded()
+
+    section.set_entries([("<Image>", "ZYX: 12 × 96 × 128")])
+    assert not section.isHidden()
+    assert section.content_widget.isHidden()
+    section.setExpanded(True)
+    section.show()
+    details_layout = section.content_widget.layout()
+    role = details_layout.itemAt(0).widget()
+    details = details_layout.itemAt(1).widget()
+    assert role.text() == "<Image>"
+    assert role.textFormat() == Qt.PlainText
+    assert details.text() == "ZYX: 12 × 96 × 128"
+    assert details.textInteractionFlags() & Qt.TextSelectableByMouse
+
+    section.set_entries([("<Image>", "ZYX: 12 × 96 × 128")])
+    assert details_layout.itemAt(1).widget() is details
+    section.set_entries([("Measurements table", "184 rows · 14 fields")])
+    assert details.isHidden()
+    assert details_layout.itemAt(0).widget().text() == "Measurements table"
+    assert details_layout.itemAt(1).widget().text() == "184 rows · 14 fields"
+    section.set_entries([])
+    assert section.isHidden()
+    assert details_layout.count() == 0

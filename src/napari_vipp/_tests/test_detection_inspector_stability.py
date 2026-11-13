@@ -98,6 +98,12 @@ def test_detection_cap_scrubbing_keeps_input_card_and_control_position(
     scroll = panel.verticalScrollBar().value()
     position = control.mapTo(panel.viewport(), QPoint(0, 0))
     events = _GeometryEvents(watched, control, panel)
+    editor = widget.node_name_editor
+    header_geometry = (
+        editor.geometry(),
+        editor.operation_label.geometry(),
+        editor.details_button.geometry(),
+    )
 
     try:
         for value in (1, 2, 843, 10000, 1, 843):
@@ -109,10 +115,11 @@ def test_detection_cap_scrubbing_keeps_input_card_and_control_position(
             assert control is widget._parameter_widgets["maximum_detections"]
             assert panel.verticalScrollBar().value() == scroll
             assert control.mapTo(panel.viewport(), QPoint(0, 0)) == position
-            label = widget.node_name_editor.summary_label
-            assert label.text() == widget._node_presentation(detector.id).summary
-            assert label.height() >= label.heightForWidth(label.width())
-            assert widget.node_name_editor.rect().contains(label.geometry())
+            assert header_geometry == (
+                editor.geometry(),
+                editor.operation_label.geometry(),
+                editor.details_button.geometry(),
+            )
         # Catch intermediate movement as ancestor layouts resize, not just the
         # final position after Qt has settled. Harmless parent size-hint changes
         # need not be frozen when they leave the control/scroll position alone.

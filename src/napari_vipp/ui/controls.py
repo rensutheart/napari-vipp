@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from html import escape
+from pathlib import PurePosixPath, PureWindowsPath
 
 import numpy as np
 from qtpy.QtCore import QEvent, QLocale, QRect, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QAction, QValidator
 from qtpy.QtWidgets import (
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -31,11 +34,18 @@ from qtpy.QtWidgets import (
 from napari_vipp.core.io import MICROSCOPE_FILE_FILTER
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_interpretation import AxisInterpretationControl
-from napari_vipp.ui.design import SPACE_SM, SPACE_XS, content_width, type_style
+from napari_vipp.ui.design import (
+    SPACE_SM,
+    SPACE_XS,
+    apply_text_role,
+    content_width,
+    type_style,
+)
 from napari_vipp.ui.file_sources import (
     SourceLoadPhase,
     SourceLoadProgress,
     SourceLoadProgressUnit,
+    source_io_progress_detail,
 )
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.reader_support import ReaderSupportControl
@@ -845,6 +855,66 @@ class BoolControl(QWidget):
             self.valueChanged.emit(self.value())
 
 
+class _SourceProgressLabel(QLabel):
+    """Reserve the wrapped text's height even when the dock is compressed."""
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setTextFormat(Qt.PlainText)
+        self.setWordWrap(True)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        if text == self.text():
+            return
+        super().setText(text)
+        self._reserve_wrapped_height()
+
+    def setWordWrap(self, enabled: bool) -> None:  # noqa: N802
+        if enabled == self.wordWrap():
+            return
+        super().setWordWrap(enabled)
+        self._reserve_wrapped_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self._reserve_wrapped_height()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._reserve_wrapped_height()
+
+    def _reserve_wrapped_height(self) -> None:
+        width = self.width()
+        if width <= 0 or getattr(self, "_reserving_wrapped_height", False):
+            return
+        self._reserving_wrapped_height = True
+        try:
+            minimum = self.minimumHeight()
+            height = max(0, self.heightForWidth(width))
+            # QLabel clamps heightForWidth to its explicit minimum. A result
+            # equal to an old wrapped minimum can therefore hide a shrink.
+            # Clear it only for that ambiguous measurement, then restore the
+            # native wrapping height before returning to the event loop.
+            if height == minimum and minimum > self.fontMetrics().height():
+                self.setMinimumHeight(0)
+                height = max(0, self.heightForWidth(width))
+            if height != self.minimumHeight():
+                self.setMinimumHeight(height)
+        finally:
+            self._reserving_wrapped_height = False
+
+
+class _SourceProgressAmount(_SourceProgressLabel):
+    def minimumSizeHint(self):  # noqa: N802
+        # Let a narrow dock reach the stacked layout even when the count is
+        # currently shown on one line.
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+
 class SourceLoadStatusControl(QWidget):
     """Generation-gated source progress with one-shot cancellation."""
 
@@ -860,29 +930,55 @@ class SourceLoadStatusControl(QWidget):
         SourceLoadPhase.VERIFY: "Verifying source revision",
     }
     _QT_PROGRESS_MAXIMUM = 1_000
+    _MIN_INLINE_BAR_WIDTH = 72
+    _FILE_ACTIONS = {
+        "Hashing source bytes": "Checking source contents",
+        "Hashing source file": "Checking file contents",
+        "Discovering source files": "Finding source files",
+        "Source identity complete": "Source contents checked",
+        "Materializing image data": "Preparing image data",
+        "Image data materialized": "Image data prepared",
+    }
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, display: bool = True):
         super().__init__(parent)
+        self.setObjectName("VippSourceLoadStatus")
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setAccessibleName("Image source load")
+        self._display = display
         self._active_run_id: int | None = None
         self._latest_run_id = -1
         self._cancel_requested_for: int | None = None
         self._has_status = False
 
-        self.label = QLabel()
-        self.label.setWordWrap(True)
+        self.heading = _SourceProgressLabel("Loading image source")
+        self.phase_label = _SourceProgressLabel()
+        apply_text_role(self.phase_label, "section")
+        self.label = _SourceProgressLabel()
+        self.amount_label = _SourceProgressAmount()
+        self.amount_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.amount_label.hide()
         self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setObjectName("VippSourceLoadProgress")
+        self.progress_bar.setAccessibleName("Image loading progress")
+        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setTextVisible(False)
         self.cancel_button = QPushButton("Cancel load")
         self.cancel_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
 
-        progress_row = QHBoxLayout()
-        progress_row.setContentsMargins(0, 0, 0, 0)
-        progress_row.addWidget(self.progress_bar, 1)
-        progress_row.addWidget(self.cancel_button)
-        layout = QFormLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addRow(self.label)
-        layout.addRow(progress_row)
+        header = QHBoxLayout()
+        header.addWidget(self.heading, 1)
+        header.addWidget(self.cancel_button, 0, Qt.AlignTop)
+        self._progress_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self._progress_row.addWidget(self.progress_bar, 1, Qt.AlignVCenter)
+        self._progress_row.addWidget(self.amount_label)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        layout.setSpacing(SPACE_XS)
+        layout.addLayout(header)
+        layout.addWidget(self.phase_label)
+        layout.addWidget(self.label)
+        layout.addLayout(self._progress_row)
 
         self.cancel_button.clicked.connect(self._request_cancel)
         self.hide()
@@ -895,7 +991,14 @@ class SourceLoadStatusControl(QWidget):
     def has_status(self) -> bool:
         return self._has_status
 
-    def begin(self, run_id: int, message: str = "Inspecting source.") -> bool:
+    def begin(
+        self,
+        run_id: int,
+        message: str = "",
+        *,
+        title: str = "Loading image source",
+        phase: SourceLoadPhase = SourceLoadPhase.INSPECT,
+    ) -> bool:
         """Activate a newer load generation and reject stale starts."""
 
         run_id = int(run_id)
@@ -905,12 +1008,16 @@ class SourceLoadStatusControl(QWidget):
         self._active_run_id = run_id
         self._cancel_requested_for = None
         self._has_status = True
-        self.label.setText(str(message))
+        self.heading.setText(title)
+        self.phase_label.setText(self._PHASE_LABELS[phase])
+        self._set_detail(message)
+        self._set_amount("")
         self.progress_bar.setRange(0, 0)
-        self.progress_bar.setFormat("Inspecting")
+        self.progress_bar.setFormat(self.phase_label.text())
         self.cancel_button.setText("Cancel load")
         self.cancel_button.setEnabled(True)
-        self.show()
+        if self._display:
+            self.show()
         return True
 
     def update_progress(self, progress: SourceLoadProgress) -> bool:
@@ -921,16 +1028,15 @@ class SourceLoadStatusControl(QWidget):
         if self._cancel_requested_for == progress.run_id:
             return False
         phase_label = self._PHASE_LABELS[progress.phase]
-        message = str(progress.message).strip()
         item_suffix = (
-            f" ({progress.item_index}/{progress.item_total})"
+            f" · Item {progress.item_index} of {progress.item_total}"
             if progress.item_total > 1
             else ""
         )
-        self.label.setText(f"{phase_label}{item_suffix}. {message}".strip())
+        self.phase_label.setText(f"{phase_label}{item_suffix}")
+        self._set_detail(progress.message, compact=True)
         self._set_progress_bar(progress, phase_label)
         self._has_status = True
-        self.show()
         return True
 
     def finish(
@@ -947,23 +1053,26 @@ class SourceLoadStatusControl(QWidget):
             return False
         self._active_run_id = None
         self.cancel_button.setEnabled(False)
+        self._set_amount("")
         if cancelled:
-            self.label.setText("Source load cancelled at a safe checkpoint.")
+            self.phase_label.setText("Cancelled")
+            self._set_detail("Source load cancelled at a safe checkpoint.")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("Cancelled")
         elif error:
-            self.label.setText(f"Source load failed: {error}")
+            self.phase_label.setText("Source load failed")
+            self._set_detail(error)
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("Failed")
         else:
-            self.label.setText("Source loaded and verified.")
+            self.phase_label.setText("Source loaded and verified")
+            self._set_detail("")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(1)
             self.progress_bar.setFormat("Complete")
         self._has_status = True
-        self.show()
         return True
 
     def clear(self) -> None:
@@ -972,7 +1081,9 @@ class SourceLoadStatusControl(QWidget):
         self._active_run_id = None
         self._cancel_requested_for = None
         self._has_status = False
-        self.label.clear()
+        self.phase_label.clear()
+        self._set_detail("")
+        self._set_amount("")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
         self.cancel_button.setEnabled(False)
@@ -985,10 +1096,34 @@ class SourceLoadStatusControl(QWidget):
         self._cancel_requested_for = run_id
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText("Cancelling…")
-        self.label.setText("Cancelling source load at the next safe I/O checkpoint…")
+        self.phase_label.setText("Cancelling load")
+        self._set_detail("Waiting for the next safe I/O checkpoint.")
+        self._set_amount("")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFormat("Cancelling")
         self.cancelRequested.emit(run_id)
+
+    def _set_detail(self, message: str, *, compact: bool = False) -> None:
+        raw = str(message).strip()
+        detail = raw
+        if compact:
+            step, detail = source_io_progress_detail(raw)
+            action, separator, path = detail.partition(": ")
+            if separator and path and action in self._FILE_ACTIONS:
+                # Parse path syntax, not the host OS: do not split a drive
+                # letter, UNC share, or a colon in a POSIX filename.
+                windows = PureWindowsPath(path)
+                name = (
+                    windows.name
+                    if windows.drive or path.startswith("\\")
+                    else PurePosixPath(path).name
+                )
+                detail = " · ".join(filter(None, (self._FILE_ACTIONS[action], name)))
+            detail = " · ".join(filter(None, (step, detail)))
+        self.label.setText(detail)
+        self.label.setVisible(bool(detail))
+        # Force escaped tooltip text; Qt otherwise guesses HTML from filenames.
+        self.label.setToolTip(f"<qt>{escape(raw)}</qt>" if detail != raw else "")
 
     def _set_progress_bar(
         self,
@@ -998,6 +1133,7 @@ class SourceLoadStatusControl(QWidget):
         if not progress.determinate:
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat(phase_label)
+            self._set_amount("")
             return
         total = max(int(progress.total), 1)
         current = min(max(int(progress.current), 0), total)
@@ -1006,11 +1142,42 @@ class SourceLoadStatusControl(QWidget):
         self.progress_bar.setRange(0, maximum)
         self.progress_bar.setValue(scaled)
         if progress.unit is SourceLoadProgressUnit.BYTES:
-            self.progress_bar.setFormat(
-                f"{_human_bytes(current)} / {_human_bytes(total)}"
-            )
+            amount = f"{_human_bytes(current)} / {_human_bytes(total)}"
         else:
-            self.progress_bar.setFormat(f"{current} / {total}")
+            amount = f"{current} / {total}"
+        self.progress_bar.setFormat(amount)
+        self._set_amount(amount)
+
+    def _set_amount(self, text: str) -> None:
+        self.amount_label.setText(text)
+        self.amount_label.setVisible(bool(text))
+        self.progress_bar.setAccessibleDescription(text)
+        self._sync_progress_row()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self._sync_progress_row()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange) and hasattr(
+            self, "_progress_row"
+        ):
+            self._sync_progress_row()
+
+    def _sync_progress_row(self) -> None:
+        margins = self.layout().contentsMargins()
+        width = self.contentsRect().width() - margins.left() - margins.right()
+        amount = self.amount_label.text()
+        amount_width = self.amount_label.fontMetrics().horizontalAdvance(amount)
+        required = amount_width + SPACE_SM + self._MIN_INLINE_BAR_WIDTH
+        inline = not amount or width >= required
+        self._progress_row.setDirection(
+            QBoxLayout.LeftToRight if inline else QBoxLayout.TopToBottom
+        )
+        self._progress_row.setSpacing(SPACE_SM if inline else SPACE_XS)
+        self.amount_label.setWordWrap(not inline)
 
 
 class ImageSourceControl(QWidget):
@@ -1033,6 +1200,7 @@ class ImageSourceControl(QWidget):
         sample_names: list[str],
         series_options: list[tuple[int, str]] | None = None,
         source_summary: str = "",
+        show_load_status: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -1062,7 +1230,10 @@ class ImageSourceControl(QWidget):
         )
         self.source_summary = QLabel()
         self.source_summary.setWordWrap(True)
-        self.source_load_status = SourceLoadStatusControl()
+        self._show_load_status = show_load_status
+        self.source_load_status = SourceLoadStatusControl(
+            self, display=show_load_status
+        )
         self.source_load_status.cancelRequested.connect(
             self.sourceLoadCancelRequested.emit
         )
@@ -1216,7 +1387,8 @@ class ImageSourceControl(QWidget):
         self.form_layout.addRow(self.source_summary)
         self.form_layout.addRow(self._source_representation_home)
         self.form_layout.addRow(self.memory_repair_panel)
-        self.form_layout.addRow(self.source_load_status)
+        if self._show_load_status:
+            self.form_layout.addRow(self.source_load_status)
         self.form_layout.addRow(self.reader_support)
         self.reader_support.layoutChanged.connect(self._sync_reader_support_row)
 
@@ -1547,11 +1719,13 @@ class ImageSourceControl(QWidget):
     def begin_source_load(
         self,
         run_id: int,
-        message: str = "Inspecting source.",
+        message: str = "",
+        *,
+        phase: SourceLoadPhase = SourceLoadPhase.INSPECT,
     ) -> bool:
         """Begin progress for a new source-load generation."""
 
-        accepted = self.source_load_status.begin(run_id, message)
+        accepted = self.source_load_status.begin(run_id, message, phase=phase)
         if accepted:
             self.reader_support.set_source(self.path_edit.text(), "")
         self._sync_rows()
@@ -1755,10 +1929,11 @@ class ImageSourceControl(QWidget):
             self._source_representation_home,
             resolution_visible and self._source_representation_host is None,
         )
-        self._set_form_row_visible(
-            self.source_load_status,
-            file_mode and self.source_load_status.has_status,
-        )
+        if self._show_load_status:
+            self._set_form_row_visible(
+                self.source_load_status,
+                file_mode and self.source_load_status.has_status,
+            )
         self._set_form_row_visible(
             self.memory_repair_panel,
             file_mode and self._memory_repair_presentation.visible,

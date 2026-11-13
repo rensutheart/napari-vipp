@@ -1,6 +1,33 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-10-23
+Last reviewed: 2026-11-13
+
+## 0.16.0a8 qualification declaration
+
+The [release plan](release-0.16.0a8-plan.md) names the affected tests and
+carry-forward boundaries. This declaration is not a record of completed CI,
+native lifecycle qualification or publication.
+
+```yaml
+tier: alpha
+previous_public_tag: v0.16.0a7
+changed:
+  core_ui_and_recovery: true
+  viewer_graphics_and_preview_lifecycle: true
+  hysteresis_cpu_memory_path: true
+  windows_installer_runtime_and_frozen_content: true
+  documentation: true
+  workflow_schema_numbers: false
+  workflow_serializers_and_working_copy_storage: false
+  gpu_compute_providers_and_dispatch: false
+  macos_installer_runtime: false
+  dependencies_toolchain: false
+  publication_workflows: false
+carried_forward:
+  unchanged_schema_and_save_reopen_contract: v0.16.0a7
+  unchanged_macos_installer_engine: v0.16.0a7
+  unchanged_gpu_provider_implementations_and_runtime_pins: v0.16.0a7
+```
 
 ## 0.16.0a7 qualification declaration
 

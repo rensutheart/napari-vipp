@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from qtpy.QtCore import QMimeData, QPoint, QPointF, QRectF, Qt
+from qtpy.QtCore import QMimeData, QPoint, QPointF, QRect, QRectF, Qt
 from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette
 from qtpy.QtWidgets import QApplication, QVBoxLayout, QWidget
 
@@ -37,6 +37,36 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     view.resize(980, 520)
     view.build_graph(pipeline.nodes.values(), pipeline.connections)
     return view, pipeline
+
+
+@pytest.mark.parametrize("dark", (False, True))
+def test_thumbnail_placeholder_wraps_with_larger_text(qtbot, dark):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.setPalette(_graph_palette(dark=dark))
+    view.show()
+    preview = view._cards["gaussian"].preview
+    font = preview.font()
+    font.setPointSize(16)
+    preview.setFont(font)
+    placeholder = "Synthetic preview — no image loaded"
+    preview.setText(placeholder)
+
+    bounds = preview.contentsRect().adjusted(
+        preview.margin(), preview.margin(), -preview.margin(), -preview.margin()
+    )
+    metrics = preview.fontMetrics()
+    assert metrics.horizontalAdvance(placeholder) > bounds.width()
+    assert preview.wordWrap()
+    assert preview.textFormat() == Qt.PlainText
+    wrapped = metrics.boundingRect(
+        QRect(0, 0, bounds.width(), bounds.height()),
+        int(Qt.AlignCenter | Qt.TextWordWrap),
+        placeholder,
+    )
+    assert wrapped.width() <= bounds.width()
+    assert metrics.height() < wrapped.height() <= bounds.height()
+    assert not preview.has_source_pixmap()
 
 
 @pytest.mark.parametrize("dark", (False, True))
@@ -2018,7 +2048,73 @@ def test_resolved_dynamic_output_labels_are_drawn_in_ambiguous_mode(qtbot):
     assert all(port.label_item.isVisible() for port in drawn)
 
 
-def test_long_port_labels_are_elided_with_full_tooltips(qtbot):
+def _port_label_lines(port):
+    document = port.label_item.document()
+    document.documentLayout().documentSize()
+    lines = []
+    block = document.begin()
+    while block.isValid():
+        layout = block.layout()
+        for index in range(layout.lineCount()):
+            line = layout.lineAt(index)
+            start = line.textStart()
+            lines.append(block.text()[start : start + line.textLength()].strip())
+        block = block.next()
+    return lines
+
+
+def _assert_port_label_inside_its_gutter(proxy, card, port):
+    bounds = port.label_item.sceneBoundingRect()
+    content = proxy.mapRectToScene(QRectF(card.card_layout.contentsRect()))
+    assert proxy.sceneBoundingRect().contains(bounds)
+    assert not content.intersects(bounds)
+    assert bounds.center().y() == pytest.approx(port.scenePos().y(), abs=1)
+
+
+@pytest.mark.parametrize(
+    ("operation", "label", "lines"),
+    [
+        (
+            "estimate_registration",
+            "Moving image / time series",
+            ["Moving image /", "time series"],
+        ),
+        ("apply_transform", "Image / masks / labels", ["Image /", "masks /", "labels"]),
+    ],
+)
+def test_registration_port_labels_wrap_in_compact_columns(
+    qtbot, operation, label, lines
+):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation)
+    view = PipelineGraphView()
+    qtbot.addWidget(view)
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    proxy = view._proxies[node.id]
+    card = view._cards[node.id]
+    port = proxy.input_ports[0]
+
+    assert port.label == label
+    assert port.label_item.toolTip() == label
+    rendered_lines = _port_label_lines(port)
+    assert " ".join(rendered_lines) == label
+    if operation == "apply_transform":
+        assert port.label_item.toPlainText().splitlines() == lines
+    else:
+        assert port.label_item.toPlainText().splitlines() in (
+            lines,
+            ["Moving image", "/ time series"],
+        )
+    # The host font can wrap a phrase again, but nothing may disappear.
+    assert len(rendered_lines) >= len(lines)
+    assert "/" not in rendered_lines
+    scale = max(port.label_item.font().pointSizeF() / 10, 1)
+    assert port.label_item.boundingRect().width() <= 100 * scale
+    for side_port in (*proxy.input_ports, *proxy.output_ports):
+        _assert_port_label_inside_its_gutter(proxy, card, side_port)
+
+
+def test_long_port_labels_wrap_without_losing_text_or_tooltips(qtbot):
     pipeline = PrototypePipeline()
     node = pipeline.add_node("richardson_lucy_tv_deconvolution")
     view = PipelineGraphView()
@@ -2030,13 +2126,80 @@ def test_long_port_labels_are_elided_with_full_tooltips(qtbot):
 
     proxy = view._proxies[node.id]
     port = proxy.input_ports[0]
-    assert port.label_item.toPlainText() != long_label
-    assert port.label_item.toPlainText().endswith("…")
+    assert " ".join(port.label_item.toPlainText().split()) == long_label
+    assert len(_port_label_lines(port)) >= 3
+    scale = max(port.label_item.font().pointSizeF() / 10, 1)
+    assert port.label_item.boundingRect().width() <= 100 * scale
     assert port.label_item.toolTip() == long_label
-    assert proxy.sceneBoundingRect().contains(port.label_item.sceneBoundingRect())
+    _assert_port_label_inside_its_gutter(proxy, view._cards[node.id], port)
+
+
+def test_dense_wrapped_labels_stay_separate_and_toggle_without_moving_nodes(qtbot):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("combine_channels")
+    view = PipelineGraphView()
+    qtbot.addWidget(view)
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    view.add_connection("input", node.id, target_port=0)
+    connection = view._connections[-1]
+    labels = [
+        "Image / masks / labels",
+        "Original camera exposure",
+        "LongUnbrokenImportedNameForAnImage",
+        "Z projection / diagnostic image",
+        "Green",
+        "Red fluorescence reference",
+    ]
+    outputs = ["Corrected image / overlays", "Valid coverage / region mask"]
+    view.set_node_input_ports(node.id, len(labels), labels)
+    view.set_node_output_ports(node.id, len(outputs), outputs)
+    proxy = view._proxies[node.id]
     card = view._cards[node.id]
-    content_rect = proxy.mapRectToScene(QRectF(card.card_layout.contentsRect()))
-    assert not content_rect.intersects(port.label_item.sceneBoundingRect())
+    positions = view.node_positions()
+    labeled_bounds = proxy.sceneBoundingRect()
+
+    sides = ((proxy.input_ports, labels), (proxy.output_ports, outputs))
+    for ports, originals in sides:
+        previous = None
+        for index, (port, original) in enumerate(zip(ports, originals, strict=True)):
+            assert port.port_index == index
+            assert port.label_item.isVisible()
+            assert " ".join(port.label_item.toPlainText().split()) == original
+            assert port.label_item.toolTip() == original
+            _assert_port_label_inside_its_gutter(proxy, card, port)
+            bounds = port.label_item.sceneBoundingRect()
+            if previous is not None:
+                assert previous.bottom() < bounds.top()
+            previous = bounds
+        assert any(len(_port_label_lines(port)) > 1 for port in ports)
+
+    def assert_wire_attached():
+        start = connection.path().pointAtPercent(0)
+        end = connection.path().pointAtPercent(1)
+        source_port = connection.source.port_scene_pos("output")
+        assert (start - source_port).manhattanLength() < 0.01
+        assert (end - proxy.port_scene_pos("input")).manhattanLength() < 0.01
+
+    assert_wire_attached()
+    view.set_port_label_mode(PortLabelMode.HIDE_ALL)
+    assert all(
+        not port.label_item.isVisible()
+        for port in (*proxy.input_ports, *proxy.output_ports)
+    )
+    hidden_bounds = proxy.sceneBoundingRect()
+    assert hidden_bounds.width() < labeled_bounds.width()
+    assert hidden_bounds.height() < labeled_bounds.height()
+    assert view.node_positions() == positions
+    assert_wire_attached()
+
+    view.set_port_label_mode(PortLabelMode.SHOW_ALL)
+    assert proxy.sceneBoundingRect() == labeled_bounds
+    assert view.node_positions() == positions
+    assert all(
+        port.label_item.isVisible()
+        for port in (*proxy.input_ports, *proxy.output_ports)
+    )
+    assert_wire_attached()
 
 
 def test_expanded_port_rows_keep_wires_attached_and_feed_layout_sizes(qtbot):

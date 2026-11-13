@@ -18,8 +18,12 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Validation and release
 
-- [Incremental Windows installer](incremental-installer-plan.md): unreleased
-  safe dependency reuse, fresh replacement, cache and isolated qualification.
+- [Incremental Windows installer](incremental-installer-plan.md): safe
+  dependency reuse, fresh replacement, cache and isolated qualification.
+- [In-place installer plan](inplace-installer-plan.md): app-only updates and
+  the application-use lease.
+- [Changed-package installer plan](package-delta-installer-plan.md): guarded
+  dependency deltas and rollback.
 
 - [Floating VIPP recovery on Windows](validation/floating-dock-windows-2026-10-09.md):
   native taskbar registration, plugin reuse and minimized-window recovery.
@@ -32,6 +36,7 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
+- [0.16.0a8 UI and Windows updater release](release-0.16.0a8-plan.md)
 - [0.16.0a7 startup, recovery and path-saving patch](release-0.16.0a7-plan.md)
 - [0.16.0a6 performance release plan](release-0.16.0a6-plan.md)
 - [0.16.0a5 non-AI release plan](release-0.16.0a5-plan.md)

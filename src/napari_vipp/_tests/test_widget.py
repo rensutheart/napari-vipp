@@ -260,7 +260,12 @@ from napari_vipp.ui.compute_setup import ComputeDeviceOption
 from napari_vipp.ui.compute_setup_dialog import ComputeSetupDialog
 from napari_vipp.ui.controls import ImageSourceResolutionPresentation
 from napari_vipp.ui.diagnostic_workers import ThumbnailContrastProgress
-from napari_vipp.ui.file_sources import SourceFileLoadSpec
+from napari_vipp.ui.file_sources import (
+    SourceFileLoadSpec,
+    SourceLoadPhase,
+    SourceLoadProgress,
+    SourceLoadProgressUnit,
+)
 from napari_vipp.ui.iconography import palette_category_colors
 from napari_vipp.ui.napari_compat import viewer_camera
 from napari_vipp.ui.palette import OPERATION_ROLE
@@ -6448,6 +6453,96 @@ def test_explicit_source_cancel_consumes_queued_retry(qtbot, monkeypatch):
     assert reruns == []
 
 
+def test_source_load_banner_survives_inspector_rebuild_and_cancels_its_worker(
+    qtbot, monkeypatch, tmp_path
+):
+    widget = VippWidget(_Viewer(), defer_initial_run=True)
+    # This owned graph is deliberately unsaved and must not prompt on teardown.
+    widget._confirm_close_dirty_workflow_tabs = lambda: True
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda *args, **kwargs: None)
+    monkeypatch.setattr(widget, "_ensure_selected_source_preview", lambda *_: None)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    other = widget.add_node_from_palette("gaussian_blur")
+    path = tmp_path / "large-image.ome.tif"
+    widget.pipeline.nodes["input"].params.update(
+        source_mode="file path", file_path=str(path), series_index=0
+    )
+    widget._select_node("input")
+    widget.resize(760, 640)
+    widget.show()
+    banner = widget.source_load_banner
+    assert banner.isHidden()
+
+    spec = SourceFileLoadSpec(
+        node_id="input", path=str(path), series_index=0, cache_key=(str(path), 0)
+    )
+    widget._start_source_file_load((spec,))
+    (worker,) = pool.workers
+    run_id = worker.run_id
+    assert run_id == widget._active_source_load_id
+    progress = SourceLoadProgress(
+        run_id,
+        SourceLoadPhase.VERIFY,
+        node_id="input",
+        current=775 * 1024**2,
+        total=2 * 1024**3,
+        unit=SourceLoadProgressUnit.BYTES,
+        message="Verifying the source revision.",
+    )
+    worker.signals.progress.emit(progress)
+    QApplication.processEvents()
+
+    assert banner.active_run_id == run_id
+    assert banner.isVisibleTo(widget)
+    assert banner.amount_label.isVisibleTo(widget)
+    amount = banner.amount_label.text()
+    assert "775.0 MiB" in amount and "2.0 GiB" in amount
+    assert not banner.progress_bar.isTextVisible()
+    assert widget.pipeline_activity_group.isHidden()
+    assert (
+        banner.mapTo(widget, QPoint()).y() + banner.height()
+        <= widget.graph_view.mapTo(widget, QPoint()).y()
+    )
+    original_control = widget._parameter_widgets["image_source"]
+    assert [
+        card for card in widget.findChildren(type(banner)) if card.isVisibleTo(widget)
+    ] == [banner]
+
+    widget._select_node(other.id)
+    widget._select_node("input")
+    rebuilt_control = widget._parameter_widgets["image_source"]
+    assert rebuilt_control is not original_control
+    assert [
+        card for card in widget.findChildren(type(banner)) if card.isVisibleTo(widget)
+    ] == [banner]
+    assert widget.source_load_banner is banner and banner.isVisibleTo(widget)
+    assert banner.amount_label.text() == amount
+
+    worker.signals.progress.emit(replace(progress, run_id=run_id - 1, current=0))
+    assert banner.amount_label.text() == amount
+
+    cancellations = []
+    cancel_worker = worker.cancel
+
+    def cancel():
+        cancellations.append(run_id)
+        cancel_worker()
+
+    monkeypatch.setattr(worker, "cancel", cancel)
+    qtbot.mouseClick(banner.cancel_button, Qt.LeftButton)
+    qtbot.mouseClick(banner.cancel_button, Qt.LeftButton)
+    assert cancellations == [run_id]
+    assert worker.cancellation_requested
+
+    worker.signals.finished.emit(SourceFileLoadResult(run_id, {}, cancelled=True))
+    assert widget._active_source_load_id is None
+    assert banner.isHidden()
+    worker.signals.progress.emit(progress)
+    assert banner.isHidden()
+
+
 def test_rendering_matching_source_does_not_cancel_full_loader(qtbot, tmp_path):
     path = tmp_path / "source.zarr"
     path.mkdir()
@@ -9357,7 +9452,7 @@ def test_rescale_axes_uses_numeric_entry_without_sliders(qtbot):
     assert widget.pipeline.nodes[node.id].params["x_scale"] == 20.25
 
 
-def test_rescale_axes_reset_is_visible_adjacent_and_stays_inline_longer(qtbot):
+def test_rescale_axes_reset_stays_adjacent_when_parameter_rows_stack(qtbot):
     viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -9390,14 +9485,11 @@ def test_rescale_axes_reset_is_visible_adjacent_and_stays_inline_longer(qtbot):
     gap = reset.geometry().left() - x_scale.value_box.geometry().right() - 1
     assert 0 <= gap <= layout.spacing()
 
-    inline_width = (
-        INSPECTOR_STACKED_FORM_BREAKPOINT
-        + INSPECTOR_COMPACT_FORM_BREAKPOINT
-    ) // 2
-    widget.inspector_content.resize(inline_width, 700)
-    widget.inspector_viewport.resize(inline_width, 700)
+    intermediate_width = INSPECTOR_COMPACT_FORM_BREAKPOINT - 20
+    widget.inspector_content.resize(intermediate_width, 700)
+    widget.inspector_viewport.resize(intermediate_width, 700)
     widget._sync_inspector_responsive_layout()
-    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapLongRows
+    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapAllRows
 
     widget.inspector_content.resize(INSPECTOR_STACKED_FORM_BREAKPOINT - 1, 700)
     widget.inspector_viewport.resize(INSPECTOR_STACKED_FORM_BREAKPOINT - 1, 700)
@@ -17520,7 +17612,10 @@ def test_richardson_lucy_inspector_controls_can_shrink(qtbot, operation_id):
     widget.graph_view.select_node(node.id)
     widget._sync_inspector_responsive_layout()
 
-    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapLongRows
+    assert widget.parameter_form.rowWrapPolicy() in (
+        QFormLayout.WrapAllRows,
+        QFormLayout.DontWrapRows,
+    )
     assert widget.selected_title.wordWrap()
     assert widget.selected_title.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
     assert (
@@ -25235,7 +25330,7 @@ def test_settings_menu_headings_are_bold_normal_color_labels(
         assert not action.isEnabled()
         assert label.isEnabled()
         assert label.font().bold()
-        assert label.alignment() == Qt.AlignCenter
+        assert label.alignment() == Qt.AlignLeft | Qt.AlignVCenter
         margins = label.contentsMargins()
         assert margins.left() == margins.right()
         assert margins.top() > margins.bottom() >= 4

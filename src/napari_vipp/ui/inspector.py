@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import ceil
 
-from qtpy.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
-from qtpy.QtGui import QPainter, QPalette, QPen
+from qtpy.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer
+from qtpy.QtGui import (
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPen,
+    QTextLayout,
+    QTextOption,
+)
 from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
     QSizePolicy,
+    QStyle,
+    QStyleOptionToolButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -49,6 +60,7 @@ BEHAVIOR_SECTION = "behavior"
 READER_SUPPORT_SECTION = "reader_support"
 COMPUTE_SECTION = "compute"
 METADATA_SECTION = "metadata"
+INPUT_METADATA_SECTION = "input_metadata"
 HISTORY_SECTION = "history"
 
 _WRITER_OPERATION_IDS = frozenset({"save_output", "batch_output"})
@@ -361,6 +373,7 @@ class InspectorProfile:
             BEHAVIOR_SECTION,
             COMPUTE_SECTION,
             METADATA_SECTION,
+            *((INPUT_METADATA_SECTION,) if self.show_connected_inputs else ()),
             HISTORY_SECTION,
         )
         return tuple(dict.fromkeys(sections))
@@ -630,27 +643,93 @@ def inspector_profile(
 
 
 class _InspectorSectionTitleButton(QToolButton):
-    """Natural-width section title that can still shrink in a narrow dock."""
+    """A real tool button with a literal, width-responsive title label."""
 
     _ICON_TEXT_GAP = 4
     _HORIZONTAL_PADDING = 12
+    _VERTICAL_PADDING = 10
+
+    def _label_chrome_width(self) -> int:
+        icon_width = self.iconSize().width() if not self.icon().isNull() else 0
+        gap = self._ICON_TEXT_GAP if icon_width and self.text() else 0
+        return self._HORIZONTAL_PADDING + icon_width + gap
+
+    def _label_layout(self, width: int | None) -> tuple[QTextLayout, int]:
+        layout = QTextLayout(self.text(), self.font(), self)
+        option = QTextOption()
+        if width is None:
+            option.setWrapMode(QTextOption.NoWrap)
+            text_width = 0  # NoWrap still lays out the entire title.
+        else:
+            option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+            text_width = max(1, width - self._label_chrome_width())
+        layout.setTextOption(option)
+        height = 0.0
+        layout.beginLayout()
+        while (line := layout.createLine()).isValid():
+            line.setLineWidth(text_width)
+            line.setPosition(QPointF(0, height))
+            height += line.height()
+        layout.endLayout()
+        return layout, ceil(height)
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        _, text_height = self._label_layout(width)
+        return self._height_for_label(text_height, super().sizeHint().height())
+
+    def _height_for_label(self, text_height: int, minimum: int) -> int:
+        icon_height = self.iconSize().height() if not self.icon().isNull() else 0
+        return max(minimum, max(text_height, icon_height) + self._VERTICAL_PADDING)
 
     def sizeHint(self) -> QSize:  # noqa: N802
         """Size to the visible icon and title rather than extra tool-button chrome."""
 
         hint = super().sizeHint()
-        text_width = self.fontMetrics().horizontalAdvance(self.text())
-        icon_width = 0 if self.icon().isNull() else self.iconSize().width()
-        content_width = text_width + icon_width
-        if text_width and icon_width:
-            content_width += self._ICON_TEXT_GAP
-        hint.setWidth(content_width + self._HORIZONTAL_PADDING)
+        # Use the same shaped text as paintEvent. Integer font metrics can
+        # underestimate it at fractional scaling, causing a needless line break.
+        layout, text_height = self._label_layout(None)
+        text_width = max(
+            (layout.lineAt(i).naturalTextWidth() for i in range(layout.lineCount())),
+            default=0.0,
+        )
+        hint.setWidth(ceil(text_width) + self._label_chrome_width())
+        hint.setHeight(self._height_for_label(text_height, hint.height()))
         return hint
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         hint = super().minimumSizeHint()
         hint.setWidth(0)
         return hint
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        # Leave control chrome and interaction to Qt, replacing only its
+        # single-line eliding/mnemonic label with the same layout used to size.
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        icon, icon_size = QIcon(option.icon), option.iconSize
+        option.text = ""
+        option.icon = QIcon()
+        painter = QPainter(self)
+        self.style().drawComplexControl(QStyle.CC_ToolButton, option, painter, self)
+        painter.setClipRect(self.rect())
+        x = self._HORIZONTAL_PADDING // 2
+        if not icon.isNull():
+            enabled = bool(option.state & QStyle.State_Enabled)
+            icon.paint(
+                painter,
+                QRect(
+                    x,
+                    (self.height() - icon_size.height()) // 2,
+                    icon_size.width(),
+                    icon_size.height(),
+                ),
+                Qt.AlignCenter,
+                QIcon.Normal if enabled else QIcon.Disabled,
+            )
+            x += icon_size.width() + self._ICON_TEXT_GAP
+        layout, height = self._label_layout(self.width())
+        painter.setPen(option.palette.color(QPalette.ButtonText))
+        layout.draw(painter, QPointF(x, (self.height() - height) / 2))
 
 
 class _InspectorSectionSummaryLabel(QLabel):
@@ -718,7 +797,9 @@ class InspectorSection(QWidget):
         self.title_button.setIconSize(self.title_button.iconSize())
         # Use the title's natural width without turning it into a hard dock
         # minimum. The summary then receives every remaining flexible pixel.
-        self.title_button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        title_policy = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        title_policy.setHeightForWidth(True)
+        self.title_button.setSizePolicy(title_policy)
         self.title_button.setMinimumWidth(0)
         title_font = self.title_button.font()
         title_font.setBold(True)
@@ -785,6 +866,7 @@ class InspectorSection(QWidget):
     def setTitle(self, title: str) -> None:  # noqa: N802 - Qt-compatible API
         self._title = str(title)
         self.title_button.setText(self._title)
+        self.title_button.setShortcut(QKeySequence())
         self._refresh_semantic_icon()
         self._sync_accessibility()
 
@@ -906,6 +988,12 @@ class InspectorSection(QWidget):
                 return True
         return super().eventFilter(watched, event)
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # Reserve the header's wrapped height without constraining the dock's
+        # width. Wait until Qt has polished the inherited style and palette.
+        constrain_layout_minimum_height(self.header.layout())
+
     def refresh_theme(self) -> None:
         if self._theme_refresh_in_progress:
             return
@@ -968,6 +1056,7 @@ __all__ = [
     "COMPUTE_SECTION",
     "HISTOGRAMS_SECTION",
     "HISTORY_SECTION",
+    "INPUT_METADATA_SECTION",
     "InspectorProfile",
     "InspectorSection",
     "LABEL_DISTRIBUTION_SECTION",

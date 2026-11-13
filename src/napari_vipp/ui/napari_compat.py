@@ -11,10 +11,11 @@ import warnings
 from functools import wraps
 from types import MethodType
 from typing import Any
+from weakref import ref
 
-from qtpy.QtCore import QSize, Qt
+from qtpy.QtCore import QSignalBlocker, QSize, Qt
 from qtpy.QtGui import QPixmap
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QLineEdit, QWidget
 
 
 def viewer_camera(viewer: Any) -> Any:
@@ -93,6 +94,61 @@ def viewer_qt_window(viewer: Any, *, anchor: QWidget | None = None) -> QWidget:
         return resolved
 
     raise RuntimeError("Could not resolve napari's native Qt window.")
+
+
+def install_layer_cursor_safety(layer: Any) -> bool:
+    """Skip the known 3D cursor read against a stale 2D slice, on this layer."""
+    current = getattr(layer, "_get_value_ray", None)
+    if not callable(current):
+        return False
+    if getattr(current, "_vipp_safe_cursor_ray", False):
+        return True
+    try:
+        from napari.layers._scalar_field.scalar_field import ScalarFieldBase
+    except ImportError:
+        return False
+
+    original = getattr(ScalarFieldBase, "_get_value_ray", None)
+    code = getattr(original, "__code__", None)
+    if (
+        not isinstance(layer, ScalarFieldBase)
+        or original is not getattr(current, "__func__", None)
+        or code is None
+        or not {"slice_shape", "level0_shape", "dims_displayed", "ds"}.issubset(
+            code.co_varnames
+        )
+    ):
+        return False
+    layer_ref = ref(layer)
+
+    @wraps(original)
+    def read_ray(*args, **kwargs):
+        instance = layer_ref()
+        if instance is None:
+            return None
+        try:
+            return original(instance, *args, **kwargs)
+        except ValueError as error:
+            # The status thread can race a 2D/3D change even after a readiness
+            # check. Inspect only the stock ray method's *failed snapshot*,
+            # not the live slice (which may already have caught up).
+            trace = error.__traceback__
+            while trace is not None and trace.tb_next is not None:
+                trace = trace.tb_next
+            if trace is not None and trace.tb_frame.f_code is code:
+                state = trace.tb_frame.f_locals
+                if (
+                    len(state.get("dims_displayed", ())) == 3
+                    and getattr(state.get("slice_shape"), "shape", ()) == (2,)
+                    and "level0_shape" in state
+                    and "ds" not in state
+                ):
+                    return None
+            raise
+
+    read_ray._vipp_safe_cursor_ray = True
+    layer._get_value_ray = read_ray
+    return True
 
 
 def install_layer_delegate_safety(viewer: Any) -> bool:
@@ -186,4 +242,54 @@ def install_layer_delegate_safety(viewer: Any) -> bool:
     delegate._paint_loading = MethodType(paint_loading, delegate)
     delegate._paint_thumbnail = MethodType(paint_thumbnail, delegate)
     delegate._vipp_safe_layer_decorations = True
+    return True
+
+
+def install_dim_slider_retirement_safety(viewer: Any) -> bool:
+    """Hide retired native slice controls before their deferred deletion."""
+
+    window = getattr(viewer, "window", None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        qt_viewer = getattr(window, "qt_viewer", None)
+    panel = getattr(qt_viewer, "dims", None)
+    if panel is None:
+        return False
+    try:
+        from napari._qt.widgets.qt_dims import QtDims
+    except ImportError:
+        return False
+    if type(panel) is not QtDims or panel.dims is not getattr(viewer, "dims", None):
+        return False
+    current = getattr(panel, "_remove_slider_widget", None)
+    if getattr(current, "_vipp_hide_retired_slider", False):
+        return True
+    original = getattr(QtDims, "_remove_slider_widget", None)
+    code = getattr(original, "__code__", None)
+    if (
+        original is not getattr(current, "__func__", None)
+        or code is None
+        or not {"slider_widgets", "removeWidget", "deleteLater"}.issubset(
+            code.co_names
+        )
+    ):
+        return False
+
+    @wraps(original)
+    def hide_retired_slider(instance, index):
+        row = instance.slider_widgets[index]
+        original(instance, index)
+        if not row.isHidden():
+            # removeWidget() does not hide the child. Keep stock disposal,
+            # but don't show the obsolete row in a nested Qt event loop.
+            # Hiding a focused editor must not commit its obsolete value.
+            blockers = [QSignalBlocker(edit) for edit in row.findChildren(QLineEdit)]
+            try:
+                row.hide()
+            finally:
+                for blocker in blockers:
+                    blocker.unblock()
+
+    hide_retired_slider._vipp_hide_retired_slider = True
+    panel._remove_slider_widget = MethodType(hide_retired_slider, panel)
     return True

@@ -37,6 +37,7 @@ from qtpy.QtGui import (
     QPainterPathStroker,
     QPen,
     QPixmap,
+    QTextOption,
     QTransform,
 )
 from qtpy.QtWidgets import (
@@ -283,6 +284,9 @@ class ClickablePreview(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._source_pixmap = QPixmap()
+        self.setTextFormat(Qt.PlainText)
+        self.setWordWrap(True)
+        self.setMargin(6)
 
     def set_source_pixmap(self, pixmap: QPixmap) -> None:
         """Retain full render detail for zoom-aware custom painting."""
@@ -1736,6 +1740,8 @@ class PortItem(QGraphicsEllipseItem):
     hover_radius = 8.0
     target_radius = 10.0
     label_gap = 7.0
+    LABEL_MAX_WIDTH = 88.0  # At the reference 10-point text size.
+    LABEL_DOCUMENT_MARGIN = 1.0
 
     def __init__(
         self,
@@ -1766,11 +1772,17 @@ class PortItem(QGraphicsEllipseItem):
         self._drop_state: str | None = None
         self._tunnel_highlight_role = ""
         self._persistent_label_visible = False
-        self._persistent_label_max_width = 86.0
+        self._label_layout_key: tuple[str, QFont] | None = None
         self.label_item = QGraphicsTextItem("", self)
         label_font = QFont()
         label_font.setPointSizeF(body_point_size(None))
         self.label_item.setFont(label_font)
+        document = self.label_item.document()
+        document.setDocumentMargin(self.LABEL_DOCUMENT_MARGIN)
+        options = document.defaultTextOption()
+        options.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        options.setAlignment(Qt.AlignLeft if kind == "input" else Qt.AlignRight)
+        document.setDefaultTextOption(options)
         self.label_item.setDefaultTextColor(
             QColor(_theme_for_graphics_item(self).muted_text)
         )
@@ -1793,25 +1805,14 @@ class PortItem(QGraphicsEllipseItem):
         self._refresh_persistent_label()
         self._refresh_style()
 
-    def set_persistent_label_visible(
-        self,
-        visible: bool,
-        *,
-        maximum_width: float,
-    ) -> None:
+    def set_persistent_label_visible(self, visible: bool) -> None:
         self._persistent_label_visible = bool(visible)
-        self._persistent_label_max_width = max(float(maximum_width), 24.0)
         self._refresh_persistent_label()
 
-    def preferred_persistent_label_width(self, maximum_width: float) -> float:
-        """Return the rendered label width, capped for practical node sizes."""
-        full_label = str(self.label or "").strip()
-        if not full_label:
-            return 0.0
-        metrics = QFontMetricsF(self.label_item.font())
-        # QGraphicsTextItem's document contributes a small horizontal margin.
-        natural_width = metrics.horizontalAdvance(full_label) + 8.0
-        return min(natural_width, max(float(maximum_width), 24.0))
+    def persistent_label_rect(self) -> QRectF:
+        if self._persistent_label_visible and self._label_layout_key is not None:
+            return self.label_item.boundingRect()
+        return QRectF()
 
     def set_active(self, active: bool) -> None:
         self._active = active
@@ -1963,19 +1964,40 @@ class PortItem(QGraphicsEllipseItem):
         visible = self._persistent_label_visible and bool(full_label)
         if not visible:
             self.label_item.hide()
-            self.label_item.setPlainText("")
-            self.label_item.setToolTip("")
+            if self._label_layout_key is not None:
+                self._label_layout_key = None
+                self.label_item.setPlainText("")
+                self.label_item.setToolTip("")
             return
-        metrics = QFontMetricsF(self.label_item.font())
-        elided = metrics.elidedText(
-            full_label,
-            Qt.ElideRight,
-            int(self._persistent_label_max_width),
-        )
-        self.label_item.setPlainText(elided)
-        self.label_item.setToolTip(full_label)
-        self._position_persistent_label()
+        font = self.label_item.font()
+        key = (full_label, font)
+        if key != self._label_layout_key:
+            self._label_layout_key = key
+            maximum = self.LABEL_MAX_WIDTH * max(font.pointSizeF() / 10.0, 1.0)
+            self.label_item.setTextWidth(-1)
+            self.label_item.setPlainText(full_label)
+            document = self.label_item.document()
+            if document.idealWidth() > maximum and " / " in full_label:
+                # Prefer meaningful breaks for alternatives like Image / masks / labels.
+                parts = full_label.split(" / ")
+                lines = []
+                current = parts[0]
+                for following in parts[1:]:
+                    self.label_item.setPlainText(f"{current} /")
+                    if document.idealWidth() <= maximum:
+                        lines.append(f"{current} /")
+                        current = following
+                    else:
+                        # Keep a separator with the next phrase rather than
+                        # letting Qt wrap it onto a line by itself.
+                        lines.append(current)
+                        current = f"/ {following}"
+                self.label_item.setPlainText("\n".join([*lines, current]))
+            # The document (not font metrics alone) determines actual line breaks.
+            self.label_item.setTextWidth(min(ceil(document.idealWidth()) + 1, maximum))
+            self.label_item.setToolTip(full_label)
         self.label_item.show()
+        self._position_persistent_label()
 
     def _position_persistent_label(self) -> None:
         if not self.label_item.isVisible() and not self.label_item.toPlainText():
@@ -2006,9 +2028,8 @@ class NodeProxy(QGraphicsProxyWidget):
     DRAG_OPACITY = 0.62
     PORT_EDGE_INSET = 42.0
     PORT_ROW_SPACING = 24.0
-    PORT_LABEL_CENTER_GAP = 24.0
-    PORT_LABEL_MAX_WIDTH = 140.0
     PORT_LABEL_CONTENT_GAP = 8.0
+    PORT_LABEL_VERTICAL_GAP = 6.0
 
     def __init__(
         self,
@@ -2054,35 +2075,16 @@ class NodeProxy(QGraphicsProxyWidget):
             self._ensure_input_ports()
         if self._has_output:
             self._ensure_output_ports()
-        self._update_card_minimum_height()
+        visible = self._persistent_port_labels_are_visible()
+        for port in (*self.input_ports, *self.output_ports):
+            port.set_persistent_label_visible(visible)
+        input_rows = self._port_row_layout(self.input_ports)
+        output_rows = self._port_row_layout(self.output_ports)
         self._update_card_port_label_gutters()
+        self._update_card_minimum_height(input_rows, output_rows)
         rect = self.boundingRect()
-        if self._has_input and self.input_type is not None:
-            top = rect.top() + self.PORT_EDGE_INSET
-            bottom = rect.bottom() - self.PORT_EDGE_INSET
-            if bottom <= top:
-                top = rect.top()
-                bottom = rect.bottom()
-            for index, port in enumerate(self.input_ports):
-                if len(self.input_ports) == 1:
-                    y = rect.center().y()
-                else:
-                    step = (bottom - top) / max(len(self.input_ports) - 1, 1)
-                    y = top + step * index
-                port.setPos(rect.left(), y)
-        if self._has_output:
-            top = rect.top() + self.PORT_EDGE_INSET
-            bottom = rect.bottom() - self.PORT_EDGE_INSET
-            if bottom <= top:
-                top = rect.top()
-                bottom = rect.bottom()
-            for index, port in enumerate(self.output_ports):
-                if len(self.output_ports) == 1:
-                    y = rect.center().y()
-                else:
-                    step = (bottom - top) / max(len(self.output_ports) - 1, 1)
-                    y = top + step * index
-                port.setPos(rect.right(), y)
+        self._position_port_rows(self.input_ports, input_rows, rect, rect.left())
+        self._position_port_rows(self.output_ports, output_rows, rect, rect.right())
         card = self._card()
         if card is not None:
             primary_input_y = (
@@ -2097,7 +2099,6 @@ class NodeProxy(QGraphicsProxyWidget):
                 primary_input_y,
                 sole_output_y,
             )
-        self._refresh_persistent_port_labels(rect)
 
     @property
     def port_label_mode(self) -> PortLabelMode:
@@ -2143,26 +2144,6 @@ class NodeProxy(QGraphicsProxyWidget):
             return True
         return len(self.input_ports) > 1 or len(self.output_ports) > 1
 
-    def _refresh_persistent_port_labels(self, rect: QRectF) -> None:
-        visible = self._persistent_port_labels_are_visible()
-        maximum_width = min(
-            max(
-                (
-                    rect.width()
-                    - 2.0 * (PortItem.radius + PortItem.label_gap)
-                    - self.PORT_LABEL_CENTER_GAP
-                )
-                / 2.0,
-                24.0,
-            ),
-            self.PORT_LABEL_MAX_WIDTH,
-        )
-        for port in (*self.input_ports, *self.output_ports):
-            port.set_persistent_label_visible(
-                visible,
-                maximum_width=maximum_width,
-            )
-
     def _update_card_port_label_gutters(self) -> None:
         card = self._card()
         if card is None:
@@ -2172,17 +2153,11 @@ class NodeProxy(QGraphicsProxyWidget):
             return
 
         input_width = max(
-            (
-                port.preferred_persistent_label_width(self.PORT_LABEL_MAX_WIDTH)
-                for port in self.input_ports
-            ),
+            (port.persistent_label_rect().width() for port in self.input_ports),
             default=0.0,
         )
         output_width = max(
-            (
-                port.preferred_persistent_label_width(self.PORT_LABEL_MAX_WIDTH)
-                for port in self.output_ports
-            ),
+            (port.persistent_label_rect().width() for port in self.output_ports),
             default=0.0,
         )
         base_left, _top, base_right, _bottom = card.BASE_CONTENT_MARGINS
@@ -2203,15 +2178,53 @@ class NodeProxy(QGraphicsProxyWidget):
             gutter(output_width, base_right),
         )
 
-    def _update_card_minimum_height(self) -> None:
+    def _port_row_layout(
+        self, ports: list[PortItem]
+    ) -> tuple[float, tuple[float, ...], float]:
+        if not ports:
+            return 0.0, (), 0.0
+        halves = [port.persistent_label_rect().height() / 2.0 for port in ports]
+        gap = self.PORT_LABEL_VERTICAL_GAP
+        if len(ports) == 1:
+            padding = halves[0] + gap if halves[0] else 0.0
+            return padding, (), padding
+        # Keep the usual port placement for short labels. Reserve more vertical
+        # space only where neighboring wrapped labels need it.
+        steps = tuple(
+            max(self.PORT_ROW_SPACING, first + second + gap)
+            for first, second in zip(halves[:-1], halves[1:], strict=True)
+        )
+        return (
+            max(self.PORT_EDGE_INSET, halves[0] + gap),
+            steps,
+            max(self.PORT_EDGE_INSET, halves[-1] + gap),
+        )
+
+    @staticmethod
+    def _position_port_rows(ports, rows, rect: QRectF, x: float) -> None:
+        if not ports:
+            return
+        if len(ports) == 1:
+            ports[0].setPos(x, rect.center().y())
+            return
+        top, steps, bottom = rows
+        spare = max(rect.height() - top - bottom - sum(steps), 0.0) / len(steps)
+        y = rect.top() + top
+        ports[0].setPos(x, y)
+        for port, step in zip(ports[1:], steps, strict=True):
+            y += step + spare
+            port.setPos(x, y)
+
+    def _update_card_minimum_height(self, *row_layouts) -> None:
         card = self._card()
         if card is None:
             return
-        port_rows = max(len(self.input_ports), len(self.output_ports), 1)
-        required = int(
-            2.0 * self.PORT_EDGE_INSET + max(port_rows - 1, 0) * self.PORT_ROW_SPACING
+        required = ceil(
+            max(top + sum(steps) + bottom for top, steps, bottom in row_layouts)
         )
-        card.setMinimumHeight(required if port_rows > 1 else 0)
+        if card.minimumHeight() == required:
+            return
+        card.setMinimumHeight(required)
         card.updateGeometry()
         card.adjustSize()
 

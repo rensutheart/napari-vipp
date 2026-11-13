@@ -292,6 +292,37 @@ def test_compact_rail_has_full_accessible_labels_and_only_global_search(
     assert len(node_library.findChildren(QLineEdit)) == 1
 
 
+def test_compact_global_search_shares_precise_results(node_library, qtbot):
+    node_library.set_compact(True)
+    node_library.open_global_search(node_library.compact_rail.search_button)
+    qtbot.waitUntil(node_library.popup.isVisible)
+    node_library.search_edit.setText("Otsu")
+
+    for tree in (node_library.palette, node_library.popup.palette):
+        assert {
+            item.data(0, OPERATION_ROLE)
+            for item in tree._operation_items  # noqa: SLF001
+            if not item.isHidden()
+        } == {"otsu_threshold"}
+
+
+def test_enter_does_not_add_a_node_hidden_by_search(node_library, qtbot):
+    tree = node_library.palette
+    requested: list[str] = []
+    node_library.operation_requested.connect(requested.append)
+    gaussian = _operation_item(tree, "gaussian_blur")
+    tree.setCurrentItem(gaussian)
+    node_library.search_edit.setText("otsu")
+    assert gaussian.isHidden()
+
+    qtbot.keyClick(tree, Qt.Key_Return)
+    assert not requested
+
+    tree.setCurrentItem(_operation_item(tree, "otsu_threshold"))
+    qtbot.keyClick(tree, Qt.Key_Return)
+    assert requested == ["otsu_threshold"]
+
+
 def test_node_library_uses_shared_toggle_with_action_direction(node_library):
     collapse = node_library.collapse_button
     expand = node_library.compact_rail.expand_button

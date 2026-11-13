@@ -23,6 +23,7 @@ from napari_vipp.core.transforms import TransformState, is_transform_data
 from napari_vipp.ui.design import SPACE_SM, SPACE_XS, _font_host, type_style
 from napari_vipp.ui.iconography import data_type_icon
 from napari_vipp.ui.inspector import (
+    InspectorSection,
     constrain_layout_minimum_height,
     release_layout_minimum_height,
 )
@@ -84,17 +85,22 @@ def connected_input_scientific_summary(data, state) -> str:
     transform_state = data.state if is_transform_data(data) else state
     if isinstance(transform_state, TransformState):
         count = transform_state.transform_count
-        axes = "".join(transform_state.spatial_axes).upper()
+        axes = ", ".join(axis.upper() for axis in transform_state.spatial_axes)
+        scope = "1" if count == 1 else f"{count:,} (one per time point)"
         return (
-            f"{transform_state.model} · {axes} · "
-            f"{count} {'transform' if count == 1 else 'time-point transforms'} · "
-            "moving → reference"
+            f"Model: {transform_state.model}\nSpatial axes: {axes}\n"
+            f"Transforms: {scope}\n"
+            "Maps coordinates from the moving image to the reference."
         )
     table_source = state if state is not None else data
     row_count = getattr(table_source, "row_count", None)
     column_count = getattr(table_source, "column_count", None)
     if row_count is not None and column_count is not None:
-        parts = [f"{int(row_count):,} rows", f"{int(column_count):,} fields"]
+        rows, columns = int(row_count), int(column_count)
+        parts = [
+            f"{rows:,} {'row' if rows == 1 else 'rows'}",
+            f"{columns:,} {'field' if columns == 1 else 'fields'}",
+        ]
         table_kind = str(
             getattr(table_source, "table_kind", "") or getattr(table_source, "kind", "")
         ).strip()
@@ -144,7 +150,7 @@ class ConnectedInputBinding:
     input_type: str
     source_title: str | None = None
     source_port_label: str | None = None
-    scientific_summary: str = ""
+    source_port_is_implicit: bool = False
 
     @property
     def is_connected(self) -> bool:
@@ -155,9 +161,10 @@ class ConnectedInputBinding:
         if not self.is_connected:
             expected = self.input_type.replace("_", " ")
             return f"Not connected · expects {expected}"
-        if self.source_port_label:
-            return f"{self.source_title} · {self.source_port_label}"
-        return str(self.source_title)
+        source = f"From: {self.source_title}"
+        if self.source_port_label and not self.source_port_is_implicit:
+            return f"{source} · Output: {self.source_port_label}"
+        return source
 
 
 class ConnectedInputRow(QFrame):
@@ -187,8 +194,7 @@ class ConnectedInputRow(QFrame):
         layout.addWidget(self.icon_label, 0, Qt.AlignTop)
 
         text_layout = QVBoxLayout()
-        # These are three lines of one binding, not separate form fields.
-        # Keep full host-sized scientific text; save space in the gaps instead.
+        # Keep the receiving role and its upstream source visually paired.
         text_layout.setSpacing(SPACE_XS // 2)
 
         self.role_label = QLabel(binding.port_label, self)
@@ -207,32 +213,19 @@ class ConnectedInputRow(QFrame):
         self.source_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         text_layout.addWidget(self.source_label)
 
-        self.scientific_label = QLabel(binding.scientific_summary, self)
-        self.scientific_label.setObjectName("InspectorConnectedInputScientific")
-        self.scientific_label.setTextFormat(Qt.PlainText)
-        self.scientific_label.setWordWrap(True)
-        self.scientific_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.scientific_label.setVisible(bool(binding.scientific_summary))
-        text_layout.addWidget(self.scientific_label)
         layout.addLayout(text_layout, 1)
 
         expected = binding.input_type.replace("_", " ")
+        tooltip_lines = [f"Input: {binding.port_label}"]
         if binding.is_connected:
-            tooltip = (
-                f"{binding.port_label} expects {expected} data. Connected from "
-                f"{binding.source_summary}."
-            )
+            tooltip_lines.extend((binding.source_summary, f"Accepts {expected} data."))
         else:
-            tooltip = f"{binding.port_label} expects {expected} data."
-        tooltip_html = f"<qt>{html.escape(tooltip)}</qt>"
+            tooltip_lines.append(binding.source_summary)
+        tooltip_html = "<qt>" + "<br>".join(map(html.escape, tooltip_lines)) + "</qt>"
         self.setToolTip(tooltip_html)
         self.role_label.setToolTip(tooltip_html)
         self.source_label.setToolTip(tooltip_html)
-        self.scientific_label.setToolTip(tooltip_html)
-        accessible_summary = f"{binding.port_label}: {binding.source_summary}"
-        if binding.scientific_summary:
-            accessible_summary += f"; {binding.scientific_summary}"
-        self.setAccessibleName(accessible_summary)
+        self.setAccessibleName(f"Input: {binding.port_label}; {binding.source_summary}")
         self._refresh_icon()
         constrain_layout_minimum_height(layout)
 
@@ -393,10 +386,6 @@ class ConnectedInputsCard(QFrame):
                 f" color: {colors.text.name()};"
                 f" background: transparent; {type_style(self, 'body')}"
                 "}"
-                "QLabel#InspectorConnectedInputScientific {"
-                f" color: {colors.text.name()};"
-                f" background: transparent; {type_style(self, 'body')}"
-                "}"
                 "QLabel#InspectorConnectedInputIcon {"
                 " background: transparent;"
                 "}"
@@ -421,9 +410,50 @@ class ConnectedInputsCard(QFrame):
             self._queue_host_font_refresh()
 
 
+class InputMetadataSection(InspectorSection):
+    """Optional, read-only details about incoming data, apart from wiring."""
+
+    def __init__(self) -> None:
+        super().__init__("Input metadata", expanded=False)
+        self._entries: tuple[tuple[str, str], ...] = ()
+        self._details_layout = QVBoxLayout(self.content_widget)
+        self._details_layout.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_SM)
+        self._details_layout.setSpacing(SPACE_XS)
+        self.hide()
+
+    def set_entries(self, rows: list[tuple[str, str]]) -> None:
+        entries = tuple(rows)
+        if entries != self._entries:
+            self._entries = entries
+            while self._details_layout.count():
+                widget = self._details_layout.takeAt(0).widget()
+                widget.hide()
+                widget.deleteLater()
+            for role, summary in entries:
+                title = QLabel(role, self.content_widget)
+                title.setTextFormat(Qt.PlainText)
+                title.setWordWrap(True)
+                font = title.font()
+                font.setWeight(QFont.DemiBold)
+                title.setFont(font)
+                details = QLabel(summary, self.content_widget)
+                details.setTextFormat(Qt.PlainText)
+                details.setWordWrap(True)
+                details.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                details.setAccessibleName(f"{role}: {summary}")
+                self._details_layout.addWidget(title)
+                self._details_layout.addWidget(details)
+            if entries:
+                constrain_layout_minimum_height(self._details_layout)
+            else:
+                release_layout_minimum_height(self._details_layout)
+        self.setVisible(bool(entries))
+
+
 __all__ = [
     "ConnectedInputBinding",
     "ConnectedInputRow",
     "ConnectedInputsCard",
+    "InputMetadataSection",
     "connected_input_scientific_summary",
 ]

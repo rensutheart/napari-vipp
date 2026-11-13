@@ -36,6 +36,24 @@ class SourceLoadPhase(StrEnum):
     VERIFY = "verify"
 
 
+# The core loader also reports to non-Qt callers; keep its diagnostic text
+# unchanged and interpret only its known I/O stage prefixes in this adapter.
+_CORE_IO_STAGES = {
+    "Source validation 1/3": (SourceLoadPhase.INSPECT, "Step 1 of 3"),
+    "Source materialization 2/3": (SourceLoadPhase.DECODE, "Step 2 of 3"),
+    "Source window materialization 2/3": (SourceLoadPhase.DECODE, "Step 2 of 3"),
+    "Source reverification 3/3": (SourceLoadPhase.VERIFY, "Step 3 of 3"),
+}
+
+
+def source_io_progress_detail(message: str) -> tuple[str, str]:
+    """Return an optional I/O step and its detail; leave other text intact."""
+    prefix, _, detail = message.partition(": ")
+    if prefix in _CORE_IO_STAGES and detail:
+        return _CORE_IO_STAGES[prefix][1], detail
+    return "", message
+
+
 class SourceLoadProgressUnit(StrEnum):
     """Unit carried by a source progress update."""
 
@@ -324,6 +342,9 @@ class SourceFileLoadWorker(QRunnable):
 def _phase_from_core_message(message: str) -> SourceLoadPhase:
     """Map the Qt-free loader's progress text onto the public typed phases."""
 
+    prefix, _, _detail = str(message).partition(": ")
+    if prefix in _CORE_IO_STAGES:
+        return _CORE_IO_STAGES[prefix][0]
     normalized = str(message).casefold()
     if "reverification" in normalized or "re-verification" in normalized:
         return SourceLoadPhase.VERIFY

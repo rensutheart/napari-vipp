@@ -47,11 +47,10 @@ from napari_vipp.ui.iconography import (
 )
 from napari_vipp.ui.operation_help import IMAGEJ_COMPATIBILITY_TOOLTIPS
 from napari_vipp.ui.panel_toggle import SidePanelToggleButton
-from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text
+from napari_vipp.ui.search import NodeLibrarySearchTerms, _normalize_search_text
 from napari_vipp.ui.search_fields import SearchLineEdit
 
 OPERATION_ROLE = Qt.UserRole
-SEARCH_TEXT_ROLE = Qt.UserRole + 1
 CATEGORY_ROLE = Qt.UserRole + 2
 
 
@@ -104,6 +103,7 @@ class NodePalette(QTreeWidget):
         self._operation_items: list[QTreeWidgetItem] = []
         self._category_by_item: dict[int, str] = {}
         self._spec_by_item: dict[int, OperationSpec] = {}
+        self._search_terms: dict[int, NodeLibrarySearchTerms] = {}
 
         self.setColumnCount(2)
         self.setHeaderHidden(True)
@@ -131,7 +131,6 @@ class NodePalette(QTreeWidget):
             category_item = QTreeWidgetItem([category, str(count)])
             category_item.setFlags(category_item.flags() & ~Qt.ItemIsDragEnabled)
             category_item.setData(0, CATEGORY_ROLE, category)
-            category_item.setData(0, SEARCH_TEXT_ROLE, category)
             category_item.setData(
                 0,
                 Qt.AccessibleTextRole,
@@ -159,11 +158,6 @@ class NodePalette(QTreeWidget):
                         Qt.AccessibleTextRole,
                         f"{subgroup}, {len(specs)} nodes",
                     )
-                    subgroup_item.setData(
-                        0,
-                        SEARCH_TEXT_ROLE,
-                        f"{category} {subgroup}",
-                    )
                     category_item.addChild(subgroup_item)
                     self._subcategory_items.append(subgroup_item)
                     self._category_by_item[id(subgroup_item)] = category
@@ -173,17 +167,19 @@ class NodePalette(QTreeWidget):
                     item = QTreeWidgetItem([spec.title, ""])
                     item.setData(0, OPERATION_ROLE, spec.id)
                     item.setData(0, CATEGORY_ROLE, category)
-                    item.setData(
-                        0,
-                        SEARCH_TEXT_ROLE,
-                        f"{category} {subgroup} {spec.title} {spec.id}",
-                    )
                     item.setData(0, Qt.AccessibleDescriptionRole, description)
                     item.setToolTip(0, description)
                     parent_item.addChild(item)
                     self._operation_items.append(item)
                     self._category_by_item[id(item)] = category
                     self._spec_by_item[id(item)] = spec
+                    self._search_terms[id(item)] = NodeLibrarySearchTerms.from_fields(
+                        spec.title,
+                        spec.id,
+                        aliases=operation_search_aliases(spec.id),
+                        category=category,
+                        subgroup=subgroup,
+                    )
 
         self._no_results_item = QTreeWidgetItem(["No matching nodes", ""])
         self._no_results_item.setFlags(Qt.NoItemFlags)
@@ -283,7 +279,7 @@ class NodePalette(QTreeWidget):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             item = self.currentItem()
             operation_id = item.data(0, OPERATION_ROLE) if item else None
-            if operation_id:
+            if operation_id and not item.isHidden():
                 self.operation_requested.emit(str(operation_id))
                 event.accept()
                 return
@@ -331,7 +327,7 @@ class NodePalette(QTreeWidget):
         self.set_filter_text("")
 
     def set_filter_text(self, text: str) -> None:
-        query = _normalize_search_text(text)
+        query = tuple(_normalize_search_text(text).split())
         if query and not self._filter_active:
             self._expansion_snapshot = [
                 (item, item.isExpanded())
@@ -339,59 +335,50 @@ class NodePalette(QTreeWidget):
             ]
             self._filter_active = True
 
-        visible_count = 0
-        for category_item in self._category_items:
-            category = str(category_item.data(0, CATEGORY_ROLE))
-            in_scope = self._scope_category is None or category == self._scope_category
-            if in_scope:
-                category_visible, category_count = self._apply_filter_to_children(
-                    category_item,
-                    query,
-                )
-            else:
-                category_visible, category_count = False, 0
-            visible_count += category_count
-            category_item.setHidden(not category_visible)
-            if query and category_visible:
-                category_item.setExpanded(True)
+        priorities: dict[int, int] = {}
+        for item in self._operation_items:
+            key = id(item)
+            if self._scope_category is not None and (
+                self._category_by_item[key] != self._scope_category
+            ):
+                continue
+            priority = self._search_terms[key].match_priority(query)
+            if priority is not None:
+                priorities[key] = priority
+        # A weaker match should never crowd out a literal result in this scope.
+        best = min(priorities.values(), default=None)
+        visible_operations = {key for key, score in priorities.items() if score == best}
 
-        self._no_results_item.setHidden(not query or visible_count > 0)
+        for category_item in self._category_items:
+            self._apply_filter(category_item, visible_operations, expand=bool(query))
+
+        self._no_results_item.setHidden(not query or bool(visible_operations))
         if not query and self._filter_active:
             for item, expanded in self._expansion_snapshot:
                 item.setExpanded(expanded)
             self._expansion_snapshot.clear()
             self._filter_active = False
 
-    def _apply_filter_to_children(
+    def _apply_filter(
         self,
-        parent: QTreeWidgetItem,
-        query: str,
-    ) -> tuple[bool, int]:
-        parent_visible = False
-        visible_count = 0
-        for index in range(parent.childCount()):
-            item = parent.child(index)
-            if item.data(0, OPERATION_ROLE):
-                haystack = _normalize_search_text(str(item.data(0, SEARCH_TEXT_ROLE)))
-                visible = not query or _fuzzy_match(
-                    query,
-                    haystack,
-                    aliases=operation_search_aliases(str(item.data(0, OPERATION_ROLE))),
-                )
-                item.setHidden(not visible)
-                parent_visible = parent_visible or visible
-                visible_count += int(visible)
-            else:
-                child_visible, child_count = self._apply_filter_to_children(
-                    item,
-                    query,
-                )
-                item.setHidden(not child_visible)
-                if query and child_visible:
-                    item.setExpanded(True)
-                parent_visible = parent_visible or child_visible
-                visible_count += child_count
-        return parent_visible, visible_count
+        item: QTreeWidgetItem,
+        visible_operations: set[int],
+        *,
+        expand: bool,
+    ) -> bool:
+        if item.data(0, OPERATION_ROLE):
+            visible = id(item) in visible_operations
+        else:
+            visible = False
+            for index in range(item.childCount()):
+                if self._apply_filter(
+                    item.child(index), visible_operations, expand=expand
+                ):
+                    visible = True
+            if visible and expand:
+                item.setExpanded(True)
+        item.setHidden(not visible)
+        return visible
 
 
 class _NodePalettePopup(QFrame):

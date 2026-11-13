@@ -580,11 +580,17 @@ def compute_toolbar_summary(
             text = f"{mode} · {fallback_nodes} CPU fallback{bypass_suffix}"
         tone = ComputePresentationTone.FALLBACK
     elif gpu_nodes:
-        text = f"{mode} · {gpu_nodes} GPU / {cpu_nodes} CPU{bypass_suffix}"
+        totals = f"{gpu_nodes} GPU"
+        if cpu_nodes:
+            totals += f" / {cpu_nodes} CPU"
+        text = f"{mode} · {totals}{bypass_suffix}"
         tone = ComputePresentationTone.GPU
     elif not compute_decisions and bypass_nodes:
         text = f"{mode} · {bypass_nodes} bypassed"
         tone = ComputePresentationTone.NEUTRAL
+    elif status.request.mode is ComputeMode.CPU:
+        text = f"{mode}{bypass_suffix}"
+        tone = ComputePresentationTone.CPU
     elif status.request.mode in {ComputeMode.AUTO, ComputeMode.PREFER_GPU}:
         text = f"{mode} · {cpu_nodes} CPU{bypass_suffix}"
         tone = ComputePresentationTone.CPU

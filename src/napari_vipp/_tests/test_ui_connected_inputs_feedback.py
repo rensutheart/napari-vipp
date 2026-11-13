@@ -1,4 +1,4 @@
-"""Compact input summaries retain readable, complete scientific context."""
+"""Compact input summaries retain complete, readable wiring context."""
 
 from dataclasses import replace
 
@@ -23,16 +23,12 @@ def _bindings():
             "image",
             "Synthetic moving fluorescence source <literal>",
             "Image",
-            "TCZYX: 3 × 2 × 32 × 128 × 128 · float32 (32-bit float) · "
-            "sampling Z 1 µm, Y 0.25 µm, X 0.25 µm · axes inferred",
         ),
         ConnectedInputBinding(
             "Reference image",
             "image",
             "Synthetic reference fluorescence source",
             "Image",
-            "ZYX: 32 × 128 × 128 · float32 (32-bit float) · "
-            "sampling Z 1 µm, Y 0.25 µm, X 0.25 µm",
         ),
     ]
 
@@ -92,7 +88,7 @@ def _wait_for_card_layout(qtbot, host, card, width):
             geometry.extend((owner.minimumHeight(), owner.geometry().getRect()))
         for row in card.rows:
             assert card.rect().contains(row.geometry())
-            for label in (row.role_label, row.source_label, row.scientific_label):
+            for label in (row.role_label, row.source_label):
                 assert row.rect().contains(label.geometry())
                 assert label.height() >= label.heightForWidth(label.width())
                 font_observation = {
@@ -123,7 +119,7 @@ def _wait_for_card_layout(qtbot, host, card, width):
 
 @pytest.mark.parametrize("points", [9, 16])
 @pytest.mark.parametrize("width", [260, 400])
-def test_card_saves_measured_height_in_spacing_not_scientific_text(
+def test_card_saves_measured_height_in_spacing_not_source_text(
     qtbot, points, width
 ):
     host = _host(qtbot, points)
@@ -163,9 +159,7 @@ def test_card_saves_measured_height_in_spacing_not_scientific_text(
     assert [row.binding for row in compact.rows] == _bindings()
     for row in compact.rows:
         assert row.source_label.text() == row.binding.source_summary
-        assert row.scientific_label.text() == row.binding.scientific_summary
         assert row.source_label.font().pointSizeF() >= points
-        assert row.scientific_label.font().pointSizeF() >= points
 
 
 @pytest.mark.parametrize("dark", [True, False])
@@ -190,12 +184,11 @@ def test_input_card_hierarchy_is_bold_without_shrinking_or_replacing_context(
     )
     for row in card.rows:
         assert row.role_label.font().weight() >= QFont.DemiBold
-        for label in (row.role_label, row.source_label, row.scientific_label):
+        for label in (row.role_label, row.source_label):
             assert label.wordWrap()
             assert label.textFormat() == Qt.PlainText
-        for label in (row.source_label, row.scientific_label):
-            assert label.textInteractionFlags() & Qt.TextSelectableByMouse
-        assert row.scientific_label.text() in row.accessibleName()
+        assert row.source_label.textInteractionFlags() & Qt.TextSelectableByMouse
+        assert row.source_label.text() in row.accessibleName()
         assert row.binding.source_title in row.source_label.text()
         assert "&lt;literal&gt;" in card.rows[0].toolTip()
         assert row.property("hasDivider") == (row is card.rows[1])
@@ -276,11 +269,7 @@ def test_compact_card_wraps_at_owner_width_without_overlap_or_forced_width(
                     violations.append(f"row_{index}_containment")
                 geometry.append(row.geometry().getRect())
                 labels = []
-                for label in (
-                    row.role_label,
-                    row.source_label,
-                    row.scientific_label,
-                ):
+                for label in (row.role_label, row.source_label):
                     if (
                         label.geometry().right() >= row.width()
                         or label.height() < label.heightForWidth(label.width())
@@ -369,7 +358,7 @@ def test_compact_card_wraps_at_owner_width_without_overlap_or_forced_width(
         assert card.height() >= card.heightForWidth(card.width())
         for row in card.rows:
             assert row.geometry().right() < card.width()
-            for label in (row.role_label, row.source_label, row.scientific_label):
+            for label in (row.role_label, row.source_label):
                 assert label.geometry().right() < row.width()
                 assert label.height() >= label.heightForWidth(label.width())
         assert following.y() >= card.geometry().bottom() + SPACE_SM
@@ -404,7 +393,7 @@ def test_input_card_height_returns_after_font_binding_and_visibility_changes(
     _wait_for_card_layout(qtbot, host, card, 260)
     assert card.minimumHeight() == original_height
     short = [
-        replace(binding, source_title=title, scientific_summary="YX: 4 × 5 · uint8")
+        replace(binding, source_title=title)
         for binding, title in zip(_bindings(), ("Moving", "Reference"), strict=True)
     ]
     card.set_bindings(short)
@@ -586,7 +575,7 @@ def test_replacing_rows_cancels_only_their_owned_pending_geometry_timers(
         timer.timeout.connect(lambda index=index: fired.append(index))
         timer.start(0)
         assert timer.isActive()  # Prove deletion happens with pending callbacks.
-    replacement = replace(_bindings()[0], scientific_summary="YX: 4 × 5 · uint8")
+    replacement = replace(_bindings()[0], source_title="Replacement source")
     card.set_bindings([replacement])
     qtbot.waitUntil(lambda: all(not isalive(row) for row in previous_rows))
     _wait_for_card_layout(qtbot, host, card, 260)

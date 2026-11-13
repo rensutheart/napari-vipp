@@ -255,19 +255,41 @@ def test_connected_inputs_are_read_only_and_threshold_guidance_is_visible(qtbot)
     assert all(row.role_label.wordWrap() for row in rows)
     assert all(row.source_label.wordWrap() for row in rows)
     assert all(not row.icon_label.pixmap().isNull() for row in rows)
-    assert any(labels.title in row.source_label.text() for row in rows)
-    assert any("Image Source" in row.source_label.text() for row in rows)
-    assert any("out" in row.source_label.text() for row in rows)
     rows_by_role = {row.role_label.text(): row for row in rows}
-    assert "ZYX: 2 × 8 × 10" in (rows_by_role["Labels"].scientific_label.text())
-    assert "uint32 (32-bit integer)" in (rows_by_role["Labels"].scientific_label.text())
-    assert "uint16 (16-bit integer)" in (
-        rows_by_role["Intensity image"].scientific_label.text()
+    assert rows_by_role["Labels"].source_label.text() == f"From: {labels.title}"
+    assert rows_by_role["Intensity image"].source_label.text() == "From: Image Source"
+    assert all(row.binding.source_port_label == "out" for row in rows)
+    assert all(row.binding.source_port_is_implicit for row in rows)
+    assert all("ZYX" not in row.accessibleName() for row in rows)
+    metadata = widget.input_metadata_section
+    _assert_visible_order(widget, widget.metadata_group, metadata)
+    assert not metadata.isExpanded()
+    assert metadata.content_widget.isHidden()
+    metadata.setExpanded(True)
+    layout = metadata.content_widget.layout()
+    assert [layout.itemAt(i).widget().text() for i in range(layout.count())] == [
+        "Labels",
+        "ZYX: 2 × 8 × 10 · uint32 (32-bit integer)",
+        "Intensity image",
+        "ZYX: 2 × 8 × 10 · uint16 (16-bit integer)",
+    ]
+    assert all(
+        "ZYX: 2 × 8 × 10" not in widget.metadata_table.item(i, 1).text()
+        for i in range(widget.metadata_table.rowCount())
     )
+
+    _publish_array_output(
+        widget, labels.id, np.zeros((3, 8, 10), dtype=np.uint32), axes="ZYX"
+    )
+    widget._sync_inspector_presentation()
+    assert widget.connected_inputs_panel.rows[0] is rows_by_role["Labels"]
+    assert "ZYX: 3 × 8 × 10" in layout.itemAt(1).widget().text()
 
     widget._connect_nodes("input", threshold.id)
     _select(widget, threshold.id)
 
+    assert metadata.isHidden()
+    assert layout.count() == 0
     assert not widget.histogram_interaction_hint.isHidden()
     assert widget.histogram_interaction_hint.text() == (
         "Foreground: values strictly above the threshold. Equal values stay "
@@ -276,6 +298,40 @@ def test_connected_inputs_are_read_only_and_threshold_guidance_is_visible(qtbot)
     assert widget.histogram_interaction_hint.accessibleName() == (
         "Interactive histogram guidance"
     )
+
+
+def test_registration_connections_separate_receiving_roles_from_named_sources(qtbot):
+    widget = _widget(qtbot, np.zeros((12, 12), dtype=np.uint16), axes="YX")
+    widget.load_example_workflow("registration-translation")
+    registration = next(
+        node
+        for node in widget.pipeline.nodes.values()
+        if node.operation_id == "estimate_registration"
+    )
+    connections = sorted(
+        widget.pipeline._input_connections(registration.id),
+        key=lambda connection: connection.target_port,
+    )
+    titles = ("Synthetic translated comparison image", "Synthetic reference image")
+    for connection, title in zip(connections, titles, strict=True):
+        assert widget._set_node_name(connection.source_id, title)
+    _select(widget, registration.id)
+
+    rows = widget.connected_inputs_panel.rows
+    assert [row.role_label.text() for row in rows] == [
+        "Moving image / time series",
+        "Reference image",
+    ]
+    assert [row.source_label.text() for row in rows] == [
+        f"From: {title}" for title in titles
+    ]
+    assert [row.binding.source_port_label for row in rows] == ["out", "out"]
+    assert all(row.binding.source_port_is_implicit for row in rows)
+    assert all(row.source_label.wordWrap() for row in rows)
+    assert sorted(
+        widget.pipeline._input_connections(registration.id),
+        key=lambda connection: connection.target_port,
+    ) == connections
 
 
 def _metadata_values(widget) -> dict[str, str]:

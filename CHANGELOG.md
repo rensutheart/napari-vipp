@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+## 0.16.0a8 - 2026-11-13
+
+- Scroll past inspector sliders, number boxes and closed drop-downs without
+  changing their values, even when they have focus.
+- Switch inspector parameter rows together between inline and stacked
+  layouts, keeping each slider and its numeric entry paired.
+- Keep inspector section headings on one line when there is room, including
+  at fractional display scaling, and wrap them only in narrow docks.
+- Wrap long input and output labels on graph cards in narrower columns,
+  keeping the full names readable without covering the preview or nearby ports.
+- Keep the inspector histogram's plotting area readable with larger text,
+  and label connected inputs by receiving role, source node and distinct output.
+- Keep **Connected inputs** focused on wiring; show incoming image, table and
+  transform details separately under **Input metadata**.
+- Fit full results table columns to their contents by default, with an
+  **Equal widths** option and manual resizing.
+- Avoid a full-volume float64 temporary in Hysteresis Threshold. Keep the
+  same thresholds, connectivity and output mask.
+- Keep 3D display warnings visible alongside workflow progress. If OpenGL
+  reports a 3D texture allocation failure, explain it and suggest 2D.
+- Compact the toolbar settings: keep Viewer graphics to one-line status and
+  choices, mark pending changes, and move renderer details to tooltips.
+- Budget 3D labels using napari's actual display texture so full-resolution
+  labels are not needlessly hidden. In **Review Images**, keep masks and
+  labels exact while reducing only a too-large intensity preview if needed.
+- Narrow node-library searches to matching names, aliases, and category words.
+  Fall back to a small typo or name abbreviation only when there is no direct
+  match, so searching for **Otsu** no longer shows unrelated nodes.
+- Add **Viewer graphics** to the toolbar settings. See the active OpenGL
+  renderer and choose Auto, GPU, or CPU for the next standalone launch,
+  independently of workflow compute.
+- Check the renderer before displaying large 3D results. Keep binary masks
+  full-resolution and use a labeled, reduced 3D preview for large intensity
+  volumes when needed, without changing workflow data or outputs.
+- Show **CPU** once for CPU runs, omit zero-count CPU entries for GPU-only
+  runs, and retain mixed-run and fallback information in the compute summary.
+- Wrap inspector section headings at the current text size in narrow docks
+  instead of replacing the middle of the title with an ellipsis.
+
+- Keep real channel/time labels and preserve the Z slice when switching
+  between a multichannel stack and a single-channel result in napari. Hide
+  retired slice controls immediately when a tab or preview has fewer axes.
+
+- Skip the cursor value read on VIPP-generated layers when napari requests a
+  3D sample while the previous 2D slice is still in use.
+
+- Show image loading and preview progress above the workflow graph. Keep the
+  current phase in bold with a separate action, and put the progress count
+  beside the bar when space allows. Show filenames in place of long paths,
+  with full details available on hover. Wrapped progress text gives its space
+  back to the graph when the dock widens or the message gets shorter.
+
+- Wrap graph thumbnail placeholder text. Give inline **View dimensions**
+  sliders equal lengths and fit the position fields to each axis range.
+  **Show sliders** opens sliders for the same axes in compact docks;
+  **View dimensions** opens all navigation controls in narrow docks.
+
+- Stop Review Images slicing work and clear its owned layers before closing
+  the rendering canvases.
+
+- Replace the inspector's repeated parameter line with **Node details**, a
+  read-only, labeled view of the selected node's configuration. Raw JSON is
+  available separately; editable settings and scientific guidance stay visible.
+
 - Keep slider number fields compact and consistent when inspector rows wrap,
   expanding only for a longer current value. Make connected-input summaries
   denser with a clearer heading, and improve recovery checkbox contrast in
@@ -40,7 +104,6 @@
   to close a detected running instance and keep VIPP closed until setup finishes;
   never force-close it. Ambiguous processes, foreign files, unsupported package
   layouts and runtime/ABI changes remain explicit Replacement/Fresh blockers.
-  This is unreleased development work, not a published installer qualification.
 
 - Compare installer versions using Python package version ordering, so numeric
   development releases such as dev10 correctly follow dev9; keep genuine
@@ -80,11 +143,10 @@
   directory. This avoids cross-runtime OpenSSL DLL conflicts without changing
   the computer's PATH or reinstalling packages.
 
-- Windows setup offers a default-when-safe incremental update and an explicit
-  fresh environment. Incremental app-only updates reuse verified installed
-  dependencies in a staged replacement; both paths retain rollback and use
-  verified cached downloads. Initial local checks no longer wait for a full
-  online dependency resolution. This is unreleased development work.
+- Windows setup defaults to the fastest safe method and offers a separate
+  replacement or fresh environment. Replacement reuses verified compatible
+  installed dependencies. Setup reuses verified cached downloads when needed;
+  initial local checks no longer wait for a full online dependency resolution.
 - Windows setup can separately review and repair a stale registration for a
   verified installer-owned VIPP installation, with an exact backup and explicit
   confirmation. Foreign, incomplete or changed Windows entries remain blocked;

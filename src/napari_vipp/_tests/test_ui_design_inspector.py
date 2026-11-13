@@ -156,21 +156,16 @@ def test_graph_action_colors_use_the_selected_theme_not_stale_native_roles(
     assert card.palette().color(QPalette.Text) == QColor("#000000")
 
 
-def test_connected_input_card_keeps_scientific_context_at_body_size(qtbot):
+def test_connected_input_card_keeps_source_context_at_body_size(qtbot):
     card = ConnectedInputsCard()
     qtbot.addWidget(card)
-    summary = "Explicit ZYX · 0.25 µm XY · 1.0 µm Z"
-    card.set_bindings(
-        [
-            ConnectedInputBinding(
-                "Image", "image", "Synthetic source", scientific_summary=summary
-            )
-        ]
-    )
+    card.set_bindings([ConnectedInputBinding("Image", "image", "Synthetic source")])
     row = card.rows[0]
-    assert row.scientific_label.text() == summary
-    assert row.scientific_label.wordWrap()
-    assert row.scientific_label.textInteractionFlags()
+    assert row.source_label.text() == "From: Synthetic source"
+    assert row.source_label.wordWrap()
+    assert row.source_label.textInteractionFlags()
+    assert row.layout().itemAt(1).layout().count() == 2
+    assert row.accessibleName() == "Input: Image; From: Synthetic source"
     assert "font-size: 11px" not in card.styleSheet()
     assert "border-left: 3px" not in card.styleSheet()
 

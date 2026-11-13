@@ -23,6 +23,7 @@ from qtpy.QtGui import QPainter, QPalette, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -56,6 +57,7 @@ _EXPORT_NOTE = (
     "Sorting changes this view only; export preserves the workflow's exact row order."
 )
 _BACKGROUND_TASK_ROW_THRESHOLD = 50_000
+_COLUMN_WIDTH_SAMPLE_ROWS = 128
 
 
 class _SortChevronStyle(QProxyStyle):
@@ -491,8 +493,16 @@ class _ResultTableView:
         horizontal_header.setSectionsClickable(True)
         horizontal_header.setSortIndicatorShown(False)
         horizontal_header.setSectionResizeMode(QHeaderView.Interactive)
-        horizontal_header.setMinimumSectionSize(70)
-        horizontal_header.setDefaultSectionSize(160)
+        horizontal_header.setMinimumSectionSize(52)
+        horizontal_header.setResizeContentsPrecision(_COLUMN_WIDTH_SAMPLE_ROWS)
+        self.column_layout = QComboBox(self)
+        self.column_layout.addItem("Fit to contents", "fit")
+        self.column_layout.addItem("Equal widths", "equal")
+        self.column_layout.setAccessibleName("Result table column layout")
+        self.column_layout.setToolTip(
+            "Fit widths to headings and a sample of cells, or give every "
+            "column the same width. You can still drag a column divider."
+        )
         self._refresh_table_metrics()
 
         self.export_note = QLabel(_EXPORT_NOTE, self)
@@ -514,6 +524,7 @@ class _ResultTableView:
         layout = QVBoxLayout(self)
         self.table_toolbar = QHBoxLayout()
         self.table_toolbar.addWidget(self.summary_label, 1)
+        self.table_toolbar.addWidget(self.column_layout, 0)
         self.table_toolbar.addWidget(self.decimal_controls, 0, Qt.AlignRight)
         layout.addLayout(self.table_toolbar)
         layout.addWidget(self.result_status_panel)
@@ -542,6 +553,7 @@ class _ResultTableView:
         self._theme_refresh_in_progress = False
 
         horizontal_header.sectionClicked.connect(self._sort_by_header)
+        self.column_layout.currentIndexChanged.connect(self._apply_column_layout)
         self.result_action_button.clicked.connect(self.recalculationRequested.emit)
         self.result_action_button.setAutoDefault(False)
         self.result_action_button.setDefault(False)
@@ -584,8 +596,18 @@ class _ResultTableView:
             self._sort_column = None
             self._sort_order = Qt.AscendingOrder
             self._restore_committed_sort_indicator()
+            self._apply_column_layout()
             self.table_view.scrollToTop()
         self.export_button.setEnabled(self._active_export_worker is None)
+
+    def _apply_column_layout(self, *_args) -> None:
+        """Choose starting widths while leaving header sections draggable."""
+        if self.column_layout.currentData() == "fit":
+            self.table_view.resizeColumnsToContents()
+            return
+        width = max(160, self.table_view.fontMetrics().averageCharWidth() * 20)
+        for column in range(self.model.columnCount()):
+            self.table_view.setColumnWidth(column, width)
 
     def set_result_status(
         self,

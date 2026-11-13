@@ -310,7 +310,7 @@ def test_connected_input_card_preserves_dynamic_source_output_label(qtbot):
 
     _select(widget, add.id)
 
-    assert "Split Channels · Ch 3" == (
+    assert "From: Split Channels · Output: Ch 3" == (
         widget.connected_inputs_panel.rows[0].source_label.text()
     )
 
@@ -328,13 +328,13 @@ def test_connected_input_card_tracks_tunnel_connect_reroute_clear_and_remove(qtb
     widget._connect_input_to_tunnel("Raw", combine.id, 0)
     assert (
         widget.connected_inputs_panel.rows[0].source_label.text()
-        == "Image Source · out"
+        == "From: Image Source"
     )
 
     assert widget._reroute_output_tunnel("Raw", blur.id, 0)
     assert (
         widget.connected_inputs_panel.rows[0].source_label.text()
-        == "Gaussian Blur · out"
+        == "From: Gaussian Blur"
     )
 
     widget._clear_input_tunnel(combine.id, 0)
@@ -355,7 +355,7 @@ def test_connected_input_card_clears_when_upstream_node_is_deleted(qtbot):
 
     assert (
         widget.connected_inputs_panel.rows[0].source_label.text()
-        == f"{widget._node_title(blur.id)} · out"
+        == f"From: {widget._node_title(blur.id)}"
     )
 
     widget._delete_node(blur.id)
@@ -378,7 +378,7 @@ def test_connected_input_card_clears_when_dynamic_source_ports_shrink(qtbot):
 
     assert (
         widget.connected_inputs_panel.rows[0].source_label.text()
-        == "Split Channels · Ch 3"
+        == "From: Split Channels · Output: Ch 3"
     )
 
     one_channel = np.zeros((1, 10, 12), dtype=np.uint16)

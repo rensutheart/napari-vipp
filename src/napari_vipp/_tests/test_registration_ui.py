@@ -408,10 +408,52 @@ def test_transform_inspector_profile_has_no_image_actions_or_histograms():
 def test_connected_transform_summary_is_readable_and_directional():
     transform = _transform()
     summary = connected_input_scientific_summary(None, transform.state)
-    assert "Translation" in summary
-    assert "YX" in summary
-    assert "1 transform" in summary
-    assert "moving → reference" in summary
+    assert summary.splitlines() == [
+        "Model: Translation",
+        "Spatial axes: Y, X",
+        "Transforms: 1",
+        "Maps coordinates from the moving image to the reference.",
+    ]
+
+
+def test_input_metadata_tracks_named_ports_and_disconnects(registration_widget):
+    widget, registration = registration_widget
+    widget.run_pipeline = lambda *args, **kwargs: None
+    apply = widget.add_node_from_palette("apply_transform")
+    label_filter = widget.add_node_from_palette("filter_labels_by_property")
+    widget._connect_nodes(registration.id, apply.id, target_port=1, source_port=0)
+    widget._connect_nodes(
+        registration.id, label_filter.id, target_port=1, source_port=1
+    )
+    _publish(widget, registration)
+
+    section = widget.input_metadata_section
+    layout = section.content_widget.layout()
+    widget._select_node(apply.id)
+    row = widget.connected_inputs_panel.rows[1]
+    assert row.source_label.text() == "From: Estimate Registration · Output: Transform"
+    assert "Translation" not in row.accessibleName()
+    assert not section.isHidden()
+    assert not section.isExpanded()
+    assert layout.itemAt(0).widget().text() == "Transform"
+    assert "Model: Translation" in layout.itemAt(1).widget().text()
+
+    widget._select_node(label_filter.id)
+    row = widget.connected_inputs_panel.rows[1]
+    assert row.source_label.text() == (
+        "From: Estimate Registration · Output: Diagnostics"
+    )
+    assert layout.itemAt(0).widget().text() == "Measurements table"
+    assert layout.itemAt(1).widget().text() == (
+        "1 row · 2 fields · registration diagnostics"
+    )
+
+    widget._disconnect_nodes(registration.id, label_filter.id, target_port=1)
+    assert section.isHidden()
+    assert layout.count() == 0
+    assert widget.connected_inputs_panel.rows[1].source_label.text() == (
+        "Not connected · expects table"
+    )
 
 
 def test_transform_card_has_no_thumbnail_before_or_after_calculation(
