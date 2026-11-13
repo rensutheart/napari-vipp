@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from napari_vipp.installer import discovery as discovery_module
+from napari_vipp.installer import windows_backend as windows_backend_module
 from napari_vipp.installer.discovery import (
     DiscoveryServices,
     InterpreterProbe,
@@ -22,6 +23,7 @@ from napari_vipp.installer.frontend import (
     ProgressUnit,
     TargetKind,
     TrackChoice,
+    VippMustBeClosed,
 )
 from napari_vipp.installer.models import (
     ComputeTrack,
@@ -29,6 +31,7 @@ from napari_vipp.installer.models import (
     NvidiaSnapshot,
     ReleaseSpec,
     ShortcutScope,
+    UpdateStrategy,
 )
 from napari_vipp.installer.ownership import (
     OwnedEnvironment,
@@ -55,14 +58,24 @@ def _simulate_windows_host(monkeypatch):
 
 
 class _Engine:
-    def __init__(self, kind="new"):
+    def __init__(
+        self,
+        kind="new",
+        *,
+        selected_strategy=UpdateStrategy.FRESH,
+        strategy_reason="",
+    ):
         self.kind = kind
         self.prepared_plans = []
         self.authorizations = []
         self.applied = []
+        self.resolve_requests = []
+        self.selected_strategy = selected_strategy
+        self.strategy_reason = strategy_reason
 
-    def prepare(self, plan, *, progress, cancellation, repair=False):
+    def prepare(self, plan, *, progress, cancellation, repair=False, resolve=True):
         self.prepared_plans.append((plan, repair))
+        self.resolve_requests.append(resolve)
         progress(
             SimpleNamespace(
                 stage=SimpleNamespace(value="resolve"),
@@ -79,6 +92,8 @@ class _Engine:
                 reason="",
             ),
             operation=SimpleNamespace(value=("repair" if repair else self.kind)),
+            selected_strategy=self.selected_strategy,
+            strategy_reason=self.strategy_reason,
             as_dict=lambda: {"resolution": "reviewed"},
         )
 
@@ -289,6 +304,227 @@ def test_registration_conflict_during_prepare_routes_to_setup_help(tmp_path):
     assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
     assert "Windows entry was preserved" in prepared.technical_details
     assert not prepared.target.exists()
+
+
+def _repair_conflict_backend(tmp_path, monkeypatch, *, helper_error=None):
+    from napari_vipp.installer import registration_repair
+    from napari_vipp.installer.engine import RegistrationConflictError
+
+    class ConflictingEngine(_RecoveryEngine):
+        def prepare(self, *args, **kwargs):
+            raise RegistrationConflictError("The old Windows entry was preserved.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"test Python")
+    repair_backend = object()
+    engine = ConflictingEngine()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8.dev2"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+        repair_backend=repair_backend,
+    )
+    calls = []
+
+    def prepare(root, local_app_data, *, backend):
+        calls.append((root, local_app_data, backend))
+        if helper_error:
+            raise RuntimeError(helper_error)
+        return SimpleNamespace(
+            fingerprint="a" * 64,
+            managed_root=root,
+            track=ComputeTrack.CPU,
+            registered_version="0.16.0a3",
+            installed_version="0.16.0a7",
+            changes=(("DisplayVersion", "0.16.0a3", "0.16.0a7"),),
+            backup_path=tmp_path / "repair-backup.json",
+            summary="Verified older entry for this installation only.",
+        )
+
+    monkeypatch.setattr(registration_repair, "prepare_registration_repair", prepare)
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    return backend, prepared, engine, repair_backend, calls
+
+
+def test_registration_conflict_offers_separate_readonly_repair_review(
+    tmp_path, monkeypatch
+):
+    backend, prepared, engine, repair_backend, calls = _repair_conflict_backend(
+        tmp_path, monkeypatch
+    )
+    assert prepared.kind is TargetKind.BLOCKED
+    assert prepared.payload is None
+    assert prepared.blocked_action is BlockedAction.REPAIR_REGISTRATION
+    assert prepared.registration_repair.fingerprint == "a" * 64
+    assert "DisplayVersion: '0.16.0a3' → '0.16.0a7'" in (
+        prepared.registration_repair.preview
+    )
+    assert prepared.registration_repair.backup_path == tmp_path / "repair-backup.json"
+    assert prepared.registration_repair.managed_root == prepared.target
+    assert prepared.registration_repair.registered_version == "0.16.0a3"
+    assert prepared.registration_repair.installed_version == "0.16.0a7"
+    assert calls == [(prepared.target, tmp_path, repair_backend)]
+    assert backend._repair_backend is repair_backend
+    assert engine.authorizations == [] and engine.applied == []
+    assert not prepared.target.exists()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "The entry belongs to another installation.",
+        "The entry is incomplete.",
+        "Unexpected registry values are present.",
+    ],
+)
+def test_unverified_registration_conflict_keeps_actionable_setup_help(
+    tmp_path, monkeypatch, reason
+):
+    _, prepared, engine, _, _ = _repair_conflict_backend(
+        tmp_path, monkeypatch, helper_error=reason
+    )
+    assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert prepared.registration_repair is None
+    assert reason in prepared.reason
+    assert "do not delete or overwrite" in prepared.reason
+    assert engine.applied == []
+
+
+def test_registration_repair_uses_only_separate_typed_helper_backend(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer import registration_repair
+
+    backend, prepared, engine, repair_backend, _ = _repair_conflict_backend(
+        tmp_path, monkeypatch
+    )
+    calls = []
+    token = object()
+
+    def authorize(plan, *, confirmed):
+        calls.append(("authorize", plan, confirmed))
+        return token
+
+    def apply(plan, authorization, *, backend):
+        calls.append(("apply", plan, authorization, backend))
+        return SimpleNamespace(
+            succeeded=True,
+            message="Verified entry repaired; backup retained.",
+            backup_path=plan.backup_path,
+        )
+
+    monkeypatch.setattr(registration_repair, "authorize_registration_repair", authorize)
+    monkeypatch.setattr(registration_repair, "apply_registration_repair", apply)
+    with pytest.raises(RuntimeError, match="explicitly confirmed"):
+        backend.repair_registration(prepared, confirmed=False, progress=lambda _e: None)
+    assert calls == []
+    events = []
+    outcome = backend.repair_registration(
+        prepared, confirmed=True, progress=events.append
+    )
+    assert outcome.succeeded
+    assert calls == [
+        ("authorize", prepared.registration_repair.payload, True),
+        ("apply", prepared.registration_repair.payload, token, repair_backend),
+    ]
+    assert events[-1].stage == "repairing_registration"
+    assert engine.authorizations == [] and engine.applied == []
+
+
+@pytest.mark.parametrize(
+    "forged",
+    [
+        "preview",
+        "backup",
+        "track",
+        "fingerprint",
+        "root",
+        "registered",
+        "installed",
+        "old-state",
+    ],
+)
+def test_registration_repair_rejects_misleading_review_before_authorization_or_write(
+    tmp_path, monkeypatch, forged
+):
+    from napari_vipp.installer import registration_repair
+
+    backend, prepared, engine, _, _ = _repair_conflict_backend(tmp_path, monkeypatch)
+    if forged == "track":
+        prepared = replace(prepared, track=ComputeTrack.CUDA13)
+    else:
+        replacements = {
+            "preview": {"preview": "No change, no backup needed."},
+            "backup": {"backup_path": tmp_path / "misleading-backup.json"},
+            "fingerprint": {"fingerprint": "b" * 64},
+            "root": {"managed_root": tmp_path / "another-installation"},
+            "registered": {"registered_version": "misleading-old-version"},
+            "installed": {"installed_version": "misleading-installed-version"},
+            "old-state": {"old_uninstaller_state": "absent"},
+        }
+        prepared = replace(
+            prepared,
+            registration_repair=replace(
+                prepared.registration_repair, **replacements[forged]
+            ),
+        )
+    calls = []
+    monkeypatch.setattr(
+        registration_repair,
+        "authorize_registration_repair",
+        lambda *_args, **_kwargs: calls.append("authorize"),
+    )
+    monkeypatch.setattr(
+        registration_repair,
+        "apply_registration_repair",
+        lambda *_args, **_kwargs: calls.append("apply"),
+    )
+
+    with pytest.raises(RuntimeError, match="review changed"):
+        backend.repair_registration(prepared, confirmed=True, progress=lambda _e: None)
+
+    assert calls == []
+    assert engine.authorizations == [] and engine.applied == []
+
+
+def test_recovery_blocker_never_offers_registration_repair(tmp_path, monkeypatch):
+    from napari_vipp.installer import registration_repair
+    from napari_vipp.installer.engine import RecoveryError
+
+    class RecoveryFailure(_RecoveryEngine):
+        def prepare(self, *args, **kwargs):
+            raise RecoveryError("Unresolved transaction snapshot")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"test Python")
+    backend = WindowsInstallerBackend(
+        engine=RecoveryFailure(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8.dev2"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        registration_repair,
+        "prepare_registration_repair",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Recovery must not propose registry repair"
+        ),
+    )
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    assert prepared.blocked_action is BlockedAction.OPEN_SETUP_HELP
+    assert prepared.registration_repair is None
+    assert "Unresolved transaction snapshot" in prepared.technical_details
 
 
 def test_missing_python_is_a_guided_non_mutating_screen(tmp_path):
@@ -1033,6 +1269,195 @@ def test_automatic_route_falls_back_to_cpu_and_prepares_exact_transaction(
     assert "Automatic selection used CPU" in prepared.technical_details
     assert len(engine.prepared_plans) == 1
     assert engine.prepared_plans[0][0].request.shortcut_scope is ShortcutScope.BOTH
+    assert engine.resolve_requests == [False]
+
+
+@pytest.mark.parametrize("strategy", list(UpdateStrategy))
+def test_light_preflight_binds_method_without_resolving_online(
+    tmp_path, monkeypatch, strategy
+):
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    engine = _Engine()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU, update_strategy=strategy),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.NEW
+    assert engine.resolve_requests == [False]
+    assert engine.prepared_plans[0][0].request.update_strategy is strategy
+    assert engine.authorizations == []
+    assert engine.applied == []
+
+
+def test_incremental_review_exposes_engine_decision_without_full_download_estimate(
+    tmp_path, monkeypatch
+):
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    reason = "Reuse verified dependencies in a separate staged copy."
+    backend = WindowsInstallerBackend(
+        engine=_Engine(
+            "update",
+            selected_strategy=UpdateStrategy.INCREMENTAL,
+            strategy_reason=reason,
+        ),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert prepared.strategy_reason == reason
+    assert prepared.size_estimate is None
+    assert prepared.required_free_bytes == 5 * 1024**3
+    assert prepared.temporary_free_bytes == 1024**3
+
+
+def test_in_place_review_uses_changed_package_scope_not_parallel_copy_claim(
+    tmp_path, monkeypatch
+):
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    reason = "The exact installed package state supports the required changes."
+    backend = WindowsInstallerBackend(
+        engine=_Engine(
+            "update", selected_strategy=UpdateStrategy.IN_PLACE, strategy_reason=reason
+        ),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    prepared = backend.inspect(
+        InstallerSelection(track=TrackChoice.CPU),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    assert prepared.selected_strategy is UpdateStrategy.IN_PLACE
+    assert prepared.strategy_reason == reason
+    assert "Only required package changes" in prepared.plain_summary
+    assert "current environment" in prepared.plain_summary
+    assert "compatible installed versions are retained" in prepared.plain_summary
+    assert "working version is kept" not in prepared.plain_summary
+    assert prepared.size_estimate is None
+
+
+def test_explicit_incremental_unavailability_is_blocked_not_silently_fresh(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer.engine import PreparationError
+
+    class _Unavailable(_Engine):
+        def prepare(self, *args, **kwargs):
+            assert kwargs["resolve"] is False
+            raise PreparationError("A required dependency changed.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    engine = _Unavailable()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.installer.windows_backend._engine_cancellation_token",
+        lambda event: event,
+    )
+
+    prepared = backend.inspect(
+        InstallerSelection(
+            track=TrackChoice.CPU, update_strategy=UpdateStrategy.INCREMENTAL
+        ),
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+
+    assert prepared.kind is TargetKind.BLOCKED
+    assert prepared.payload is None
+    assert prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert "dependency changed" in prepared.plain_summary
+    assert "Choose Automatic or Fresh installation" in prepared.reason
+    assert engine.authorizations == []
+    assert engine.applied == []
+
+
+@pytest.mark.parametrize("track", list(ComputeTrack))
+def test_valid_preferred_python_avoids_probing_every_system_interpreter(
+    tmp_path, track
+):
+    python = tmp_path / "Python312" / "python.exe"
+    calls = []
+
+    def finder(**kwargs):
+        calls.append(kwargs)
+        assert kwargs.get("candidate_paths") == (("setup option", python),)
+        return _candidate_finder(python)
+
+    backend = WindowsInstallerBackend(
+        preferred_python=python,
+        services=_services(tmp_path),
+        candidate_finder=finder,
+    )
+
+    candidates = backend._python_candidates(None, track=track)
+
+    assert candidates[0].executable == python
+    assert len(calls) == 1
+
+
+def test_cpu_only_preferred_python_does_not_hide_cuda_compatible_python(tmp_path):
+    python313 = tmp_path / "Python313" / "python.exe"
+    python312 = tmp_path / "Python312" / "python.exe"
+    calls = []
+
+    def finder(**kwargs):
+        calls.append(kwargs)
+        if "candidate_paths" in kwargs:
+            return (PythonCandidate(python313, (3, 13, 0), "preferred"),)
+        return (PythonCandidate(python312, (3, 12, 10), "discovered"),)
+
+    backend = WindowsInstallerBackend(
+        preferred_python=python313,
+        services=_services(tmp_path),
+        candidate_finder=finder,
+    )
+
+    candidates = backend._python_candidates(None, track=ComputeTrack.CUDA13)
+
+    assert {item.executable for item in candidates} == {python313, python312}
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -1089,6 +1514,42 @@ def test_prepared_routes_expose_estimates_and_unchanged_space_thresholds(
     assert prepared.size_estimate.download_bytes == download_mib * 1024**2
     assert prepared.size_estimate.installed_bytes == installed_mib * 1024**2
     assert prepared.size_estimate.peak_temporary_bytes == peak_mib * 1024**2
+
+
+@pytest.mark.parametrize("unit", ["files", "packages", "checks"])
+def test_progress_adapter_preserves_exact_local_work_counts(unit):
+    update = _progress_update(
+        SimpleNamespace(
+            stage="installing",
+            message="Measured work",
+            completed=321,
+            total=1000,
+            unit=unit,
+        )
+    )
+    assert update.completed == 321
+    assert update.total == 1000
+    assert update.unit.value == unit
+    assert update.fraction == pytest.approx(0.321)
+
+
+@pytest.mark.parametrize(
+    "completed,total", [(None, 10), (-1, 10), (11, 10), (0, 0), (True, 10)]
+)
+def test_progress_adapter_does_not_promote_invalid_local_counts(completed, total):
+    update = _progress_update(
+        SimpleNamespace(
+            stage="installing",
+            message="Unknown work",
+            completed=completed,
+            total=total,
+            unit="files",
+        )
+    )
+    assert update.unit is ProgressUnit.ACTIVITY
+    assert update.completed is None
+    assert update.total is None
+    assert update.fraction is None
 
 
 def test_progress_adapter_preserves_stage_unit_log_and_truthful_indeterminacy(
@@ -1264,6 +1725,139 @@ def test_disabling_desktop_shortcut_keeps_start_menu_launcher(
     )
 
 
+def test_typed_running_app_inspection_signal_survives_preparation_mapping(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer.engine import InPlaceAppRunning
+
+    class _Running(_Engine):
+        def prepare(self, *args, **kwargs):
+            raise InPlaceAppRunning("An exact runtime user is still active.")
+
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.touch()
+    engine = _Running()
+    backend = WindowsInstallerBackend(
+        engine=engine,
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+        candidate_finder=lambda **kwargs: _candidate_finder(python, **kwargs),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    with pytest.raises(VippMustBeClosed, match="exact runtime user") as captured:
+        backend.inspect(
+            InstallerSelection(
+                track=TrackChoice.CPU, update_strategy=UpdateStrategy.IN_PLACE
+            ),
+            progress=lambda _event: None,
+            cancellation=__import__("threading").Event(),
+        )
+    assert "exact runtime user" in captured.value.details
+    assert engine.authorizations == []
+    assert engine.applied == []
+
+
+def test_direct_typed_running_app_apply_error_is_actionable_not_generic(
+    tmp_path, monkeypatch
+):
+    from napari_vipp.installer.engine import InPlaceAppRunning
+
+    class _Running(_Engine):
+        def apply(self, *args, **kwargs):
+            raise InPlaceAppRunning("Exact app-use lease is active.")
+
+    backend = WindowsInstallerBackend(
+        engine=_Running(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    with pytest.raises(VippMustBeClosed, match="Exact app-use") as captured:
+        backend.apply(
+            SimpleNamespace(kind=TargetKind.UPDATE, payload=SimpleNamespace()),
+            confirmed=True,
+            progress=lambda _event: None,
+            cancellation=__import__("threading").Event(),
+        )
+    assert "Exact app-use lease" in captured.value.details
+
+
+@pytest.mark.parametrize(
+    ("technical", "typed"),
+    [
+        ("InPlaceAppRunning: exact active runtime lease", True),
+        ("RuntimeLeaseError: process identity is unavailable", False),
+        ("Close VIPP if it is running", False),
+        ("InPlaceAppRunningMaybe: unknown identity", False),
+        ("prefix InPlaceAppRunning: not a structured code", False),
+    ],
+)
+def test_failed_apply_result_maps_only_the_exact_running_app_code(
+    tmp_path, monkeypatch, technical, typed
+):
+    class _Failed(_Engine):
+        def apply(self, *args, **kwargs):
+            return SimpleNamespace(
+                status=SimpleNamespace(value="failed"),
+                message="Setup did not finish.",
+                technical_error=technical,
+                as_dict=lambda: {"status": "failed", "technical_error": technical},
+            )
+
+    backend = WindowsInstallerBackend(
+        engine=_Failed(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    with pytest.raises(RuntimeError) as captured:
+        backend.apply(
+            SimpleNamespace(kind=TargetKind.UPDATE, payload=SimpleNamespace()),
+            confirmed=True,
+            progress=lambda _event: None,
+            cancellation=__import__("threading").Event(),
+        )
+    assert isinstance(captured.value, VippMustBeClosed) is typed
+    details = captured.value.details if typed else str(captured.value)
+    assert technical in details
+
+
+def test_committed_success_is_never_reclassified_by_a_running_app_error_string(
+    tmp_path, monkeypatch
+):
+    class _Succeeded(_Engine):
+        def apply(self, *args, **kwargs):
+            return SimpleNamespace(
+                status=SimpleNamespace(value="succeeded"),
+                launcher_path=Path("C:/VIPP/current/Scripts/vipp-app.exe"),
+                technical_error="InPlaceAppRunning: historical warning only",
+                as_dict=lambda: {"status": "succeeded"},
+            )
+
+    backend = WindowsInstallerBackend(
+        engine=_Succeeded(),
+        release=ReleaseSpec("napari-vipp", "0.16.0a8"),
+        services=_services(tmp_path),
+    )
+    monkeypatch.setattr(
+        windows_backend_module, "_engine_cancellation_token", lambda event: event
+    )
+    outcome = backend.apply(
+        SimpleNamespace(kind=TargetKind.UPDATE, payload=SimpleNamespace()),
+        confirmed=True,
+        progress=lambda _event: None,
+        cancellation=__import__("threading").Event(),
+    )
+    assert outcome.launcher.name == "vipp-app.exe"
+
+
 def test_apply_passes_explicit_confirmation_to_engine(tmp_path, monkeypatch):
     engine = _Engine()
     transaction = SimpleNamespace(name="transaction")
@@ -1379,10 +1973,7 @@ def test_open_vipp_uses_documents_not_the_replaceable_environment(
     tmp_path,
     monkeypatch,
 ):
-    launcher = tmp_path / "managed" / ".vipp" / "environments" / "current"
-    launcher = launcher / "Scripts" / "vipp-cpu.exe"
-    launcher.parent.mkdir(parents=True)
-    launcher.touch()
+    launcher, _base = _launch_environment_fixture(tmp_path)
     calls = []
     monkeypatch.setattr(
         "napari_vipp.installer.windows_backend.subprocess.Popen",
@@ -1404,6 +1995,351 @@ def test_open_vipp_uses_documents_not_the_replaceable_environment(
         )
     else:
         assert calls[0][1]["creationflags"] == 0
+
+
+def _launch_environment_fixture(tmp_path):
+    """Different arbitrary locations model a venv backed by another volume."""
+
+    environment = tmp_path / "application storage" / "accepted environment"
+    base = tmp_path / "independent Python location"
+    for directory in (
+        environment / "Scripts",
+        environment / "Lib" / "site-packages" / "PyQt6" / "Qt6" / "bin",
+        base / "DLLs",
+    ):
+        directory.mkdir(parents=True)
+    launcher = environment / "Scripts" / "vipp-cpu.exe"
+    launcher.touch()
+    (base / "python.exe").touch()
+    (environment / "pyvenv.cfg").write_text(
+        f"home = {base}\ninclude-system-site-packages = false\n"
+        f"executable = {base / 'python.exe'}\n",
+        encoding="utf-8",
+    )
+    return launcher, base
+
+
+class _DllDirectory:
+    def __init__(self, directory):
+        self.directory = directory
+        self.writes = []
+
+    def get(self):
+        return self.directory
+
+    def set(self, directory):
+        self.writes.append(directory)
+        self.directory = directory
+
+
+def _frozen_launch_fixture(monkeypatch, *, directory="unrelated prior DLL directory"):
+    api = _DllDirectory(directory)
+    monkeypatch.setattr(
+        windows_backend_module,
+        "sys",
+        SimpleNamespace(platform="win32", frozen=True),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        windows_backend_module,
+        "_windows_dll_directory_api",
+        lambda: api,
+        raising=False,
+    )
+    return api
+
+
+def test_open_vipp_isolates_child_loader_environment_without_changing_parent(
+    tmp_path, monkeypatch
+):
+    launcher, base = _launch_environment_fixture(tmp_path)
+    environment = launcher.parent.parent
+    frozen = tmp_path / "arbitrary frozen payload"
+    custom = str(tmp_path / "custom command tools")
+    foreign = str(tmp_path / "different tool runtime" / "Library" / "bin")
+    similar = str(frozen.with_name(frozen.name + "-unrelated"))
+    inherited = {
+        "Path": os.pathsep.join(
+            [foreign, str(frozen), str(frozen / "nested"), similar, custom]
+        ),
+        "PYTHONHOME": "another interpreter",
+        "pythonpath": "injected modules",
+        "QT_API": "another binding",
+        "QT_PLUGIN_PATH": "another Qt plugins directory",
+        "QT_QPA_PLATFORM_PLUGIN_PATH": "another platforms directory",
+        "QT_QPA_PLATFORM": "offscreen",
+        "QML2_IMPORT_PATH": "another QML ABI",
+        "CUDA_PATH": "user CUDA toolkit",
+        "CUDA_VISIBLE_DEVICES": "1",
+        "QT_DEBUG_PLUGINS": "1",
+        "CUSTOM_PLUGIN_CONFIGURATION": "keep this",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "VIPP_WORKFLOW_RECOVERY_ROOT": "owned test recovery",
+        "NAPARI_CONFIG": "owned test settings",
+    }
+    original = dict(inherited)
+    parent_environment = dict(os.environ)
+    api = _frozen_launch_fixture(monkeypatch)
+    windows_backend_module.sys._MEIPASS = str(frozen)
+    calls = []
+    dll_directories_during_spawn = []
+
+    def popen(argv, **kwargs):
+        assert windows_backend_module._DLL_DIRECTORY_LOCK.locked()
+        dll_directories_during_spawn.append(api.directory)
+        calls.append((argv, kwargs))
+
+    monkeypatch.setattr(windows_backend_module.subprocess, "Popen", popen)
+    backend = WindowsInstallerBackend(services=_services(tmp_path), environ=inherited)
+
+    backend.open_vipp(launcher)
+
+    child = calls[0][1]["env"]
+    components = child["PATH"].split(os.pathsep)
+    assert components.index(str(base / "DLLs")) < components.index(foreign)
+    assert components.index(str(base)) < components.index(foreign)
+    assert components.index(str(launcher.parent)) < components.index(foreign)
+    qt_bin = environment / "Lib" / "site-packages" / "PyQt6" / "Qt6" / "bin"
+    assert components.index(str(qt_bin)) < components.index(foreign)
+    assert components[-3:] == [foreign, similar, custom]
+    assert str(frozen) not in components
+    assert str(frozen / "nested") not in components
+    for name in (
+        "pythonhome",
+        "pythonpath",
+        "qt_api",
+        "qt_plugin_path",
+        "qt_qpa_platform_plugin_path",
+        "qt_qpa_platform",
+        "qml2_import_path",
+    ):
+        assert name not in {key.casefold() for key in child}
+    for name in (
+        "CUDA_PATH",
+        "CUDA_VISIBLE_DEVICES",
+        "QT_DEBUG_PLUGINS",
+        "CUSTOM_PLUGIN_CONFIGURATION",
+        "PYTHONDONTWRITEBYTECODE",
+        "VIPP_WORKFLOW_RECOVERY_ROOT",
+        "NAPARI_CONFIG",
+    ):
+        assert child[name] == original[name]
+    assert inherited == original
+    assert dict(os.environ) == parent_environment
+    assert dll_directories_during_spawn == [None]
+    assert api.directory == "unrelated prior DLL directory"
+    assert api.writes == [None, "unrelated prior DLL directory"]
+    assert not windows_backend_module._DLL_DIRECTORY_LOCK.locked()
+
+
+@pytest.mark.parametrize("platform,frozen", [("linux", True), ("win32", False)])
+def test_open_vipp_does_not_change_loader_state_outside_frozen_windows(
+    tmp_path, monkeypatch, platform, frozen
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    monkeypatch.setattr(
+        windows_backend_module,
+        "sys",
+        SimpleNamespace(platform=platform, frozen=frozen),
+    )
+
+    def forbidden():
+        pytest.fail("Non-Windows/unfrozen Open must not access the DLL-directory API.")
+
+    monkeypatch.setattr(windows_backend_module, "_windows_dll_directory_api", forbidden)
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+        launcher
+    )
+
+    assert len(calls) == 1
+    assert "env" in calls[0]
+
+
+def test_open_vipp_leaves_an_empty_prior_dll_directory_exactly_untouched(
+    tmp_path, monkeypatch
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    api = _frozen_launch_fixture(monkeypatch, directory="")
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+        launcher
+    )
+
+    assert len(calls) == 1
+    assert api.directory == ""
+    assert api.writes == []
+
+
+@pytest.mark.parametrize("failure", ["snapshot", "reset", "restore"])
+def test_open_vipp_surfaces_loader_failures_and_restores_after_reset_failure(
+    tmp_path, monkeypatch, failure
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    api = _frozen_launch_fixture(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+    original_set = api.set
+
+    def get():
+        if failure == "snapshot":
+            raise OSError("snapshot failed")
+        return api.directory
+
+    def set_directory(directory):
+        original_set(directory)
+        if (failure == "reset" and directory is None) or (
+            failure == "restore" and directory is not None
+        ):
+            raise OSError(f"{failure} failed")
+
+    api.get = get
+    api.set = set_directory
+
+    with pytest.raises(OSError, match=f"{failure} failed"):
+        WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+            launcher
+        )
+
+    assert len(calls) == (1 if failure == "restore" else 0)
+    assert not windows_backend_module._DLL_DIRECTORY_LOCK.locked()
+    if failure != "snapshot":
+        assert api.writes == [None, "unrelated prior DLL directory"]
+        assert api.directory == "unrelated prior DLL directory"
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["relative-base", "different-base", "redirected-dlls"]
+)
+def test_open_vipp_rejects_unsafe_base_metadata_before_spawning(
+    tmp_path, monkeypatch, unsafe
+):
+    launcher, base = _launch_environment_fixture(tmp_path)
+    services = _services(tmp_path)
+    if unsafe == "relative-base":
+        (launcher.parent.parent / "pyvenv.cfg").write_text(
+            "home = relative-python\ninclude-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+    elif unsafe == "different-base":
+        unrelated = tmp_path / "unrelated runtime" / "python.exe"
+        unrelated.parent.mkdir()
+        unrelated.touch()
+        (launcher.parent.parent / "pyvenv.cfg").write_text(
+            f"home = {base}\ninclude-system-site-packages = false\n"
+            f"executable = {unrelated}\n",
+            encoding="utf-8",
+        )
+    else:
+        services = replace(services, reparse_probe=lambda path: path == base / "DLLs")
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    with pytest.raises(RuntimeError, match="base Python|unsafe"):
+        WindowsInstallerBackend(services=services, environ={}).open_vipp(launcher)
+
+    assert calls == []
+
+
+def test_open_vipp_reads_one_bounded_configuration_snapshot(tmp_path, monkeypatch):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    configuration = launcher.parent.parent / "pyvenv.cfg"
+    original_open = Path.open
+    reads = []
+
+    class GrowingConfiguration:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size):
+            reads.append(size)
+            return b"x" * size
+
+    def open_path(path, *args, **kwargs):
+        if path == configuration:
+            return GrowingConfiguration()
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_path)
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    with pytest.raises(RuntimeError, match="unexpectedly large"):
+        WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+            launcher
+        )
+
+    assert reads == [64 * 1024 + 1]
+    assert calls == []
+
+
+def test_open_vipp_rejects_a_base_differing_from_accepted_ownership(
+    tmp_path, monkeypatch
+):
+    launcher, base = _launch_environment_fixture(tmp_path)
+    target = tmp_path / "managed root"
+    _write_owned_cuda_installation(
+        target, base_python=tmp_path / "other Python" / "python.exe"
+    )
+    record = inspect_ownership(target).record
+    assert record is not None
+    environment = record.environment_root
+    owned_launcher = environment / "Scripts" / launcher.name
+    owned_launcher.parent.mkdir(parents=True)
+    owned_launcher.touch()
+    (environment / "pyvenv.cfg").write_text(
+        f"home = {base}\ninclude-system-site-packages = false\n"
+        f"executable = {base / 'python.exe'}\n",
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        windows_backend_module.subprocess, "Popen", lambda *a, **k: calls.append(k)
+    )
+
+    with pytest.raises(RuntimeError, match="accepted ownership"):
+        WindowsInstallerBackend(services=_services(tmp_path), environ={}).open_vipp(
+            owned_launcher
+        )
+
+    assert calls == []
+
+
+def test_open_vipp_restores_actual_frozen_dll_directory_after_spawn_failure(
+    tmp_path, monkeypatch
+):
+    launcher, _base = _launch_environment_fixture(tmp_path)
+    api = _frozen_launch_fixture(monkeypatch)
+
+    def fail(*_args, **_kwargs):
+        assert api.directory is None
+        raise OSError("owned mocked child could not start")
+
+    monkeypatch.setattr(windows_backend_module.subprocess, "Popen", fail)
+    backend = WindowsInstallerBackend(services=_services(tmp_path), environ={})
+
+    with pytest.raises(OSError, match="owned mocked child could not start"):
+        backend.open_vipp(launcher)
+
+    assert api.directory == "unrelated prior DLL directory"
+    assert api.writes == [None, "unrelated prior DLL directory"]
 
 
 def test_prepare_reports_plain_language_discovery_and_decision_milestones(
@@ -1437,9 +2373,11 @@ def test_prepare_reports_plain_language_discovery_and_decision_milestones(
     assert "Found 64-bit Python 3.12.10." in messages
     assert any("CPU setup is recommended" in message for message in messages)
     assert any(
-        "Reviewing exact packages from PyPI" in message and "several minutes" in message
+        "Reviewing the installation and available update method" in message
+        and "Package downloads have not started" in message
         for message in messages
     )
+    assert not any("Reviewing exact packages from PyPI" in item for item in messages)
     assert messages[-1] == "Checks finished. Setup recommends installing VIPP."
 
 

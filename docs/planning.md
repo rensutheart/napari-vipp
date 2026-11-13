@@ -14,6 +14,42 @@ early tester feedback from Tom Naber on
 
 ## Product Direction
 
+Approved 2026-10-24 follow-up adds true changed-package in-place updates;
+Automatic may prefer an authenticated older managed installation without a
+mandatory preliminary copy. Require no-copy first-use startup exclusion,
+installed-aware dependency resolution, exact changed-file rollback/recovery,
+closed-app warnings and disposable Windows tests. Replacement retains the
+separate dependency-copy behavior; Fresh resolves an independent environment. See
+[in-place implementation](inplace-installer-plan.md). No public release or
+mutation of current installations is implied by private qualification.
+
+Approved development, 2026-10-23: [incremental installer](incremental-installer-plan.md)
+with incremental/fresh choice, lightweight initial checks and verified reusable
+downloads (issue 85). Qualify both paths in disposable roots before building a
+local development installer. No release/publication is authorized by this work;
+preserve unfinished AI work and all existing installations during testing.
+Include an explicit, backed-up Windows registration repair review for verified
+same-installation stale entries; do not silently bypass update ownership checks.
+The approved 2026-10-24 follow-up isolates **Open VIPP** from caller/frozen DLL
+search state generically, without persistent PATH changes or GPU reinstallation;
+qualify the rebuilt private installer against an already-owned disposable runtime.
+Current UI follow-up presents separate Review/Installing stages and precise
+dependency/cache wording; package-selection and explicit approval remain unchanged.
+Follow-up polish adds a bordered stage strip and a stable method selector with
+quiet read-only check feedback; it does not remove exact-selection rechecks.
+The registration-only confirmation now separates concise scope/version facts
+from full expandable technical changes, with cancellation as the default.
+The next private progress follow-up shows six transactional phases separately
+from true file/package/check counts, with a collapsed diagnostic log and no
+fabricated subprocess percentage or time estimate. Keep copy/hash/rollback
+semantics and installed environments unchanged during isolated qualification.
+Follow-up UX work adds controller-recorded total elapsed time, a non-tab setup
+breadcrumb and naturally ordered phase list, plus a larger manual-refresh
+diagnostic snapshot so progress updates cannot move the reader's position.
+Current follow-up unifies setup font/color/spacing roles and clear step arrows,
+and fixes numeric development-version ordering without weakening downgrade or
+ownership protection. Qualify privately without changing current installations.
+
 Approved patch, 2026-10-23: publish **0.16.0a7** with only initial/open/recovery
 source loading and the relative/absolute workflow-path setting. Keep unfinished
 AI work separate. Follow the [a7 release plan](release-0.16.0a7-plan.md), normal

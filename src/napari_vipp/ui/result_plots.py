@@ -62,6 +62,7 @@ from napari_vipp.core.result_plots import (
     measurement_label,
     numeric_columns,
 )
+from napari_vipp.ui.design import apply_text_role, install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.iconography import interface_icon, palette_branch_color
 from napari_vipp.ui.palette_roles import theme_colors
@@ -1188,6 +1189,7 @@ class PlotResultsDialog(QDialog):
 
     def __init__(self, owner):
         super().__init__(owner)
+        install_window_policy(self, profile="workspace")
         self.owner = owner
         self.setWindowTitle("Plot Results — VIPP")
         self.setModal(False)
@@ -1195,10 +1197,7 @@ class PlotResultsDialog(QDialog):
         self.resize(1120, 760)
         layout = QVBoxLayout(self)
         title = _label("Plot Results")
-        font = title.font()
-        font.setBold(True)
-        font.setPointSize(font.pointSize() + 3)
-        title.setFont(font)
+        apply_text_role(title, "title")
         layout.addWidget(title)
         self.summary, self._summary_reserve = _summary_slot(layout)
         self.busy_indicator = _PlotBusyIndicator(self)
@@ -1222,6 +1221,7 @@ class PlotResultsDialog(QDialog):
         self.data_decimal_controls.hide()
         plot_layout.addWidget(self.data_decimal_controls, 0, Qt.AlignRight)
         self.data_view = QTableView(self)
+        self.data_view.setAccessibleName("Plotted data")
         self.data_view.setMinimumHeight(150)
         self.data_view.setAlternatingRowColors(True)
         self.data_view.hide()
@@ -1354,6 +1354,7 @@ class PlotExportDialog(QDialog):
 
     def __init__(self, result, parent=None, *, protected_paths=(), is_current=None):
         super().__init__(parent)
+        install_window_policy(self, profile="compact")
         self.result = result
         self.protected_paths = protected_paths
         self.is_current = is_current
@@ -1367,13 +1368,19 @@ class PlotExportDialog(QDialog):
         self.setWindowTitle("Export figure")
         self.resize(450, 430)
         layout = QVBoxLayout(self)
-        layout.addWidget(_label("Save a publication figure", self))
+        heading = _label("Save a publication figure", self)
+        apply_text_role(heading, "title")
+        layout.addWidget(heading)
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.format_combo = QComboBox(self)
+        self.format_combo.setAccessibleName("Figure format")
         self.format_combo.addItems(["PNG", "TIFF", "SVG", "PDF"])
         form.addRow("Format", self.format_combo)
         self.width_spin = QDoubleSpinBox(self)
         self.height_spin = QDoubleSpinBox(self)
+        self.width_spin.setAccessibleName("Figure width in millimetres")
+        self.height_spin.setAccessibleName("Figure height in millimetres")
         for widget, value in ((self.width_spin, 160), (self.height_spin, 110)):
             widget.setRange(20, 500)
             widget.setValue(value)
@@ -1383,6 +1390,7 @@ class PlotExportDialog(QDialog):
         form.addRow("Width", self.width_spin)
         form.addRow("Height", self.height_spin)
         self.dpi = QSpinBox(self)
+        self.dpi.setAccessibleName("Figure resolution in dots per inch")
         self.dpi.setRange(72, 1200)
         self.dpi.setValue(300)
         form.addRow("Resolution", self.dpi)

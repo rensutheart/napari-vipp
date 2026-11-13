@@ -1166,17 +1166,20 @@ def _environment_root_from_python(executable: Path) -> Path | None:
 
 def _read_pyvenv_configuration(
     environment_root: Path,
+    *,
+    text: str | None = None,
 ) -> _PyvenvConfiguration:
     configuration = environment_root / "pyvenv.cfg"
-    if not configuration.is_file():
-        return _PyvenvConfiguration(present=False)
-    try:
-        text = configuration.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeError) as exc:
-        return _PyvenvConfiguration(
-            present=True,
-            error=f"Could not read pyvenv.cfg: {exc}",
-        )
+    if text is None:
+        if not configuration.is_file():
+            return _PyvenvConfiguration(present=False)
+        try:
+            text = configuration.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            return _PyvenvConfiguration(
+                present=True,
+                error=f"Could not read pyvenv.cfg: {exc}",
+            )
     values: dict[str, str] = {}
     for line_number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()

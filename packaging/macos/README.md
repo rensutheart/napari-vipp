@@ -87,6 +87,14 @@ constraint, not a change to VIPP's scientific dependencies or a reason to skip
 the installed dependency check. Both native PKGs must pass that check and
 their subsequent launch checks after rebuilding.
 
+The macOS recipe pins `czifile==2026.10.14`. Its installed Python metadata
+accepts `imagecodecs>=2026.8.16`, the combination already exercised on both
+architectures. The conda dependency metadata for `czifile 2026.11.12` let the
+solver select it alongside `imagecodecs 2026.8.16`, but its installed Python
+metadata requires `imagecodecs>=2026.11.11`. Keep strict installed `pip check`
+and native reader checks on both architectures when changing this constraint.
+The Python wheel and Windows dependency ranges are unchanged.
+
 The alpha lockfile still records the build's temporary local channel URI for
 the three local packages. Their exact hashes remain in the build/release
 manifests and their bytes are embedded in the offline PKG. A signed production

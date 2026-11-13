@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QFont, QFontMetrics
+from qtpy.QtGui import QColor, QFont, QFontMetrics, QPalette
 from qtpy.QtWidgets import QApplication, QScrollArea, QVBoxLayout, QWidget
 
-from napari_vipp.ui.plots import DetailedHistogramPlot
+from napari_vipp.ui.plots import DetailedHistogramPlot, HistogramPlot
 
 
 def _flush_layout():
@@ -54,6 +54,59 @@ def _assert_readable(plot, label):
     assert metrics.elidedText(label, Qt.ElideRight, rect.height()) == label
     assert rect.width() > 0
     assert plot.rect().contains(rect)
+
+
+@pytest.mark.parametrize(
+    ("base", "text", "has_data"),
+    [("#ffffff", "#111827", False), ("#111827", "#f8fafc", True)],
+)
+def test_compact_source_histogram_keeps_room_for_data_at_large_text(
+    qtbot, base, text, has_data
+):
+    scroll = QScrollArea()
+    qtbot.addWidget(scroll)
+    scroll.setWidgetResizable(True)
+    body = QWidget()
+    layout = QVBoxLayout(body)
+    layout.setContentsMargins(0, 0, 0, 0)
+    plot = HistogramPlot(body)
+    layout.addWidget(plot)
+    scroll.setWidget(body)
+    scroll.resize(280, 124)
+    palette = body.palette()
+    palette.setColor(QPalette.Base, QColor(base))
+    palette.setColor(QPalette.Text, QColor(text))
+    body.setPalette(palette)
+    _font(body, 9)
+    plot.set_plot_labels(
+        title="Source data", x_axis_label="Intensity (a.u.)", y_axis_label="Voxels"
+    )
+    counts = np.array([2, 7, 11, 1]) if has_data else None
+    plot.set_histogram(counts, log_scale=False, x_range=(0, 255) if has_data else None)
+    cached_counts = plot._counts
+    scroll.show()
+    _flush_layout()
+    compact_height = plot.minimumHeight()
+
+    # As the inspector font grows, the scroll area should accommodate a
+    # taller chart rather than taking space from its data and axis label.
+    _font(body, 16)
+    _flush_layout()
+    plot_rect = plot._plot_rect()
+    assert plot.minimumHeight() > compact_height
+    assert plot_rect.height() >= 76
+    label = plot.fontMetrics().elidedText(
+        "Voxels", Qt.ElideRight, plot_rect.height() - 4
+    )
+    assert label == "Voxels"
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert scroll.horizontalScrollBar().maximum() == 0
+    assert plot._counts is cached_counts
+
+    _font(body, 9)
+    _flush_layout()
+    assert plot.minimumHeight() == compact_height
+    assert plot._counts is cached_counts
 
 
 @pytest.mark.parametrize(

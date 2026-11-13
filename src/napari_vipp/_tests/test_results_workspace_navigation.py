@@ -192,23 +192,32 @@ def test_navigation_unavailable_without_active_workflow_choices(qtbot):
 
 @pytest.mark.parametrize("width", [760, 1280])
 @pytest.mark.parametrize("base,text", [("#23242b", "#f0f1f2"), ("#fafafa", "#20252d")])
+@pytest.mark.parametrize("wide_hints", [False, True])
 def test_prominent_connection_bar_has_four_compact_controls_on_every_tab(
-    qtbot, width, base, text
+    qtbot, width, base, text, wide_hints
 ):
     dialog = _dialog(qtbot)
     dialog.setPalette(_palette(base, text))
     dialog.refresh_theme()
     dialog.set_workflows([("workflow", "Cell measurements")], "workflow")
     _choices(dialog)
-    dialog.resize(width, 700)
-    dialog.set_relationship("Cell measurements → By condition → Mean area")
-    qtbot.wait(20)
     choices = (
         dialog.workflow_selector,
         dialog.data_selector,
         dialog.summary_selector,
         dialog.plot_selector,
     )
+    if wide_hints:
+        # Reproduce wider native/style minima independently of the host OS.
+        font = dialog.font()
+        font.setPointSize(16)
+        dialog.setFont(font)
+        for combo in choices:
+            combo.setFont(font)
+            combo.setMinimumContentsLength(24)
+    dialog.resize(width, 700)
+    dialog.set_relationship("Cell measurements → By condition → Mean area")
+    qtbot.wait(20)
     assert dialog.connection_bar.findChildren(QComboBox) == list(choices)
     assert "border-radius: 0" in dialog.connection_bar.styleSheet()
     assert "border:" in dialog.connection_bar.styleSheet()
@@ -228,9 +237,15 @@ def test_prominent_connection_bar_has_four_compact_controls_on_every_tab(
     assert dialog.connection_bar.accessibleDescription().endswith("Mean area")
     assert not dialog.connection_label.isVisible()
     assert not dialog.plot_scope.isVisible()
+    actions = (dialog.add_summary_button, dialog.add_plot_button)
+    trailing_controls = (*choices[:2], *actions)
     for tab in ("data", "summary", "plots"):
         dialog.show_tab(tab)
         qtbot.wait(10)
+        assert all(
+            dialog.connection_bar.contentsRect().contains(control.geometry())
+            for control in (*choices, *actions, *dialog.connection_arrows)
+        )
         for combo in choices:
             assert combo.isVisible()
             assert 95 <= combo.width() <= 340
@@ -245,15 +260,16 @@ def test_prominent_connection_bar_has_four_compact_controls_on_every_tab(
                 dialog, choices[index + 1].rect().center()
             )
             assert abs(center.y() - target_center.y()) <= 1
-            previous_right = (
-                dialog.connection_groups[index]
-                .mapTo(dialog, dialog.connection_groups[index].rect().topRight())
-                .x()
-            )
+            previous = trailing_controls[index]
+            previous_right = previous.mapTo(dialog, previous.rect().topRight()).x()
             next_left = choices[index + 1].mapTo(dialog, QPoint()).x()
-            assert previous_right < center.x() < next_left
+            arrow_left = arrow.mapTo(dialog, arrow.rect().topLeft()).x()
+            arrow_right = arrow.mapTo(dialog, arrow.rect().topRight()).x()
+            assert previous_right < arrow_left <= center.x() <= arrow_right < next_left
         assert dialog.add_summary_button.isVisible()
         assert dialog.add_plot_button.isVisible()
+        for combo, action in zip(choices[2:], actions, strict=True):
+            assert combo.geometry().right() < action.geometry().left()
         assert not dialog.plot_source.isVisible()
 
 

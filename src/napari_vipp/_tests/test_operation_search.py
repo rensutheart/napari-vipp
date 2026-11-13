@@ -1,5 +1,6 @@
 """Alternative names locate the same operations on every search surface."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -144,6 +145,56 @@ def test_palette_aliases_preserve_categories_expansion_and_no_result_behavior(qt
     palette.set_filter_text("normalisation")
     assert items["normalize_image"].parent().isHidden()
     assert not palette._no_results_item.isHidden()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("Otsu", {"otsu_threshold"}),
+        ("otsu thresh", {"otsu_threshold"}),
+        ("ostu", {"otsu_threshold"}),
+        ("otsuu", {"otsu_threshold"}),
+        ("medain", {"median_filter"}),
+        ("set pixle size", {"set_pixel_size"}),
+        ("gblr", {"gaussian_blur", "gaussian_blur_3d", "imagej_gaussian_blur"}),
+        ("gausian blur", {"gaussian_blur", "gaussian_blur_3d", "imagej_gaussian_blur"}),
+        ("CCL", {"label_connected_components"}),
+        ("3mf", {"mask_to_3d_mesh", "labels_to_3d_mesh"}),
+        ("cat", set()),
+        ("otsu blur", set()),
+    ],
+)
+def test_palette_search_returns_only_relevant_catalog_operations(
+    qtbot, query, expected
+):
+    palette = NodePalette(grouped_palette_specs())
+    qtbot.addWidget(palette)
+
+    palette.set_filter_text(query)
+
+    assert {
+        item.data(0, OPERATION_ROLE)
+        for item in palette._operation_items
+        if not item.isHidden()
+    } == expected
+    assert palette._no_results_item.isHidden() == bool(expected)
+
+
+def test_palette_prefers_direct_results_within_the_current_scope(qtbot):
+    otsu = next(spec for spec in PALETTE_NODE_LIBRARY if spec.id == "otsu_threshold")
+    near = replace(otsu, id="test_otsi", title="Otsi Filter", category="Filtering")
+    palette = NodePalette({"Segmentation": {"": [otsu]}, "Filtering": {"": [near]}})
+    qtbot.addWidget(palette)
+    exact, approximate = palette._operation_items
+
+    palette.set_filter_text("otsu")
+    assert not exact.isHidden()
+    assert approximate.isHidden()
+
+    palette.set_scope_category("Filtering")
+    palette.set_filter_text("otsu")
+    assert exact.isHidden()
+    assert not approximate.isHidden()
 
 
 def test_insert_picker_uses_aliases_without_adding_incompatible_candidates(qtbot):

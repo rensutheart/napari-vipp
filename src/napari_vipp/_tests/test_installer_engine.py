@@ -41,6 +41,7 @@ from napari_vipp.installer.models import (
     PythonSnapshot,
     ReleaseSpec,
     ShortcutScope,
+    UpdateStrategy,
     installation_request_fingerprint,
 )
 from napari_vipp.installer.ownership import (
@@ -78,8 +79,18 @@ def _isolate_installer_temporary_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(
         engine_module.shutil,
         "disk_usage",
-        lambda _path: SimpleNamespace(total=50 * 1024**3, used=10 * 1024**3,
-                                     free=40 * 1024**3),
+        lambda _path: SimpleNamespace(
+            total=50 * 1024**3, used=10 * 1024**3, free=40 * 1024**3
+        ),
+    )
+    # These legacy transaction tests use synthetic resolver hashes and a fake
+    # pip runner that cannot produce matching wheel bytes. Preserve their lock
+    # assertions; real cache materialization is tested with exact-byte fake
+    # downloads in test_installer_update_strategies.py instead.
+    monkeypatch.setattr(
+        ManagedInstallerEngine,
+        "_cached_install_requirements",
+        lambda self, packages, lock_path, **kwargs: lock_path,
     )
 
 
@@ -168,7 +179,8 @@ def _plan(
     if scope is None:
         scope = (
             ShortcutScope.DESKTOP
-            if shortcut_directory is not None else ShortcutScope.NONE
+            if shortcut_directory is not None
+            else ShortcutScope.NONE
         )
     request = InstallRequest(
         mode=InstallMode.MANAGED,
@@ -177,6 +189,9 @@ def _plan(
         install_root=target,
         shortcut_scope=scope,
         shortcut_directory=shortcut_directory,
+        # This fixture models the pre-existing fresh transaction route. Tests
+        # of AUTO/INCREMENTAL selection live in the strategy-specific module.
+        update_strategy=UpdateStrategy.FRESH,
     )
     ownership = inspect_ownership(target)
     exists = target.exists()
@@ -188,7 +203,9 @@ def _plan(
                 probe_succeeded=True,
                 driver_api_version=13030,
                 devices=(GpuDeviceSnapshot("Test CUDA GPU", (8, 6)),),
-            ) if track is ComputeTrack.CUDA13 else None
+            )
+            if track is ComputeTrack.CUDA13
+            else None
         ),
         python=PythonSnapshot(
             requested_executable=request.python,
@@ -511,6 +528,138 @@ def test_classifies_new_update_current_repair_newer_and_foreign(tmp_path):
     assert foreign.can_apply is False
 
 
+@pytest.mark.parametrize(
+    ("installed", "desired", "expected"),
+    [
+        ("0.16.0a8.dev9", "0.16.0a8.dev10", ManagedTargetKind.UPDATE),
+        ("0.16.0a8.dev10", "0.16.0a8.dev9", ManagedTargetKind.NEWER),
+        ("0.16.0a8.dev10", "0.16.0a8.dev11", ManagedTargetKind.UPDATE),
+        ("0.16.0a8.dev11", "0.16.0a8.dev10", ManagedTargetKind.NEWER),
+        ("0.16.0a8.dev10", "0.16.0a8", ManagedTargetKind.UPDATE),
+        ("0.16.0rc9", "0.16.0rc10", ManagedTargetKind.UPDATE),
+        ("0.16.0rc10", "0.16.0", ManagedTargetKind.UPDATE),
+        ("0.16.0", "0.16.0.post1", ManagedTargetKind.UPDATE),
+        ("0.16.0.post1", "0.16.0", ManagedTargetKind.NEWER),
+        ("0.16.0a8.post1", "0.16.0a9", ManagedTargetKind.UPDATE),
+        ("0.16.0", "0.16.0+build.9", ManagedTargetKind.UPDATE),
+        ("0.16.0+build.9", "0.16.0+build.10", ManagedTargetKind.UPDATE),
+        ("1!0.1", "0.16.0", ManagedTargetKind.NEWER),
+        ("0.16", "0.16.0", ManagedTargetKind.CURRENT),
+        ("0.16.0a8.dev010", "0.16.0a8.dev10", ManagedTargetKind.CURRENT),
+    ],
+)
+def test_managed_target_version_order_is_pep440(tmp_path, installed, desired, expected):
+    """Use numeric dev/build ordering, including the actual dev9 to dev10 case."""
+
+    target = tmp_path / "managed"
+    _record(target, version=installed)
+    before = {
+        path.relative_to(target): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    }
+
+    inspection = inspect_managed_target(
+        target,
+        release=_release(desired),
+        track=ComputeTrack.CPU,
+    )
+
+    assert inspection.kind is expected
+    assert inspection.can_apply is (expected is ManagedTargetKind.UPDATE)
+    assert inspection.current_version == installed
+    assert inspection.desired_version == desired
+    assert {
+        path.relative_to(target): path.read_bytes()
+        for path in target.rglob("*")
+        if path.is_file()
+    } == before
+
+
+@pytest.mark.parametrize(
+    ("installed", "desired"),
+    [
+        ("broken", "0.16.0a8.dev10"),
+        ("0.16.0a8.dev9", "broken"),
+        ("broken", "broken"),
+        ("0.16.0a8.devX", "0.16.0a8.dev10"),
+    ],
+)
+@pytest.mark.parametrize("healthy", [True, False])
+def test_managed_target_invalid_version_order_is_blocked(
+    tmp_path, installed, desired, healthy
+):
+    target = tmp_path / "managed"
+    _record(target, version=installed, healthy=healthy)
+
+    inspection = inspect_managed_target(
+        target,
+        release=_release(desired),
+        track=ComputeTrack.CPU,
+    )
+
+    assert inspection.kind is ManagedTargetKind.FOREIGN
+    assert inspection.can_apply is False
+    assert "cannot safely compare" in inspection.reason
+    assert inspection.current_version == installed
+    assert inspection.desired_version == desired
+
+
+@pytest.mark.parametrize(
+    ("installed", "desired", "expected"),
+    [
+        ("0.16.0a8.dev9", "0.16.0a8.dev10", "upgrade"),
+        ("0.16.0a8.dev10", "0.16.0a8.dev9", "downgrade"),
+        ("0.16", "0.16.0", "keep"),
+    ],
+)
+def test_package_review_version_order_is_pep440(tmp_path, installed, desired, expected):
+    target = tmp_path / "managed"
+    _record(target, version=installed)
+    inspection = inspect_managed_target(
+        target, release=_release(desired), track=ComputeTrack.CPU
+    )
+    resolved = engine_module.ResolvedPackage(
+        "napari-vipp", desired, "https://packages.example/vipp.whl", _VIPP_HASH
+    )
+
+    (change,) = engine_module._package_changes((resolved,), inspection)
+
+    assert change.disposition.value == expected
+
+
+@pytest.mark.parametrize(
+    ("installed", "desired"),
+    [("broken", "0.16.0"), ("0.16.0", "broken"), ("broken", "broken")],
+)
+def test_invalid_version_comparison_has_no_guessed_order(installed, desired):
+    assert engine_module._compare_versions(installed, desired) is None
+
+
+@pytest.mark.parametrize("desired", ["2.0", "broken"])
+def test_package_review_invalid_version_order_is_blocked(tmp_path, desired):
+    target = tmp_path / "managed"
+    record = _record(target)
+    inspection = inspect_managed_target(
+        target, release=_release(), track=ComputeTrack.CPU
+    )
+    inspection = replace(
+        inspection,
+        record=replace(
+            record, packages=(OwnedPackage("example-dependency", "broken"),)
+        ),
+    )
+    resolved = engine_module.ResolvedPackage(
+        "example-dependency",
+        desired,
+        "https://packages.example/dependency.whl",
+        _DEPENDENCY_HASH,
+    )
+
+    with pytest.raises(ResolutionError, match="cannot safely compare"):
+        engine_module._package_changes((resolved,), inspection)
+
+
 def test_prepare_is_non_mutating_and_binds_exact_hashed_resolution(tmp_path):
     target = tmp_path / "VIPP Managed"
     state = tmp_path / "installer-state"
@@ -532,7 +681,11 @@ def test_prepare_is_non_mutating_and_binds_exact_hashed_resolution(tmp_path):
     assert "--dry-run" in resolution
     assert "--ignore-installed" in resolution
     assert "--report" in resolution
-    assert "--no-cache-dir" in resolution
+    assert "--cache-dir" in resolution
+    assert "--no-cache-dir" not in resolution
+    assert resolution[resolution.index("--cache-dir") + 1] == str(
+        state / "cache" / "pip"
+    )
     assert "--only-binary=:all:" in resolution
 
 
@@ -632,6 +785,106 @@ def test_first_apply_progress_exposes_the_existing_exact_run_log(tmp_path):
     assert first.stage is ProgressStage.PREPARING
     assert first.log_path == result.log_path
     assert existed_when_reported is True
+    assert "Installing VIPP and the resolved required components…" in {
+        update.message for update, _existed in observations
+    }
+
+
+def test_apply_reports_successful_locked_batch_and_acceptance_check_counts(tmp_path):
+    events = []
+
+    class ObservingRunner(_FakeRunner):
+        def run(self, argv, **kwargs):
+            if "--requirement" in argv and "--no-index" in argv:
+                measured = [event for event in events if event.unit == "packages"]
+                assert measured[-1].completed == 0
+                assert measured[-1].total == 2
+                assert "batch" in measured[-1].message.lower()
+            return super().run(argv, **kwargs)
+
+    engine = _engine(tmp_path, ObservingRunner())
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+    assert result.succeeded
+    batches = [event for event in events if event.unit == "packages"]
+    assert [(event.completed, event.total) for event in batches] == [(0, 2), (2, 2)]
+    checks = [event for event in events if event.unit == "checks"]
+    total = len(prepared.plan.acceptance)
+    assert total > 0
+    assert [(event.completed, event.total) for event in checks] == [
+        (count, total) for count in range(total + 1)
+    ]
+    stages = [event.stage for event in events if event.unit == "steps"]
+    assert list(dict.fromkeys(stages)) == [
+        ProgressStage.PREPARING,
+        ProgressStage.CREATING_ENVIRONMENT,
+        ProgressStage.INSTALLING,
+        ProgressStage.VERIFYING,
+        ProgressStage.CREATING_SHORTCUTS,
+        ProgressStage.COMMITTING,
+        ProgressStage.COMPLETED,
+    ]
+
+
+def test_apply_failed_batch_never_reports_packages_installed(tmp_path):
+    class FailingBatchRunner(_FakeRunner):
+        def run(self, argv, **kwargs):
+            if "--requirement" in argv and "--no-index" in argv:
+                return CommandResult(1, "", "simulated install failure")
+            return super().run(argv, **kwargs)
+
+    engine = _engine(tmp_path, FailingBatchRunner())
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+    events = []
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+    assert not result.succeeded
+    batches = [event for event in events if event.unit == "packages"]
+    assert [(event.completed, event.total) for event in batches] == [(0, 2)]
+    assert not [event for event in events if event.unit == "checks"]
+
+
+def test_apply_failed_acceptance_counts_only_successful_checks(tmp_path):
+    engine = _engine(tmp_path, _FakeRunner(fail_acceptance=True))
+    prepared = engine.prepare(_plan(tmp_path / "managed", _release()))
+    events = []
+    result = engine.apply(
+        prepared,
+        engine.authorize(prepared, confirmed=True),
+        progress=events.append,
+    )
+    assert not result.succeeded
+    checks = [event for event in events if event.unit == "checks"]
+    assert [(event.completed, event.total) for event in checks] == [
+        (0, len(prepared.plan.acceptance))
+    ]
+
+
+def test_file_progress_is_throttled_and_keeps_exact_boundaries(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock[0])
+    events = []
+    callback = engine_module._file_progress_callback(events.append, "Copying files")
+    callback(0, 10_000)
+    for count in range(1, 5000):
+        callback(count, 10_000)
+    assert [(event.completed, event.total) for event in events] == [(0, 10_000)]
+    clock[0] += 0.2
+    callback(5000, 10_000)
+    callback(10_000, 10_000)
+    assert [(event.completed, event.total) for event in events] == [
+        (0, 10_000),
+        (5000, 10_000),
+        (10_000, 10_000),
+    ]
+    assert all(event.unit == "files" for event in events)
 
 
 def test_failed_update_preserves_active_environment_and_manifest(tmp_path):
@@ -858,11 +1111,19 @@ def test_native_shortcut_is_rendered_privately_before_atomic_publication(tmp_pat
                 return super().run(argv, cancellation=cancellation, env=env, cwd=cwd)
             self.calls.append(tuple(str(value) for value in argv))
             completed = subprocess.run(
-                argv, cwd=cwd, env=env, capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW, timeout=30, check=False,
+                argv,
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=30,
+                check=False,
             )
             return CommandResult(
-                completed.returncode, completed.stdout, completed.stderr,
+                completed.returncode,
+                completed.stdout,
+                completed.stderr,
             )
 
     desktop = tmp_path / "Desktop with spaces"
@@ -995,7 +1256,9 @@ def test_cuda_upgrade_blocks_and_preserves_modified_owned_legacy_profile(tmp_pat
     with pytest.raises(PreparationError, match="changed and was preserved"):
         engine.prepare(
             _plan(
-                target, _release(), track=ComputeTrack.CUDA13,
+                target,
+                _release(),
+                track=ComputeTrack.CUDA13,
                 shortcut_directory=desktop,
             )
         )
@@ -1016,7 +1279,9 @@ def test_cuda_legacy_shortcut_migration_rolls_back_all_scopes_on_failed_commit(
     engine = _engine(tmp_path, _FakeRunner())
     prepared = engine.prepare(
         _plan(
-            target, _release(), track=ComputeTrack.CUDA13,
+            target,
+            _release(),
+            track=ComputeTrack.CUDA13,
             shortcut_scope=ShortcutScope.BOTH,
         )
     )
@@ -1047,7 +1312,9 @@ def test_other_track_owned_single_launcher_is_never_retargeted(tmp_path):
     with pytest.raises(PreparationError, match="another VIPP installation"):
         engine.prepare(
             _plan(
-                cuda_target, _release(), track=ComputeTrack.CUDA13,
+                cuda_target,
+                _release(),
+                track=ComputeTrack.CUDA13,
                 shortcut_directory=desktop,
             )
         )
@@ -1327,9 +1594,8 @@ def test_pip_is_isolated_and_apply_uses_candidate_temp(tmp_path, monkeypatch):
     assert install_call[install_call.index("--timeout") + 1] == "120"
     assert install_call[install_call.index("--retries") + 1] == "8"
     assert "--trusted-host" not in install_call
-    assert install_call[install_call.index("--index-url") + 1] == (
-        "https://pypi.org/simple"
-    )
+    assert "--no-index" in install_call
+    assert "--index-url" not in install_call
     assert result.environment_root is not None
     expected_temp = result.environment_root / ".installer-tmp"
     assert Path(runner.environments[install_index]["TEMP"]) == expected_temp
@@ -1943,7 +2209,8 @@ def test_atomic_journal_replace_retries_transient_windows_scanner_lock(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
 def test_ownership_publication_retries_windows_lock_and_keeps_previous_bytes(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     target = tmp_path / "managed"
     old = _record(target)
@@ -1974,7 +2241,10 @@ def test_ownership_publication_retries_windows_lock_and_keeps_previous_bytes(
 @pytest.mark.parametrize("winerror", [5, 32, 33])
 @pytest.mark.parametrize("updating", [False, True])
 def test_shortcut_publication_retries_brief_windows_lock(
-    tmp_path, monkeypatch, winerror, updating,
+    tmp_path,
+    monkeypatch,
+    winerror,
+    updating,
 ):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
@@ -2014,7 +2284,9 @@ def test_shortcut_publication_retries_brief_windows_lock(
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
 @pytest.mark.parametrize("after_commit", [False, True])
 def test_shortcut_rollback_retries_brief_windows_lock(
-    tmp_path, monkeypatch, after_commit,
+    tmp_path,
+    monkeypatch,
+    after_commit,
 ):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
@@ -2070,7 +2342,9 @@ def test_shortcut_rollback_retries_brief_windows_lock(
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations")
 @pytest.mark.parametrize("error_number", [13, 22])
 def test_shortcut_permanent_lock_or_other_error_keeps_previous_install(
-    tmp_path, monkeypatch, error_number,
+    tmp_path,
+    monkeypatch,
+    error_number,
 ):
     target = tmp_path / "managed"
     desktop = tmp_path / "Desktop"
@@ -2489,9 +2763,10 @@ def test_owned_setup_accepts_exact_or_absent_registration(
     assert result.succeeded and not result.registration_warning
     current = inspect_ownership(installed.target)
     assert current.record is not None and current.record.version == "0.13.0a8"
-    assert installed.registry.values[CPU_REGISTRY_KEY.casefold()][
-        "VippManifestSha256"
-    ] == current.manifest_sha256
+    assert (
+        installed.registry.values[CPU_REGISTRY_KEY.casefold()]["VippManifestSha256"]
+        == current.manifest_sha256
+    )
 
 
 @pytest.mark.parametrize("change_at", ["after_review", "before_ownership_commit"])

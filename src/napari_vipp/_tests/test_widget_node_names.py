@@ -84,7 +84,7 @@ def test_inspector_name_edit_updates_graph_results_and_search(qtbot):
     assert widget.graph_view._cards[node.id].title_label._full_text == "Well comparison"
     assert dialog.summary_selector.currentText() == "Well comparison"
     assert "Statistics" in editor.operation_label.text()
-    assert "Grouped by condition" in editor.summary_label.text()
+    assert "Grouped by condition" in widget._node_presentation(node.id).summary
     assert widget.pipeline.outputs[node.id] is result
     widget.graph_search_edit.setText("Well comparison")
     assert [match.node_id for match in widget._graph_search_matches] == [node.id]

@@ -10,15 +10,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from copy import deepcopy
+from dataclasses import dataclass
 from functools import partial
 from inspect import signature
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
-from napari.components import ViewerModel
+from napari.components import Dims, ViewerModel
 from napari.qt import QtViewer
 from napari.utils.colormaps import AVAILABLE_COLORMAPS, Colormap
-from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, QTimer, Signal
+from napari.utils.events import disconnect_events
+from qtpy.QtCore import QEvent, QSignalBlocker, QSize, Qt, QThread, QTimer, Signal
 from qtpy.QtGui import QColor, QLinearGradient, QPainter, QPalette
 from qtpy.QtWidgets import (
     QButtonGroup,
@@ -51,6 +53,7 @@ from napari_vipp.core.review_images import (
     validate_review_settings,
 )
 from napari_vipp.ui.controls import FlexibleDoubleSpinBox
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.iconography import interface_icon
 from napari_vipp.ui.image_review_rendering import (
     add_mask_review_layer,
@@ -61,8 +64,24 @@ from napari_vipp.ui.inspector import InspectorSection
 from napari_vipp.ui.napari_compat import viewer_camera
 from napari_vipp.ui.palette_roles import blend_colors
 from napari_vipp.ui.sliders import VippSlider
+from napari_vipp.ui.volume_preview import (
+    VolumePreviewPlan,
+    plan_volume_preview,
+    preview_data,
+    renderer_volume_limits,
+)
+from napari_vipp.ui.volume_preview_napari import default_label_texture_bytes
+from napari_vipp.ui.volume_render_status import (
+    is_3d_texture_allocation_failure,
+    renderer_error_notifications,
+    scene_canvas,
+)
 
 _DOUBLE_LIMIT = float(np.finfo(float).max)
+_VOLUME_RENDER_ALLOCATION_MESSAGE = (
+    "OpenGL could not allocate the 3D preview. "
+    "Switch to 2D slices; results are unchanged."
+)
 
 
 class _ReviewChoice(QComboBox):
@@ -279,6 +298,44 @@ def _finite_display_limits(data: np.ndarray) -> tuple[float, float]:
     return low, high
 
 
+def _model_properties(model: type) -> dict[str, property]:
+    # napari's EventedModel builds computed-property events from the class's
+    # own namespace. Redeclare the original descriptors without wrapping them.
+    return {
+        name: value
+        for name, value in vars(model).items()
+        if isinstance(value, property)
+    }
+
+
+class _ReviewDims(Dims):
+    """Route native display requests before napari can queue a volume upload."""
+
+    _display_request: ClassVar[Callable[[int], bool] | None] = None
+    locals().update(_model_properties(Dims))
+
+    def route_display_requests(self, callback: Callable[[int], bool] | None) -> None:
+        # This is an owner callback, not a Pydantic model field or recipe setting.
+        object.__setattr__(self, "_display_request", callback)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        callback = self._display_request
+        if callback is not None:
+            if name == "ndisplay" and value in (2, 3) and callback(value):
+                return
+            if name == "order" and self.ndisplay == 3:
+                # 3D orientations are camera presets. Native roll/transpose
+                # must not replace a probed spatial axis with time, or change
+                # the row alignment of the renderer-approved texture.
+                value = tuple(range(self.ndim))
+        super().__setattr__(name, value)
+
+
+class _ReviewViewerModel(ViewerModel):
+    dims: _ReviewDims
+    locals().update(_model_properties(ViewerModel))
+
+
 class _ReviewPane(QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -307,7 +364,7 @@ class _ReviewPane(QFrame):
         self.position_label.setObjectName("ReviewPanePosition")
         self.position_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         footer_layout.addWidget(self.position_label)
-        self.viewer = ViewerModel()
+        self.viewer = _ReviewViewerModel()
         self.qt_viewer = QtViewer(self.viewer, show_welcome_screen=False)
         # QtViewer exposes its dimension widget. Hide that owned widget, not
         # global napari controls: the review has one shared semantic navigator.
@@ -372,6 +429,34 @@ class _ReviewPane(QFrame):
         return super().eventFilter(watched, event)
 
 
+@dataclass(frozen=True)
+class _ReviewVolumePlan:
+    layers: tuple[VolumePreviewPlan, ...] = ()
+    reason: str = ""
+
+    @property
+    def can_display_3d(self) -> bool:
+        return bool(self.layers)
+
+    @property
+    def strides(self) -> tuple[tuple[int, ...], ...]:
+        return tuple(plan.strides for plan in self.layers)
+
+    def for_input(self, key: str) -> VolumePreviewPlan:
+        return self.layers[0 if key == "a" else 1]
+
+
+def _shared_grid_plan(
+    shape: tuple[int, ...], strides: tuple[int, ...]
+) -> VolumePreviewPlan:
+    return VolumePreviewPlan(
+        strides,
+        tuple(
+            (size + step - 1) // step for size, step in zip(shape, strides, strict=True)
+        ),
+    )
+
+
 class ImageReviewWindow(QMainWindow):
     """Two isolated native napari panes with an inspector-style sidebar.
 
@@ -405,6 +490,7 @@ class ImageReviewWindow(QMainWindow):
             if image.kind == "mask" and image.spatial_ndim == 3
         }
         super().__init__(parent, Qt.Window)
+        install_window_policy(self, profile="workspace")
         self.setWindowTitle("VIPP · Review Images")
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.resize(1280, 800)
@@ -425,6 +511,7 @@ class ImageReviewWindow(QMainWindow):
         self._original_limits: dict[str, tuple[float, float]] = {}
         self._rgb_ranges: dict[str, tuple[float, float]] = {}
         self._display_error = ""
+        self._volume_render_failed = False
         self._navigation_controls: dict[str, dict[str, Any]] = {}
         for key, image in self._inputs.items():
             if image.kind == "scalar":
@@ -434,7 +521,7 @@ class ImageReviewWindow(QMainWindow):
                     self._settings[key]["contrast_limits"] = list(limits)
             elif image.kind == "rgb":
                 self._rgb_ranges[key] = self._rgb_display_range(image.data)
-        self._three_d_available = self._can_display_3d()
+        self._volume_plan = self._plan_volume(self.inputs)
         if self._settings["ndisplay"] == 3 and not self._three_d_available:
             # Saved 3D intent is retained; show a clear unavailable state rather
             # than silently changing a persisted setting or dropping alpha.
@@ -443,6 +530,9 @@ class ImageReviewWindow(QMainWindow):
         self._refresh_presentation_icons()
         self._build_layers()
         self._connect_navigation()
+        notifications = renderer_error_notifications()
+        if notifications is not None:
+            self._connect(notifications, self._on_renderer_error)
         self._apply_layout()
         self._refresh_controls()
         self._apply_orientation()
@@ -467,17 +557,106 @@ class ImageReviewWindow(QMainWindow):
             return (0.0, float(np.iinfo(data.dtype).max))
         return (0.0, 1.0)
 
-    def _can_display_3d(self) -> bool:
-        return all(image.spatial_ndim == 3 for image in self.inputs) and not any(
-            image.kind == "rgb" and image.data.shape[-1] == 4 for image in self.inputs
+    @property
+    def _three_d_available(self) -> bool:
+        return self._volume_plan.can_display_3d
+
+    @staticmethod
+    def _plan_volume(inputs: Sequence[ReviewImageInput]) -> _ReviewVolumePlan:
+        shape = inputs[0].shape
+        if any(image.kind == "rgb" and image.data.shape[-1] == 4 for image in inputs):
+            return _ReviewVolumePlan(
+                reason=(
+                    "RGBA volume review uses 2D slices: "
+                    "3D voxel alpha is not supported."
+                )
+            )
+        if any(image.spatial_ndim != 3 for image in inputs):
+            return _ReviewVolumePlan(
+                reason="3D review requires explicit ZYX volume inputs."
+            )
+        axes = tuple(i for i, axis in enumerate(inputs[0].axes) if axis.type == "space")
+        limits = renderer_volume_limits()
+        keep_grid = any(image.kind in {"mask", "labels"} for image in inputs)
+        # RGB volumes upload separate scalar components, never an RGBA grid.
+        payloads = tuple(
+            image.data[..., 0] if image.kind == "rgb" else image.data
+            for image in inputs
         )
 
+        def plan_for(data, image):
+            return plan_volume_preview(
+                data,
+                axes,
+                is_binary_mask=image.kind == "mask",
+                allow_reduction=image.kind not in {"mask", "labels"},
+                texture_bytes_per_voxel=(
+                    default_label_texture_bytes(data.dtype)
+                    if image.kind == "labels"
+                    else None
+                ),
+                max_texture_axis=limits.max_texture_axis,
+                max_texture_bytes=limits.max_texture_bytes,
+                admit=limits.admit,
+            )
+
+        def unavailable(detail: str = "") -> _ReviewVolumePlan:
+            reason = "3D review is unavailable at this renderer's texture limit."
+            if detail:
+                reason += f" {detail}"
+            if keep_grid:
+                reason += " Mask and label grids are kept at full resolution."
+            return _ReviewVolumePlan(reason=f"{reason} Use full-resolution 2D slices.")
+
+        plans = tuple(
+            plan_for(data, image) for data, image in zip(payloads, inputs, strict=True)
+        )
+        for key, image, plan in zip("AB", inputs, plans, strict=False):
+            if not plan.can_display_3d:
+                if image.kind in {"mask", "labels"}:
+                    return unavailable(
+                        f"Input {key}'s full-resolution {image.kind} cannot fit."
+                    )
+                return unavailable(f"Input {key}'s intensity/RGB preview cannot fit.")
+
+        # Categorical input keeps every voxel/ID. A scalar or RGB companion can
+        # use its own calibrated grid: both keep the same origin and each
+        # spatial stride is reflected in the presentation layer's scale.
+        if keep_grid or len(plans) == 1 or plans[0].strides == plans[1].strides:
+            return _ReviewVolumePlan(plans)
+
+        # Two intensity/RGB inputs keep one common preview grid. A renderer's
+        # proxy admission can depend on row alignment, so test the actual
+        # shared dimensions instead of assuming it accepts all smaller shapes.
+        strides = tuple(
+            max(a, b) for a, b in zip(plans[0].strides, plans[1].strides, strict=True)
+        )
+        while True:
+            shared = _shared_grid_plan(shape, strides)
+            candidates = tuple(
+                plan_for(preview_data(data, shared), image)
+                for data, image in zip(payloads, inputs, strict=True)
+            )
+            if not all(plan.can_display_3d for plan in candidates):
+                return unavailable()
+            if not any(plan.is_reduced for plan in candidates):
+                return _ReviewVolumePlan((shared, shared))
+            next_strides = tuple(
+                min(size, step * max(left, right))
+                for size, step, left, right in zip(
+                    shape,
+                    strides,
+                    candidates[0].strides,
+                    candidates[1].strides,
+                    strict=True,
+                )
+            )
+            if next_strides == strides:
+                return unavailable()
+            strides = next_strides
+
     def _three_d_reason(self) -> str:
-        if any(
-            image.kind == "rgb" and image.data.shape[-1] == 4 for image in self.inputs
-        ):
-            return "RGBA volume review uses 2D slices: 3D voxel alpha is not supported."
-        return "3D review requires explicit ZYX volume inputs."
+        return self._volume_plan.reason
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -582,12 +761,6 @@ class ImageReviewWindow(QMainWindow):
         toolbar.addWidget(arrangement)
         toolbar.addWidget(QLabel("View"))
         self.dim_combo = self._choice([("3D volume", 3), ("2D slice", 2)])
-        self.dim_combo.model().item(0).setEnabled(self._three_d_available)
-        self.dim_combo.setToolTip(
-            self._three_d_reason()
-            if not self._three_d_available
-            else "Choose a 2D slice or 3D view of the original calibrated grid"
-        )
         self.dim_combo.setAccessibleName("Review view dimension")
         toolbar.addWidget(self.dim_combo)
         self.link_navigation_check = QCheckBox("Link viewpoint")
@@ -1038,16 +1211,41 @@ class ImageReviewWindow(QMainWindow):
 
     def _connect_navigation(self) -> None:
         for index, pane in enumerate(self.panes):
+            pane.viewer.dims.route_display_requests(self._request_display)
             camera = viewer_camera(pane.viewer)
             for event in ("center", "zoom", "angles", "perspective"):
                 emitter = getattr(camera.events, event, None)
                 if emitter is not None:
                     self._connect(emitter, partial(self._sync_camera, index))
-            for event in ("point", "order", "ndisplay"):
+            for event in ("point", "order"):
                 self._connect(
                     getattr(pane.viewer.dims.events, event),
                     partial(self._sync_dims, index),
                 )
+
+    def _request_display(self, value: int) -> bool:
+        if self._syncing:
+            return False
+        self._set_general("ndisplay", value)
+        return True
+
+    def _on_renderer_error(self, notification) -> None:
+        if (
+            self._closing
+            or self._volume_render_failed
+            or QThread.currentThread() != self.thread()
+        ):
+            return
+        canvases = tuple(
+            canvas
+            for pane in self.panes
+            if pane.viewer.dims.ndisplay == 3
+            and (canvas := scene_canvas(pane.qt_viewer)) is not None
+        )
+        if canvases and is_3d_texture_allocation_failure(notification, canvases):
+            self._volume_render_failed = True
+            # Do not refresh layers or change modes from inside a draw callback.
+            self._refresh_status()
 
     def _sync_camera(self, source: int, event=None) -> None:
         if self._syncing or self._closing or not self._settings["link_navigation"]:
@@ -1066,21 +1264,6 @@ class ImageReviewWindow(QMainWindow):
         if self._syncing or self._closing:
             return
         current = self.panes[source].viewer.dims
-        # The native canvas has its own 2D/3D button. Route it through the same
-        # adapter and alpha support gate as the sidebar; never render an RGB
-        # volume through napari's scalar/red-component volume renderer.
-        if current.ndisplay != self._settings["ndisplay"]:
-            if current.ndisplay == 3 and not self._three_d_available:
-                self._syncing = True
-                try:
-                    current.ndisplay = 2
-                finally:
-                    self._syncing = False
-                self._display_error = self._three_d_reason()
-                self._refresh_controls()
-                return
-            self._set_general("ndisplay", current.ndisplay)
-            return
         self._syncing = True
         try:
             other = self.panes[1 - source].viewer.dims
@@ -1269,6 +1452,7 @@ class ImageReviewWindow(QMainWindow):
 
     def _build_layers(self) -> None:
         display = self._settings["ndisplay"] if self._three_d_available else 2
+        self._volume_render_failed = False
         self._syncing = True
         try:
             for pane in self.panes:
@@ -1276,16 +1460,20 @@ class ImageReviewWindow(QMainWindow):
                 old_order = pane.viewer.dims.order
                 pane.viewer.layers.clear()
                 pane.layers.clear()
+                # Never insert full-resolution 2D arrays into a still-3D canvas.
+                pane.viewer.dims.ndisplay = display
+                if display == 3:
+                    pane.viewer.dims.order = tuple(range(pane.viewer.dims.ndim))
                 for key, image in self._inputs.items():
                     pane.layers[key] = self._add_input_layers(
                         pane.viewer, key, image, display
                     )
-                pane.viewer.dims.ndisplay = display
                 pane.viewer.dims.axis_labels = tuple(
                     axis.name for axis in self.inputs[0].axes
                 )
                 if len(old_point) == pane.viewer.dims.ndim:
-                    pane.viewer.dims.order = old_order
+                    if display == 2:
+                        pane.viewer.dims.order = old_order
                     for axis, point in enumerate(old_point):
                         pane.viewer.dims.set_point(axis, point)
                 self._configure_scene_overlays(pane.viewer)
@@ -1330,9 +1518,17 @@ class ImageReviewWindow(QMainWindow):
     def _add_input_layers(
         self, viewer: ViewerModel, key: str, image: ReviewImageInput, display: int
     ) -> list[Any]:
+        plan = self._volume_plan.for_input(key) if display == 3 else None
         common = dict(
             name=f"{key.upper()} · {image.name}",
-            scale=image.scale,
+            scale=(
+                tuple(
+                    scale * step
+                    for scale, step in zip(image.scale, plan.strides, strict=True)
+                )
+                if plan is not None and plan.is_reduced
+                else image.scale
+            ),
             translate=image.translate,
         )
         add_layer = viewer.add_labels if image.kind == "labels" else viewer.add_image
@@ -1356,12 +1552,11 @@ class ImageReviewWindow(QMainWindow):
                     **common,
                 )
             ]
-        if image.kind == "rgb" and display == 3:
+        if image.kind == "rgb" and plan is not None:
             limits = self._rgb_ranges[key]
             layers = []
             for component, color in enumerate(("red", "green", "blue")):
-                values = image.data[..., component].view()
-                values.setflags(write=False)
+                values = preview_data(image.data[..., component], plan)
                 layer = viewer.add_image(
                     values,
                     rgb=False,
@@ -1373,7 +1568,12 @@ class ImageReviewWindow(QMainWindow):
                 )
                 layers.append(layer)
             return layers
-        return [viewer.add_image(image.data, rgb=image.kind == "rgb", **common)]
+        values = (
+            preview_data(image.data, plan)
+            if plan is not None and plan.is_reduced
+            else image.data
+        )
+        return [viewer.add_image(values, rgb=image.kind == "rgb", **common)]
 
     def _apply_styles(self) -> None:
         if self._closing:
@@ -1437,7 +1637,38 @@ class ImageReviewWindow(QMainWindow):
                 or ("B · not connected" if selection == "b" else "No input selected")
             )
             pane.title_label.setToolTip(pane.title_label.text())
+        self._refresh_status()
+
+    def _refresh_status(self) -> None:
+        display = self.panes[0].viewer.dims.ndisplay
         messages = ["Read-only · Native analysis resolution"]
+        plans = self._volume_plan.layers
+        if display == 3 and any(plan.is_reduced for plan in plans):
+
+            def steps(image, plan):
+                sizes = "/".join(
+                    str(step)
+                    for axis, step in zip(image.axes, plan.strides, strict=True)
+                    if axis.type == "space"
+                )
+                return f"Z/Y/X steps {sizes}"
+
+            def layer_grid(image, plan):
+                if plan.is_reduced:
+                    return steps(image, plan)
+                return f"full-resolution {image.kind}"
+
+            if any(image.kind in {"mask", "labels"} for image in self.inputs):
+                description = "; ".join(
+                    f"{key}: {layer_grid(image, plan)}"
+                    for key, image, plan in zip("AB", self.inputs, plans, strict=False)
+                )
+            else:
+                description = steps(self.inputs[0], plans[0])
+            messages = [
+                f"Read-only · Reduced 3D preview ({description}). "
+                "Use 2D for full-resolution slices; analysis data is unchanged."
+            ]
         if not self._current:
             messages = [
                 self._current_message
@@ -1445,11 +1676,15 @@ class ImageReviewWindow(QMainWindow):
             ]
         if self._display_error:
             messages.append(self._display_error)
-        if (
-            self._settings["ndisplay"] == 3
-            and self._three_d_available
-            and any(i.kind == "rgb" for i in self.inputs)
+        if self._volume_render_failed:
+            messages.append(_VOLUME_RENDER_ALLOCATION_MESSAGE)
+        if not self._three_d_available and (
+            self._settings["ndisplay"] == 3 or self.inputs[0].spatial_ndim == 3
         ):
+            reason = self._three_d_reason()
+            if reason != self._display_error:
+                messages.append(reason)
+        if display == 3 and any(i.kind == "rgb" for i in self.inputs):
             messages.append(
                 "RGB 3D: additive per-component MIP; "
                 "not a voxelwise composite or the RACC renderer."
@@ -1457,17 +1692,23 @@ class ImageReviewWindow(QMainWindow):
         self.status_label.setText(" · ".join(messages))
 
     def _refresh_controls(self) -> None:
+        self.dim_combo.model().item(0).setEnabled(self._three_d_available)
+        self.dim_combo.setToolTip(
+            self._three_d_reason()
+            if not self._three_d_available
+            else "Choose full-resolution 2D slices or a calibrated 3D preview"
+        )
         for combo, key in (
             (self.left_combo, "left"),
             (self.right_combo, "right"),
             (self.dim_combo, "ndisplay"),
         ):
             with QSignalBlocker(combo):
-                choice = (
-                    "overlay"
-                    if key == "right" and self._settings["mode"] == "overlay"
-                    else self._settings[key]
-                )
+                choice = self._settings[key]
+                if key == "right" and self._settings["mode"] == "overlay":
+                    choice = "overlay"
+                elif key == "ndisplay":
+                    choice = self.panes[0].viewer.dims.ndisplay
                 combo.setCurrentIndex(combo.findData(choice))
         for mode, button in self.mode_buttons.items():
             with QSignalBlocker(button):
@@ -1597,7 +1838,10 @@ class ImageReviewWindow(QMainWindow):
             self._closing
             or not self._current
             or value is None
-            or self._settings[key] == value
+            or (
+                self._settings[key] == value
+                and (key != "ndisplay" or self.panes[0].viewer.dims.ndisplay == value)
+            )
         ):
             return
         if key == "ndisplay" and value == 3 and not self._three_d_available:
@@ -1730,7 +1974,8 @@ class ImageReviewWindow(QMainWindow):
         for key, limits in self._original_limits.items():
             if new[key]["contrast_limits"] is None:
                 new[key]["contrast_limits"] = list(limits)
-        changed_dims = new["ndisplay"] != self._settings["ndisplay"]
+        effective_display = new["ndisplay"] if self._three_d_available else 2
+        changed_dims = effective_display != self.panes[0].viewer.dims.ndisplay
         changed_orientation = new["orientation"] != self._settings["orientation"]
         changed_overlays = any(
             new[key] != self._settings[key] for key in ("show_axes", "show_scale_bar")
@@ -1874,6 +2119,16 @@ class ImageReviewWindow(QMainWindow):
             validate_review_pair(*prepared)
         new_inputs = tuple(prepared)
         new_map = dict(zip(("a", "b"), new_inputs, strict=False))
+        new_volume_plan = self._plan_volume(new_inputs)
+        if self.panes[0].viewer.dims.ndisplay == 3 and (
+            not new_volume_plan.can_display_3d
+            or new_volume_plan.strides != self._volume_plan.strides
+        ):
+            # Existing wrappers and viewpoints are one transaction; never swap
+            # to a different preview calibration under the current camera.
+            raise ValueError(
+                "The new inputs need a different 3D preview grid. Reopen Review Images."
+            )
         new_masks = {
             key: prepare_mask_review_data(image)
             for key, image in new_map.items()
@@ -1892,14 +2147,19 @@ class ImageReviewWindow(QMainWindow):
         replacements = []
         for pane in self.panes:
             for key, image in new_map.items():
-                if image.kind == "rgb" and pane.viewer.dims.ndisplay == 3:
-                    arrays = []
-                    for index in range(3):
-                        values = image.data[..., index].view()
-                        values.setflags(write=False)
-                        arrays.append(values)
-                elif image.kind == "mask" and pane.viewer.dims.ndisplay == 3:
+                plan = (
+                    new_volume_plan.for_input(key)
+                    if pane.viewer.dims.ndisplay == 3
+                    else None
+                )
+                if image.kind == "rgb" and plan is not None:
+                    arrays = [
+                        preview_data(image.data[..., index], plan) for index in range(3)
+                    ]
+                elif image.kind == "mask" and plan is not None:
                     arrays = [new_masks[key]]
+                elif plan is not None and plan.is_reduced:
+                    arrays = [preview_data(image.data, plan)]
                 else:
                     arrays = [image.data]
                 layers = pane.layers[key]
@@ -1952,6 +2212,7 @@ class ImageReviewWindow(QMainWindow):
             self._mask_display_data,
             self._original_limits,
             self._rgb_ranges,
+            self._volume_plan,
         )
         syncing, updating = self._syncing, self.updatesEnabled()
         self._syncing = True
@@ -2012,6 +2273,7 @@ class ImageReviewWindow(QMainWindow):
                 self.inputs, self._inputs = new_inputs, new_map
                 self._mask_display_data = new_masks
                 self._original_limits, self._rgb_ranges = new_limits, new_rgb_ranges
+                self._volume_plan = new_volume_plan
                 restore_poses()
             # Publish native layer refreshes only after all wrappers hold a
             # complete replacement, or after all originals have been restored.
@@ -2060,6 +2322,7 @@ class ImageReviewWindow(QMainWindow):
                         self._mask_display_data,
                         self._original_limits,
                         self._rgb_ranges,
+                        self._volume_plan,
                     ) = old_state
                     restore_poses()
                     if errors:
@@ -2086,6 +2349,22 @@ class ImageReviewWindow(QMainWindow):
                 self._syncing = syncing
                 self.setUpdatesEnabled(updating)
 
+    @staticmethod
+    def _shutdown_pane(pane: _ReviewPane) -> None:
+        # Follow napari.Viewer.close() for the model/QtViewer we own. Closing
+        # the QtViewer alone schedules canvas deletion but does not stop its
+        # model's slicer. Layer removal must run with the canvas still alive.
+        viewer = pane.viewer
+        viewer.dims.route_display_requests(None)
+        slicer = getattr(viewer, "_layer_slicer", None)
+        stop_slicing = getattr(slicer, "shutdown", None)
+        if callable(stop_slicing):
+            stop_slicing()
+        disconnect_events(viewer.dims.events, viewer)
+        viewer.layers.clear()
+        pane.layers.clear()
+        pane.qt_viewer.close()
+
     def shutdown(self) -> None:
         """Disconnect event synchronization before releasing owned viewers."""
         if self._closing:
@@ -2095,11 +2374,11 @@ class ImageReviewWindow(QMainWindow):
         for emitter, callback in self._connections:
             emitter.disconnect(callback)
         self._connections.clear()
-        for pane in self.panes:
-            pane.qt_viewer.close()
-            pane.viewer.layers.clear()
-            pane.layers.clear()
-        self._mask_display_data.clear()
+        # Attempt cleanup of both owned panes even if one canvas fails to close.
+        with ExitStack() as cleanup:
+            cleanup.callback(self._mask_display_data.clear)
+            for pane in reversed(self.panes):
+                cleanup.callback(self._shutdown_pane, pane)
 
     def closeEvent(self, event):  # noqa: N802
         self.shutdown()

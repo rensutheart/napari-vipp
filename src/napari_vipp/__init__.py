@@ -1,5 +1,10 @@
 """napari-vipp plugin."""
 
+from napari_vipp._runtime_lease import register_runtime as _register_runtime
+
+_runtime_use_lease = _register_runtime()
+del _register_runtime
+
 try:
     from importlib.metadata import version
 except ImportError:  # pragma: no cover

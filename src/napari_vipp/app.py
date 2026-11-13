@@ -160,6 +160,9 @@ def run_application(
 ) -> int:
     """Load napari, build VIPP, report readiness, and enter the Qt event loop."""
     reporter.progress("loading_napari")
+    from napari_vipp.ui.viewer_graphics import configure_viewer_graphics_startup
+
+    configure_viewer_graphics_startup()
     import napari
 
     reporter.progress("creating_viewer")

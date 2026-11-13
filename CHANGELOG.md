@@ -2,6 +2,156 @@
 
 ## Unreleased
 
+## 0.16.0a8 - 2026-11-13
+
+- Scroll past inspector sliders, number boxes and closed drop-downs without
+  changing their values, even when they have focus.
+- Switch inspector parameter rows together between inline and stacked
+  layouts, keeping each slider and its numeric entry paired.
+- Keep inspector section headings on one line when there is room, including
+  at fractional display scaling, and wrap them only in narrow docks.
+- Wrap long input and output labels on graph cards in narrower columns,
+  keeping the full names readable without covering the preview or nearby ports.
+- Keep the inspector histogram's plotting area readable with larger text,
+  and label connected inputs by receiving role, source node and distinct output.
+- Keep **Connected inputs** focused on wiring; show incoming image, table and
+  transform details separately under **Input metadata**.
+- Fit full results table columns to their contents by default, with an
+  **Equal widths** option and manual resizing.
+- Avoid a full-volume float64 temporary in Hysteresis Threshold. Keep the
+  same thresholds, connectivity and output mask.
+- Keep 3D display warnings visible alongside workflow progress. If OpenGL
+  reports a 3D texture allocation failure, explain it and suggest 2D.
+- Compact the toolbar settings: keep Viewer graphics to one-line status and
+  choices, mark pending changes, and move renderer details to tooltips.
+- Budget 3D labels using napari's actual display texture so full-resolution
+  labels are not needlessly hidden. In **Review Images**, keep masks and
+  labels exact while reducing only a too-large intensity preview if needed.
+- Narrow node-library searches to matching names, aliases, and category words.
+  Fall back to a small typo or name abbreviation only when there is no direct
+  match, so searching for **Otsu** no longer shows unrelated nodes.
+- Add **Viewer graphics** to the toolbar settings. See the active OpenGL
+  renderer and choose Auto, GPU, or CPU for the next standalone Windows launch,
+  independently of workflow compute. CPU needs software OpenGL support.
+- Check the renderer before displaying large 3D results. Keep binary masks
+  full-resolution and use a labeled, reduced 3D preview for large intensity
+  volumes when needed, without changing workflow data or outputs.
+- Show **CPU** once for CPU runs, omit zero-count CPU entries for GPU-only
+  runs, and retain mixed-run and fallback information in the compute summary.
+- Wrap inspector section headings at the current text size in narrow docks
+  instead of replacing the middle of the title with an ellipsis.
+
+- Keep real channel/time labels and preserve the Z slice when switching
+  between a multichannel stack and a single-channel result in napari. Hide
+  retired slice controls immediately when a tab or preview has fewer axes.
+
+- Skip the cursor value read on VIPP-generated layers when napari requests a
+  3D sample while the previous 2D slice is still in use.
+
+- Show image loading and preview progress above the workflow graph. Keep the
+  current phase in bold with a separate action, and put the progress count
+  beside the bar when space allows. Show filenames in place of long paths,
+  with full details available on hover. Wrapped progress text gives its space
+  back to the graph when the dock widens or the message gets shorter.
+
+- Wrap graph thumbnail placeholder text. Give inline **View dimensions**
+  sliders equal lengths and fit the position fields to each axis range.
+  **Show sliders** opens sliders for the same axes in compact docks;
+  **View dimensions** opens all navigation controls in narrow docks.
+
+- Stop Review Images slicing work and clear its owned layers before closing
+  the rendering canvases.
+
+- Replace the inspector's repeated parameter line with **Node details**, a
+  read-only, labeled view of the selected node's configuration. Raw JSON is
+  available separately; editable settings and scientific guidance stay visible.
+
+- Keep slider number fields compact and consistent when inspector rows wrap,
+  expanding only for a longer current value. Make connected-input summaries
+  denser with a clearer heading, and improve recovery checkbox contrast in
+  light and dark themes without changing selection or recovery behavior.
+
+- Unify application headings, body text and control sizing around the current
+  UI font. Fit dialogs to the available screen on first show without resetting
+  later user resizing; scale numeric fields, table rows and bounded previews
+  with their content. Keep inspector wrapping and native layout reservations.
+  Apply consistent action/close/stop roles and keep recovery warnings visible.
+  Setup and reader screens separate review information from logs, show honest
+  measured progress and retain total as well as phase elapsed time. These are
+  presentation changes; scientific calculations and approval/safety rules stay
+  unchanged.
+
+- Choose interrupted workflow sessions with visible checkboxes, readable dates
+  and workflow counts. Click a row to choose just one; check boxes to combine
+  several, with Select all, Clear selection and live counts. Confirm discard
+  once, with No as the default. Keep unselected
+  copies and failed recoveries available; protect each recovered workspace
+  before marking its original working copy as recovered.
+
+- Correct the development installer's startup-ownership check so ordinary
+  distribution metadata is not subjected to the smaller startup/control-file
+  limit. Keep startup safety bounds and ownership checks; identify the exact
+  file, category and byte limit when validation refuses an update.
+  Recognize the owned standard PyWin32 startup-helper location without
+  executing it, and refuse shadowed or unverified helpers.
+
+- Distinguish changed-package in-place updates from copied replacements and
+  fresh environments. In-place can retain compatible dependency versions and
+  replace only required changed packages, including a safe first upgrade of
+  an older managed installation without a mandatory whole-environment copy.
+  Authenticate ownership, take the prefix offline without copying it, journal
+  only changed files, and install startup exclusion before acceptance. Ask users
+  to close a detected running instance and keep VIPP closed until setup finishes;
+  never force-close it. Ambiguous processes, foreign files, unsupported package
+  layouts and runtime/ABI changes remain explicit Replacement/Fresh blockers.
+
+- Compare installer versions using Python package version ordering, so numeric
+  development releases such as dev10 correctly follow dev9; keep genuine
+  downgrade and unrecognized-version protection. Unify setup typography,
+  spacing and surfaces, strengthen the setup-step arrows and remove inactive
+  progress indicators from completed review screens.
+
+- Keep a total installation timer through all stages and safe cleanup, frozen
+  on completion. Clarify the noninteractive setup steps and single ordered stage
+  list, remove redundant success text, and replace the moving tiny diagnostics
+  box with a larger read-only snapshot viewer with explicit Refresh and clearly
+  separate recent package output from the raw structured setup event log.
+
+- Show all six Windows installation stages and separate measured task progress:
+  dependency files checked/copied, verified package artifacts and acceptance
+  checks. Keep pip's unreported batch work explicitly indeterminate rather than
+  inventing per-package completion. Collapse the live log by default and show it
+  automatically on failure; installation, rollback and ownership guards remain.
+
+- Make Windows entry-repair confirmation concise, with explicit Repair entry
+  and Cancel actions and expandable, copyable exact changes/backup details.
+  No packages or workflows are changed and update approval remains separate.
+
+- Give the Windows setup stages solid boundaries and keep the update-method
+  selector stationary while reviewing a changed choice. Avoid repeating checks
+  for an unchanged choice, and show read-only review activity without misleading
+  completed-step ticks. Exact-settings approval and update safety are unchanged.
+
+- Separate Windows setup into focused Review and Installing stages. Hide the
+  update-method controls after approval, keep progress and logs prominent, and
+  clarify that fast updates retain compatible dependency versions while Fresh
+  resolves required versions and reuses verified cached downloads. Selecting a
+  method does not start installation or change the dependency-update policy.
+
+- Open VIPP from Windows setup with the selected installation's own Python/DLL
+  search paths rather than the setup caller's Python/Qt overrides or frozen DLL
+  directory. This avoids cross-runtime OpenSSL DLL conflicts without changing
+  the computer's PATH or reinstalling packages.
+
+- Windows setup defaults to the fastest safe method and offers a separate
+  replacement or fresh environment. Replacement reuses verified compatible
+  installed dependencies. Setup reuses verified cached downloads when needed;
+  initial local checks no longer wait for a full online dependency resolution.
+- Windows setup can separately review and repair a stale registration for a
+  verified installer-owned VIPP installation, with an exact backup and explicit
+  confirmation. Foreign, incomplete or changed Windows entries remain blocked;
+  repairing registration does not automatically install an update.
+
 ## 0.16.0a7 - 2026-10-23
 
 - Add **Settings → Workflow paths** with relative (default) or absolute file

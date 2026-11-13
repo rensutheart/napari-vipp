@@ -243,8 +243,11 @@ def test_parameter_form_wraps_for_real_label_and_field_widths(qtbot, font_pixels
     VippWidget._set_inspector_form_stacked(form, False, available_width=457)
     QApplication.processEvents()
     label = form.labelForField(field)
-    assert form.rowWrapPolicy() == QFormLayout.WrapLongRows
-    assert label.width() >= label.minimumSizeHint().width() > 0
+    assert form.rowWrapPolicy() == QFormLayout.WrapAllRows
+    margins = form.contentsMargins()
+    usable_width = host.contentsRect().width() - margins.left() - margins.right()
+    assert label.wordWrap()
+    assert label.width() >= usable_width - 2
     assert label.geometry().bottom() < field.geometry().top()
     assert host.rect().contains(label.geometry())
 

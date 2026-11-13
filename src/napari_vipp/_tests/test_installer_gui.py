@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import subprocess
 import sys
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,11 +13,14 @@ import pytest
 
 from napari_vipp.installer import gui as gui_module
 from napari_vipp.installer.frontend import (
+    IN_PLACE_CLOSE_WARNING,
     BlockedAction,
     InstallerScreen,
     InstallerSelection,
     InstallerViewState,
     InstallSizeEstimate,
+    ProgressUnit,
+    RegistrationRepairReview,
     TargetKind,
 )
 from napari_vipp.installer.gui import (
@@ -25,12 +32,231 @@ from napari_vipp.installer.gui import (
     _header_inline_width,
     _header_minimum_width,
     _header_should_stack,
+    _installation_stage_rows,
     _reviewed_message,
     _size_review_text,
+    _task_fraction,
+    _task_progress_text,
     _window_title,
     build_parser,
 )
-from napari_vipp.installer.models import ComputeTrack
+from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
+from napari_vipp.installer.ownership import (
+    OwnedPackage,
+    OwnershipRecord,
+    managed_environments_root,
+    write_ownership_record,
+)
+
+
+def _existing_open_target(tmp_path, track):
+    target = tmp_path / "private test location" / "environments" / track.value
+    environment = managed_environments_root(target) / "installed-version"
+    scripts = environment / "Scripts"
+    scripts.mkdir(parents=True)
+    marker = environment / ".vipp-install-candidate.json"
+    marker.write_text("{}", encoding="utf-8")
+    (environment / "pyvenv.cfg").write_text("home = fixture-base\n", encoding="utf-8")
+    (scripts / "python.exe").touch()
+    (scripts / "vipp-app.exe").write_bytes(b"fixture launcher")
+    record = OwnershipRecord(
+        installation_id=str(uuid.uuid4()),
+        managed_root=target,
+        environment_root=environment,
+        distribution="napari-vipp",
+        version="0.16.0a7",
+        track=track,
+        base_python=tmp_path / "separate base" / "python.exe",
+        resolved_plan_id="c" * 64,
+        packages=(OwnedPackage("napari-vipp", "0.16.0a7", "d" * 64),),
+        created_at="2026-10-24T00:00:00Z",
+        updated_at="2026-10-24T00:00:00Z",
+        environment_marker_sha256=hashlib.sha256(marker.read_bytes()).hexdigest(),
+    )
+    write_ownership_record(target, record)
+    return target, record
+
+
+class _OpenOnlyBackend:
+    def __init__(self):
+        self.opened = []
+
+    def open_vipp(self, launcher):
+        self.opened.append(launcher)
+
+    def __getattr__(self, name):
+        raise AssertionError(f"Launch-only must not enter setup: {name}")
+
+
+@pytest.mark.parametrize("track", tuple(ComputeTrack))
+def test_open_installed_is_read_only_and_independent_of_bundled_version(
+    tmp_path, monkeypatch, track
+):
+    from napari_vipp.installer import discovery
+
+    target, record = _existing_open_target(tmp_path, track)
+    monkeypatch.setattr(
+        discovery, "_windows_known_folder", lambda _: tmp_path / "local"
+    )
+    monkeypatch.setitem(sys.modules, "tkinter", None)
+    before = {str(p): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", track.value, "--install-root", str(target)],
+            backend=backend,
+        )
+        == 0
+    )
+    assert backend.opened == [record.environment_root / "Scripts" / "vipp-app.exe"]
+    assert before == {str(p): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(
+    "damage", ["absent", "wrong-track", "launcher", "journal", "marker"]
+)
+def test_open_installed_refuses_unready_roots_without_setup(
+    tmp_path, monkeypatch, damage
+):
+    from napari_vipp.installer import discovery, engine
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    local = tmp_path / "local"
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: local)
+    track = "cpu"
+    if damage == "absent":
+        target = tmp_path / "unowned"
+    elif damage == "wrong-track":
+        track = "cuda13"
+    elif damage == "launcher":
+        (record.environment_root / "Scripts" / "vipp-app.exe").unlink()
+    elif damage == "marker":
+        (record.environment_root / ".vipp-install-candidate.json").write_text(
+            "changed", encoding="utf-8"
+        )
+    else:
+        journal = engine._transaction_journal_path(local / "VIPP" / "installer", target)
+        journal.parent.mkdir(parents=True)
+        journal.write_text("preserve pending transaction", encoding="utf-8")
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", track, "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert not backend.opened
+    if damage == "journal":
+        assert journal.read_text(encoding="utf-8") == "preserve pending transaction"
+
+
+def test_open_installed_rechecks_manifest_before_spawn(tmp_path, monkeypatch):
+    from napari_vipp.installer import discovery, ownership
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: None)
+    original = ownership.inspect_ownership
+    calls = []
+
+    def changed(root):
+        calls.append(root)
+        if len(calls) == 2:
+            write_ownership_record(
+                target, replace(record, updated_at="2026-10-24T01:00Z")
+            )
+        return original(root)
+
+    monkeypatch.setattr(ownership, "inspect_ownership", changed)
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", "cpu", "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert len(calls) == 2
+    assert not backend.opened
+
+
+def test_open_installed_bounds_marker_read_even_if_file_grows(tmp_path, monkeypatch):
+    from napari_vipp.installer import discovery
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: None)
+    marker = record.environment_root / ".vipp-install-candidate.json"
+    original_open = Path.open
+    reads = []
+
+    class GrowingMarker(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+
+    def open_file(path, *args, **kwargs):
+        if path == marker:
+            return GrowingMarker(b"x" * (1024 * 1024 + 10))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_file)
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", "cpu", "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert reads == [1024 * 1024 + 1]
+    assert not backend.opened
+
+
+@pytest.mark.parametrize("damage", ["redirected-launcher", "custom-root-journal"])
+def test_open_installed_checks_direct_paths_and_custom_journal(
+    tmp_path, monkeypatch, damage
+):
+    from napari_vipp.installer import discovery, engine
+
+    target, record = _existing_open_target(tmp_path, ComputeTrack.CPU)
+    monkeypatch.setattr(discovery, "_windows_known_folder", lambda _: None)
+    if damage == "redirected-launcher":
+        original = engine._path_has_reparse_component
+        launcher = record.environment_root / "Scripts" / "vipp-app.exe"
+        monkeypatch.setattr(
+            engine,
+            "_path_has_reparse_component",
+            lambda path: path == launcher or original(path),
+        )
+    else:
+        journal = engine._transaction_journal_path(
+            target.parent.parent / "installer", target
+        )
+        journal.parent.mkdir(parents=True)
+        journal.write_text("pending", encoding="utf-8")
+    backend = _OpenOnlyBackend()
+    assert (
+        gui_module.main(
+            ["--open-installed", "--track", "cpu", "--install-root", str(target)],
+            backend=backend,
+        )
+        == 1
+    )
+    assert not backend.opened
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        ["--track", "cpu", "--base-python", "other"],
+        ["--track", "cpu", "--update-strategy", "fresh"],
+    ],
+)
+def test_open_installed_requires_explicit_track_and_no_install_options(extra):
+    backend = _OpenOnlyBackend()
+    assert gui_module.main(["--open-installed", *extra], backend=backend) == 1
+    assert not backend.opened
 
 
 class _Controller:
@@ -46,6 +272,9 @@ class _Controller:
 
     def open_owned_uninstaller(self):
         self.calls.append("open-uninstaller")
+
+    def repair_registration(self, *, confirmed, fingerprint):
+        self.calls.append(("repair-registration", confirmed, fingerprint))
 
     def retry(self):
         self.calls.append("retry")
@@ -78,6 +307,28 @@ class _Widget:
 
     def configure(self, **kwargs):
         self.configured.append(kwargs)
+
+
+class _StagePanel(_Widget):
+    def __init__(self, *, visible):
+        super().__init__()
+        self.visible = visible
+        self.packs = []
+        self.grid_calls = 0
+
+    def pack(self, **kwargs):
+        self.visible = True
+        self.packs.append(kwargs)
+
+    def pack_forget(self):
+        self.visible = False
+
+    def grid(self):
+        self.visible = True
+        self.grid_calls += 1
+
+    def grid_remove(self):
+        self.visible = False
 
 
 class _Canvas:
@@ -153,6 +404,28 @@ def _window(state):
     return window
 
 
+def _staged_window():
+    """Pure renderer fixture: no Tk, worker, filesystem or install actions."""
+
+    window = object.__new__(InstallerWindow)
+    window._controller = _Controller()
+    window._installation_started = False
+    window._review_controls_visible = True
+    window._method_panel = _StagePanel(visible=True)
+    window._advanced_review = _StagePanel(visible=True)
+    window._selected_method_label = _StagePanel(visible=False)
+    window._selected_method = _Value()
+    window._review_stage_label = _Widget()
+    window._install_stage_label = _Widget()
+    window._ready_stage_label = _Widget()
+    window._content_canvas = _Canvas()
+    window._progress = object()
+    window._progress_panel = object()
+    window._headline_label = object()
+    window.root = SimpleNamespace(after_idle=lambda callback: callback())
+    return window
+
+
 def test_gui_module_imports_without_loading_tkinter():
     code = (
         "import sys; import napari_vipp.installer.gui; "
@@ -176,6 +449,638 @@ def test_parser_keeps_recommended_automatic_route_by_default():
     assert args.track == "automatic"
     assert args.install_root is None
     assert args.base_python is None
+    assert args.update_strategy == "auto"
+
+
+@pytest.mark.parametrize("strategy", list(UpdateStrategy))
+def test_parser_accepts_each_explicit_update_method(strategy):
+    assert (
+        build_parser().parse_args(["--update-strategy", strategy.value]).update_strategy
+        == strategy.value
+    )
+
+
+def test_review_displays_requested_method_selected_method_and_fallback_reason():
+    reason = "A dependency changed; a fresh environment is required."
+    state = InstallerViewState(
+        screen=InstallerScreen.READY,
+        headline="An update is ready",
+        message="The old installation stays available until checks pass.",
+        primary_label="Update VIPP",
+        primary_enabled=True,
+        target_kind=TargetKind.UPDATE,
+        selected_strategy=UpdateStrategy.FRESH,
+        strategy_reason=reason,
+    )
+
+    message = _reviewed_message(state, InstallerSelection())
+
+    assert "Update method requested: Automatic" in message
+    assert "Selected method: Fresh installation" in message
+    assert reason in message
+
+
+def test_method_labels_distinguish_three_write_scopes_without_changing_legacy_value():
+    labels = gui_module._STRATEGY_LABELS
+    assert labels == {
+        "Automatic — fastest safe method": UpdateStrategy.AUTO,
+        "In-place update — update changed packages": UpdateStrategy.IN_PLACE,
+        "Replacement update — copy existing packages": UpdateStrategy.INCREMENTAL,
+        "Fresh installation": UpdateStrategy.FRESH,
+    }
+    assert UpdateStrategy.INCREMENTAL.value == "incremental"
+    assert gui_module._SELECTED_METHOD_NAMES == gui_module._LABEL_FOR_STRATEGY
+
+
+def test_actual_eligibility_fallback_reason_is_visible_with_exact_selected_method():
+    reason = (
+        "An installed package cannot be safely exchanged in place. "
+        "A replacement keeps its current environment unchanged."
+    )
+    state = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.INCREMENTAL,
+        strategy_reason=reason,
+    )
+    message = _reviewed_message(state, InstallerSelection())
+    assert "Update method requested: Automatic — fastest safe method" in message
+    assert "Selected method: Replacement update — copy existing packages" in message
+    assert reason in message
+    assert "Selected method: In-place" not in message
+
+
+def test_in_place_working_copy_never_promises_a_separate_replacement():
+    state = replace(
+        _state(InstallerScreen.WORKING, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.IN_PLACE,
+    )
+    message = gui_module._working_message(state)
+    assert "Updating changed packages in the current environment" in message
+    assert "Compatible installed versions are retained" in message
+    assert "cached downloads are reused for required changes" in message
+    assert message.count(IN_PLACE_CLOSE_WARNING) == 1
+    assert "replacement" not in message
+    assert "previous version stays available" not in message
+    for strategy in [UpdateStrategy.INCREMENTAL, UpdateStrategy.FRESH]:
+        assert "replacement passes checks" in gui_module._working_message(
+            replace(state, selected_strategy=strategy)
+        )
+
+
+def test_in_place_review_omits_fresh_estimates_but_keeps_enforced_space_thresholds():
+    state = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.IN_PLACE,
+        strategy_reason="The current app-use interlock and dependencies were verified.",
+        size_estimate=InstallSizeEstimate(2 * 1024**3, 5 * 1024**3, 7 * 1024**3),
+        required_free_bytes=512 * 1024**2,
+        temporary_free_bytes=256 * 1024**2,
+    )
+    message = _reviewed_message(state, InstallerSelection())
+    assert "Selected method: In-place update — update changed packages" in message
+    assert state.strategy_reason in message
+    assert "Compatible installed versions are retained" in message
+    assert "required changes are installed" in message
+    assert message.count(IN_PLACE_CLOSE_WARNING) == 1
+    assert "typical Fresh" not in message
+    assert "5 GiB" not in message and "7 GiB" not in message
+    assert "Required minimum free space (enforced): 512 MiB" in message
+    assert "256 MiB on every drive" in message
+
+
+def test_method_choice_invalidates_then_rechecks_without_applying():
+    window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection()
+    selected = replace(window._selection, update_strategy=UpdateStrategy.FRESH)
+    window._selection_from_controls = lambda: selected
+    window._suppress_setting_events = False
+    window._controller = _Controller()
+    calls = []
+    window._mark_settings_dirty = lambda: calls.append("invalidate")
+    window._check_settings_requested = lambda: calls.append("check")
+
+    window._update_method_changed()
+
+    assert calls == ["invalidate", "check"]
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_unchanged_method_selection_does_not_invalidate_or_repeat_checks(busy):
+    window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection()
+    window._selection_from_controls = lambda: window._selection
+    window._suppress_setting_events = False
+    window._controller = _Controller()
+    window._controller.busy = busy
+    window._mark_settings_dirty = lambda: pytest.fail("Invalidated unchanged method")
+    window._check_settings_requested = lambda: pytest.fail("Repeated unchanged check")
+
+    window._update_method_changed()
+
+    assert window._controller.calls == []
+
+
+def test_method_panel_precedes_variable_review_summary_and_returns_there_on_retry():
+    source = (Path(__file__).resolve().parents[1] / "installer" / "gui.py").read_text(
+        encoding="utf-8"
+    )
+    build = source[source.index("    def _build_window(") :]
+    assert build.index("self._method_panel =") < build.index("self._headline_label =")
+    window = _staged_window()
+    window._headline_label = object()
+    window._render_setup_stage(_state(InstallerScreen.WORKING, kind=TargetKind.UPDATE))
+
+    window._render_setup_stage(_state(InstallerScreen.CHECKING))
+
+    assert window._method_panel.packs[-1]["before"] is window._headline_label
+
+
+def test_setup_breadcrumb_has_three_noninteractive_labels_not_tab_cells():
+    created = []
+
+    class Frame:
+        def __init__(self, master, **kwargs):
+            self.master = master
+            self.options = kwargs
+            self.columns = []
+            self.layout = {}
+            created.append(self)
+
+        def pack(self, **kwargs):
+            self.layout = kwargs
+
+        def grid(self, **kwargs):
+            self.layout = kwargs
+
+        def columnconfigure(self, column, **kwargs):
+            self.columns.append((column, kwargs))
+
+    window = object.__new__(InstallerWindow)
+    window._tk = SimpleNamespace(Frame=Frame)
+    window._ttk = SimpleNamespace(Label=Frame, Frame=Frame)
+    parent = object()
+
+    window._build_setup_stages(parent)
+
+    strip = window._stage_strip
+    assert strip.master is parent
+    assert "borderwidth" not in strip.options
+    assert window._review_stage_label.layout == {
+        "row": 1,
+        "column": 0,
+        "sticky": "w",
+    }
+    assert window._install_stage_label.layout == {
+        "row": 1,
+        "column": 2,
+        "sticky": "w",
+    }
+    assert window._ready_stage_label.layout == {"row": 1, "column": 4, "sticky": "w"}
+    assert "command" not in window._review_stage_label.options
+    assert "command" not in window._install_stage_label.options
+    assert "command" not in window._ready_stage_label.options
+    heading = next(
+        item for item in created if item.options.get("text") == "Setup steps"
+    )
+    arrows = [item for item in created if item.options.get("text") == "→"]
+    assert heading.options["style"] == "VIPP.Section.TLabel"
+    assert len(arrows) == 2
+    assert all(item.options["style"] == "VIPP.Arrow.TLabel" for item in arrows)
+    assert all("command" not in item.options for item in arrows)
+
+
+def test_design_header_matches_official_logo_background_without_a_seam():
+    from xml.etree import ElementTree
+
+    asset = (
+        Path(gui_module.__file__).parents[1]
+        / "assets"
+        / "branding"
+        / "vipp-logo-dark.svg"
+    )
+    svg = ElementTree.parse(asset).getroot()
+    background = svg.find("{http://www.w3.org/2000/svg}rect")
+    assert background is not None
+    view_box = svg.attrib["viewBox"].split()
+    assert background.attrib["width"] == view_box[2]
+    assert background.attrib["height"] == view_box[3]
+    assert gui_module._COLORS["header"].lower() == background.attrib["fill"].lower()
+
+
+def test_design_system_uses_shared_point_fonts_and_coherent_surfaces(monkeypatch):
+    configurations = {}
+    mappings = {}
+    fonts = {}
+    themes = []
+
+    class Font:
+        def __init__(self, *, root, name, **options):
+            self.options = options
+            fonts[name] = self
+
+        def configure(self, **options):
+            self.options.update(options)
+
+    class Style:
+        def theme_names(self):
+            return ("vista", "clam")
+
+        def theme_use(self, value):
+            themes.append(value)
+
+        def configure(self, name, **options):
+            configurations[name] = options
+
+        def map(self, name, **options):
+            mappings[name] = options
+
+    root = SimpleNamespace(
+        tk=object(), configure=lambda **_: None, option_add=lambda *_: None
+    )
+    tkinter = SimpleNamespace(
+        font=SimpleNamespace(
+            Font=Font,
+            names=lambda _: tuple(fonts),
+            nametofont=lambda name, **_: fonts[name],
+        ),
+        ttk=SimpleNamespace(Style=lambda _: Style()),
+    )
+    monkeypatch.setitem(sys.modules, "tkinter", tkinter)
+    gui_module._configure_design_system(root)
+    assert themes == ["clam"]  # Unlike Vista, custom primary fills are honoured.
+    normal_roles = [
+        gui_module._FONT_BODY,
+        gui_module._FONT_SECTION,
+        gui_module._FONT_HEADLINE,
+    ]
+    assert {fonts[name].options["family"] for name in normal_roles} == {"Segoe UI"}
+    assert [fonts[name].options["size"] for name in normal_roles] == [10, 10, 20]
+    assert fonts[gui_module._FONT_SECTION].options["weight"] == "bold"
+    assert fonts[gui_module._FONT_CODE].options["family"] == "Consolas"
+    canvas = gui_module._COLORS["canvas"]
+    for name in (
+        "TFrame",
+        "TLabel",
+        "TCheckbutton",
+        "VIPP.Stage.TLabel",
+        "VIPP.Stage.Active.TLabel",
+        "VIPP.Arrow.TLabel",
+    ):
+        assert configurations[name]["background"] == canvas
+    assert configurations["VIPP.Arrow.TLabel"]["font"] == gui_module._FONT_HEADLINE
+    assert (
+        configurations["VIPP.Primary.TButton"]["foreground"]
+        == gui_module._COLORS["surface"]
+    )
+    assert mappings["VIPP.Primary.TButton"]["foreground"][0][0] == "disabled"
+    assert root._vipp_fonts == fonts  # Named fonts must stay alive with this root.
+    gui_module._configure_design_system(root)
+    assert themes == ["clam"]
+
+
+@pytest.mark.parametrize(
+    "screen,kind",
+    [
+        (InstallerScreen.READY, TargetKind.UPDATE),
+        (InstallerScreen.CURRENT, TargetKind.CURRENT),
+        (InstallerScreen.BLOCKED, TargetKind.NEWER),
+        (InstallerScreen.FAILED, TargetKind.UPDATE),
+    ],
+)
+def test_idle_review_and_preflight_results_hide_the_whole_progress_summary(
+    screen, kind
+):
+    window = object.__new__(InstallerWindow)
+    window._progress_visible = True
+    window._progress_panel = _StagePanel(visible=True)
+    window._console_panel = object()
+    stopped = []
+    window._progress = SimpleNamespace(stop=lambda: stopped.append(True))
+    state = _state(screen, kind=kind)
+    window._sync_progress_visibility(state)
+    assert not window._progress_visible
+    assert not window._progress_panel.visible
+    assert stopped == [True]
+    window._sync_progress_visibility(state)
+    assert stopped == [True]  # Stable state does not repeatedly relayout/stop.
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.CHECKING, InstallerScreen.WORKING, InstallerScreen.CANCELLING],
+)
+def test_active_work_restores_progress_before_the_log_without_touching_measurements(
+    screen,
+):
+    window = object.__new__(InstallerWindow)
+    window._progress_visible = False
+    window._progress_panel = _StagePanel(visible=False)
+    window._console_panel = object()
+    window._progress = SimpleNamespace(stop=lambda: pytest.fail("Stopped real work"))
+    window._sync_progress_visibility(_state(screen))
+    assert window._progress_visible
+    assert window._progress_panel.visible
+    assert window._progress_panel.packs[-1]["before"] is window._console_panel
+
+
+def test_preflight_failure_with_update_target_does_not_claim_approved_installation():
+    window = _staged_window()
+    window._render_setup_stage(_state(InstallerScreen.FAILED, kind=TargetKind.UPDATE))
+    assert not window._installation_started
+    assert not window._selected_method_label.visible
+    assert window._install_stage_label.configured[-1]["text"] == "○ Install"
+
+
+def test_review_then_installing_hides_choices_without_changing_approval():
+    window = _staged_window()
+    ready = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.INCREMENTAL,
+    )
+
+    window._render_setup_stage(ready)
+
+    assert window._review_stage_label.configured[-1]["text"] == "● Review"
+    assert window._install_stage_label.configured[-1]["text"] == "○ Install"
+    assert window._method_panel.visible
+    assert window._advanced_review.visible
+    assert not window._selected_method_label.visible
+    assert window._controller.calls == []
+
+    working = replace(ready, screen=InstallerScreen.WORKING, progress_stage="preparing")
+    window._render_setup_stage(working)
+
+    assert not window._method_panel.visible
+    assert not window._advanced_review.visible
+    assert window._selected_method_label.visible
+    assert (
+        window._selected_method.get()
+        == "Selected method: Replacement update — copy existing packages"
+    )
+    assert window._review_stage_label.configured[-1]["text"] == "✓ Review"
+    assert window._install_stage_label.configured[-1]["text"] == "● Install"
+    assert window._selected_method_label.packs == [
+        {"fill": "x", "pady": (0, 12), "before": window._progress_panel}
+    ]
+    assert window._content_canvas.moves == [0.0]
+    assert window._controller.calls == []
+
+    # Milestones must not repeatedly repack controls or reset reading position.
+    window._render_setup_stage(replace(working, progress_stage="installing"))
+    assert len(window._selected_method_label.packs) == 1
+    assert window._content_canvas.moves == [0.0]
+    assert window._controller.calls == []
+
+
+@pytest.mark.parametrize(
+    "screen,label",
+    [
+        (InstallerScreen.SUCCESS, "✓ Install"),
+        (InstallerScreen.FAILED, "■ Install stopped"),
+        (InstallerScreen.CANCELLED, "■ Install stopped"),
+    ],
+)
+def test_terminal_install_results_keep_stage_and_diagnostics_not_review_clutter(
+    screen, label
+):
+    window = _staged_window()
+    # The UI queue may coalesce a short WORKING state directly into its result.
+    state = replace(
+        _state(screen, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.FRESH,
+        installation_started_at=100.0,
+        installation_finished_at=101.0,
+    )
+
+    window._render_setup_stage(state)
+
+    assert window._install_stage_label.configured[-1]["text"] == label
+    assert window._ready_stage_label.configured[-1]["text"] == (
+        "✓ Ready" if screen is InstallerScreen.SUCCESS else "○ Ready"
+    )
+    assert not window._method_panel.visible
+    assert not window._advanced_review.visible
+    assert window._selected_method_label.visible
+    assert window._selected_method.get() == "Selected method: Fresh installation"
+    assert window._controller.calls == []
+
+    # Retry is still a read-only controller check; the next checking render
+    # restores review controls before a separate, explicit install approval.
+    window._render_setup_stage(_state(InstallerScreen.CHECKING))
+    assert window._method_panel.visible
+    assert window._advanced_review.visible
+    assert not window._selected_method_label.visible
+    assert window._method_panel.packs[-1]["before"] is window._headline_label
+    assert window._controller.calls == []
+
+
+def test_registration_only_work_and_cancelled_checks_do_not_claim_installing():
+    window = _staged_window()
+    registration = replace(
+        _state(InstallerScreen.WORKING, kind=TargetKind.BLOCKED),
+        progress_stage="repairing_registration",
+    )
+
+    window._render_setup_stage(registration)
+
+    assert not window._installation_started
+    assert not window._selected_method_label.visible
+    assert not window._method_panel.visible
+    assert window._review_stage_label.configured[-1]["text"] == "● Review"
+    assert window._install_stage_label.configured[-1]["text"] == "○ Install"
+
+    window._render_setup_stage(_state(InstallerScreen.CHECKING))
+    window._render_setup_stage(_state(InstallerScreen.CANCELLING))
+    window._render_setup_stage(_state(InstallerScreen.CANCELLED))
+    assert not window._installation_started
+    assert not window._selected_method_label.visible
+    assert window._controller.calls == []
+
+
+@pytest.mark.parametrize("screen", [InstallerScreen.CURRENT, InstallerScreen.BLOCKED])
+def test_preapproval_current_and_blocked_states_keep_method_choices(screen):
+    window = _staged_window()
+
+    window._render_setup_stage(_state(screen))
+
+    assert window._method_panel.visible
+    assert window._advanced_review.visible
+    assert not window._selected_method_label.visible
+    assert window._controller.calls == []
+
+
+def test_method_help_explains_compatible_versions_and_verified_cache():
+    help_text = gui_module._UPDATE_METHOD_HELP
+    assert (
+        "Automatic uses In-place when safe, otherwise Replacement or Fresh" in help_text
+    )
+    assert "In-place updates changed packages in the current environment" in help_text
+    assert "requires VIPP to be closed" in help_text
+    assert "Compatible installed versions are retained" in help_text
+    assert "only required changes are installed" in help_text
+    assert "not every package's newest version" in help_text
+    assert "one Replacement" not in help_text
+    assert "Older installations" not in help_text
+    assert (
+        "Replacement copies compatible installed packages into a separate environment"
+        in help_text
+    )
+    assert "Fresh resolves all required versions" in help_text
+    assert "Verified cached downloads are reused" in help_text
+    assert "missing packages are downloaded as needed" in help_text
+    assert "no downloads" not in gui_module._UPDATE_METHOD_HELP
+    assert gui_module._PHASE_LABELS["installing"] == "Installing required components"
+
+
+@pytest.mark.parametrize("strategy", list(UpdateStrategy))
+def test_close_vipp_warning_is_only_for_the_selected_in_place_method(strategy):
+    ready = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=strategy,
+    )
+    reviewed = _reviewed_message(ready, InstallerSelection())
+    working = gui_module._working_message(
+        replace(ready, screen=InstallerScreen.WORKING)
+    )
+    for text in (reviewed, working):
+        assert (IN_PLACE_CLOSE_WARNING in text) is (strategy is UpdateStrategy.IN_PLACE)
+        assert "change VIPP only" not in text
+        assert "dependencies stay unchanged" not in text
+
+
+@pytest.mark.parametrize("field", ["message", "strategy_reason"])
+def test_ready_warning_is_not_duplicated_if_backend_already_supplied_it(field):
+    ready = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        selected_strategy=UpdateStrategy.IN_PLACE,
+        **{field: IN_PLACE_CLOSE_WARNING},
+    )
+    assert (
+        _reviewed_message(ready, InstallerSelection()).count(IN_PLACE_CLOSE_WARNING)
+        == 1
+    )
+
+
+def test_running_vipp_popup_is_once_actionable_and_never_starts_an_update():
+    state = replace(
+        _state(InstallerScreen.FAILED, kind=TargetKind.UPDATE),
+        headline="Close VIPP to continue",
+        message="Save your work and close VIPP yourself, then choose Check again.",
+        primary_label="Check again",
+        selected_strategy=UpdateStrategy.IN_PLACE,
+        close_vipp_required=True,
+    )
+    window = _window(state)
+    callbacks = []
+    notices = []
+    window.root = SimpleNamespace(
+        after_idle=callbacks.append,
+        winfo_exists=lambda: True,
+    )
+
+    def showwarning(title, text, *, parent):
+        assert parent is window.root
+        assert window._repair_dialog_open is True
+        window._primary_requested()  # A queued Return cannot invoke retry/apply.
+        notices.append((title, text))
+
+    window._messagebox = SimpleNamespace(showwarning=showwarning)
+    window._queue_close_vipp_notice(state)
+    window._queue_close_vipp_notice(state)
+    assert len(callbacks) == 1
+    callbacks.pop()()
+    window._queue_close_vipp_notice(state)
+    assert not callbacks
+    assert notices == [("Close VIPP to continue", state.message)]
+    assert window._repair_dialog_open is False
+    assert window._controller.calls == []
+    window._primary_requested()
+    assert window._controller.calls == ["retry"]
+
+
+def test_old_running_vipp_popup_is_not_shown_after_recheck_has_started():
+    state = replace(_state(InstallerScreen.FAILED), close_vipp_required=True)
+    window = _window(state)
+    callbacks = []
+    window.root = SimpleNamespace(
+        after_idle=callbacks.append, winfo_exists=lambda: True
+    )
+    window._messagebox = SimpleNamespace(
+        showwarning=lambda *_args, **_kwargs: pytest.fail("Stale popup was shown")
+    )
+    window._queue_close_vipp_notice(state)
+    window._state = _state(InstallerScreen.CHECKING)
+    window._queue_close_vipp_notice(window._state)
+    callbacks.pop()()
+    assert window._controller.calls == []
+    assert window._close_vipp_notice_scheduled is False
+
+
+def test_plain_failure_prose_does_not_trigger_the_running_vipp_popup():
+    state = replace(
+        _state(InstallerScreen.FAILED),
+        message="Close VIPP if it is running; process identity is unknown.",
+    )
+    window = _window(state)
+    window.root = SimpleNamespace(
+        after_idle=lambda _callback: pytest.fail("Untyped prose scheduled a popup")
+    )
+    window._queue_close_vipp_notice(state)
+    assert window._controller.calls == []
+
+
+def test_update_method_control_is_built_outside_collapsed_advanced_panel(monkeypatch):
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    controller = _Controller()
+    controller.state = _state(InstallerScreen.CHECKING)
+    controller.cancel = lambda: pytest.fail("Construction attempted cancellation")
+    monkeypatch.setattr(
+        gui_module, "InstallerController", lambda *_args, **_kwargs: controller
+    )
+    try:
+        window = InstallerWindow(root, object())
+        root.update_idletasks()
+
+        assert window._strategy_control.winfo_manager() == "pack"
+        assert window._strategy_help_label.winfo_manager() == "pack"
+        assert window._strategy_control.master is not window._advanced
+        assert window._advanced.winfo_manager() == ""
+        assert window._show_advanced.get() is False
+        assert window._update_strategy.get() == "Automatic — fastest safe method"
+        assert controller.calls == [("start", InstallerSelection())]
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(
+    ("screen", "expected"),
+    [
+        (InstallerScreen.CHECKING, "readonly"),
+        (InstallerScreen.READY, "readonly"),
+        (InstallerScreen.WORKING, "disabled"),
+        (InstallerScreen.CANCELLING, "disabled"),
+        (InstallerScreen.SUCCESS, "disabled"),
+        (InstallerScreen.FAILED, "disabled"),
+        (InstallerScreen.CANCELLED, "disabled"),
+    ],
+)
+def test_update_method_is_available_before_resolution_but_immutable_during_apply(
+    screen, expected
+):
+    window = object.__new__(InstallerWindow)
+    window._track_control = _Widget()
+    window._strategy_control = _Widget()
+    window._desktop_shortcut_control = _Widget()
+    window._check_settings = _Widget()
+
+    window._set_settings_enabled(_state(screen))
+
+    assert window._strategy_control.configured == [{"state": expected}]
 
 
 @pytest.mark.parametrize("development", [False, True])
@@ -295,6 +1200,458 @@ def test_owned_uninstaller_action_stays_inside_controller_boundary():
     window._primary_requested()
 
     assert window._controller.calls == ["open-uninstaller"]
+
+
+@pytest.mark.parametrize("accepted", [False, True, "yes", 1])
+def test_registration_repair_uses_scoped_dialog_and_exact_captured_review(
+    tmp_path, accepted, monkeypatch
+):
+    review = RegistrationRepairReview(
+        "a" * 64,
+        "DisplayVersion: '0.16.0a3' → '0.16.0a7'",
+        tmp_path / "entry-backup.json",
+        object(),
+    )
+    window = _window(
+        replace(
+            _state(
+                InstallerScreen.BLOCKED,
+                blocked_action=BlockedAction.REPAIR_REGISTRATION,
+            ),
+            registration_repair=review,
+        )
+    )
+    window.root = object()
+    dialogs = []
+
+    def dialog(parent, captured_review):
+        dialogs.append((parent, captured_review))
+        return SimpleNamespace(show=lambda: accepted)
+
+    monkeypatch.setattr(gui_module, "_RegistrationRepairDialog", dialog, raising=False)
+    window._messagebox = SimpleNamespace(
+        askyesno=lambda *_args, **_kwargs: pytest.fail("Used unbounded system dialog")
+    )
+    window._primary_requested()
+
+    assert dialogs == [(window.root, review)]
+    assert window._repair_dialog_open is False
+    assert window._controller.calls == (
+        [("repair-registration", True, "a" * 64)] if accepted is True else []
+    )
+
+
+def test_registration_repair_confirmation_keeps_the_captured_fingerprint(
+    tmp_path, monkeypatch
+):
+    review = RegistrationRepairReview(
+        "a" * 64, "Exact review", tmp_path / "backup.json", object()
+    )
+    window = _window(
+        replace(
+            _state(
+                InstallerScreen.BLOCKED,
+                blocked_action=BlockedAction.REPAIR_REGISTRATION,
+            ),
+            registration_repair=review,
+        )
+    )
+    window.root = object()
+
+    def show():
+        # A newer queued review may render during the nested modal event loop.
+        # The controller must receive the fingerprint actually reviewed, not a
+        # newly substituted one; its existing generation guard rejects staleness.
+        window._state = replace(
+            window._state, registration_repair=replace(review, fingerprint="b" * 64)
+        )
+        return True
+
+    monkeypatch.setattr(
+        gui_module,
+        "_RegistrationRepairDialog",
+        lambda *_args: SimpleNamespace(show=show),
+    )
+    window._primary_requested()
+    assert window._controller.calls == [("repair-registration", True, "a" * 64)]
+
+
+def test_registration_repair_missing_review_never_opens_or_repairs(monkeypatch):
+    window = _window(
+        _state(
+            InstallerScreen.BLOCKED,
+            blocked_action=BlockedAction.REPAIR_REGISTRATION,
+        )
+    )
+    monkeypatch.setattr(
+        gui_module,
+        "_RegistrationRepairDialog",
+        lambda *_args: pytest.fail("No captured repair review"),
+    )
+    window._primary_requested()
+    assert window._controller.calls == []
+
+
+def test_registration_repair_modal_suppresses_parent_return_and_escape():
+    window = _window(_state(InstallerScreen.READY))
+    window._repair_dialog_open = True
+    window._primary_requested()
+    window._close_requested()
+    assert window._controller.calls == []
+
+
+def test_registration_repair_dialog_failure_clears_parent_modal_guard(
+    tmp_path, monkeypatch
+):
+    review = RegistrationRepairReview(
+        "a" * 64, "Exact review", tmp_path / "backup.json", object()
+    )
+    window = _window(_state(InstallerScreen.BLOCKED))
+    window.root = object()
+
+    def fail(*_args):
+        assert window._repair_dialog_open
+        raise RuntimeError("synthetic dialog failure")
+
+    monkeypatch.setattr(gui_module, "_RegistrationRepairDialog", fail)
+    with pytest.raises(RuntimeError, match="synthetic dialog"):
+        window._confirm_registration_repair(review)
+    assert window._repair_dialog_open is False
+    assert window._controller.calls == []
+
+
+class _DialogTclError(RuntimeError):
+    pass
+
+
+class _DialogWidget:
+    """Record Tk layout/events without constructing a Tk interpreter or window."""
+
+    def __init__(self, kind="root", parent=None, **options):
+        self.kind = kind
+        self.parent = parent
+        self.options = options
+        self.shared = parent.shared if parent else {"grab": None, "focus": None}
+        self.widgets = parent.widgets if parent else []
+        self.widgets.append(self)
+        self.exists = True
+        self.visible = True
+        self.bindings = {}
+        self.protocols = {}
+        self.grid_options = {}
+        self.content = ""
+        self.events = []
+        self.wait_action = lambda: self.destroy()
+
+    def __getattr__(self, name):
+        if name in {
+            "title",
+            "transient",
+            "resizable",
+            "maxsize",
+            "minsize",
+            "columnconfigure",
+            "rowconfigure",
+            "geometry",
+            "itemconfigure",
+            "yview",
+            "xview",
+            "set",
+            "deiconify",
+            "withdraw",
+        }:
+            return lambda *args, **kwargs: self.events.append((name, args, kwargs))
+        raise AttributeError(name)
+
+    def configure(self, **options):
+        self.options.update(options)
+
+    def grid(self, **options):
+        self.grid_options.update(options)
+        self.visible = True
+
+    def grid_remove(self):
+        self.visible = False
+
+    def bind(self, event, callback):
+        self.bindings[event] = callback
+
+    def protocol(self, name, callback):
+        self.protocols[name] = callback
+
+    def insert(self, _index, text):
+        self.content += text
+
+    def create_window(self, *_args, **_kwargs):
+        return "content-item"
+
+    def bbox(self, _tag):
+        return (0, 0, 640, 1200)
+
+    def winfo_screenwidth(self):
+        return 1024
+
+    def winfo_screenheight(self):
+        return 768
+
+    def winfo_exists(self):
+        return self.exists
+
+    def grab_current(self):
+        return self.shared["grab"]
+
+    def grab_set(self):
+        self.events.append(("grab_set",))
+        self.shared["grab"] = self
+
+    def grab_release(self):
+        self.events.append(("grab_release",))
+        self.shared["grab"] = None
+
+    def focus_get(self):
+        return self.shared["focus"]
+
+    def focus_set(self):
+        self.events.append(("focus_set",))
+        self.shared["focus"] = self
+
+    def wait_visibility(self):
+        self.events.append(("wait_visibility",))
+
+    def wait_window(self):
+        self.wait_action()
+
+    def destroy(self):
+        self.events.append(("destroy",))
+        self.exists = False
+
+    def invoke(self):
+        self.options["command"]()
+
+    def clipboard_clear(self):
+        self.shared["clipboard"] = ""
+
+    def clipboard_append(self, text):
+        self.shared["clipboard"] += text
+
+
+@pytest.fixture
+def repair_dialog_stub(tmp_path, monkeypatch):
+    root = _DialogWidget()
+    ttk = SimpleNamespace()
+    tk = SimpleNamespace(TclError=_DialogTclError, ttk=ttk)
+    for module, names in (
+        (tk, ("Toplevel", "Canvas", "Text")),
+        (ttk, ("Frame", "Label", "Scrollbar", "Button", "Separator")),
+    ):
+        for name in names:
+            setattr(
+                module,
+                name,
+                lambda parent, _kind=name, **options: _DialogWidget(
+                    _kind, parent, **options
+                ),
+            )
+    monkeypatch.setitem(sys.modules, "tkinter", tk)
+    review = RegistrationRepairReview(
+        fingerprint="a" * 64,
+        preview=(
+            "Older cached uninstaller is unavailable and will not be run.\n"
+            "UninstallString: '" + "old-path/" * 100 + "' → 'new command'\n"
+            "VippManifestSha256: '" + "b" * 64 + "' → '" + "c" * 64 + "'"
+        ),
+        backup_path=tmp_path / "registration-repairs" / "exact-backup.json",
+        payload=object(),
+        managed_root=tmp_path / "managed" / "cuda13",
+        registered_version="0.16.0a8.dev4",
+        installed_version="0.16.0a8.dev5",
+        old_uninstaller_state="absent",
+    )
+    return gui_module._RegistrationRepairDialog(root, review), root, review
+
+
+def test_repair_dialog_is_compact_with_exact_details_and_pinned_footer(
+    repair_dialog_stub,
+):
+    dialog, root, review = repair_dialog_stub
+    assert not dialog._details_visible
+    assert not dialog._details_panel.visible
+    assert dialog._details.options["state"] == "disabled"
+    assert dialog._details.options["wrap"] == "none"
+    assert dialog._details.content.startswith(review.preview + "\n\n")
+    assert str(review.backup_path) in dialog._details.content
+    assert review.fingerprint in dialog._details.content
+    assert dialog._location.content == str(review.managed_root)
+    assert dialog._location.options["state"] == "disabled"
+    assert dialog._location.options["wrap"] == "char"
+    assert dialog._cancel.options["text"] == "Cancel"
+    assert dialog._cancel.options["default"] == "active"
+    assert dialog._repair.options["text"] == "Repair entry"
+    footer = dialog._repair.parent
+    assert footer.parent is dialog._window
+    assert footer.grid_options["row"] == 2
+    summaries = "\n".join(
+        str(widget.options.get("text", ""))
+        for widget in root.widgets
+        if widget.kind == "Label"
+    )
+    assert review.registered_version in summaries
+    assert review.installed_version in summaries
+    assert "packages, workflows and shortcuts" in summaries
+    assert "still needs your approval" in summaries
+    assert "No older uninstaller will be run" in summaries
+    assert "UninstallString" not in summaries
+    assert review.fingerprint not in summaries
+
+
+def test_repair_dialog_disclosure_copy_and_resize_never_confirm(repair_dialog_stub):
+    dialog, root, review = repair_dialog_stub
+    dialog._toggle_details()
+    assert dialog._details_visible and dialog._details_panel.visible
+    assert dialog._disclosure.options["text"] == "Hide technical details"
+    expanded = [event for event in dialog._window.events if event[0] == "geometry"][-1]
+    assert expanded[1] == ("680x648",)  # capped below the 768px screen
+    dialog._copy_details()
+    assert root.shared["clipboard"] == dialog._details.content
+    assert review.preview in root.shared["clipboard"]
+    dialog._resized(SimpleNamespace(width=440))
+    assert all(label.options["wraplength"] == 396 for label in dialog._wrapped_labels)
+    assert all(label.options["wraplength"] == 175 for label in dialog._version_labels)
+    dialog._toggle_details()
+    assert not dialog._details_visible and not dialog._details_panel.visible
+    assert dialog._result is False
+    assert dialog._window.exists
+
+
+def test_repair_dialog_optional_facts_do_not_require_parsing_or_opaque_payload(
+    repair_dialog_stub,
+):
+    _dialog, root, review = repair_dialog_stub
+
+    class OpaquePayload:
+        def __getattr__(self, name):
+            pytest.fail(f"Read opaque authorization payload: {name}")
+
+    old_review = replace(
+        review,
+        payload=OpaquePayload(),
+        managed_root=None,
+        registered_version="",
+        installed_version="",
+        old_uninstaller_state="",
+    )
+    dialog = gui_module._RegistrationRepairDialog(root, old_review)
+    assert dialog._details.content.startswith(old_review.preview)
+    assert not hasattr(dialog, "_location")
+    assert dialog._version_labels == []
+
+
+def test_repair_dialog_construction_failure_discards_only_its_window(
+    repair_dialog_stub, monkeypatch
+):
+    existing_dialog, root, review = repair_dialog_stub
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("synthetic construction failure")
+
+    monkeypatch.setattr(sys.modules["tkinter"].ttk, "Frame", fail)
+    with pytest.raises(RuntimeError, match="synthetic construction"):
+        gui_module._RegistrationRepairDialog(root, review)
+    toplevels = [widget for widget in root.widgets if widget.kind == "Toplevel"]
+    assert len(toplevels) == 2
+    assert existing_dialog._window.exists
+    assert not toplevels[-1].exists
+
+
+@pytest.mark.parametrize("focus", ["cancel", "repair", "details", "location"])
+def test_repair_dialog_return_only_invokes_the_focused_explicit_button(
+    repair_dialog_stub, focus
+):
+    dialog, root, _review = repair_dialog_stub
+    root.shared["focus"] = getattr(dialog, "_" + focus)
+    assert dialog._return_pressed() == "break"
+    assert dialog._result is (focus == "repair")
+    assert dialog._window.exists is (focus in {"details", "location"})
+
+
+@pytest.mark.parametrize("close", ["escape", "window"])
+def test_repair_dialog_escape_and_window_close_cancel(repair_dialog_stub, close):
+    dialog, _root, _review = repair_dialog_stub
+    callback = (
+        dialog._window.bindings["<Escape>"]
+        if close == "escape"
+        else dialog._window.protocols["WM_DELETE_WINDOW"]
+    )
+    result = callback(None) if close == "escape" else callback()
+    assert result == "break"
+    assert dialog._result is False
+    assert not dialog._window.exists
+
+
+@pytest.mark.parametrize("outcome", ["cancel", "repair", "wait-failure"])
+def test_repair_dialog_show_defaults_cancel_and_always_restores_owned_grab_focus(
+    repair_dialog_stub, outcome
+):
+    dialog, root, _review = repair_dialog_stub
+    prior_grab = _DialogWidget(parent=root)
+    prior_focus = _DialogWidget(parent=root)
+    prior_grab.grab_set()
+    prior_focus.focus_set()
+
+    def finish():
+        assert root.shared["grab"] is dialog._window
+        assert root.shared["focus"] is dialog._cancel
+        if outcome == "wait-failure":
+            raise _DialogTclError("synthetic wait failure")
+        dialog._finish(outcome == "repair")
+
+    dialog._window.wait_action = finish
+    assert dialog.show() is (outcome == "repair")
+    assert not dialog._window.exists
+    assert ("grab_release",) in dialog._window.events
+    assert root.shared["grab"] is prior_grab
+    assert root.shared["focus"] is prior_focus
+
+
+@pytest.mark.parametrize("failure", ["parent-focus", "grab", "visibility"])
+def test_repair_dialog_modal_setup_failure_is_cancel_without_leaked_window(
+    repair_dialog_stub, failure
+):
+    dialog, root, _review = repair_dialog_stub
+
+    def fail():
+        raise _DialogTclError("synthetic modal setup failure")
+
+    if failure == "parent-focus":
+        root.focus_get = fail
+    elif failure == "grab":
+        dialog._window.grab_set = fail
+    else:
+        dialog._window.wait_visibility = fail
+    assert dialog.show() is False
+    assert dialog._result is False
+    assert not dialog._window.exists
+    assert root.shared["grab"] is None
+
+
+def test_close_waits_for_registration_commit_instead_of_interrupting_it():
+    window = _window(
+        replace(
+            _state(InstallerScreen.WORKING), progress_stage="repairing_registration"
+        )
+    )
+    window._controller.busy = True
+    window.root = object()
+    messages = []
+    window._messagebox = SimpleNamespace(
+        showinfo=lambda *args, **kwargs: messages.append((args, kwargs)),
+        askyesno=lambda *_args, **_kwargs: pytest.fail(
+            "Asked to interrupt registry write"
+        ),
+    )
+    window._close_requested()
+    assert len(messages) == 1
+    assert window._controller.calls == []
     assert window._installed_apps_calls == 0
 
 
@@ -344,6 +1701,7 @@ def test_use_default_switches_existing_environment_to_fixed_managed_route(
     window._existing_label = _Widget()
     window._install_root = _Value("")
     window._track = _Value("Recommended automatically")
+    window._update_strategy = _Value("Automatic — fastest safe method")
     window._desktop_shortcut = _Value(True)
     window._selection = InstallerSelection(existing_python=existing_python)
     window._controller = _Controller()
@@ -379,7 +1737,7 @@ def test_current_secondary_action_is_explicit_repair():
     assert window._controller.calls == ["repair"]
 
 
-def test_plain_activity_history_marks_prior_and_current_steps():
+def test_message_history_never_fabricates_completed_installation_stages():
     rendered = _activity_text(
         [
             "Starting VIPP Setup…",
@@ -388,25 +1746,75 @@ def test_plain_activity_history_marks_prior_and_current_steps():
         ]
     )
 
-    assert rendered.splitlines() == [
-        "✓ Starting VIPP Setup…",
-        "✓ Checking Windows and Python…",
-        "● Checking available hardware…",
-    ]
+    assert rendered.splitlines() == ["Checking available hardware…"]
+    assert "✓" not in rendered
 
 
-def test_checking_activity_explains_long_package_review_and_elapsed_time():
+def test_checking_activity_explains_light_preflight_and_elapsed_time():
     rendered = _activity_text(
         ["Starting VIPP Setup…", "Checking Windows and Python…"],
         screen=InstallerScreen.CHECKING,
         elapsed_seconds=134,
     )
 
-    assert "✓ Starting VIPP Setup…" in rendered
-    assert "● Checking this computer and reviewing exact packages…" in rendered
-    assert "can take several minutes" in rendered
-    assert "moving bar means setup is still working" in rendered
+    assert "✓" not in rendered
+    assert "Starting VIPP Setup…" not in rendered
+    assert "Checking the installation and available update methods…" in rendered
+    assert "Packages will not be downloaded or installed until you approve" in rendered
+    assert "reviewing exact packages" not in rendered
     assert "Elapsed in this phase: 2m 14s" in rendered
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.READY, InstallerScreen.CURRENT, InstallerScreen.BLOCKED],
+)
+def test_review_activity_shows_only_current_status_not_completed_old_checks(screen):
+    rendered = _activity_text(
+        ["Checked Automatic", "Checked Incremental", "Fresh installation is ready"],
+        screen=screen,
+    )
+
+    assert rendered == "Fresh installation is ready"
+    assert "✓" not in rendered
+
+
+def test_install_activity_does_not_promote_review_checks_to_completed_steps():
+    window = object.__new__(InstallerWindow)
+    window._status_history = ["Ready for approval"]
+    window._install_status_history = []
+    window._installation_started = False
+    window._record_status("Checking Fresh installation")
+    assert window._install_status_history == []
+    window._installation_started = True
+    window._record_status("Preparing files")
+
+    rendered = _activity_text(
+        window._activity_messages(), screen=InstallerScreen.WORKING
+    )
+
+    assert rendered.splitlines()[0] == "Preparing files"
+    assert "✓" not in rendered
+    assert "Checking Fresh" not in rendered
+    assert "Checking Fresh installation" in window._status_history
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.WORKING, InstallerScreen.CANCELLED, InstallerScreen.FAILED],
+)
+def test_registration_and_stopped_review_activity_do_not_claim_old_checks_completed(
+    screen,
+):
+    rendered = _activity_text(
+        ["A former review", "Current registration or stopped-check status"],
+        screen=screen,
+        reviewing=True,
+    )
+
+    assert rendered.splitlines()[0] == "Current registration or stopped-check status"
+    assert "A former review" not in rendered
+    assert "✓" not in rendered
 
 
 @pytest.mark.parametrize(
@@ -441,7 +1849,8 @@ def test_size_review_separates_approximate_estimates_from_enforced_minimums():
     rendered = _size_review_text(state)
 
     assert "Approximate sizes (estimates, not enforced limits)" in rendered
-    assert "Download: 1.5 GiB" in rendered
+    assert "Download (typical Fresh, before cache reuse" in rendered
+    assert "not a measured update transfer): 1.5 GiB" in rendered
     assert "Installed: 5 GiB" in rendered
     assert "Peak temporary working space: 7 GiB" in rendered
     assert "Required minimum free space (enforced): 15 GiB" in rendered
@@ -453,7 +1862,7 @@ def test_size_review_separates_approximate_estimates_from_enforced_minimums():
     assert rendered in reviewed
 
 
-def test_quiet_active_phase_reports_heartbeat_without_claiming_failure():
+def test_elapsed_activity_is_secondary_and_does_not_invent_expected_duration():
     latest = "Installing VIPP and its required components…"
     rendered = _activity_text(
         ["Preparing files…", latest],
@@ -463,9 +1872,9 @@ def test_quiet_active_phase_reports_heartbeat_without_claiming_failure():
     )
 
     assert latest in rendered
-    assert "Still working — no new milestone for 2m 05s" in rendered
-    assert "taking longer than usual" in rendered
-    assert "setup has not reported a failure" in rendered
+    assert "Elapsed in this phase: 5m 05s" in rendered
+    assert "no new milestone" not in rendered
+    assert "taking longer than usual" not in rendered
 
     stopped = _activity_text(
         ["Setup stopped before completion."],
@@ -579,6 +1988,26 @@ def test_advanced_details_keeps_live_setup_log_location_visible(tmp_path):
     assert f"Setup log: {log_path}" in details
     assert "Current activity: Downloading VIPP components…" in details
     assert "Elapsed in this phase: 1m 15s" in details
+
+
+def test_installing_keeps_log_and_diagnostics_but_not_review_size_estimates(tmp_path):
+    window = object.__new__(InstallerWindow)
+    window._selection = InstallerSelection()
+    window._status_history = ["Installing required components"]
+    state = replace(
+        _state(InstallerScreen.READY, kind=TargetKind.UPDATE),
+        size_estimate=InstallSizeEstimate(1024**3, 2 * 1024**3, 3 * 1024**3),
+        log_path=tmp_path / "setup.jsonl",
+        technical_details="Retained exact diagnostic evidence",
+    )
+
+    assert "Approximate sizes" in window._rendered_details(state)
+    installing = window._rendered_details(
+        replace(state, screen=InstallerScreen.WORKING)
+    )
+    assert "Approximate sizes" not in installing
+    assert f"Setup log: {state.log_path}" in installing
+    assert "Retained exact diagnostic evidence" in installing
 
 
 def test_open_setup_log_uses_exact_live_log_path(tmp_path, monkeypatch):
@@ -724,8 +2153,10 @@ def test_installer_has_page_and_console_scrollbars_with_fixed_footer():
 
     assert "self._content_scrollbar = ttk.Scrollbar(" in gui_source
     assert "yscrollcommand=self._content_scrollbar.set" in gui_source
-    assert "details_scrollbar = ttk.Scrollbar(" in gui_source
-    assert "yscrollcommand=details_scrollbar.set" in gui_source
+    assert "class _DiagnosticsWindow:" in gui_source
+    assert "Refresh snapshot" in gui_source
+    assert "Open raw setup log" in gui_source
+    assert "height=5," not in gui_source
     assert "self._button_bar = ttk.Frame(main" in gui_source
     assert "self._button_bar = ttk.Frame(outer" not in gui_source
 
@@ -747,7 +2178,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
     window = object.__new__(InstallerWindow)
     canvas = _Canvas(height=600)
     window._content_canvas = canvas
-    window._details = object()
+    window._console = object()
 
     for delta, steps in (
         (120, -1),
@@ -764,7 +2195,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
         assert canvas.scrolls[-1] == (steps, "units")
 
     assert (
-        window._content_mousewheel(SimpleNamespace(delta=-120, widget=window._details))
+        window._content_mousewheel(SimpleNamespace(delta=-120, widget=window._console))
         is None
     )
     assert len(canvas.scrolls) == 6
@@ -776,7 +2207,7 @@ def test_mousewheel_scrolls_only_an_overflowing_page():
     assert len(canvas.scrolls) == 6
 
 
-def test_advanced_toggle_reveals_panel_without_moving_diagnostic_text():
+def test_advanced_toggle_never_forces_scroll_or_schedules_delayed_reveal():
     class _Flag:
         value = True
 
@@ -828,17 +2259,14 @@ def test_advanced_toggle_reveals_panel_without_moving_diagnostic_text():
     assert window._advanced.packed
     assert window._details.seen == []
     assert window._content_canvas.moves == []
-    delay, callback = window.root.timed.pop()
-    assert delay == 75
-    callback()
-    assert window._details.seen == []
-    assert window._content_canvas.moves == [1.0]
+    assert window.root.timed == []
+    assert window.root.idle == []
 
     window._show_advanced.value = False
     window._toggle_advanced()
     assert window._advanced.forgotten == 1
-    window.root.idle.pop()()
-    assert window._content_canvas.moves[-1] == 0.0
+    assert window.root.idle == []
+    assert window._content_canvas.moves == []
 
 
 def test_responsive_guidance_wrap_leaves_room_for_frame_padding():
@@ -856,11 +2284,12 @@ def test_responsive_guidance_wrap_leaves_room_for_frame_padding():
     window._message_label = _Label()
     window._status_label = _Label()
     window._activity_label = _Label()
+    window._strategy_help_label = _Label()
     window._content_canvas = _Canvas(bounds=None)
 
     window._content_resized(_Event())
 
-    assert configured == [648, 648, 648, 648]
+    assert configured == [648, 648, 648, 648, 648]
 
 
 def test_short_screen_geometry_remains_inside_scrollable_minimum():
@@ -884,6 +2313,7 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     window._controller = _Controller()
     window._selection = InstallerSelection()
     window._track = _Value("NVIDIA GPU acceleration (CUDA 13)")
+    window._update_strategy = _Value("Fresh installation")
     window._install_root = _Value(str(tmp_path / "custom GPU root"))
     window._existing_environment = _Value(False)
     window._existing_python = None
@@ -907,6 +2337,7 @@ def test_form_edit_invalidates_plan_and_check_uses_exact_visible_values(tmp_path
     assert invalidated.track.value == "cuda13"
     assert invalidated.install_root == tmp_path / "custom GPU root"
     assert invalidated.create_desktop_shortcut is False
+    assert invalidated.update_strategy is UpdateStrategy.FRESH
     assert window._primary.configured[-1] == {"state": "disabled"}
     assert window._secondary.configured[-1] == {"state": "disabled"}
     assert not any(call == "confirm" for call in window._controller.calls)
@@ -961,7 +2392,380 @@ def test_elapsed_refresh_does_not_rewrite_diagnostics_or_console():
 
     window._refresh_elapsed()
 
-    assert "Elapsed in this phase: 2s" in window._activity.get()
+    assert "Elapsed in this stage: 2s" in window._activity.get()
+
+
+def test_total_clock_uses_approval_times_across_phases_rollback_and_terminal(
+    monkeypatch,
+):
+    window = object.__new__(InstallerWindow)
+    window._installation_started = True
+    current = [120.0]
+    monkeypatch.setattr(gui_module.time, "monotonic", lambda: current[0])
+    working = replace(
+        _state(InstallerScreen.WORKING),
+        installation_started_at=100.0,
+        progress_stage="preparing",
+    )
+    window._update_installation_clock(working)
+    assert window._total_elapsed_seconds() == 20
+    for now, phase in [(130.0, "installing"), (150.0, "rolling_back")]:
+        current[0] = now
+        window._update_installation_clock(replace(working, progress_stage=phase))
+        assert window._total_elapsed_seconds() == now - 100
+    terminal = replace(
+        working, screen=InstallerScreen.CANCELLED, installation_finished_at=175.0
+    )
+    current[0] = 250.0
+    window._update_installation_clock(terminal)
+    assert window._total_elapsed_seconds() == 75
+    current[0] = 400.0
+    assert window._total_elapsed_seconds() == 75
+    # Retry checks are not another install; fresh approval gets a new clock.
+    window._installation_started = False
+    window._update_installation_clock(_state(InstallerScreen.CHECKING))
+    assert window._total_elapsed_seconds() is None
+    window._installation_started = True
+    window._update_installation_clock(replace(working, installation_started_at=380.0))
+    assert window._total_elapsed_seconds() == 20
+
+
+@pytest.mark.parametrize("screen", [InstallerScreen.SUCCESS, InstallerScreen.FAILED])
+def test_total_clock_freezes_even_when_first_render_is_terminal(screen, monkeypatch):
+    window = object.__new__(InstallerWindow)
+    window._installation_started = True
+    monkeypatch.setattr(gui_module.time, "monotonic", lambda: 999.0)
+    window._update_installation_clock(
+        replace(
+            _state(screen), installation_started_at=50.0, installation_finished_at=89.0
+        )
+    )
+    window._state = _state(screen)
+    window._activity = _Value("old phase time")
+    window._total_elapsed = _Value()
+    window._refresh_activity_summary()
+    assert window._total_elapsed.get() == "Total installation time: 39s"
+    assert window._activity.get() == ""
+
+
+def test_registration_only_repair_never_starts_installation_clock():
+    window = object.__new__(InstallerWindow)
+    window._installation_started = False
+    window._update_installation_clock(
+        replace(
+            _state(InstallerScreen.WORKING), progress_stage="repairing_registration"
+        )
+    )
+    assert window._total_elapsed_seconds() is None
+
+
+def test_success_summary_removes_only_generic_duplicate_and_preserves_limits():
+    state = replace(_state(InstallerScreen.SUCCESS), message="VIPP is ready.")
+    assert InstallerWindow._completion_message(state) == (
+        "Select Open VIPP to start, or Close to finish setup."
+    )
+    for message in [
+        "VIPP is ready. A shortcut could not be created; use the launcher.",
+        "Previous-version cleanup needs attention. Nothing else was removed.",
+    ]:
+        assert (
+            InstallerWindow._completion_message(replace(state, message=message))
+            == message
+        )
+
+
+class _SnapshotText:
+    def __init__(self, content=""):
+        self.content = content
+        self.reading_line = "24.0"
+        self.horizontal = 0.2
+        self.replacements = 0
+        self.state = "disabled"
+
+    def get(self, start, end):
+        assert (start, end) == ("1.0", "end-1c")
+        return self.content
+
+    def index(self, index):
+        assert index == "@0,0"
+        return self.reading_line
+
+    def xview(self):
+        return self.horizontal, 0.6
+
+    def configure(self, *, state):
+        self.state = state
+
+    def delete(self, start, end):
+        assert (start, end) == ("1.0", "end")
+        self.content = ""
+        self.replacements += 1
+
+    def insert(self, index, text):
+        assert index == "1.0"
+        self.content = text
+
+    def yview(self, index):
+        self.reading_line = index
+
+    def xview_moveto(self, fraction):
+        self.horizontal = fraction
+
+
+def test_manual_snapshot_refresh_preserves_line_and_skips_identical_text():
+    text = _SnapshotText("old content")
+    gui_module._replace_snapshot_text(text, "old content")
+    assert text.replacements == 0
+    gui_module._replace_snapshot_text(text, "new\n" * 200)
+    assert text.replacements == 1
+    assert text.reading_line == "24.0"
+    assert text.horizontal == 0.2
+    assert text.state == "disabled"
+
+
+def test_diagnostics_snapshot_is_bounded_and_does_not_read_raw_log(tmp_path):
+    window = object.__new__(InstallerWindow)
+    window._state = replace(
+        _state(InstallerScreen.WORKING), log_path=tmp_path / "absent.jsonl"
+    )
+    window._console = _SnapshotText("a" * (gui_module._CONSOLE_VISIBLE_LIMIT + 8))
+    window._rendered_details = lambda _: "d" * (gui_module._CONSOLE_VISIBLE_LIMIT + 50)
+    output, details = window._diagnostic_snapshot()
+    assert len(output) == gui_module._CONSOLE_VISIBLE_LIMIT
+    assert len(details) == gui_module._CONSOLE_VISIBLE_LIMIT
+    assert details.endswith(
+        "[Further setup details omitted from this bounded snapshot.]"
+    )
+    assert not window._state.log_path.exists()
+
+
+def test_viewer_updates_only_on_explicit_refresh_and_destroys_only_owned_window():
+    owner = SimpleNamespace(
+        _diagnostic_snapshot=lambda: ("first output", "first details")
+    )
+    viewer = object.__new__(gui_module._DiagnosticsWindow)
+    viewer._owner = owner
+    viewer._texts = [_SnapshotText(), _SnapshotText()]
+    viewer._captured = _Value()
+    viewer._window = SimpleNamespace(destroy=lambda: closed.append("viewer only"))
+    owner._diagnostics_window = viewer
+    viewer.refresh()
+    assert [text.content for text in viewer._texts] == ["first output", "first details"]
+    owner._diagnostic_snapshot = lambda: ("later output", "later details")
+    assert [text.content for text in viewer._texts] == ["first output", "first details"]
+    viewer.refresh()
+    assert [text.content for text in viewer._texts] == ["later output", "later details"]
+    closed = []
+    assert viewer.close() == "break"
+    assert closed == ["viewer only"]
+    assert owner._diagnostics_window is None
+
+
+def test_live_detail_cache_never_rewrites_open_viewer_or_scrolls():
+    window = object.__new__(InstallerWindow)
+    viewer = SimpleNamespace(_texts=[_SnapshotText("the selected snapshot")])
+    window._diagnostics_window = viewer
+    window._replace_details("new progress data")
+    assert viewer._texts[0].content == "the selected snapshot"
+    assert viewer._texts[0].replacements == 0
+
+
+def test_existing_diagnostics_window_is_reused_without_implicit_refresh(monkeypatch):
+    window = object.__new__(InstallerWindow)
+    events = []
+    window._diagnostics_window = SimpleNamespace(
+        _window=SimpleNamespace(
+            winfo_exists=lambda: True, lift=lambda: events.append("lift")
+        ),
+        refresh=lambda: pytest.fail("Reopening silently replaced the reading snapshot"),
+        focus=lambda: events.append("focus"),
+    )
+    monkeypatch.setattr(
+        gui_module, "_DiagnosticsWindow", lambda _: pytest.fail("Duplicate viewer")
+    )
+    window._open_diagnostics()
+    assert events == ["lift", "focus"]
+
+
+def test_diagnostics_copy_copies_only_selected_snapshot_tab():
+    viewer = object.__new__(gui_module._DiagnosticsWindow)
+    viewer._notebook = SimpleNamespace(select=lambda: "details", index=lambda _: 1)
+    viewer._texts = [_SnapshotText("activity output"), _SnapshotText("setup details")]
+    clipboard = []
+    viewer._window = SimpleNamespace(
+        clipboard_clear=lambda: clipboard.clear(), clipboard_append=clipboard.append
+    )
+    viewer.copy()
+    assert clipboard == ["setup details"]
+
+
+def test_diagnostics_footer_wraps_at_large_text_and_header_tracks_window_width():
+    class Button:
+        def __init__(self, width):
+            self.width = width
+            self.layouts = []
+
+        def winfo_reqwidth(self):
+            return self.width
+
+        def grid(self, **options):
+            self.layouts.append(options)
+
+    viewer = object.__new__(gui_module._DiagnosticsWindow)
+    viewer._footer_buttons = [Button(width) for width in [160, 170, 180, 80]]
+    viewer._footer_columns = 0
+    configured = []
+    viewer._footer = SimpleNamespace(
+        columnconfigure=lambda *args, **kwargs: configured.append((args, kwargs))
+    )
+    viewer._layout_footer(428)
+    assert viewer._footer_columns == 2
+    assert [
+        (button.layouts[-1]["row"], button.layouts[-1]["column"])
+        for button in viewer._footer_buttons
+    ] == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    # The same narrow width must accommodate larger requested native fonts.
+    for button in viewer._footer_buttons:
+        button.width *= 2
+    viewer._window = object()
+    viewer._guidance_label = _Widget()
+    viewer._captured_label = _Widget()
+    viewer._resized(SimpleNamespace(widget=viewer._window, width=460))
+    assert viewer._footer_columns == 1
+    assert [
+        (button.layouts[-1]["row"], button.layouts[-1]["column"])
+        for button in viewer._footer_buttons
+    ] == [(0, 0), (1, 0), (2, 0), (3, 0)]
+    assert configured[-1] == ((1,), {"weight": 0})
+    assert viewer._guidance_label.configured[-1]["wraplength"] == 428
+    assert viewer._captured_label.configured[-1]["wraplength"] == 428
+    before = len(viewer._guidance_label.configured)
+    viewer._resized(SimpleNamespace(widget=object(), width=800))
+    assert len(viewer._guidance_label.configured) == before
+
+
+def test_diagnostics_constructor_keeps_real_guidance_widget_and_blocks_parent_return():
+    class Widget(_SnapshotText):
+        def __init__(self, parent, **options):
+            super().__init__()
+            self.parent = parent
+            self.options = options
+            self.bindings = {}
+            self.focus_calls = 0
+            self.idle_callbacks = []
+
+        def __getattr__(self, name):
+            if name in {
+                "title",
+                "transient",
+                "geometry",
+                "minsize",
+                "columnconfigure",
+                "rowconfigure",
+                "protocol",
+                "grid",
+                "add",
+                "set",
+            }:
+                return lambda *args, **kwargs: None
+            raise AttributeError(name)
+
+        def pack(self, **options):
+            # Real Tk geometry managers return None, not the widget.
+            return None
+
+        def bind(self, event, callback):
+            self.bindings[event] = callback
+
+        def winfo_reqwidth(self):
+            return 140
+
+        def focus_set(self):
+            self.focus_calls += 1
+
+        def after_idle(self, callback):
+            self.idle_callbacks.append(callback)
+
+        def winfo_exists(self):
+            return True
+
+        def configure(self, **options):
+            self.options.update(options)
+            if "state" in options:
+                self.state = options["state"]
+
+    owner = SimpleNamespace(
+        root=object(),
+        _bounded_geometry=lambda *_: "940x700",
+        _diagnostic_snapshot=lambda: ("snapshot activity", "snapshot details"),
+        _open_setup_log=lambda: pytest.fail("Constructor opened raw log"),
+        _tk=SimpleNamespace(Toplevel=Widget, Text=Widget, StringVar=_Value),
+        _ttk=SimpleNamespace(
+            Frame=Widget, Label=Widget, Notebook=Widget, Scrollbar=Widget, Button=Widget
+        ),
+    )
+    viewer = gui_module._DiagnosticsWindow(owner)
+    assert isinstance(viewer._guidance_label, Widget)
+    assert viewer._guidance_label.options["text"].startswith("A snapshot for reading")
+    assert [text.content for text in viewer._texts] == [
+        "snapshot activity",
+        "snapshot details",
+    ]
+    assert all(text.state == "disabled" for text in viewer._texts)
+    assert viewer._window.bindings["<Return>"](None) == "break"
+    assert viewer._window.focus_calls == 1
+    viewer._window.idle_callbacks.pop()()
+    assert viewer._window.focus_calls == 2
+    viewer._window.bindings["<Configure>"](
+        SimpleNamespace(widget=viewer._window, width=460)
+    )
+    assert viewer._guidance_label.options["wraplength"] == 428
+
+
+def test_deferred_primary_focus_checks_dialog_ownership_when_callback_runs():
+    window = object.__new__(InstallerWindow)
+    focused = []
+    window.root = SimpleNamespace(winfo_exists=lambda: True)
+    window._primary = SimpleNamespace(focus_set=lambda: focused.append("primary"))
+    window._diagnostics_window = None
+    deferred_callback = window._focus_primary_if_available
+    # The viewer opened after the terminal render scheduled this callback.
+    window._diagnostics_window = SimpleNamespace(
+        _window=SimpleNamespace(winfo_exists=lambda: True)
+    )
+    deferred_callback()
+    assert focused == []
+    window._diagnostics_window = None
+    window._repair_dialog_open = True
+    deferred_callback()
+    assert focused == []
+    window._repair_dialog_open = False
+    deferred_callback()
+    assert focused == ["primary"]
+    source = Path(gui_module.__file__).read_text(encoding="utf-8")
+    assert "self.root.after_idle(self._focus_primary_if_available)" in source
+    assert "self.root.after_idle(self._primary.focus_set)" not in source
+
+
+@pytest.mark.parametrize(
+    "screen,phase",
+    [
+        (InstallerScreen.CANCELLING, "installing"),
+        (InstallerScreen.WORKING, "rolling_back"),
+    ],
+)
+def test_cancellation_breadcrumb_does_not_claim_already_stopped(screen, phase):
+    window = _staged_window()
+    window._installation_started = True
+    window._render_setup_stage(
+        replace(
+            _state(screen, kind=TargetKind.UPDATE),
+            progress_stage=phase,
+            installation_started_at=100.0,
+        )
+    )
+    assert window._install_stage_label.configured[-1]["text"] == "● Stopping safely"
+    assert window._ready_stage_label.configured[-1]["text"] == "○ Ready"
 
 
 @pytest.fixture
@@ -1036,19 +2840,21 @@ def test_live_console_trim_keeps_reading_anchor_and_bounds_memory(
 def test_diagnostic_changes_preserve_scroll_and_skip_identical_text(tk_log_window):
     window, root = tk_log_window
     details = "\n".join(f"diagnostic {i}" for i in range(100))
-    window._replace_details(details)
+    gui_module._replace_snapshot_text(window._details, details)
     root.update()
     window._details.yview_moveto(0.4)
     root.update()
-    position = window._details.yview()[0]
+    position = window._details.index("@0,0")
     window._details.tag_add("sel", "40.0", "40.end")
     selected = window._details.tag_ranges("sel")
-    window._replace_details(details)
+    gui_module._replace_snapshot_text(window._details, details)
     assert window._details.tag_ranges("sel") == selected
-    assert window._details.yview()[0] == pytest.approx(position)
-    window._replace_details(details.replace("diagnostic", "information"))
+    assert window._details.index("@0,0") == position
+    gui_module._replace_snapshot_text(
+        window._details, details.replace("diagnostic", "information")
+    )
     root.update()
-    assert window._details.yview()[0] == pytest.approx(position, abs=0.002)
+    assert window._details.index("@0,0") == position
 
 
 def test_complete_setup_window_streams_without_advanced_details(
@@ -1076,9 +2882,232 @@ def test_complete_setup_window_streams_without_advanced_details(
     window._poll_states()
     root.update()
     assert not window._show_advanced.get()
+    assert not window._show_log.get()
+    assert not window._console.winfo_ismapped()
+    window._show_log.set(True)
+    window._toggle_log()
+    root.update()
     assert window._console.winfo_ismapped()
     assert "Downloading component.whl" in window._console.get("1.0", "end")
     assert "Installing collected packages" in window._console.get("1.0", "end")
     assert window._button_bar.winfo_y() + window._button_bar.winfo_height() <= (
         window._button_bar.master.winfo_height()
     )
+
+
+@pytest.mark.parametrize(
+    "unit,completed,total,expected",
+    [
+        (
+            ProgressUnit.FILES,
+            48123,
+            83204,
+            "48,123 of 83,204 files checked/copied · 58% of this task",
+        ),
+        (ProgressUnit.PACKAGES, 3, 12, "3 of 12 packages · 25% of this task"),
+        (ProgressUnit.CHECKS, 0, 5, "0 of 5 checks · 0% of this task"),
+        (ProgressUnit.BYTES, 1024, 4096, "1 KiB of 4 KiB · 25% of this task"),
+    ],
+)
+def test_measured_task_count_and_bar_use_exact_backend_totals(
+    unit, completed, total, expected
+):
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="installing",
+        progress_unit=unit,
+        progress_completed=completed,
+        progress_total=total,
+        # The old overall-step fraction must never override measured work.
+        progress_fraction=1.0,
+    )
+
+    assert _task_progress_text(state) == expected
+    assert _task_fraction(state) == completed / total
+
+
+@pytest.mark.parametrize(
+    "completed,total,unit",
+    [
+        (None, None, ProgressUnit.ACTIVITY),
+        (None, 160, ProgressUnit.PACKAGES),
+        (0, 0, ProgressUnit.FILES),
+        (3, 6, ProgressUnit.STEPS),
+    ],
+)
+def test_unknown_work_never_shows_invented_task_or_global_percentage(
+    completed, total, unit
+):
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_unit=unit,
+        progress_completed=completed,
+        progress_total=total,
+        progress_fraction=0.5,
+    )
+
+    assert _task_fraction(state) is None
+    assert _task_progress_text(state) == (
+        "Working — this task does not report a measurable total."
+    )
+    assert "%" not in _task_progress_text(state)
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [InstallerScreen.FAILED, InstallerScreen.CANCELLED, InstallerScreen.CANCELLING],
+)
+def test_stopped_install_does_not_promote_stale_task_counts_to_100_percent(screen):
+    state = replace(
+        _state(screen),
+        progress_unit=ProgressUnit.FILES,
+        progress_completed=20,
+        progress_total=20,
+        progress_fraction=1.0,
+    )
+
+    assert _task_fraction(state) is None
+    assert "100%" not in _task_progress_text(state)
+    rows = _installation_stage_rows(state, 2)
+    assert [status for _text, status in rows] == [
+        "complete",
+        "complete",
+        "stopped",
+        "pending",
+        "pending",
+        "pending",
+    ]
+
+
+def _measured_progress_window():
+    window = object.__new__(InstallerWindow)
+    window._installation_started = True
+    window._last_install_stage_index = None
+    window._install_checklist = _StagePanel(visible=False)
+    window._install_phase_labels = [_Widget() for _ in range(6)]
+    window._task_heading = _Value()
+    window._task_measurement = _Value()
+    window._activity = _Value()
+    window._elapsed_seconds = lambda: 25
+    return window
+
+
+def test_six_stage_checklist_tracks_stable_ids_not_each_changing_activity_message():
+    window = _measured_progress_window()
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="installing",
+        installation_stage="installing",
+        status_message="Copying dependency files",
+    )
+    for message in [
+        "Copying dependency files",
+        "Installing the VIPP wheel",
+        "Checking packages",
+    ]:
+        window._state = replace(state, status_message=message)
+        window._render_installation_progress(window._state)
+        assert window._task_heading.get() == "Stage 3 of 6 · Packages"
+        assert [
+            label.configured[-1]["text"][0] for label in window._install_phase_labels
+        ] == ["✓", "✓", "●", "○", "○", "○"]
+    assert window._install_checklist.visible
+    assert window._activity.get() == "Elapsed in this stage: 25s"
+
+
+def test_coalesced_failure_uses_controller_retained_stage_without_earlier_render():
+    window = _measured_progress_window()
+    state = replace(
+        _state(InstallerScreen.FAILED),
+        progress_stage="failed",
+        installation_stage="verifying",
+    )
+    window._state = state
+
+    window._render_installation_progress(state)
+
+    assert window._task_heading.get() == "Stopped at stage 4 of 6"
+    assert [
+        label.configured[-1]["text"][0] for label in window._install_phase_labels
+    ] == ["✓", "✓", "✓", "■", "○", "○"]
+    assert window._activity.get() == ""
+
+
+def test_rollback_keeps_last_reached_stage_and_does_not_mark_remaining_complete():
+    window = _measured_progress_window()
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="rolling_back",
+        installation_stage="installing",
+    )
+    window._state = state
+
+    window._render_installation_progress(state)
+
+    assert window._task_heading.get() == "Rolling back safely"
+    assert [
+        label.configured[-1]["text"][0] for label in window._install_phase_labels
+    ] == ["✓", "✓", "■", "○", "○", "○"]
+
+
+def test_only_success_marks_all_six_stages_complete():
+    state = replace(_state(InstallerScreen.SUCCESS), installation_stage="completed")
+
+    assert len(_installation_stage_rows(state, None)) == 6
+    assert all(
+        status == "complete" for _text, status in _installation_stage_rows(state, None)
+    )
+    assert _task_progress_text(state) == "All installation stages completed."
+
+
+def test_read_only_review_and_registration_repair_have_no_installation_checklist():
+    window = _measured_progress_window()
+    window._installation_started = False
+    for screen, stage in [
+        (InstallerScreen.CHECKING, "checking"),
+        (InstallerScreen.WORKING, "repairing_registration"),
+    ]:
+        window._state = replace(_state(screen), progress_stage=stage)
+        window._render_installation_progress(window._state)
+        assert not window._install_checklist.visible
+        assert "of 6" not in window._task_heading.get()
+
+
+def test_task_percentage_cannot_round_up_to_finished_before_final_item():
+    state = replace(
+        _state(InstallerScreen.WORKING),
+        progress_stage="installing",
+        progress_unit=ProgressUnit.FILES,
+        progress_completed=83203,
+        progress_total=83204,
+    )
+    assert "83,203 of 83,204" in _task_progress_text(state)
+    assert "99%" in _task_progress_text(state)
+    assert "100%" not in _task_progress_text(state)
+    assert "100%" in _task_progress_text(replace(state, progress_completed=83204))
+
+
+def test_log_disclosure_retains_output_and_honors_choice_until_failure():
+    window = object.__new__(InstallerWindow)
+    window._show_log = _Value(False)
+    window._console_body = _StagePanel(visible=False)
+    window._console = object()
+    window._render_log_disclosure(_state(InstallerScreen.WORKING))
+    assert not window._console_body.visible
+    window._show_log.set(True)
+    window._toggle_log()
+    assert window._console_body.visible
+    window._show_log.set(False)
+    window._toggle_log()
+    window._render_log_disclosure(_state(InstallerScreen.WORKING))
+    assert not window._console_body.visible
+
+    window._render_log_disclosure(_state(InstallerScreen.FAILED))
+
+    assert window._show_log.get()
+    assert window._console_body.visible
+    assert window._console is not None  # Disclosure never recreates/losses Text.
+    window._show_log.set(False)
+    window._toggle_log()
+    window._render_log_disclosure(_state(InstallerScreen.FAILED))
+    assert not window._console_body.visible

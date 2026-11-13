@@ -1,12 +1,20 @@
-"""Keep inspector scrolling separate from deliberate drop-down selection."""
+"""Keep inspector scrolling separate from deliberate parameter edits."""
 
 from qtpy.QtCore import QEvent, QPointF, Qt
 from qtpy.QtGui import QWheelEvent
-from qtpy.QtWidgets import QAbstractScrollArea, QApplication, QComboBox, QWidget
+from qtpy.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QScrollBar,
+    QWidget,
+)
 
 
-def route_closed_dropdown_wheel(scope: QWidget, watched, event) -> bool:
-    """Route a closed selector's wheel to its closest enclosing scroll area.
+def route_inspector_control_wheel(scope: QWidget, watched, event) -> bool:
+    """Route a parameter control's wheel to its closest enclosing scroll area.
 
     An application event filter returning True stops Qt's normal propagation,
     even for an ignored event. Forward once with the original deltas and phase
@@ -18,15 +26,19 @@ def route_closed_dropdown_wheel(scope: QWidget, watched, event) -> bool:
         or not scope.isAncestorOf(watched)
     ):
         return False
-    combo = watched
-    while combo is not None and combo is not scope:
-        if isinstance(combo, QComboBox):
+    control = watched
+    while control is not None and control is not scope:
+        if isinstance(control, QScrollBar):
+            return False  # This is already a scrolling surface, not a parameter.
+        if isinstance(control, (QAbstractSlider, QAbstractSpinBox, QComboBox)):
             break
-        combo = combo.parentWidget()
-    if not isinstance(combo, QComboBox) or combo.view().isVisible():
+        control = control.parentWidget()
+    else:
         return False
+    if isinstance(control, QComboBox) and control.view().isVisible():
+        return False  # The user opened the list; let it scroll normally.
 
-    parent = combo.parentWidget()
+    parent = control.parentWidget()
     while parent is not None and not isinstance(parent, QAbstractScrollArea):
         parent = parent.parentWidget()
     if parent is not None:

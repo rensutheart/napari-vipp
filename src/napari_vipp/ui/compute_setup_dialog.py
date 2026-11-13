@@ -584,7 +584,12 @@ class ComputeSetupDialog(QDialog):
         """Refresh semantic text after napari changes its live theme."""
 
         super().changeEvent(event)
-        if event.type() not in (QEvent.PaletteChange, QEvent.StyleChange):
+        if event.type() not in (
+            QEvent.PaletteChange,
+            QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+        ):
             return
         if getattr(self, "_refreshing_tone_styles", False):
             return
@@ -849,6 +854,7 @@ class ComputeSetupDialog(QDialog):
             _effective_palette(self),
             dialog_name=self.objectName(),
             tone=self._presentation.tone.value,
+            font_widget=self,
         )
         # Keep styles off the dialog itself: Qt otherwise replaces an explicit
         # caller palette with the stylesheet's old resolved palette on switches.

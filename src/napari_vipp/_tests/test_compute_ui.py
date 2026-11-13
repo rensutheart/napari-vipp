@@ -605,6 +605,36 @@ def test_toolbar_summary_explains_prefer_gpu_before_and_after_cpu_only_run():
     assert "GPU unavailable; Prefer GPU used CPU" in actual.tooltip
 
 
+def test_toolbar_summary_does_not_repeat_matching_cpu_intent():
+    request = ComputeRequest(mode="cpu")
+    cpu = _decision(
+        node_id="gaussian",
+        operation_id="gaussian_blur",
+        runtime_id="cpu-numpy",
+        library_id="cpu",
+        implementation_id="cpu-gaussian_blur-v1",
+    )
+
+    for decisions, text, bypassed in (
+        ((cpu,), "CPU", 0),
+        ((cpu, _bypass_decision()), "CPU · 1 bypassed", 1),
+    ):
+        summary = compute_toolbar_summary(
+            request, ComputeStatusSnapshot(request, actual_decisions=decisions)
+        )
+
+        assert summary.text == text
+        assert summary.tone is ComputePresentationTone.CPU
+        assert (summary.gpu_nodes, summary.cpu_nodes, summary.bypass_nodes) == (
+            0,
+            1,
+            bypassed,
+        )
+        assert f"Actual compute: 0 GPU, 1 CPU, 0 fallback; {bypassed} bypassed." in (
+            summary.tooltip
+        )
+
+
 def test_toolbar_summary_reports_mixed_actual_run_and_fallback():
     request = ComputeRequest(mode="auto", allow_experimental=True)
     gpu = _decision(
@@ -684,7 +714,7 @@ def test_toolbar_summary_reports_bypass_without_counting_it_as_gpu_or_cpu():
 
     summary = compute_toolbar_summary(request, report)
 
-    assert summary.text == "Prefer GPU · 1 GPU / 0 CPU · 1 bypassed"
+    assert summary.text == "Prefer GPU · 1 GPU · 1 bypassed"
     assert summary.tone is ComputePresentationTone.GPU
     assert (
         summary.gpu_nodes,

@@ -6,13 +6,18 @@ import json
 import os
 import secrets
 import subprocess
+import sys
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from napari_vipp.installer.discovery import (
     DiscoveryServices,
+    _read_pyvenv_configuration,
+    _unsafe_pyvenv_base_path,
     default_services,
     discover_installation,
 )
@@ -24,8 +29,10 @@ from napari_vipp.installer.frontend import (
     PreparedInstall,
     ProgressUnit,
     ProgressUpdate,
+    RegistrationRepairReview,
     TargetKind,
     TrackChoice,
+    VippMustBeClosed,
     default_install_size_estimate,
     default_temporary_free_bytes,
 )
@@ -37,6 +44,7 @@ from napari_vipp.installer.models import (
     IssueSeverity,
     ReleaseSpec,
     ShortcutScope,
+    UpdateStrategy,
     managed_environment_name,
 )
 from napari_vipp.installer.ownership import (
@@ -60,6 +68,27 @@ _SETUP_HELP_URL = (
     "getting-started/installation/#troubleshooting"
 )
 
+_DLL_DIRECTORY_LOCK = threading.Lock()
+# These select another interpreter's modules or another Qt build's loader/ABI.
+# They cannot safely cross into a separately managed application. Other Python
+# controls (for example bytecode policy), CUDA configuration, custom PATH entries
+# and non-loader Qt diagnostics remain unchanged in the child's environment.
+_CROSS_RUNTIME_OVERRIDES = frozenset(
+    {
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "QT_API",
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "QT_QPA_PLATFORM",
+        "QML_IMPORT_PATH",
+        "QML2_IMPORT_PATH",
+        "QTWEBENGINEPROCESS_PATH",
+        "QTWEBENGINE_RESOURCES_PATH",
+        "QTWEBENGINE_LOCALES_PATH",
+    }
+)
+
 
 class _SetupCheckBlocked(RuntimeError):
     """Retain the exact root when prior-transaction recovery needs attention."""
@@ -67,6 +96,35 @@ class _SetupCheckBlocked(RuntimeError):
     def __init__(self, root: Path, details: str):
         self.root = root
         super().__init__(details)
+
+
+class _RegistrationCheckBlocked(_SetupCheckBlocked):
+    """A new-plan registry conflict, distinct from unsafe transaction recovery."""
+
+
+def _registration_repair_review(repair: object) -> RegistrationRepairReview:
+    """Build exactly the same confirmed presentation during review and apply."""
+
+    changes = "\n".join(
+        f"{name}: {before!r} → {after!r}" for name, before, after in repair.changes
+    )
+    preview = (
+        f"{repair.summary}\n\n"
+        f"Installation: {repair.managed_root}\n"
+        f"Windows entry version: {repair.registered_version}\n"
+        f"Verified installed version: {repair.installed_version}\n\n"
+        f"Changes:\n{changes}"
+    )
+    return RegistrationRepairReview(
+        fingerprint=repair.fingerprint,
+        preview=preview,
+        backup_path=repair.backup_path,
+        payload=repair,
+        managed_root=repair.managed_root,
+        registered_version=repair.registered_version,
+        installed_version=repair.installed_version,
+        old_uninstaller_state=getattr(repair, "old_uninstaller_state", ""),
+    )
 
 
 _ERROR_FRIENDLY_TEXT = {
@@ -135,6 +193,7 @@ class WindowsInstallerBackend:
             discover_python_candidates
         ),
         registry_backend: object | None = None,
+        repair_backend: object | None = None,
         shortcut_scope: ShortcutScope | None = None,
         managed_build_sha256: str = "",
     ) -> None:
@@ -147,6 +206,7 @@ class WindowsInstallerBackend:
         self._environ = dict(os.environ if environ is None else environ)
         self._candidate_finder = candidate_finder
         self._registry_backend = registry_backend
+        self._repair_backend = repair_backend
         self._shortcut_scope = (
             ShortcutScope(shortcut_scope) if shortcut_scope is not None else None
         )
@@ -180,7 +240,7 @@ class WindowsInstallerBackend:
                 ownership.record if ownership.state is OwnershipState.VALID else None
             )
             release = self._release or bundled_release_spec()
-            return PreparedInstall(
+            blocked = PreparedInstall(
                 kind=TargetKind.BLOCKED,
                 target=exc.root,
                 release_version=release.version,
@@ -205,6 +265,9 @@ class WindowsInstallerBackend:
                 blocked_action=BlockedAction.OPEN_SETUP_HELP,
                 help_url=_SETUP_HELP_URL,
             )
+            if isinstance(exc, _RegistrationCheckBlocked):
+                return self._registration_repair_decision(blocked)
+            return blocked
 
     def _inspect(
         self,
@@ -295,7 +358,13 @@ class WindowsInstallerBackend:
                     "package resolution did not run."
                 ),
             )
-        candidates = self._python_candidates(owned)
+        candidates = self._python_candidates(
+            owned,
+            track=(
+                _explicit_track(selection.track)
+                or (owned.record.track if owned is not None else ComputeTrack.CUDA13)
+            ),
+        )
         progress(
             ProgressUpdate(
                 "python-found",
@@ -321,8 +390,7 @@ class WindowsInstallerBackend:
             target = (
                 owned.record.managed_root
                 if owned is not None
-                else selection.install_root
-                or self._managed_install_root(track)
+                else selection.install_root or self._managed_install_root(track)
             )
             python_requirement = (
                 "64-bit Python 3.12"
@@ -410,10 +478,10 @@ class WindowsInstallerBackend:
 
         progress(
             ProgressUpdate(
-                "resolution",
+                "preflight",
                 (
-                    "Reviewing exact packages from PyPI — the first check can "
-                    "take several minutes."
+                    "Reviewing the installation and available update method. "
+                    "Package downloads have not started."
                 ),
                 3,
                 5,
@@ -421,6 +489,8 @@ class WindowsInstallerBackend:
         )
         token = _engine_cancellation_token(cancellation)
         from napari_vipp.installer.engine import (
+            InPlaceAppRunning,
+            PreparationError,
             RecoveryError,
             RegistrationConflictError,
         )
@@ -431,11 +501,39 @@ class WindowsInstallerBackend:
                 progress=lambda event: progress(_progress_update(event)),
                 cancellation=token,
                 repair=repair,
+                resolve=False,
             )
-        except (RecoveryError, RegistrationConflictError) as exc:
+        except RegistrationConflictError as exc:
+            raise _RegistrationCheckBlocked(
+                plan.discovery.filesystem.target, str(exc)
+            ) from exc
+        except RecoveryError as exc:
             raise _SetupCheckBlocked(
                 plan.discovery.filesystem.target, str(exc)
             ) from exc
+        except InPlaceAppRunning as exc:
+            raise VippMustBeClosed(str(exc), details=str(exc)) from exc
+        except PreparationError as exc:
+            if selection.update_strategy not in {
+                UpdateStrategy.INCREMENTAL,
+                UpdateStrategy.IN_PLACE,
+            }:
+                raise
+            return PreparedInstall(
+                kind=TargetKind.BLOCKED,
+                target=plan.discovery.filesystem.target,
+                release_version=release.version,
+                track=plan.request.track,
+                plain_summary=str(exc),
+                technical_details=_join_details(plan.to_json(), str(exc)),
+                reason=(
+                    "The selected update method was not approved. Choose Automatic or "
+                    "Fresh installation to review another method; nothing has "
+                    "been installed."
+                ),
+                selected_strategy=selection.update_strategy,
+                strategy_reason=str(exc),
+            )
         self._check_cancelled(cancellation)
         prepared = _prepared_for_transaction(
             transaction,
@@ -451,6 +549,96 @@ class WindowsInstallerBackend:
             )
         )
         return prepared
+
+    def _registration_repair_decision(
+        self, blocked: PreparedInstall
+    ) -> PreparedInstall:
+        """Offer a registry-only action only after an independent safe review."""
+
+        if self._local_app_data is None:
+            return blocked
+        try:
+            from napari_vipp.installer.registration_repair import (
+                prepare_registration_repair,
+            )
+
+            repair = prepare_registration_repair(
+                blocked.target,
+                self._local_app_data,
+                backend=self._repair_backend,
+            )
+            if Path(repair.managed_root) != blocked.target or (
+                blocked.track is not None and repair.track is not blocked.track
+            ):
+                raise RuntimeError("The repair review belongs to another installation.")
+            review = _registration_repair_review(repair)
+        except Exception as exc:
+            return replace(
+                blocked,
+                technical_details=_join_details(
+                    blocked.technical_details,
+                    f"Registration-only repair is unavailable: {exc}",
+                ),
+                reason=(
+                    f"This entry cannot be repaired automatically: {exc} "
+                    "Save Advanced details and contact setup support; do not delete "
+                    "or overwrite the entry manually."
+                ),
+            )
+        return replace(
+            blocked,
+            plain_summary=(
+                f"Windows lists VIPP {repair.registered_version}; this verified "
+                f"installation is {repair.installed_version}. Review a Windows-entry "
+                "repair with an exact backup. No update or removal will start."
+            ),
+            technical_details=_join_details(blocked.technical_details, review.preview),
+            blocked_action=BlockedAction.REPAIR_REGISTRATION,
+            installed_version=repair.installed_version,
+            track=repair.track,
+            reason="Repair registration shows the exact changes before confirmation.",
+            registration_repair=review,
+            help_url="",
+        )
+
+    def repair_registration(
+        self,
+        prepared: PreparedInstall,
+        *,
+        confirmed: bool,
+        progress: Callable[[ProgressUpdate], None],
+    ) -> object:
+        """Apply a separate registration-only authorization, never an update."""
+
+        if (
+            confirmed is not True
+            or prepared.kind is not TargetKind.BLOCKED
+            or prepared.blocked_action is not BlockedAction.REPAIR_REGISTRATION
+            or prepared.registration_repair is None
+        ):
+            raise RuntimeError("Registration repair was not explicitly confirmed.")
+        review = prepared.registration_repair
+        if (
+            _registration_repair_review(review.payload) != review
+            or Path(review.payload.managed_root) != prepared.target
+            or prepared.track is not review.payload.track
+        ):
+            raise RuntimeError("The registration repair review changed.")
+        from napari_vipp.installer.registration_repair import (
+            apply_registration_repair,
+            authorize_registration_repair,
+        )
+
+        authorization = authorize_registration_repair(review.payload, confirmed=True)
+        result = apply_registration_repair(
+            review.payload, authorization, backend=self._repair_backend
+        )
+        if not result.succeeded:
+            raise RuntimeError(result.message)
+        if Path(result.backup_path) != review.backup_path:
+            raise RuntimeError("The registration repair backup location changed.")
+        progress(ProgressUpdate("repairing_registration", result.message, 1, 1))
+        return result
 
     def apply(
         self,
@@ -472,6 +660,8 @@ class WindowsInstallerBackend:
         engine = self._selected_engine()
         authorization = engine.authorize(transaction, confirmed=confirmed)
         token = _engine_cancellation_token(cancellation)
+        from napari_vipp.installer.engine import InPlaceAppRunning
+
         try:
             result = engine.apply(
                 transaction,
@@ -480,6 +670,8 @@ class WindowsInstallerBackend:
                 cancellation=token,
             )
         except Exception as exc:
+            if isinstance(exc, InPlaceAppRunning):
+                raise VippMustBeClosed(str(exc), details=str(exc)) from exc
             if cancellation.is_set() or _looks_cancelled(exc):
                 raise InstallationCancelled(details=str(exc)) from exc
             raise
@@ -489,6 +681,10 @@ class WindowsInstallerBackend:
         if _result_cancelled(result):
             raise InstallationCancelled(details=_json_details(result))
         if not _result_succeeded(result):
+            if str(getattr(result, "technical_error", "")).startswith(
+                "InPlaceAppRunning:"
+            ):
+                raise VippMustBeClosed(details=_result_error(result))
             raise RuntimeError(_result_error(result))
         if result.launcher_path is None:
             raise RuntimeError("VIPP passed setup but its launcher was not recorded.")
@@ -531,16 +727,19 @@ class WindowsInstallerBackend:
             self._services,
             launcher=launcher,
         )
-        subprocess.Popen(
-            (str(launcher), "--desktop"),
-            cwd=str(working_directory),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            shell=False,
-            creationflags=creationflags,
-        )
+        environment = _vipp_launch_environment(launcher, self._services, self._environ)
+        with _external_program_dll_directory():
+            subprocess.Popen(
+                (str(launcher), "--desktop"),
+                cwd=str(working_directory),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                shell=False,
+                creationflags=creationflags,
+            )
 
     def open_owned_uninstaller(self, prepared: PreparedInstall) -> None:
         """Revalidate and launch one exact ownership-recorded uninstaller."""
@@ -620,7 +819,12 @@ class WindowsInstallerBackend:
             )
         return self._engine
 
-    def _python_candidates(self, owned) -> tuple[PythonCandidate, ...]:
+    def _python_candidates(
+        self,
+        owned,
+        *,
+        track: ComputeTrack = ComputeTrack.CUDA13,
+    ) -> tuple[PythonCandidate, ...]:
         paths = []
         if self._preferred_python is not None:
             paths.append(("setup option", self._preferred_python))
@@ -634,6 +838,13 @@ class WindowsInstallerBackend:
             if paths
             else ()
         )
+        # Prefer an independently verified supported interpreter from the
+        # installer override or our ownership record. Searching and launching
+        # every Python on the computer is unnecessary when this route already
+        # has a suitable base. Automatic discovery needs CUDA-capable 3.12 here;
+        # a preferred CPU-only 3.13 must not hide an available GPU route.
+        if choose_python(preferred, track) is not None:
+            return preferred
         discovered = self._candidate_finder(environ=self._environ)
         by_path: dict[str, PythonCandidate] = {}
         for candidate in (*preferred, *discovered):
@@ -652,9 +863,7 @@ class WindowsInstallerBackend:
                 if explicit is not None
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
-            roots = [
-                self._managed_install_root(track) for track in tracks
-            ]
+            roots = [self._managed_install_root(track) for track in tracks]
         for root in roots:
             inspection = inspect_ownership(root)
             if inspection.state is OwnershipState.VALID:
@@ -671,9 +880,7 @@ class WindowsInstallerBackend:
                 if explicit is not None
                 else (ComputeTrack.CUDA13, ComputeTrack.CPU)
             )
-            roots = tuple(
-                self._managed_install_root(track) for track in tracks
-            )
+            roots = tuple(self._managed_install_root(track) for track in tracks)
         for root in roots:
             self._recover_interrupted_root(root)
 
@@ -771,6 +978,7 @@ class WindowsInstallerBackend:
         request = InstallRequest(
             mode=InstallMode.MANAGED,
             managed_build_sha256=self._managed_build_sha256,
+            update_strategy=selection.update_strategy,
             track=track,
             python=candidate.executable,
             install_root=(
@@ -1096,6 +1304,13 @@ def _prepared_for_transaction(
     if kind_value is None:
         kind_value = getattr(getattr(transaction, "operation", None), "value", None)
     kind = _target_kind(kind_value)
+    blocking_reason = str(getattr(transaction, "blocking_reason", "")).strip()
+    if (
+        kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}
+        and blocking_reason
+        and not getattr(transaction, "applicable", True)
+    ):
+        kind = TargetKind.BLOCKED
     installed_version = getattr(inspection, "installed_version", None)
     if installed_version is None:
         installed_version = getattr(inspection, "current_version", None)
@@ -1112,12 +1327,26 @@ def _prepared_for_transaction(
                 launcher = candidate
         if launcher is None:
             launcher = _launcher_for_plan(plan)
+    selected_strategy = UpdateStrategy(
+        getattr(transaction, "selected_strategy", UpdateStrategy.FRESH)
+    )
     summary = _transaction_summary(
         kind,
         release_version=plan.release.version,
         installed_version=installed_version,
         track=plan.request.track,
+        selected_strategy=selected_strategy,
     )
+    if blocking_reason:
+        summary = blocking_reason
+    strategy_reason = str(getattr(transaction, "strategy_reason", "")).strip()
+    review = getattr(transaction, "review_summary", None)
+    if getattr(transaction, "resolution_complete", False) and review is not None:
+        summary += (
+            f"\n\nPackages: {getattr(review, 'packages_to_install', 0)} new, "
+            f"{getattr(review, 'packages_to_change', 0)} changed, "
+            f"{getattr(review, 'packages_to_remove', 0)} removed."
+        )
     transaction_details = _json_details(transaction)
     return PreparedInstall(
         kind=kind,
@@ -1138,9 +1367,16 @@ def _prepared_for_transaction(
         installed_version=installed_version,
         required_free_bytes=plan.required_free_bytes,
         temporary_free_bytes=default_temporary_free_bytes(plan.request.track),
-        size_estimate=default_install_size_estimate(plan.request.track),
+        size_estimate=(
+            None
+            if selected_strategy
+            in {UpdateStrategy.INCREMENTAL, UpdateStrategy.IN_PLACE}
+            else default_install_size_estimate(plan.request.track)
+        ),
         launcher=Path(launcher) if launcher is not None else None,
-        reason=str(getattr(inspection, "reason", "")),
+        reason=blocking_reason or str(getattr(inspection, "reason", "")),
+        selected_strategy=selected_strategy,
+        strategy_reason=strategy_reason,
     )
 
 
@@ -1163,6 +1399,7 @@ def _transaction_summary(
     release_version: str,
     installed_version: str | None,
     track: ComputeTrack,
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH,
 ) -> str:
     compute = (
         "GPU acceleration will be available, with safe CPU fallback."
@@ -1176,6 +1413,12 @@ def _transaction_summary(
             f"left unchanged, and VIPP shortcuts will be added. {compute}"
         )
     if kind is TargetKind.UPDATE:
+        if selected_strategy is UpdateStrategy.IN_PLACE:
+            return (
+                f"VIPP {installed_version or 'an older version'} will be updated to "
+                f"{release_version}. Only required package changes are applied in "
+                "the current environment; compatible installed versions are retained."
+            )
         return (
             f"VIPP {installed_version or 'an older version'} will be updated to "
             f"{release_version}. The working version is kept until checks pass."
@@ -1207,10 +1450,20 @@ def _progress_update(event: object) -> ProgressUpdate:
     raw_unit = ProgressUnit(str(getattr(event, "unit", ProgressUnit.STEPS.value)))
     completed = _optional_int(getattr(event, "completed", None))
     total = _optional_int(getattr(event, "total", None))
-    trustworthy_bytes = (
-        raw_unit is ProgressUnit.BYTES and total is not None and total > 0
+    measured_count = (
+        raw_unit
+        in {
+            ProgressUnit.BYTES,
+            ProgressUnit.FILES,
+            ProgressUnit.PACKAGES,
+            ProgressUnit.CHECKS,
+        }
+        and completed is not None
+        and total is not None
+        and total > 0
+        and 0 <= completed <= total
     )
-    indeterminate = stage_value in {"installing", "resolving"} and not trustworthy_bytes
+    indeterminate = stage_value in {"installing", "resolving"} and not measured_count
     return ProgressUpdate(
         stage=stage_value,
         message=str(getattr(event, "message", "Working…")),
@@ -1302,6 +1555,196 @@ def _stable_launch_directory(
     raise RuntimeError(
         "Windows could not find a stable Documents or home folder for VIPP."
     )
+
+
+def _vipp_launch_environment(
+    launcher: Path,
+    services: DiscoveryServices,
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    """Isolate one managed Python/Qt child without changing caller settings.
+
+    A venv's Python DLLs can live outside that venv. Prepending only Scripts is
+    insufficient: a Qt OpenSSL dependency might otherwise find a different tool's
+    DLL on inherited PATH. Derive the actual base from local venv metadata, never
+    from the installer's Python, PATH, a fixed drive, or an interpreter subprocess.
+    """
+
+    environment = Path(os.path.abspath(launcher.parent.parent))
+    _safe_launch_path(launcher, services, directory=False)
+    _safe_launch_path(environment, services, directory=True)
+    configuration_path = environment / "pyvenv.cfg"
+    _safe_launch_path(configuration_path, services, directory=False)
+    try:
+        with configuration_path.open("rb") as stream:
+            raw_configuration = stream.read(64 * 1024 + 1)
+        text = raw_configuration.decode("utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(
+            "The VIPP environment's pyvenv.cfg could not be read."
+        ) from exc
+    if len(raw_configuration) > 64 * 1024:
+        raise RuntimeError("The VIPP environment's pyvenv.cfg is unexpectedly large.")
+    configuration = _read_pyvenv_configuration(environment, text=text)
+    problem = configuration.error or _unsafe_pyvenv_base_path(configuration, services)
+    if (
+        not configuration.present
+        or configuration.include_system_site_packages is not False
+        or configuration.home is None
+        or problem
+    ):
+        raise RuntimeError(
+            "The VIPP environment's base Python could not be verified. "
+            + (problem or "A private pyvenv.cfg is required.")
+        )
+    base = configuration.home
+    executable = configuration.executable or base / "python.exe"
+    if not _same_path(executable.parent, base):
+        raise RuntimeError("The VIPP environment's base Python metadata disagrees.")
+    _safe_launch_path(base, services, directory=True)
+    _safe_launch_path(executable, services, directory=False)
+    # Corroborate managed layouts against the already accepted ownership record.
+    # Other verified venv callers still have their own local pyvenv.cfg boundary.
+    if (
+        environment.parent.name == MANAGED_ENVIRONMENTS_DIRECTORY
+        and environment.parent.parent.name == OWNERSHIP_DIRECTORY
+    ):
+        inspection = inspect_ownership(environment.parent.parent.parent)
+        record = inspection.record
+        if (
+            inspection.state is not OwnershipState.VALID
+            or record is None
+            or not _same_path(record.environment_root, environment)
+            or not _same_path(record.base_python, executable)
+        ):
+            raise RuntimeError(
+                "The VIPP launch environment differs from its accepted ownership."
+            )
+    directories = [launcher.parent, environment]
+    for optional in (
+        base / "DLLs",
+        base,
+        environment / "DLLs",
+        environment / "Library" / "bin",
+        environment / "Lib" / "site-packages" / "PyQt6" / "Qt6" / "bin",
+        environment / "Lib" / "site-packages" / "PySide6",
+        environment / "Lib" / "site-packages" / "PySide6" / "Qt" / "bin",
+    ):
+        if optional.exists():
+            _safe_launch_path(optional, services, directory=True)
+            directories.append(optional)
+
+    child = {
+        key: value
+        for key, value in environ.items()
+        if key.upper() not in _CROSS_RUNTIME_OVERRIDES and key.upper() != "PATH"
+    }
+    inherited_path = next(
+        (value for key, value in environ.items() if key.upper() == "PATH"), ""
+    )
+    frozen_root = (
+        getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
+    )
+    frozen_root = Path(frozen_root) if frozen_root else None
+    entries = [str(directory) for directory in directories]
+    for component in inherited_path.split(os.pathsep):
+        selected = component.strip('"')
+        if (
+            frozen_root is not None
+            and selected
+            and _same_or_descendant(Path(selected), frozen_root)
+        ):
+            continue
+        # Preserve unrelated user/tool/CUDA PATH components and their ordering.
+        entries.append(component)
+    child["PATH"] = os.pathsep.join(dict.fromkeys(entries))
+    return child
+
+
+def _safe_launch_path(
+    path: Path, services: DiscoveryServices, *, directory: bool
+) -> None:
+    """Never promote redirected, missing or remote directories into DLL PATH."""
+
+    try:
+        unsafe = (
+            not path.is_absolute()
+            or str(path).startswith(("\\\\", "//"))
+            or path.is_symlink()
+            or services.reparse_probe(path)
+            or (
+                services.remote_path_probe is not None
+                and services.remote_path_probe(path)
+            )
+        )
+        exists = path.is_dir() if directory else path.is_file()
+    except Exception as exc:
+        raise RuntimeError(
+            f"The VIPP launch path could not be verified: {path}"
+        ) from exc
+    if unsafe or not exists:
+        raise RuntimeError(f"The VIPP launch path is missing or unsafe: {path}")
+
+
+class _WindowsDllDirectory:
+    """Small injectable Win32 boundary; never used on an unfrozen launch."""
+
+    def __init__(self) -> None:
+        import ctypes
+
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.GetDllDirectoryW.argtypes = [ctypes.c_uint32, ctypes.c_wchar_p]
+        self._kernel32.GetDllDirectoryW.restype = ctypes.c_uint32
+        self._kernel32.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+        self._kernel32.SetDllDirectoryW.restype = ctypes.c_int
+
+    def get(self) -> str:
+        ctypes = self._ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        ctypes.set_last_error(0)
+        size = self._kernel32.GetDllDirectoryW(len(buffer), buffer)
+        error = ctypes.get_last_error()
+        if size >= len(buffer) or (size == 0 and error):
+            raise OSError(error, "Windows could not snapshot its DLL directory.")
+        return buffer.value
+
+    def set(self, directory: str | None) -> None:
+        if not self._kernel32.SetDllDirectoryW(directory):
+            raise OSError(
+                self._ctypes.get_last_error(),
+                "Windows could not change its temporary DLL directory.",
+            )
+
+
+def _windows_dll_directory_api() -> _WindowsDllDirectory:
+    return _WindowsDllDirectory()
+
+
+@contextmanager
+def _external_program_dll_directory() -> Iterator[None]:
+    """Undo frozen-loader inheritance only for the duration of child creation.
+
+    PyInstaller's SetDllDirectory is inherited independently of env/PATH. Keep
+    this unavoidable process-global transition serialized and restore the actual
+    prior path, not an assumed _MEIPASS. An empty snapshot means no additional
+    DLL directory: leave it untouched, preserving NULL-versus-empty semantics.
+    """
+
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        yield
+        return
+    with _DLL_DIRECTORY_LOCK:
+        api = _windows_dll_directory_api()
+        previous = api.get()
+        if not previous:
+            yield
+            return
+        try:
+            api.set(None)
+            yield
+        finally:
+            api.set(previous)
 
 
 def _same_or_descendant(path: Path, parent: Path) -> bool:

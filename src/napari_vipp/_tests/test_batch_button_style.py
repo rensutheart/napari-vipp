@@ -29,7 +29,7 @@ def test_batch_commands_match_shared_toolbar_at_larger_fonts(qtbot, dark, point_
     dialog.show()
     qtbot.wait(10)
 
-    assert "padding: 2px 5px" in dialog.config_row.styleSheet()
+    assert "padding: 4px 8px" in dialog.config_row.styleSheet()
     for button, kind in (
         (dialog.load_config_button, "open"),
         (dialog.save_config_button, "save"),

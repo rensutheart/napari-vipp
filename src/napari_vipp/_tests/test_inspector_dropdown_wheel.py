@@ -3,7 +3,15 @@
 import pytest
 from qtpy.QtCore import QEvent, QObject, QPoint, QPointF, Qt
 from qtpy.QtGui import QWheelEvent
-from qtpy.QtWidgets import QApplication, QComboBox, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDoubleSpinBox,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_vipp._tests.test_ui_inspector_widget_integration import _widget
 
@@ -126,8 +134,102 @@ def test_wheel_behavior_outside_inspector_is_unchanged(qtbot):
     assert outside.currentIndex() == 2
 
 
+@pytest.fixture
+def inspector_numeric_controls(qtbot):
+    widget, combo = _scrollable_inspector(qtbot)
+    layout = combo.parentWidget().layout()
+    controls = {
+        "slider": QSlider(Qt.Horizontal),
+        "spinbox": QSpinBox(),
+        "decimal": QDoubleSpinBox(),
+    }
+    for position, control in enumerate(controls.values()):
+        control.setRange(0, 100)
+        control.setValue(30)
+        layout.insertWidget(position, control)
+    QApplication.processEvents()
+    return widget, controls
+
+
+@pytest.mark.parametrize("focused", (False, True))
+@pytest.mark.parametrize("pixels", (0, -45))
+@pytest.mark.parametrize("kind", ("slider", "spinbox", "spin_editor", "decimal_editor"))
+def test_numeric_controls_keep_values_and_scroll_inspector(
+    inspector_numeric_controls, focused, pixels, kind,
+):
+    widget, controls = inspector_numeric_controls
+    control = controls[{"spin_editor": "spinbox", "decimal_editor": "decimal"}.get(
+        kind, kind
+    )]
+    target = control.lineEdit() if kind.endswith("editor") else control
+    if focused:
+        control.setFocus(Qt.TabFocusReason)
+        assert control.hasFocus() or target.hasFocus()
+    else:
+        widget.graph_search_edit.setFocus()
+        assert not (control.hasFocus() or target.hasFocus())
+    scroll = widget.inspector_panel.verticalScrollBar()
+    scroll.setValue(0)
+    changes = []
+    control.valueChanged.connect(changes.append)
+
+    _wheel(target, pixels=pixels)
+
+    assert control.value() == 30
+    assert changes == []
+    assert scroll.value() > 0
+
+
+@pytest.mark.parametrize("kind", ("slider", "spinbox"))
+def test_focused_numeric_controls_remain_safe_at_inspector_scroll_limits(
+    inspector_numeric_controls, kind,
+):
+    widget, controls = inspector_numeric_controls
+    control = controls[kind]
+    control.setFocus(Qt.TabFocusReason)
+    scroll = widget.inspector_panel.verticalScrollBar()
+    for end, angle in ((scroll.minimum(), 120), (scroll.maximum(), -120)):
+        scroll.setValue(end)
+        _wheel(control, angle=angle, native=False)
+        assert control.value() == 30
+        assert scroll.value() == end
+
+
+def test_inspector_scrollbar_still_scrolls_under_the_pointer(qtbot):
+    widget, _combo = _scrollable_inspector(qtbot)
+    scroll = widget.inspector_panel.verticalScrollBar()
+    _wheel(scroll)
+    assert scroll.value() > scroll.minimum()
+
+
+def test_numeric_controls_still_respond_to_deliberate_input(
+    qtbot, inspector_numeric_controls,
+):
+    _widget, controls = inspector_numeric_controls
+    slider, spin = controls["slider"], controls["spinbox"]
+    slider.setFocus(Qt.TabFocusReason)
+    qtbot.mouseClick(
+        slider, Qt.LeftButton,
+        pos=QPoint(slider.width() - 5, slider.height() // 2),
+    )
+    assert slider.value() > 30
+    old_slider = slider.value()
+    qtbot.keyClick(slider, Qt.Key_Left)
+    assert slider.value() == old_slider - slider.singleStep()
+
+    editor = spin.lineEdit()
+    editor.setFocus(Qt.TabFocusReason)
+    editor.selectAll()
+    qtbot.keyClicks(editor, "42")
+    qtbot.keyClick(editor, Qt.Key_Return)
+    assert spin.value() == 42
+    qtbot.keyClick(spin, Qt.Key_Up)
+    assert spin.value() == 42 + spin.singleStep()
+
+
+@pytest.mark.parametrize("kind", ("dropdown", "slider", "spinbox", "spin_editor"))
 def test_wheel_over_real_parameter_does_not_edit_workflow_or_undo_history(
-    qtbot, monkeypatch,
+    qtbot, monkeypatch, kind,
 ):
     widget = _widget(qtbot)
     # Adding the fixture node dirties this shown workflow; avoid a save prompt
@@ -136,15 +238,24 @@ def test_wheel_over_real_parameter_does_not_edit_workflow_or_undo_history(
     node = widget.add_node_from_palette("subtract_background")
     widget._select_node(node.id)
     combo = widget._parameter_widgets["spatial_mode"].combo
+    radius = widget._parameter_widgets["radius"]
+    target = {
+        "dropdown": combo,
+        "slider": radius.slider,
+        "spinbox": radius.value_box,
+        "spin_editor": radius.value_box.lineEdit(),
+    }[kind]
     widget.resize(1100, 480)
     widget.show()
-    combo.setFocus()
+    target.setFocus()
     widget._debounce_timer.stop()
     params = dict(node.params)
     undo_count = len(widget._undo_stack)
     index = combo.currentIndex()
-    _wheel(combo, native=False)
+    old_radius = radius.value_box.value()
+    _wheel(target, native=False)
     assert combo.currentIndex() == index
+    assert radius.value_box.value() == old_radius
     assert node.params == params
     assert len(widget._undo_stack) == undo_count
     assert not widget._debounce_timer.isActive()

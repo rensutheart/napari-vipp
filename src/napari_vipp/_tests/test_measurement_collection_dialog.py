@@ -32,37 +32,56 @@ from napari_vipp.ui import measurement_collection as ui
 
 def _preview(statuses=("ready", "empty"), *, metadata=False):
     columns = ("label", "area", "condition") if metadata else ("label", "area")
-    rows = ((1, 25.0, "Control"), (2, 15.0, "Control")) if metadata else (
-        (1, 25.0), (2, 15.0)
+    rows = (
+        ((1, 25.0, "Control"), (2, 15.0, "Control"))
+        if metadata
+        else ((1, 25.0), (2, 15.0))
     )
     items = []
     for index, status in enumerate(statuses, 1):
         table = (
-            TableData(columns, () if status == "empty" else rows,
-                      column_units=(("area", "micrometer²"),))
-            if status in {"ready", "empty"} else None
+            TableData(
+                columns,
+                () if status == "empty" else rows,
+                column_units=(("area", "micrometer²"),),
+            )
+            if status in {"ready", "empty"}
+            else None
         )
-        items.append(CollectionItem(
-            key=f"item-{index}", index=index, batch_id=f"image-{index}",
-            status=status, message=f"File check: {status}",
-            row_count=table.row_count if table is not None else None,
-            source_path=f"C:/private/source/image-{index}.tif",
-            result_path=f"C:/results/image-{index}.json",
-            result_sha256="c" * 64 if table is not None else "",
-            table=table,
-        ))
+        items.append(
+            CollectionItem(
+                key=f"item-{index}",
+                index=index,
+                batch_id=f"image-{index}",
+                status=status,
+                message=f"File check: {status}",
+                row_count=table.row_count if table is not None else None,
+                source_path=f"C:/private/source/image-{index}.tif",
+                result_path=f"C:/results/image-{index}.json",
+                result_sha256="c" * 64 if table is not None else "",
+                table=table,
+            )
+        )
     return MeasurementPreview(
         MeasurementOutput("measure", "Object measurements", "objects"),
-        tuple(items), "run-1", "a" * 64, "b" * 64,
+        tuple(items),
+        "run-1",
+        "a" * 64,
+        "b" * 64,
     )
 
 
 def _inspection(preview):
     preserved = tuple(
-        (item.key, tuple(
-            (field, value) for field in ui._ANNOTATIONS
-            if (value := ui._preserved_annotation(item, field)) is not None
-        )) for item in preview.items
+        (
+            item.key,
+            tuple(
+                (field, value)
+                for field in ui._ANNOTATIONS
+                if (value := ui._preserved_annotation(item, field)) is not None
+            ),
+        )
+        for item in preview.items
     )
     return (preview.output,), preview, preserved
 
@@ -116,8 +135,14 @@ def test_footer_orders_save_export_close_and_preserves_export_default(
 
 def test_review_distinguishes_zero_rows_and_unavailable_results(qtbot, monkeypatch):
     statuses = (
-        "ready", "empty", "failed", "missing", "changed", "unsupported",
-        "skipped", "partial",
+        "ready",
+        "empty",
+        "failed",
+        "missing",
+        "changed",
+        "unsupported",
+        "skipped",
+        "partial",
     )
     dialog = _open(qtbot, monkeypatch, _preview(statuses))
     model = dialog.model
@@ -127,8 +152,12 @@ def test_review_distinguishes_zero_rows_and_unavailable_results(qtbot, monkeypat
     assert model.data(model.index(1, 3)) == "0"
     assert model.data(model.index(2, 3)) == "—"
     assert [model.data(model.index(row, 2)) for row in range(2, 8)] == [
-        "Failed", "Missing file", "File changed", "Unsupported table",
-        "Skipped", "Incomplete",
+        "Failed",
+        "Missing file",
+        "File changed",
+        "Unsupported table",
+        "Skipped",
+        "Incomplete",
     ]
     assert "2 images included · 6 excluded · 2 rows" in dialog.review_label.text()
     assert "1 successful image with no rows" in dialog.review_label.text()
@@ -150,9 +179,9 @@ def test_valid_empty_collection_can_be_saved(qtbot, monkeypatch, tmp_path):
     assert dialog.save_button.isEnabled()
     assert "0 rows" in dialog.review_label.text()
     path = tmp_path / "empty.vipp-results.json"
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(path), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (str(path), "")
+    )
     dialog.open_workflow_check.setChecked(True)
     with qtbot.waitSignal(dialog.collectionSaved, timeout=5000) as signal:
         dialog.save_button.click()
@@ -173,9 +202,9 @@ def test_native_save_does_not_open_a_workflow_by_default(qtbot, monkeypatch, tmp
     opened = []
     dialog.collectionSaved.connect(opened.append)
     path = tmp_path / "saved.vipp-results.json"
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(path), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (str(path), "")
+    )
     dialog.save_button.click()
     qtbot.waitUntil(lambda: dialog.status_label.text() == "Collection saved")
     assert path.exists()
@@ -187,7 +216,10 @@ def test_native_save_does_not_open_a_workflow_by_default(qtbot, monkeypatch, tmp
 
 @pytest.mark.parametrize("already_exists", [False, True])
 def test_native_save_binds_destination_revision_before_confirmation_or_work(
-    qtbot, monkeypatch, tmp_path, already_exists,
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    already_exists,
 ):
     dialog = _open(qtbot, monkeypatch)
     path = tmp_path / "guarded.vipp-results.json"
@@ -208,9 +240,9 @@ def test_native_save_binds_destination_revision_before_confirmation_or_work(
             return save(request, cancellation, progress)
 
         monkeypatch.setattr(ui, "_save", create_before_save)
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(path), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (str(path), "")
+    )
     opened = []
     dialog.collectionSaved.connect(opened.append)
     dialog.open_workflow_check.setChecked(True)
@@ -229,15 +261,18 @@ def _export_setup(monkeypatch, path, *, format="csv", summary=True):
         targets += (Path(path).with_stem(Path(path).stem + "-image-summary"),)
     monkeypatch.setattr(ui, "_choose_export_options", lambda _parent: choice)
     monkeypatch.setattr(ui, "_export_targets", lambda *_args: targets)
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(path), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (str(path), "")
+    )
     return targets
 
 
 @pytest.mark.parametrize("format", ["csv", "tsv", "xlsx"])
 def test_direct_export_uses_reviewed_rows_keeps_window_and_never_opens_workflow(
-    qtbot, monkeypatch, tmp_path, format,
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    format,
 ):
     dialog = _open(qtbot, monkeypatch, _preview(("ready", "empty", "missing")))
     _select(dialog, 0, 1)
@@ -278,7 +313,9 @@ def test_direct_export_uses_reviewed_rows_keeps_window_and_never_opens_workflow(
 
 
 def test_companion_overwrite_requires_explicit_confirmation(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     dialog = _open(qtbot, monkeypatch)
     targets = _export_setup(monkeypatch, tmp_path / "measurements.csv")
@@ -311,7 +348,9 @@ def test_companion_overwrite_requires_explicit_confirmation(
 
 
 def test_direct_export_companion_revision_is_bound_before_overwrite_prompt(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     dialog = _open(qtbot, monkeypatch)
     targets = _export_setup(monkeypatch, tmp_path / "guarded.csv")
@@ -330,7 +369,9 @@ def test_direct_export_companion_revision_is_bound_before_overwrite_prompt(
 
 
 def test_cancelled_or_failed_export_keeps_review_and_never_opens_tab(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     dialog = _open(qtbot, monkeypatch)
     _export_setup(monkeypatch, tmp_path / "results.csv", summary=False)
@@ -392,7 +433,9 @@ def test_export_options_explain_formats_and_zero_image_accounting(qtbot):
 
 @pytest.mark.parametrize("format_index", [0, 2])
 def test_export_options_large_font_wraps_without_clipped_explanations(
-    qtbot, monkeypatch, format_index,
+    qtbot,
+    monkeypatch,
+    format_index,
 ):
     parent = _open(qtbot, monkeypatch)
     parent.setFont(QFont("Segoe UI", 14))
@@ -426,7 +469,11 @@ def test_cancelled_format_or_file_picker_does_nothing(qtbot, monkeypatch):
     "format,summary", [("csv", True), ("tsv", False), ("xlsx", True)]
 )
 def test_real_direct_export_roundtrip_does_not_reopen_originals_or_add_empty_rows(
-    qtbot, monkeypatch, tmp_path, format, summary,
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    format,
+    summary,
 ):
     from napari_vipp.core import measurement_collection as core
 
@@ -463,7 +510,9 @@ def test_real_direct_export_roundtrip_does_not_reopen_originals_or_add_empty_row
             workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
             sheets = workbook.findall("m:sheets/m:sheet", namespace)
             assert [sheet.attrib["name"] for sheet in sheets] == [
-                "Measurements", "Image summary", "About this collection",
+                "Measurements",
+                "Image summary",
+                "About this collection",
             ]
             measurements = ElementTree.fromstring(
                 archive.read("xl/worksheets/sheet1.xml")
@@ -503,22 +552,31 @@ def test_existing_metadata_is_visible_and_protected(qtbot, monkeypatch):
 
 def test_varying_metadata_is_not_collapsed_or_replaced():
     item = _preview(metadata=True).items[0]
-    item = replace(item, table=replace(item.table, rows=(
-        (1, 25.0, "Control"), (2, 15.0, "Treatment"),
-    )))
+    item = replace(
+        item,
+        table=replace(
+            item.table,
+            rows=(
+                (1, 25.0, "Control"),
+                (2, 15.0, "Treatment"),
+            ),
+        ),
+    )
     assert ui._preserved_annotation(item, "condition") == "Multiple values (kept)"
     assert ui._preserved_annotation(item, "sample") is None
 
 
 def test_bulk_annotations_only_target_selection_and_require_conflict_review(
-    qtbot, monkeypatch,
+    qtbot,
+    monkeypatch,
 ):
     dialog = _open(qtbot, monkeypatch, _preview(("ready", "ready", "ready")))
     _select(dialog, 0, 2)
     dialog.annotation_edit.setText("Control")
     dialog.apply_button.click()
     assert dialog.model.annotations == {
-        "item-1": {"condition": "Control"}, "item-3": {"condition": "Control"},
+        "item-1": {"condition": "Control"},
+        "item-3": {"condition": "Control"},
     }
     monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.Cancel)
     _select(dialog, 0, 1)
@@ -536,7 +594,9 @@ def test_bulk_annotations_only_target_selection_and_require_conflict_review(
 
 
 def test_save_snapshot_preserves_annotations_exclusions_and_provenance(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     dialog = _open(qtbot, monkeypatch, _preview(("ready", "empty", "missing")))
     _select(dialog, 0, 1)
@@ -544,9 +604,11 @@ def test_save_snapshot_preserves_annotations_exclusions_and_provenance(
     dialog.apply_button.click()
     dialog.exclusions_check.setChecked(True)
     path = tmp_path / "review.vipp-results.json"
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(tmp_path / "review"), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog,
+        "getSaveFileName",
+        lambda *_a, **_k: (str(tmp_path / "review"), ""),
+    )
     dialog.open_workflow_check.setChecked(True)
     with qtbot.waitSignal(dialog.collectionSaved, timeout=5000):
         dialog.save_button.click()
@@ -561,14 +623,18 @@ def test_save_snapshot_preserves_annotations_exclusions_and_provenance(
 
 
 def test_suffix_normalization_cannot_bypass_overwrite_confirmation(
-    qtbot, monkeypatch, tmp_path,
+    qtbot,
+    monkeypatch,
+    tmp_path,
 ):
     dialog = _open(qtbot, monkeypatch)
     path = tmp_path / "existing.vipp-results.json"
     path.write_text("keep this existing file", encoding="utf-8")
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(tmp_path / "existing"), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog,
+        "getSaveFileName",
+        lambda *_a, **_k: (str(tmp_path / "existing"), ""),
+    )
     monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.Cancel)
     dialog.save_button.click()
     assert dialog._task_id is None
@@ -606,7 +672,9 @@ def test_io_runs_off_gui_thread_and_progress_is_queued(qtbot, monkeypatch, qapp)
 
 @pytest.mark.parametrize("action", ["cancel", "close", "delete_parent"])
 def test_cancel_and_close_never_wait_or_deliver_stale_preview(
-    qtbot, monkeypatch, action,
+    qtbot,
+    monkeypatch,
+    action,
 ):
     started, cancelled = threading.Event(), threading.Event()
 
@@ -663,9 +731,9 @@ def test_cancel_save_does_not_emit_saved_path(qtbot, monkeypatch, tmp_path):
 
     monkeypatch.setattr(ui, "_save", save)
     path = tmp_path / "cancel.vipp-results.json"
-    monkeypatch.setattr(ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (
-        str(path), ""
-    ))
+    monkeypatch.setattr(
+        ui.QFileDialog, "getSaveFileName", lambda *_a, **_k: (str(path), "")
+    )
     dialog.save_button.click()
     qtbot.waitUntil(started.is_set)
     assert not dialog.table.isEnabled()
@@ -677,7 +745,9 @@ def test_cancel_save_does_not_emit_saved_path(qtbot, monkeypatch, tmp_path):
 
 
 def test_inspection_adapter_reads_only_core_table_apis_off_thread(
-    qtbot, monkeypatch, qapp,
+    qtbot,
+    monkeypatch,
+    qapp,
 ):
     from napari_vipp.core import measurement_collection as core
 
@@ -709,7 +779,9 @@ def test_inspection_adapter_reads_only_core_table_apis_off_thread(
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_no_outputs_or_failed_inspection_has_clear_disabled_save(
-    qtbot, monkeypatch, failure,
+    qtbot,
+    monkeypatch,
+    failure,
 ):
     def inspect(*_args):
         if failure:
@@ -730,11 +802,15 @@ def test_no_outputs_or_failed_inspection_has_clear_disabled_save(
 
 
 def test_saved_review_keeps_exact_inclusion_inventory_and_annotations(
-    qtbot, tmp_path, monkeypatch,
+    qtbot,
+    tmp_path,
+    monkeypatch,
 ):
     preview = _preview(("ready", "empty", "ready", "changed"), metadata=True)
     collection = collect_measurements(
-        preview, included_ids=("item-1", "item-2"), reviewed_exclusions=True,
+        preview,
+        included_ids=("item-1", "item-2"),
+        reviewed_exclusions=True,
         annotations={
             "item-1": {"sample": "Sample A"},
             "item-2": {"sample": "Sample B"},
@@ -792,13 +868,22 @@ def test_parent_styles_cannot_shrink_fonts_and_theme_remains_live(qtbot, monkeyp
     dialog.setFont(QFont("Segoe UI", 14))
     dialog.grab()
     for widget in (
-        dialog.title_label, dialog.intro_label, dialog.status_label,
-        dialog.output_combo, dialog.annotation_edit, dialog.save_button,
+        dialog.title_label,
+        dialog.intro_label,
+        dialog.status_label,
+        dialog.output_combo,
+        dialog.annotation_edit,
+        dialog.save_button,
         dialog.export_button,
         dialog.table.horizontalHeader(),
     ):
-        assert widget.font().pointSizeF() == pytest.approx(14), (
-            type(widget).__name__, widget.styleSheet(), dialog.font().toString()
+        # The title is the deliberate shared title role; every ordinary
+        # control and header still retains the explicitly requested body font.
+        expected_points = 18 if widget is dialog.title_label else 14
+        assert widget.font().pointSizeF() == pytest.approx(expected_points), (
+            type(widget).__name__,
+            widget.styleSheet(),
+            dialog.font().toString(),
         )
         assert widget.font().family() == "Segoe UI"
     original_style = dialog.status_panel.styleSheet()
@@ -829,7 +914,11 @@ def test_long_evidence_text_is_compact_with_full_details_in_tooltip(qtbot, monke
 @pytest.mark.parametrize("point_size", [10, 14])
 @pytest.mark.parametrize("dark", [False, True])
 def test_responsive_theme_and_large_font_layout(
-    qtbot, monkeypatch, width, point_size, dark,
+    qtbot,
+    monkeypatch,
+    width,
+    point_size,
+    dark,
 ):
     dialog = _open(qtbot, monkeypatch)
     palette = QPalette(dialog.palette())
@@ -848,9 +937,14 @@ def test_responsive_theme_and_large_font_layout(
     dialog.grab()
     assert dialog.width() <= width + 10
     for widget in (
-        dialog.intro_label, dialog.status_panel, dialog.annotation_help,
-        dialog.review_label, dialog.save_button, dialog.close_button,
-        dialog.export_button, dialog.open_workflow_check,
+        dialog.intro_label,
+        dialog.status_panel,
+        dialog.annotation_help,
+        dialog.review_label,
+        dialog.save_button,
+        dialog.close_button,
+        dialog.export_button,
+        dialog.open_workflow_check,
     ):
         location = widget.mapTo(dialog, QPoint(0, 0))
         assert location.x() >= 0
@@ -863,6 +957,8 @@ def test_responsive_theme_and_large_font_layout(
     assert dialog.table.verticalHeader().defaultSectionSize() >= font.pointSize() + 16
     colors = ui.theme_colors(palette)
     assert colors.success.surface.name() in dialog.status_panel.styleSheet()
-    assert dialog.table.palette().color(QPalette.Text).lightnessF() > 0.5 if dark else (
-        dialog.table.palette().color(QPalette.Text).lightnessF() < 0.5
+    assert (
+        dialog.table.palette().color(QPalette.Text).lightnessF() > 0.5
+        if dark
+        else (dialog.table.palette().color(QPalette.Text).lightnessF() < 0.5)
     )

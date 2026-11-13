@@ -56,9 +56,10 @@ def test_first_frame_clock_and_minimize_work_while_fonts_are_pending(
         qtbot.waitUntil(lambda: splash._ui_ready)
         assert splash.elapsed_label.text() == "Elapsed 0:21"
         assert splash.version_label.text() == "VIPP test"
-        assert splash.version_label.font().pixelSize() == 12
-        assert splash.elapsed_label.font().pixelSize() == 11
-        assert splash.stage_label.font().pixelSize() == 11
+        body_size = QApplication.font().pointSizeF()
+        assert splash.version_label.font().pointSizeF() >= body_size
+        assert splash.elapsed_label.font().pointSizeF() >= body_size
+        assert splash.stage_label.font().pointSizeF() >= body_size
         assert splash.detail_label.text() == "test failure"
         assert splash.close_button.isVisibleTo(splash)
     finally:
@@ -230,7 +231,7 @@ def test_splash_stylesheet_parses_and_styles_profile_and_minimize_button(
             splash.profile_spec.accent.lower()
         )
         assert badge.font().bold()
-        assert badge.font().pixelSize() == 10
+        assert badge.font().pointSizeF() >= QApplication.font().pointSizeF()
     # A malformed rule earlier in the shared sheet can also discard the new
     # minimize rule, even though the window still launches and minimizes.
     assert splash.minimize_button.font().pixelSize() == 22
@@ -255,6 +256,37 @@ def test_splash_timeout_and_failure_actions_are_explicit(qtbot, tmp_path):
     assert splash.open_log_button.isVisibleTo(splash)
     assert splash.close_button.isVisibleTo(splash)
     assert splash.detail_label.text() == "Example startup error"
+
+
+def test_branded_splash_body_stays_dark_under_real_light_napari_styles(qtbot, tmp_path):
+    from napari.qt import get_stylesheet
+
+    app = QApplication.instance()
+    previous = app.styleSheet()
+    try:
+        app.setStyleSheet(get_stylesheet("light"))
+        splash = StartupSplash(
+            profile="auto", version="test", log_path=tmp_path / "unused.log"
+        )
+        qtbot.addWidget(splash)
+        splash.update_snapshot(
+            _snapshot(StartupPhase.FAILED, error="Synthetic failure")
+        )
+        splash.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        # Check actual painted empty content margin, not only a declared QSS
+        # token/palette. The old light viewport was pale behind pale text.
+        dark = QColor("#08151F")
+        for widget in (
+            splash.content_scroll.viewport(),
+            splash.content_scroll.widget(),
+        ):
+            assert widget.grab().toImage().pixelColor(2, 2) == dark
+        assert splash.close_button.isVisibleTo(splash)
+        assert splash.detail_label.text() == "Synthetic failure"
+    finally:
+        app.setStyleSheet(previous)
 
 
 def test_splash_elapsed_time_and_real_milestone_progress(qtbot, tmp_path):

@@ -8,6 +8,7 @@ no Tk imports so every safety transition can be tested on headless builders.
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -15,7 +16,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from napari_vipp.installer.models import ComputeTrack
+from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
+
+IN_PLACE_CLOSE_WARNING = "Keep VIPP closed. Do not open it until setup finishes."
+IN_PLACE_WORKING_MESSAGE = (
+    "Updating changed packages in the current environment. Compatible installed "
+    "versions are retained; verified cached downloads are reused for required "
+    "changes. " + IN_PLACE_CLOSE_WARNING
+)
 
 
 class TargetKind(StrEnum):
@@ -50,6 +58,9 @@ class ProgressUnit(StrEnum):
     ACTIVITY = "activity"
     STEPS = "steps"
     BYTES = "bytes"
+    FILES = "files"
+    PACKAGES = "packages"
+    CHECKS = "checks"
 
 
 class TrackChoice(StrEnum):
@@ -68,6 +79,7 @@ class BlockedAction(StrEnum):
     OPEN_SETUP_HELP = "open_setup_help"
     OPEN_INSTALLED_APPS = "open_installed_apps"
     RUN_OWNED_UNINSTALLER = "run_owned_uninstaller"
+    REPAIR_REGISTRATION = "repair_registration"
     USE_DEFAULT_LOCATION = "use_default_location"
     USE_CPU = "use_cpu"
 
@@ -80,9 +92,13 @@ class InstallerSelection:
     install_root: Path | None = None
     existing_python: Path | None = None
     create_desktop_shortcut: bool = True
+    update_strategy: UpdateStrategy = UpdateStrategy.AUTO
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "track", TrackChoice(self.track))
+        object.__setattr__(
+            self, "update_strategy", UpdateStrategy(self.update_strategy)
+        )
         if self.install_root is not None:
             object.__setattr__(self, "install_root", Path(self.install_root))
         if self.existing_python is not None:
@@ -161,6 +177,55 @@ class ProgressUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistrationRepairReview:
+    """Read-only presentation of a separately authorized registry-only repair."""
+
+    fingerprint: str
+    preview: str
+    backup_path: Path
+    payload: object = field(repr=False, compare=False)
+    managed_root: Path | None = None
+    registered_version: str = ""
+    installed_version: str = ""
+    old_uninstaller_state: str = ""
+
+    def __post_init__(self) -> None:
+        if len(self.fingerprint) != 64 or any(
+            value not in "0123456789abcdef" for value in self.fingerprint
+        ):
+            raise ValueError("Registration repair needs an exact review fingerprint.")
+        object.__setattr__(self, "backup_path", Path(self.backup_path))
+        if (
+            not self.backup_path.is_absolute()
+            or not self.preview
+            or self.payload is None
+        ):
+            raise ValueError("Registration repair needs a preview and backup location.")
+        # Optional display facts are copied from the same ownership-bound
+        # repair plan. Renderers must not parse prose or inspect opaque payloads.
+        if self.managed_root is not None:
+            object.__setattr__(self, "managed_root", Path(self.managed_root))
+        if any(
+            (
+                self.managed_root is not None,
+                self.registered_version,
+                self.installed_version,
+            )
+        ):
+            if (
+                self.managed_root is None
+                or not self.managed_root.is_absolute()
+                or not isinstance(self.registered_version, str)
+                or not self.registered_version.strip()
+                or not isinstance(self.installed_version, str)
+                or not self.installed_version.strip()
+            ):
+                raise ValueError("Registration repair display facts must be complete.")
+        if self.old_uninstaller_state not in {"", "verified-present", "absent"}:
+            raise ValueError("Unknown prior uninstaller display state.")
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedInstall:
     """A reviewed executor transaction translated for a nontechnical user."""
 
@@ -182,9 +247,15 @@ class PreparedInstall:
     ownership_manifest_sha256: str = ""
     owned_uninstaller_path: Path | None = None
     owned_uninstaller_sha256: str = ""
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
+    strategy_reason: str = ""
+    registration_repair: RegistrationRepairReview | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", TargetKind(self.kind))
+        object.__setattr__(
+            self, "selected_strategy", UpdateStrategy(self.selected_strategy)
+        )
         object.__setattr__(self, "target", Path(self.target))
         if self.track is not None:
             object.__setattr__(self, "track", ComputeTrack(self.track))
@@ -218,6 +289,10 @@ class PreparedInstall:
             raise ValueError(
                 "The owned-uninstaller action requires a hash-bound fallback."
             )
+        if self.blocked_action is BlockedAction.REPAIR_REGISTRATION and (
+            self.kind is not TargetKind.BLOCKED or self.registration_repair is None
+        ):
+            raise ValueError("Registration repair requires a separate blocked review.")
         if self.kind in {
             TargetKind.NEW,
             TargetKind.UPDATE,
@@ -252,6 +327,16 @@ class InstallationCancelled(RuntimeError):
         self.details = details
 
 
+class VippMustBeClosed(RuntimeError):
+    """A positively detected app user prevents the selected in-place update."""
+
+    def __init__(
+        self, message: str = "Close VIPP before continuing.", *, details: str = ""
+    ):
+        super().__init__(message)
+        self.details = details
+
+
 class InstallerBackend(Protocol):
     """Mutation boundary consumed by :class:`InstallerController`."""
 
@@ -276,6 +361,14 @@ class InstallerBackend(Protocol):
     def open_vipp(self, launcher: Path) -> None: ...
 
     def open_owned_uninstaller(self, prepared: PreparedInstall) -> None: ...
+
+    def repair_registration(
+        self,
+        prepared: PreparedInstall,
+        *,
+        confirmed: bool,
+        progress: Callable[[ProgressUpdate], None],
+    ) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,9 +397,21 @@ class InstallerViewState:
     track: ComputeTrack | None = None
     help_url: str = ""
     blocked_action: BlockedAction = BlockedAction.RETRY
+    selected_strategy: UpdateStrategy = UpdateStrategy.FRESH
+    strategy_reason: str = ""
+    registration_repair: RegistrationRepairReview | None = None
+    progress_completed: int | None = None
+    progress_total: int | None = None
+    installation_stage: str = ""
+    installation_started_at: float | None = None
+    installation_finished_at: float | None = None
+    close_vipp_required: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "screen", InstallerScreen(self.screen))
+        object.__setattr__(
+            self, "selected_strategy", UpdateStrategy(self.selected_strategy)
+        )
         object.__setattr__(self, "blocked_action", BlockedAction(self.blocked_action))
         object.__setattr__(self, "progress_unit", ProgressUnit(self.progress_unit))
         if self.log_path is not None:
@@ -420,6 +525,7 @@ class InstallerController:
             install_root=selection.install_root,
             existing_python=selection.existing_python,
             create_desktop_shortcut=selection.create_desktop_shortcut,
+            update_strategy=selection.update_strategy,
         )
         with self._lock:
             if self._state.screen in {
@@ -446,7 +552,7 @@ class InstallerController:
                     headline="Settings changed",
                     message=(
                         "Select 'Check these settings' to review the new location "
-                        "and computer-use choices before continuing."
+                        "and update-method choices before continuing."
                     ),
                     primary_label="Check settings above",
                     primary_enabled=False,
@@ -486,10 +592,18 @@ class InstallerController:
                 TargetKind.REPAIR: "Repairing",
             }[prepared.kind]
             working_message = (
-                "The GPU components are a large download and can take several "
-                "minutes. The moving bar means setup is still working."
+                IN_PLACE_WORKING_MESSAGE
+                if prepared.selected_strategy is UpdateStrategy.IN_PLACE
+                else "Staging a new VIPP copy with current compatible "
+                "dependency versions. "
+                "This still needs temporary disk space; the previous installation "
+                "stays available until checks pass."
+                if prepared.selected_strategy is UpdateStrategy.INCREMENTAL
+                else "Required GPU components can be large downloads. Verified cached "
+                "packages are reused where available; setup can take several minutes."
                 if prepared.track is ComputeTrack.CUDA13
-                else "You can keep using this computer while setup finishes."
+                else "Preparing a separate environment. Verified cached packages are "
+                "reused; missing required packages are downloaded as needed."
             )
             self._publish(
                 InstallerViewState(
@@ -501,6 +615,8 @@ class InstallerController:
                     cancel_enabled=True,
                     status_message="Preparing the installation…",
                     progress_stage="preparing",
+                    installation_stage="preparing",
+                    installation_started_at=time.monotonic(),
                     technical_details=prepared.technical_details,
                     target_kind=prepared.kind,
                     target=prepared.target,
@@ -508,6 +624,8 @@ class InstallerController:
                     required_free_bytes=prepared.required_free_bytes,
                     temporary_free_bytes=prepared.temporary_free_bytes,
                     size_estimate=prepared.size_estimate,
+                    selected_strategy=prepared.selected_strategy,
+                    strategy_reason=prepared.strategy_reason,
                 )
             )
         self._start_worker(
@@ -557,6 +675,8 @@ class InstallerController:
         """Request cooperative cancellation; the backend owns safe rollback."""
 
         with self._lock:
+            if self._state.progress_stage == "repairing_registration":
+                return
             if not self.busy or self._state.screen is InstallerScreen.CANCELLING:
                 return
             self._cancellation.set()
@@ -575,6 +695,8 @@ class InstallerController:
                     progress_fraction=None,
                     progress_stage="rolling_back",
                     progress_unit=ProgressUnit.ACTIVITY,
+                    progress_completed=None,
+                    progress_total=None,
                 )
             )
 
@@ -629,6 +751,109 @@ class InstallerController:
                 exc,
             )
 
+    def repair_registration(self, *, confirmed: bool, fingerprint: str) -> None:
+        """Apply only the separately confirmed, currently visible registry review."""
+
+        if confirmed is not True:
+            return
+        with self._lock:
+            prepared = self._prepared
+            review = prepared.registration_repair if prepared is not None else None
+            if (
+                self._state.screen is not InstallerScreen.BLOCKED
+                or prepared is None
+                or prepared.blocked_action is not BlockedAction.REPAIR_REGISTRATION
+                or self._prepared_selection != self._selection
+                or review is None
+                or review.fingerprint != fingerprint
+            ):
+                return
+            selection = self._selection
+            generation = self._begin_operation()
+            self._publish(
+                InstallerViewState(
+                    screen=InstallerScreen.WORKING,
+                    headline="Repairing the Windows entry…",
+                    message=(
+                        "Only this installation's Windows uninstall entry is being "
+                        "repaired. No packages, workflows or shortcuts are changed."
+                    ),
+                    primary_label="Repairing…",
+                    primary_enabled=False,
+                    cancel_enabled=False,
+                    status_message="Saving the verified entry backup before repair…",
+                    progress_stage="repairing_registration",
+                    technical_details=prepared.technical_details,
+                    target=prepared.target,
+                    target_kind=TargetKind.BLOCKED,
+                    track=prepared.track,
+                )
+            )
+        self._start_worker(
+            lambda: self._registration_repair_worker(generation, selection, prepared)
+        )
+
+    def _registration_repair_worker(
+        self,
+        generation: int,
+        selection: InstallerSelection,
+        prepared: PreparedInstall,
+    ) -> None:
+        try:
+            outcome = self._backend.repair_registration(
+                prepared,
+                confirmed=True,
+                progress=lambda update: self._on_progress(generation, update),
+            )
+            with self._lock:
+                if generation != self._generation or selection != self._selection:
+                    return
+                self._prepared = None
+                self._prepared_selection = None
+                self._publish(
+                    InstallerViewState(
+                        screen=InstallerScreen.CHECKING,
+                        headline="Windows entry repaired — checking again…",
+                        message=(
+                            "Setup is reviewing the same selection again. Updating "
+                            "VIPP still needs your separate approval."
+                        ),
+                        primary_label="Please wait",
+                        primary_enabled=False,
+                        cancel_enabled=True,
+                        status_message="Rechecking after registration repair…",
+                        progress_stage="checking",
+                    )
+                )
+            self._inspect_worker(
+                generation,
+                selection,
+                self._cancellation,
+                repair=False,
+                prior_repair_details=(
+                    "Registration-only repair completed.\n"
+                    f"{getattr(outcome, 'message', 'Windows entry repaired.')}\n"
+                    "Entry backup: "
+                    f"{prepared.registration_repair.backup_path}"
+                ),
+            )
+        except Exception as exc:
+            self._fail(
+                "The Windows entry could not be repaired",
+                "No package installation was started. Keep any backup and repair "
+                "records, and read Advanced details before trying again.",
+                exc,
+                generation=generation,
+                prepared=replace(
+                    prepared,
+                    technical_details=_join_details(
+                        prepared.technical_details,
+                        "Registration repair backup location: "
+                        f"{prepared.registration_repair.backup_path}",
+                    ),
+                ),
+            )
+
     def _begin_operation(self) -> int:
         self._generation += 1
         self._cancellation = threading.Event()
@@ -650,6 +875,7 @@ class InstallerController:
         cancellation: threading.Event,
         *,
         repair: bool,
+        prior_repair_details: str = "",
     ) -> None:
         try:
             prepared = self._backend.inspect(
@@ -658,6 +884,13 @@ class InstallerController:
                 cancellation=cancellation,
                 repair=repair,
             )
+            if prior_repair_details:
+                prepared = replace(
+                    prepared,
+                    technical_details=_join_details(
+                        prepared.technical_details, prior_repair_details
+                    ),
+                )
             if cancellation.is_set():
                 raise InstallationCancelled()
             with self._lock:
@@ -668,6 +901,8 @@ class InstallerController:
                 self._publish(_view_for_prepared(prepared))
         except InstallationCancelled as exc:
             self._show_cancelled(generation, details=exc.details)
+        except VippMustBeClosed as exc:
+            self._show_vipp_must_be_closed(generation, exc)
         except Exception as exc:
             headline, message = _plain_check_failure(exc)
             self._fail(
@@ -711,6 +946,9 @@ class InstallerController:
                         progress_fraction=1.0,
                         progress_stage="completed",
                         progress_unit=ProgressUnit.STEPS,
+                        installation_stage="completed",
+                        installation_started_at=self._state.installation_started_at,
+                        installation_finished_at=time.monotonic(),
                         log_path=outcome.log_path or self._state.log_path,
                         required_free_bytes=prepared.required_free_bytes,
                         temporary_free_bytes=prepared.temporary_free_bytes,
@@ -719,10 +957,14 @@ class InstallerController:
                         target_kind=prepared.kind,
                         target=prepared.target,
                         track=prepared.track,
+                        selected_strategy=prepared.selected_strategy,
+                        strategy_reason=prepared.strategy_reason,
                     )
                 )
         except InstallationCancelled as exc:
             self._show_cancelled(generation, details=exc.details)
+        except VippMustBeClosed as exc:
+            self._show_vipp_must_be_closed(generation, exc, prepared=prepared)
         except Exception as exc:
             headline, message = _plain_apply_failure(exc)
             self._fail(
@@ -759,6 +1001,24 @@ class InstallerController:
                     progress_fraction=update.fraction,
                     progress_stage=update.stage,
                     progress_unit=update.unit,
+                    progress_completed=update.completed,
+                    progress_total=update.total,
+                    installation_stage=(
+                        update.stage
+                        if self._state.screen
+                        in {InstallerScreen.WORKING, InstallerScreen.CANCELLING}
+                        and self._state.installation_stage
+                        and update.stage
+                        in {
+                            "preparing",
+                            "creating_environment",
+                            "installing",
+                            "verifying",
+                            "creating_shortcuts",
+                            "committing",
+                        }
+                        else self._state.installation_stage
+                    ),
                     log_path=update.log_path or self._state.log_path,
                 )
             )
@@ -783,6 +1043,13 @@ class InstallerController:
                     secondary_enabled=True,
                     status_message="Cancellation completed.",
                     progress_stage="cancelled",
+                    installation_stage=self._state.installation_stage,
+                    installation_started_at=self._state.installation_started_at,
+                    installation_finished_at=(
+                        time.monotonic()
+                        if self._state.installation_started_at is not None
+                        else None
+                    ),
                     log_path=self._state.log_path,
                     required_free_bytes=(
                         prepared.required_free_bytes if prepared else None
@@ -798,8 +1065,30 @@ class InstallerController:
                     target_kind=prepared.kind if prepared else None,
                     target=prepared.target if prepared else None,
                     track=prepared.track if prepared else None,
+                    selected_strategy=(
+                        prepared.selected_strategy if prepared else UpdateStrategy.FRESH
+                    ),
+                    strategy_reason=prepared.strategy_reason if prepared else "",
                 )
             )
+
+    def _show_vipp_must_be_closed(
+        self,
+        generation: int,
+        exc: VippMustBeClosed,
+        *,
+        prepared: PreparedInstall | None = None,
+    ) -> None:
+        self._fail(
+            "Close VIPP to continue",
+            "This in-place update needs VIPP to be closed. Save your work and "
+            "close VIPP yourself, then choose Check again. Setup will not close "
+            "VIPP for you or start the update again automatically.",
+            exc,
+            generation=generation,
+            prepared=prepared,
+            close_vipp_required=True,
+        )
 
     def _fail(
         self,
@@ -809,23 +1098,42 @@ class InstallerController:
         *,
         generation: int | None = None,
         prepared: PreparedInstall | None = None,
+        close_vipp_required: bool = False,
     ) -> None:
-        details = "".join(traceback.format_exception(exc)).strip()
+        details = _join_details(
+            "".join(traceback.format_exception(exc)).strip(),
+            exc.details if isinstance(exc, VippMustBeClosed) else "",
+        )
         with self._lock:
             if generation is not None and generation != self._generation:
                 return
             selected = prepared or self._prepared
+            if close_vipp_required:
+                # Checking again must create a fresh plan; it is not permission
+                # to reuse the rejected transaction or retry application.
+                self._prepared = None
+                self._prepared_selection = None
+                self._outcome = None
             self._publish(
                 InstallerViewState(
                     screen=InstallerScreen.FAILED,
                     headline=headline,
                     message=message,
-                    primary_label="Try again",
+                    primary_label="Check again" if close_vipp_required else "Try again",
                     primary_enabled=True,
                     secondary_label="Close",
                     secondary_enabled=True,
                     status_message="Setup stopped before completion.",
                     progress_stage="failed",
+                    installation_stage=self._state.installation_stage,
+                    installation_started_at=self._state.installation_started_at,
+                    installation_finished_at=(
+                        self._state.installation_finished_at
+                        if self._state.installation_finished_at is not None
+                        else time.monotonic()
+                        if self._state.installation_started_at is not None
+                        else None
+                    ),
                     log_path=self._state.log_path,
                     required_free_bytes=(
                         selected.required_free_bytes if selected else None
@@ -841,6 +1149,15 @@ class InstallerController:
                     target_kind=selected.kind if selected else None,
                     target=selected.target if selected else None,
                     track=selected.track if selected else None,
+                    selected_strategy=(
+                        selected.selected_strategy
+                        if selected
+                        else UpdateStrategy.IN_PLACE
+                        if close_vipp_required
+                        else UpdateStrategy.FRESH
+                    ),
+                    strategy_reason=selected.strategy_reason if selected else "",
+                    close_vipp_required=close_vipp_required,
                 )
             )
 
@@ -858,6 +1175,9 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         "help_url": prepared.help_url,
         "required_free_bytes": prepared.required_free_bytes,
         "temporary_free_bytes": prepared.temporary_free_bytes,
+        "selected_strategy": prepared.selected_strategy,
+        "strategy_reason": prepared.strategy_reason,
+        "registration_repair": prepared.registration_repair,
         "size_estimate": prepared.size_estimate,
     }
     if prepared.kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}:
@@ -939,6 +1259,7 @@ def _view_for_prepared(prepared: PreparedInstall) -> InstallerViewState:
         BlockedAction.OPEN_SETUP_HELP: "Get setup help",
         BlockedAction.OPEN_INSTALLED_APPS: "Open Installed apps",
         BlockedAction.RUN_OWNED_UNINSTALLER: "Open VIPP uninstaller",
+        BlockedAction.REPAIR_REGISTRATION: "Repair registration…",
         BlockedAction.USE_DEFAULT_LOCATION: "Use default location",
         BlockedAction.USE_CPU: "Use CPU",
         BlockedAction.RETRY: "Check again",
@@ -1072,12 +1393,16 @@ __all__ = [
     "InstallSizeEstimate",
     "InstallOutcome",
     "InstallationCancelled",
+    "IN_PLACE_CLOSE_WARNING",
+    "IN_PLACE_WORKING_MESSAGE",
+    "VippMustBeClosed",
     "InstallerBackend",
     "InstallerController",
     "InstallerScreen",
     "InstallerSelection",
     "InstallerViewState",
     "PreparedInstall",
+    "RegistrationRepairReview",
     "ProgressUnit",
     "ProgressUpdate",
     "TargetKind",

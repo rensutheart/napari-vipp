@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from math import ceil
+
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QColor, QPalette
+from qtpy.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QPixmap
 from qtpy.QtWidgets import QApplication, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from napari_vipp.core.pipeline import NODE_LIBRARY, NODE_LIBRARY_BY_ID
@@ -13,6 +15,7 @@ from napari_vipp.ui.inspector import (
     FILTER_RESULT_SECTION,
     HISTOGRAMS_SECTION,
     HISTORY_SECTION,
+    INPUT_METADATA_SECTION,
     LABEL_DISTRIBUTION_SECTION,
     MASK_SUMMARY_SECTION,
     METADATA_SECTION,
@@ -139,8 +142,20 @@ def test_every_registered_operation_resolves_one_complete_inspector_profile():
         assert profile.operation_id == spec.id
         assert profile.parameter_title
         assert profile.primary_sections[0] == PARAMETERS_SECTION
+        section_order = tuple(
+            section
+            for section in profile.section_order
+            if section != INPUT_METADATA_SECTION
+        )
+        if profile.show_connected_inputs:
+            assert profile.section_order[-2:] == (
+                INPUT_METADATA_SECTION,
+                HISTORY_SECTION,
+            )
+        else:
+            assert INPUT_METADATA_SECTION not in profile.section_order
         if METADATA_SECTION in profile.primary_sections:
-            assert profile.section_order[-3:] == (
+            assert section_order[-3:] == (
                 BEHAVIOR_SECTION,
                 COMPUTE_SECTION,
                 HISTORY_SECTION,
@@ -153,7 +168,7 @@ def test_every_registered_operation_resolves_one_complete_inspector_profile():
                 profile.section_order.index(BEHAVIOR_SECTION)
             )
         else:
-            assert profile.section_order[-4:] == _COMMON_TRAILING_SECTIONS
+            assert section_order[-4:] == _COMMON_TRAILING_SECTIONS
         assert all(
             profile.section_order.count(section) == 1
             for section in _COMMON_TRAILING_SECTIONS
@@ -729,6 +744,199 @@ def test_inspector_section_summary_does_not_force_a_wide_dock(qtbot):
     assert section.summary_label.isVisible()
 
 
+def _section_header_widths(section):
+    """Measure fit from polished fonts, not from the widths assigned by layout."""
+    button = section.title_button
+    unwrapped, _ = button._label_layout(10_000)
+    title_width = (
+        ceil(unwrapped.lineAt(0).naturalTextWidth())
+        + button.iconSize().width()
+        + button._ICON_TEXT_GAP
+        + button._HORIZONTAL_PADDING
+    )
+    summary = section.summary_label
+    summary_width = ceil(
+        QFontMetricsF(summary.font(), summary).horizontalAdvance(summary.text())
+    )
+    header_layout = section.header.layout()
+    margins = header_layout.contentsMargins()
+    chrome_width = (
+        margins.left()
+        + margins.right()
+        + 2 * header_layout.spacing()  # Title, summary, and idle disclosure.
+        + section.toggle_button.minimumWidth()
+    )
+    return title_width, summary_width, chrome_width
+
+
+@pytest.mark.parametrize(
+    ("title", "summary"),
+    (("Displayed output", "Aligned image"), ("Histograms", "Output · intensity")),
+)
+@pytest.mark.parametrize("point_size", (10, 11, 16))
+def test_inspector_section_titles_use_available_width(
+    qtbot, title, summary, point_size,
+):
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.setFont(QFont("Sans Serif", point_size))
+    outer = QVBoxLayout(host)
+    outer.setContentsMargins(0, 0, 0, 0)
+    section = InspectorSection(title, expanded=False, parent=host)
+    section.setSummary(summary)
+    following = QLabel("Following section", host)
+    outer.addWidget(section)
+    outer.addWidget(following)
+    outer.addStretch()
+    host.resize(440, 260)
+    host.show()
+    qtbot.waitExposed(host)
+
+    button = section.title_button
+    title_width, summary_width, chrome_width = _section_header_widths(section)
+    # A fixed 440 px does not necessarily fit both strings (e.g. DejaVu Sans
+    # at 16 pt). Exercise the same fit boundaries at each platform's font.
+    wide_width = title_width + summary_width + chrome_width + 2
+    host.resize(wide_width, 260)
+    QApplication.processEvents()
+    assert button.width() >= title_width
+    assert section.summary_label.contentsRect().width() >= summary_width
+    layout, _ = button._label_layout(button.width())
+    assert layout.lineCount() == 1, (title, button.width(), button.font().toString())
+    assert section.summary_label.displayText() == summary
+    assert following.geometry().top() > section.geometry().bottom()
+
+    wide_height = section.header.height()
+    host.resize(title_width + chrome_width + summary_width // 2, 260)
+    QApplication.processEvents()
+    layout, _ = button._label_layout(button.width())
+    assert layout.lineCount() == 1
+    assert section.summary_label.displayText().endswith("…")
+    assert section.summary_label.toolTip() == summary
+    assert section.header.height() == wide_height
+    assert following.geometry().top() > section.geometry().bottom()
+
+    host.resize(title_width + chrome_width - 28, 260)
+    QApplication.processEvents()
+    layout, _ = button._label_layout(button.width())
+    assert layout.lineCount() > 1
+    assert layout.text() == title
+    assert section.summary_label.displayText() == ""
+    assert section.header.height() > wide_height
+    assert following.geometry().top() > section.geometry().bottom()
+    assert section.header.rect().contains(section.toggle_button.geometry())
+
+    host.resize(wide_width, 260)
+    QApplication.processEvents()
+    layout, _ = button._label_layout(button.width())
+    assert layout.lineCount() == 1
+    assert section.summary_label.displayText() == summary
+    assert section.header.height() == wide_height
+    assert following.geometry().top() > section.geometry().bottom()
+
+
+@pytest.mark.parametrize(
+    ("base", "text"),
+    (("#ffffff", "#111827"), ("#111827", "#f8fafc")),
+)
+def test_long_section_title_wraps_and_releases_height_on_widen(qtbot, base, text):
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.setFont(QFont("Sans Serif", 10))
+    host.setPalette(_test_palette(base=base, text=text))
+    outer = QVBoxLayout(host)
+    outer.setContentsMargins(0, 0, 0, 0)
+    title = "Source & data representations"
+    section = InspectorSection(title, expanded=False, parent=host)
+    content = QVBoxLayout(section.content_widget)
+    content.addWidget(QLabel("Source controls", section.content_widget))
+    section.setSummary("3 values")
+    following = QLabel("Following section", host)
+    outer.addWidget(section)
+    outer.addWidget(following)
+    outer.addStretch()
+    host.resize(520, 220)
+    host.show()
+    qtbot.waitExposed(host)
+
+    title_button = section.title_button
+    default_font = title_button.font().pointSizeF()
+    host.setFont(QFont("Sans Serif", 16))
+    section.refresh_theme()  # Match the inspector's appearance update.
+    qtbot.waitUntil(lambda: title_button.font().pointSizeF() > default_font)
+    title_width, summary_width, chrome_width = _section_header_widths(section)
+    wide_width = title_width + summary_width + chrome_width + 2
+    host.resize(wide_width, 220)
+    QApplication.processEvents()
+    margins = section.header.layout().contentsMargins()
+    qtbot.waitUntil(
+        lambda: (
+            section.header.height()
+            >= title_button.sizeHint().height() + margins.top() + margins.bottom()
+        )
+    )
+    wide_height = section.header.height()
+    large_font = title_button.font()
+    assert title_button.width() >= title_width
+    assert section.summary_label.contentsRect().width() >= summary_width
+    assert section.summary_label.displayText() == "3 values"
+
+    host.resize(220, 220)
+    qtbot.waitUntil(
+        lambda: section.header.height() >= wide_height + large_font.pointSize(),
+        timeout=1500,
+    )
+    narrow_height = section.header.height()
+    assert title_button.font() == large_font
+    assert title_button.text() == title
+    assert title_button.shortcut().isEmpty()
+    assert title_button.height() >= title_button.heightForWidth(title_button.width())
+    title_layout, _ = title_button._label_layout(title_button.width())
+    assert title_layout.text() == title
+    assert title_layout.lineCount() > 1
+    last = title_layout.lineAt(title_layout.lineCount() - 1)
+    assert last.textStart() + last.textLength() == len(title)
+    assert following.geometry().top() > section.geometry().bottom()
+    assert section.toggle_button.geometry().right() < section.header.width()
+    assert section.toggle_button.icon().isNull() is False
+    assert section.summary_label.displayText() == ""
+    assert title_button.accessibleName() == f"Expand {title}"
+
+    qtbot.keyClick(title_button, Qt.Key_Space)
+    qtbot.waitUntil(section.content_widget.isVisible)
+    assert title_button.accessibleName() == f"Collapse {title}"
+    assert section.header.height() == narrow_height
+    assert following.geometry().top() > section.geometry().bottom()
+
+    host.resize(wide_width, 220)
+    qtbot.waitUntil(lambda: section.header.height() < narrow_height)
+    assert section.header.height() == wide_height
+    assert title_button.font() == large_font
+    assert section.summary_label.displayText() == "3 values"
+    assert following.geometry().top() > section.geometry().bottom()
+    qtbot.mouseClick(section.toggle_button, Qt.LeftButton)
+    assert not section.isExpanded()
+
+
+def test_wrapping_section_paints_its_semantic_icon(qtbot):
+    section = InspectorSection("Source & data representations", expanded=False)
+    qtbot.addWidget(section)
+    section.resize(240, section.sizeHint().height())
+    section.show()
+    qtbot.waitExposed(section)
+    button = section.title_button
+    color = QColor("#ff00ff")
+    pixmap = QPixmap(button.iconSize())
+    pixmap.fill(color)
+    button.setIcon(QIcon(pixmap))
+
+    image = button.grab().toImage()
+    dpr = image.devicePixelRatio()
+    sample_x = button._HORIZONTAL_PADDING // 2 + button.iconSize().width() // 2
+    sample_y = button.height() // 2
+    assert image.pixelColor(round(sample_x * dpr), round(sample_y * dpr)) == color
+
+
 def test_inspector_section_summary_receives_unused_title_width(qtbot):
     section = InspectorSection("Histograms", expanded=False)
     qtbot.addWidget(section)
@@ -782,10 +990,9 @@ def test_busy_capable_section_summary_uses_idle_width_beside_chevron(qtbot):
     QApplication.processEvents()
     header_layout = section.header.layout()
     margins = header_layout.contentsMargins()
+    natural_layout, _ = section.title_button._label_layout(10_000)
     compact_title_width = (
-        section.title_button.fontMetrics().horizontalAdvance(
-            section.title_button.text()
-        )
+        ceil(natural_layout.lineAt(0).naturalTextWidth())
         + section.title_button.iconSize().width()
         + section.title_button._ICON_TEXT_GAP
         + section.title_button._HORIZONTAL_PADDING
@@ -801,7 +1008,9 @@ def test_busy_capable_section_summary_uses_idle_width_beside_chevron(qtbot):
     section.resize(required_width, section.sizeHint().height())
     QApplication.processEvents()
 
-    assert section.title_button.sizeHint().width() == compact_title_width
+    assert section.title_button.sizeHint().width() >= compact_title_width
+    title_layout, _ = section.title_button._label_layout(section.title_button.width())
+    assert title_layout.lineCount() == 1
     assert section.busy_indicator.isHidden()
     assert section.summary_label.alignment() & Qt.AlignRight
     assert section.summary_label.displayText() == summary

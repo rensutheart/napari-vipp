@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from napari_vipp.installer import frontend as frontend_module
 from napari_vipp.installer.frontend import (
+    IN_PLACE_CLOSE_WARNING,
     BlockedAction,
     InstallationCancelled,
     InstallerController,
@@ -17,10 +19,12 @@ from napari_vipp.installer.frontend import (
     PreparedInstall,
     ProgressUnit,
     ProgressUpdate,
+    RegistrationRepairReview,
     TargetKind,
+    VippMustBeClosed,
     default_install_size_estimate,
 )
-from napari_vipp.installer.models import ComputeTrack
+from napari_vipp.installer.models import ComputeTrack, UpdateStrategy
 
 
 class _QueuedWorker:
@@ -43,6 +47,8 @@ class _Backend:
         self.cancel_after_success = False
         self.inspect_error = None
         self.apply_error = None
+        self.registration_repairs = []
+        self.registration_repair_error = None
 
     def inspect(self, selection, *, progress, cancellation, repair=False):
         self.inspect_calls.append((selection, repair))
@@ -82,6 +88,21 @@ class _Backend:
     def open_owned_uninstaller(self, prepared):
         self.opened_uninstallers.append(prepared)
 
+    def repair_registration(self, prepared, *, confirmed, progress):
+        self.registration_repairs.append((prepared, confirmed))
+        if self.registration_repair_error is not None:
+            raise self.registration_repair_error
+        progress(
+            ProgressUpdate("repairing_registration", "Fake backup and repair", 1, 1)
+        )
+        self.prepared = replace(
+            prepared,
+            kind=TargetKind.UPDATE,
+            blocked_action=BlockedAction.RETRY,
+            registration_repair=None,
+            payload="freshly checked update",
+        )
+
 
 def _prepared(kind: TargetKind, tmp_path: Path) -> PreparedInstall:
     mutable = kind in {TargetKind.NEW, TargetKind.UPDATE, TargetKind.REPAIR}
@@ -102,6 +123,124 @@ def _prepared(kind: TargetKind, tmp_path: Path) -> PreparedInstall:
         launcher=launcher,
         required_free_bytes=5 * 1024**3,
     )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [UpdateStrategy.IN_PLACE, UpdateStrategy.INCREMENTAL, UpdateStrategy.FRESH],
+)
+def test_working_copy_warns_only_for_in_place_and_explains_package_reuse(
+    tmp_path, strategy
+):
+    workers = []
+    backend = _Backend(
+        replace(_prepared(TargetKind.UPDATE, tmp_path), selected_strategy=strategy)
+    )
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    assert controller.state.screen is InstallerScreen.WORKING
+    assert (IN_PLACE_CLOSE_WARNING in controller.state.message) is (
+        strategy is UpdateStrategy.IN_PLACE
+    )
+    if strategy is UpdateStrategy.IN_PLACE:
+        assert "Updating changed packages" in controller.state.message
+        assert "Compatible installed versions are retained" in controller.state.message
+        assert (
+            "cached downloads are reused for required changes"
+            in controller.state.message
+        )
+        assert "dependencies stay unchanged" not in controller.state.message
+        assert "previous installation stays available" not in controller.state.message
+    assert backend.apply_calls == []
+
+
+def test_typed_running_app_blocker_requires_manual_close_then_new_review(tmp_path):
+    workers = []
+    backend = _Backend(
+        replace(
+            _prepared(TargetKind.UPDATE, tmp_path),
+            selected_strategy=UpdateStrategy.IN_PLACE,
+        )
+    )
+    backend.apply_error = VippMustBeClosed(details="Exact runtime user was detected.")
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    started = controller.state.installation_started_at
+    workers.pop(0)()
+    state = controller.state
+    assert state.screen is InstallerScreen.FAILED
+    assert state.close_vipp_required is True
+    assert state.headline == "Close VIPP to continue"
+    assert state.primary_label == "Check again"
+    assert "Save your work and close VIPP yourself" in state.message
+    assert "not close VIPP for you" in state.message
+    assert "automatically" in state.message
+    assert "Exact runtime user was detected" in state.technical_details
+    assert state.installation_started_at == started and started is not None
+    assert state.installation_finished_at is not None
+    assert controller._prepared is None
+    assert controller._prepared_selection is None
+    controller.confirm()
+    controller.open_vipp()
+    assert len(backend.apply_calls) == 1
+    assert backend.opened == []
+    controller.retry()
+    assert controller.state.screen is InstallerScreen.CHECKING
+    assert controller.state.close_vipp_required is False
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.READY
+    assert len(backend.inspect_calls) == 2
+    assert len(backend.apply_calls) == 1  # Recheck is not a fresh approval.
+
+
+def test_typed_inspection_blocker_does_not_invent_started_installation(tmp_path):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    backend.inspect_error = VippMustBeClosed(details="An exact running user was found.")
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    assert controller.state.close_vipp_required is True
+    assert controller.state.primary_label == "Check again"
+    assert controller.state.installation_started_at is None
+    assert controller.state.installation_finished_at is None
+    assert backend.apply_calls == []
+    assert backend.opened == []
+
+
+def test_unknown_failure_text_is_not_a_positive_running_app_signal(tmp_path):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    backend.inspect_error = RuntimeError(
+        "Close VIPP if it is running; identity unknown."
+    )
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.FAILED
+    assert controller.state.close_vipp_required is False
+    assert controller.state.headline != "Close VIPP to continue"
+    assert backend.apply_calls == []
 
 
 @pytest.mark.parametrize(
@@ -164,9 +303,7 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     controller.start()
     workers.pop(0)()
     status = controller.state.status_message
-    assert (
-        "at least 15 GiB of free disk space on the installation drive" in status
-    )
+    assert "at least 15 GiB of free disk space on the installation drive" in status
     assert "during setup" in status
     assert "Windows temporary files and VIPP installer records" in status
     assert "at least 5 GiB" in status
@@ -178,6 +315,8 @@ def test_gpu_install_explains_that_the_large_download_can_pause(tmp_path):
     assert controller.state.screen is InstallerScreen.WORKING
     assert "large download" in controller.state.message
     assert "several minutes" in controller.state.message
+    assert "can be" in controller.state.message
+    assert "cached" in controller.state.message
 
 
 def test_ready_state_keeps_estimates_separate_from_enforced_space_limits(tmp_path):
@@ -244,6 +383,152 @@ def test_progress_units_distinguish_byte_progress_from_unknown_activity():
     assert unknown_activity.fraction is None
 
 
+@pytest.mark.parametrize(
+    "unit", [ProgressUnit.FILES, ProgressUnit.PACKAGES, ProgressUnit.CHECKS]
+)
+def test_controller_preserves_exact_measured_counts_through_console_and_rollback(
+    tmp_path, unit
+):
+    workers = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.UPDATE, tmp_path)),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    generation = controller._generation
+    controller._on_progress(
+        generation, ProgressUpdate("installing", "Measured task", 23, 100, unit)
+    )
+    measured = controller.state
+    assert measured.progress_completed == 23
+    assert measured.progress_total == 100
+    assert measured.progress_unit is unit
+    assert measured.progress_fraction == pytest.approx(0.23)
+    assert measured.installation_stage == "installing"
+    controller._on_progress(
+        generation, ProgressUpdate("installing", "", console_text="pip output\n")
+    )
+    assert controller.state == measured
+    controller._on_progress(
+        generation,
+        ProgressUpdate("rolling_back", "Cleaning up", unit=ProgressUnit.ACTIVITY),
+    )
+    assert controller.state.installation_stage == "installing"
+    assert controller.state.progress_completed is None
+    assert controller.state.progress_total is None
+    controller._fail(
+        "Stopped", "Safe failure", RuntimeError("test only"), generation=generation
+    )
+    assert controller.state.installation_stage == "installing"
+    assert controller.state.progress_fraction is None
+
+
+def test_cancel_clears_task_counts_but_preserves_last_installation_stage(tmp_path):
+    workers = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    controller._on_progress(
+        controller._generation,
+        ProgressUpdate("verifying", "Checking", 2, 3, ProgressUnit.CHECKS),
+    )
+    controller.cancel()
+    assert controller.state.screen is InstallerScreen.CANCELLING
+    assert controller.state.installation_stage == "verifying"
+    assert controller.state.progress_completed is None
+    assert controller.state.progress_total is None
+    assert controller.state.progress_fraction is None
+    controller._show_cancelled(controller._generation)
+    assert controller.state.installation_stage == "verifying"
+    controller.retry()
+    assert controller.state.installation_stage == ""
+    assert controller.state.progress_completed is None
+    assert controller.state.progress_total is None
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
+def test_installation_clock_begins_at_accepted_approval_and_freezes_at_terminal(
+    tmp_path, monkeypatch, outcome
+):
+    now = [10.0]
+    monkeypatch.setattr(frontend_module.time, "monotonic", lambda: now[0])
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    backend.apply_error = RuntimeError("test failure") if outcome == "failure" else None
+    backend.cancel_apply = outcome == "cancelled"
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    assert controller.state.installation_started_at is None
+    controller.confirm()  # Checking is not permission to start installation.
+    assert controller.state.installation_started_at is None
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.READY
+    now[0] = 25.0
+    controller.confirm()
+    assert controller.state.installation_started_at == 25.0
+    assert controller.state.installation_finished_at is None
+    controller._on_progress(
+        controller._generation,
+        ProgressUpdate("installing", "Copying", 1, 2, ProgressUnit.FILES),
+    )
+    assert controller.state.installation_started_at == 25.0
+    now[0] = 65.0
+    workers.pop(0)()
+    assert (
+        controller.state.screen
+        is {
+            "success": InstallerScreen.SUCCESS,
+            "failure": InstallerScreen.FAILED,
+            "cancelled": InstallerScreen.CANCELLED,
+        }[outcome]
+    )
+    assert controller.state.installation_started_at == 25.0
+    assert controller.state.installation_finished_at == 65.0
+    now[0] = 1000.0
+    controller._on_progress(
+        controller._generation, ProgressUpdate("completed", "Late output")
+    )
+    assert controller.state.installation_finished_at == 65.0
+    if outcome != "success":
+        controller.retry()
+        assert controller.state.installation_started_at is None
+        assert controller.state.installation_finished_at is None
+
+
+def test_post_install_open_error_cannot_extend_completed_installation_clock(
+    tmp_path, monkeypatch
+):
+    now = [10.0]
+    monkeypatch.setattr(frontend_module.time, "monotonic", lambda: now[0])
+    workers = []
+    controller = InstallerController(
+        _Backend(_prepared(TargetKind.NEW, tmp_path)),
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.confirm()
+    now[0] = 40.0
+    workers.pop(0)()
+    now[0] = 1000.0
+    controller._fail("Launch failed", "Test only", RuntimeError("launch only"))
+    assert controller.state.installation_started_at == 10.0
+    assert controller.state.installation_finished_at == 40.0
+
+
 def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):
     class _PhasedBackend(_Backend):
         def apply(self, prepared, *, confirmed, progress, cancellation):
@@ -266,9 +551,7 @@ def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):
                     log_path=tmp_path / "setup.log",
                 )
             )
-            return InstallOutcome(
-                launcher=prepared.target / "Scripts" / "vipp-app.exe"
-            )
+            return InstallOutcome(launcher=prepared.target / "Scripts" / "vipp-app.exe")
 
     workers = []
     states = []
@@ -283,12 +566,8 @@ def test_controller_preserves_phase_progress_unit_and_live_log_path(tmp_path):
     controller.confirm()
     workers.pop(0)()
 
-    download = next(
-        state for state in states if state.progress_stage == "download"
-    )
-    installing = next(
-        state for state in states if state.progress_stage == "installing"
-    )
+    download = next(state for state in states if state.progress_stage == "download")
+    installing = next(state for state in states if state.progress_stage == "installing")
     assert download.progress_unit is ProgressUnit.BYTES
     assert download.progress_fraction == pytest.approx(0.25)
     assert download.log_path == tmp_path / "setup.log"
@@ -785,7 +1064,8 @@ def test_common_preparation_failures_have_plain_next_steps(
 
 @pytest.mark.parametrize("winerror", [32, 33])
 def test_shortcut_lock_has_actionable_message_and_retry_requires_review(
-    tmp_path, winerror,
+    tmp_path,
+    winerror,
 ):
     workers = []
     backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
@@ -795,7 +1075,8 @@ def test_shortcut_lock_has_actionable_message_and_retry_requires_review(
     )
     backend.apply_error = RuntimeError(technical)
     controller = InstallerController(
-        backend, lambda _state: None,
+        backend,
+        lambda _state: None,
         worker_factory=lambda target: _QueuedWorker(target, workers),
     )
     controller.start()
@@ -940,6 +1221,8 @@ def test_edit_during_initial_check_cannot_publish_or_apply_old_selection(tmp_pat
     [
         InstallerSelection(track="cpu"),
         InstallerSelection(create_desktop_shortcut=False),
+        InstallerSelection(update_strategy=UpdateStrategy.INCREMENTAL),
+        InstallerSelection(update_strategy=UpdateStrategy.FRESH),
         InstallerSelection(existing_python=Path("C:/selected-venv/Scripts/python.exe")),
     ],
 )
@@ -963,3 +1246,195 @@ def test_every_install_relevant_selection_change_revokes_confirmation(
     assert controller.state.primary_enabled is False
     assert backend.apply_calls == []
     assert workers == []
+
+
+def test_incremental_method_is_reviewed_and_preserved_through_working_and_success(
+    tmp_path,
+):
+    workers = []
+    states = []
+    prepared = replace(
+        _prepared(TargetKind.UPDATE, tmp_path),
+        selected_strategy=UpdateStrategy.INCREMENTAL,
+        strategy_reason="Reuse verified packages in a separate staged environment.",
+    )
+    backend = _Backend(prepared)
+    controller = InstallerController(
+        backend,
+        states.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    selection = InstallerSelection(update_strategy=UpdateStrategy.INCREMENTAL)
+
+    controller.start(selection)
+    workers.pop(0)()
+
+    assert backend.inspect_calls == [(selection, False)]
+    assert controller.state.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert controller.state.strategy_reason == prepared.strategy_reason
+    controller.confirm()
+    working = controller.state
+    assert working.selected_strategy is UpdateStrategy.INCREMENTAL
+    assert "Staging a new VIPP copy" in working.message
+    assert "temporary disk space" in working.message
+    assert "current compatible dependency versions" in working.message
+    workers.pop(0)()
+    assert backend.apply_calls == [(prepared, True)]
+    assert controller.state.screen is InstallerScreen.SUCCESS
+    assert controller.state.selected_strategy is UpdateStrategy.INCREMENTAL
+
+
+def test_editing_method_during_check_cannot_restore_old_confirmation(tmp_path):
+    workers = []
+    backend = _Backend(_prepared(TargetKind.UPDATE, tmp_path))
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    old_worker = workers.pop(0)
+    selection = InstallerSelection(update_strategy=UpdateStrategy.FRESH)
+
+    assert controller.invalidate_selection(selection)
+    old_worker()
+    controller.confirm()
+
+    assert controller.state.screen is InstallerScreen.BLOCKED
+    assert backend.apply_calls == []
+    controller.start(selection)
+    workers.pop(0)()
+    assert backend.inspect_calls[-1][0].update_strategy is UpdateStrategy.FRESH
+    assert controller.state.screen is InstallerScreen.READY
+
+
+def _registration_blocked(tmp_path):
+    return replace(
+        _prepared(TargetKind.BLOCKED, tmp_path),
+        blocked_action=BlockedAction.REPAIR_REGISTRATION,
+        registration_repair=RegistrationRepairReview(
+            "a" * 64,
+            "DisplayVersion: 'old' → 'verified installed version'",
+            tmp_path / "registration-backup.json",
+            object(),
+        ),
+    )
+
+
+def test_registration_review_has_structured_optional_display_facts(tmp_path):
+    review = RegistrationRepairReview(
+        "a" * 64,
+        "Exact original technical review",
+        tmp_path / "backup.json",
+        object(),
+        managed_root=tmp_path / "owned-installation",
+        registered_version="0.16.0a8.dev4",
+        installed_version="0.16.0a8.dev5",
+        old_uninstaller_state="absent",
+    )
+    assert review.managed_root == tmp_path / "owned-installation"
+    assert review.registered_version == "0.16.0a8.dev4"
+    assert review.installed_version == "0.16.0a8.dev5"
+    assert review.preview == "Exact original technical review"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"managed_root": Path("relative-installation")},
+        {"managed_root": None},
+        {"registered_version": ""},
+        {"installed_version": ""},
+        {"old_uninstaller_state": "unknown"},
+    ],
+)
+def test_registration_review_rejects_incomplete_display_facts(tmp_path, changes):
+    facts = {
+        "managed_root": tmp_path / "owned-installation",
+        "registered_version": "old",
+        "installed_version": "verified",
+        "old_uninstaller_state": "absent",
+    }
+    facts.update(changes)
+    with pytest.raises(ValueError):
+        RegistrationRepairReview(
+            "a" * 64, "Exact review", tmp_path / "backup.json", object(), **facts
+        )
+
+
+def test_registration_repair_is_separately_confirmed_then_rechecks_without_install(
+    tmp_path,
+):
+    workers, states = [], []
+    prepared = _registration_blocked(tmp_path)
+    backend = _Backend(prepared)
+    controller = InstallerController(
+        backend,
+        states.append,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    assert controller.state.primary_label == "Repair registration…"
+    controller.confirm()
+    controller.repair_registration(confirmed=False, fingerprint="a" * 64)
+    controller.repair_registration(confirmed=True, fingerprint="b" * 64)
+    assert workers == [] and backend.registration_repairs == []
+
+    controller.repair_registration(confirmed=True, fingerprint="a" * 64)
+    assert controller.state.screen is InstallerScreen.WORKING
+    assert controller.state.cancel_enabled is False
+    controller.cancel()
+    assert not controller._cancellation.is_set()
+    workers.pop(0)()
+
+    assert backend.registration_repairs == [(prepared, True)]
+    assert len(backend.inspect_calls) == 2
+    assert controller.state.screen is InstallerScreen.READY
+    assert any("checking again" in state.headline for state in states)
+    assert "Registration-only repair completed" in controller.state.technical_details
+    assert str(prepared.registration_repair.backup_path) in (
+        controller.state.technical_details
+    )
+    assert backend.apply_calls == []
+    assert backend.opened == []
+
+
+def test_old_registration_confirmation_cannot_apply_after_selection_changes(tmp_path):
+    workers = []
+    backend = _Backend(_registration_blocked(tmp_path))
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    assert controller.invalidate_selection(InstallerSelection(track="cpu"))
+    controller.repair_registration(confirmed=True, fingerprint="a" * 64)
+    assert workers == []
+    assert backend.registration_repairs == []
+
+
+def test_registration_repair_failure_does_not_recheck_or_start_install(tmp_path):
+    workers = []
+    backend = _Backend(_registration_blocked(tmp_path))
+    backend.registration_repair_error = RuntimeError(
+        "Registration changed after preview"
+    )
+    controller = InstallerController(
+        backend,
+        lambda _state: None,
+        worker_factory=lambda target: _QueuedWorker(target, workers),
+    )
+    controller.start()
+    workers.pop(0)()
+    controller.repair_registration(confirmed=True, fingerprint="a" * 64)
+    workers.pop(0)()
+    assert controller.state.screen is InstallerScreen.FAILED
+    assert "Registration changed after preview" in controller.state.technical_details
+    assert str(backend.prepared.registration_repair.backup_path) in (
+        controller.state.technical_details
+    )
+    assert len(backend.inspect_calls) == 1
+    assert backend.apply_calls == [] and backend.opened == []

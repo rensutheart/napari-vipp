@@ -1,0 +1,154 @@
+# Incremental Windows installer (unreleased)
+
+User-approved 2026-10-23; issue [85](https://github.com/rensutheart/napari-vipp/issues/85).
+Development build: `0.16.0a8.dev11`; this is not a public release. The earlier
+`dev1`/`dev2`/`dev3`/`dev4` artifacts and failed trials remain retained as qualification evidence.
+
+## Routes and consent
+
+- Automatic prefers incremental only for an older, healthy, owned managed
+  installation with the same base Python/ABI/compute track and an exact new VIPP
+  wheel whose complete dependency closure is already satisfied.
+- Incremental update only blocks with a reason if those conditions fail.
+- Fresh installation creates an independently resolved replacement and is the
+  repair/new-install/fallback route. It does not modify an unrelated environment.
+- Changing the method invalidates prior approval. Local checking does not wait
+  for an online resolution. Fresh-route approval explicitly authorizes subsequent
+  resolution; all non-package consent fields and current ownership are rechecked
+  before any candidate mutation. Exact package results remain in the setup log.
+
+Use focused **Review** and **Installing** presentation stages, not freely
+navigable tabs that could suggest settings can change during an active apply.
+Method controls/explanation, estimates and advanced selection belong to Review;
+after explicit approval, show only the selected-method summary and relevant
+progress/logs. Failure/cancellation/retry must retain honest stage context, and
+registration-only repair must not appear as package installation. Selecting a
+method never starts an apply. Retain existing controller/ownership/consent guards.
+Keep the method selector before variable-length review/check results so rechecks
+do not move it. Opening the list performs no check; selecting the unchanged value
+is a no-op. A changed value still invalidates and rechecks the exact selection
+before approval is enabled. Review shows one current activity rather than
+marking earlier read-only checks as completed install steps. A compact labelled
+setup breadcrumb remains descriptive, not a set of navigable tabs.
+Avoid a global "no downloads" claim: the copy phase copies compatible current
+versions, while the Fresh route may fetch missing required artifacts. A newer
+dependency on PyPI alone does not make an otherwise eligible fast update upgrade
+that dependency.
+
+The Installing view names all six transactional stages (prepare, workspace,
+packages, verification, shortcuts, finish) and persists the last reached stage
+in controller state, including across coalesced GUI events and safe rollback.
+Only successful completion marks all stages complete. Within-stage task counts
+use typed files/packages/checks/bytes, never equal-weight global/time estimates.
+Copy counts cover checked/copied RECORD entries; destination preflight and late
+source/.pth validation remain visible, and completion waits for their guards.
+Cache counts describe verified artifacts, not inferred network transfer. One
+hash-locked pip install batch reports its known package total but confirms them
+only after successful process completion; unreported inner work is not guessed.
+Keep the bounded live output collected behind Show installation log, with a
+failure-triggered reveal and ordinary access to the complete setup log.
+
+The total installation clock is controller-owned monotonic metadata. Start it
+only after a valid exact-settings approval, include all worker phases and safe
+rollback, and record a terminal finish time. Coalesced GUI events must not shorten
+it; a later Open error must not extend a completed installation. Retry/checking
+has no installation total until a genuinely new approved attempt. Registration
+repair is separate. Keep the current-stage clock secondary and total duration
+visible on terminal screens without claiming an ETA.
+
+Use a noninteractive Review -> Install -> Ready breadcrumb and one ordered
+six-phase list. Diagnostics are read-only captured snapshots in a larger
+resizable window. Progress/timers do not rewrite a reading surface; manual
+Refresh is explicit. Label bounded recent package stdout/stderr separately from
+the persisted raw JSONL setup event log. No new worker, process, install, repair
+or launch may be triggered by opening, refreshing or closing diagnostics. Keep
+meaningful outcome warnings while removing duplicate generic ready messages.
+
+Use a shared setup visual system across the main page, repair review and
+diagnostic viewer: one proportional font family, body/section roles separated
+by weight rather than arbitrary sizes, a clear page headline, consistent
+neutral surfaces and spacing, and readable state accents. Monospace is reserved
+for diagnostic text. Setup steps is a bold section label with prominent arrows,
+not interactive tabs. Completed read-only review has no idle busy bar.
+
+Managed installation versions must use PEP 440 ordering, including numeric
+development, prerelease, final and post releases. Unrecognized versions must
+not be ordered lexicographically or used to authorize an update or repair.
+Keep genuine downgrade prevention and exact ownership checks unchanged.
+
+## Implementation boundary
+
+Incremental means independent, verified copies of installed dependency RECORD
+files into a new candidate, not a live in-place pip upgrade and not writable
+hard links. Old VIPP code and bytecode are excluded. Dependency entry points are
+regenerated for the new candidate interpreter; copied RECORDs are rewritten.
+Only the new VIPP wheel is installed by pip. The existing acceptance, journal,
+ownership/shortcut/registration promotion, cancellation and rollback boundaries
+remain in force. The old accepted environment remains the rollback boundary.
+
+Metadata/closure review is local; every retained file hash is verified during
+copy. Stale, corrupt, editable, foreign, redirected, overlapping or unsupported
+layouts fail closed. This first path does not incrementally change dependency
+versions: choose Fresh installation if the new release needs different ones.
+Copying and antivirus scanning still cost time and require replacement disk space.
+
+Fresh routes keep pip's download cache enabled and additionally retain exact
+SHA-256-addressed verified wheel artifacts. Only misses are downloaded through
+an isolated, hash-locked pip child; installation uses local hash-locked files with
+`--no-index --no-deps`. Existing invalid/foreign cache files are not overwritten.
+Cache retention is not yet an automatic size-bounded eviction policy.
+
+## Explicit registration repair
+
+A stale Windows Apps & Features entry is not permission to overwrite it during
+an ordinary update. Keep the existing update/uninstall ownership guards strict.
+Offer a separate read-only registration repair review only for a completely
+verified, same-installation entry. Bind confirmation to exact typed registry
+values, ownership bytes and cached uninstaller identity; save an exclusive,
+durable backup before writing. Reject unknown fields/types/subkeys, foreign or
+partial identities and stale confirmation. Recheck the installation after a
+successful repair, without automatically updating or opening VIPP. The repair
+does not rebuild packages or change user workflows.
+
+Confirmation shows a short structured version/location summary with Cancel as
+the default and a separate Repair entry action. Exact registry changes, backup
+path, review fingerprint and historical-uninstaller caveats remain unmodified
+in expandable copyable Technical details. Display facts come from the same
+ownership-bound plan and are reconstituted alongside the exact original review
+before authorization; prose is not parsed and payloads stay opaque to the UI.
+
+The obsolete cached uninstaller may already have been retired. An exact missing
+path is recorded and displayed as missing, not treated as verified old executable
+bytes. This narrow case can still restore the complete same-installation entry
+to the currently verified ownership/uninstaller after explicit confirmation.
+Present-but-altered or redirected old files remain blocked. A change in that
+old-file state invalidates the review. No old uninstaller is ever executed.
+
+## Qualification and handoff
+
+Open VIPP is a separate launch boundary. Discover the selected environment and
+its declared base Python without probing another interpreter; use those DLL
+directories first, exclude the frozen setup directory and cross-runtime Python/Qt
+loader overrides from the child, and temporarily reset/restore the frozen Windows
+DLL directory around process creation. Do not alter persistent PATH, special-case
+a caller/tool/vendor, or reinstall packages to correct inherited search state.
+The read-only diagnostic `--open-installed` route requires an explicit compute
+track and verified owned, healthy installed-version identity. It never enters
+setup preparation, transaction recovery, registration repair or package apply;
+the same backend Open path is used by the setup button. This permits frozen
+launch regression testing against an existing disposable installation.
+
+Run focused installer/controller/GUI/cache/copy tests, including stale approval,
+failure, cancellation, byte/hash damage, fresh fallback and launchers. Exercise
+real pip/candidate/acceptance flows only in explicit disposable roots, with
+per-instance known-folder services, no shortcuts/registration, and no host
+installation mutation. Inspect a new owned native preview window and build the
+development EXE from the tested source/wheel. Existing CPU/CUDA installations,
+unfinished AI work, public tags and release bytes are not test fixtures.
+
+Record actual outcomes and limits under
+`VIPP-local-tests/incremental-installer-20261023`. A built EXE is not itself a
+passing native install/update or a published release. Replace only the user's
+explicitly selected installation after qualification, never all managed roots.
+The companion manual change is in `vipp-mkdocs-incremental-installer` and is
+explicitly unreleased.

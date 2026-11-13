@@ -30,7 +30,7 @@ from napari_vipp.ui.batch_overrides import (
     BatchOverrideSourceItem,
     BatchParameterOverrideEditor,
 )
-from napari_vipp.ui.palette_roles import custom_paint_colors
+from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 
 
 def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
@@ -226,7 +226,8 @@ def test_invalid_cell_is_visible_and_cannot_emit(qtbot):
     cell.setText("2.5")
 
     assert "whole number" in editor.status_label.text()
-    assert "#ef4444" in cell.styleSheet()
+    assert theme_colors(cell.palette()).error.foreground.name() in cell.styleSheet()
+    assert cell.property("vippInvalid") is True
     with pytest.raises(BatchOverrideEditorError, match="whole number"):
         editor.overrides()
 
@@ -241,12 +242,16 @@ def test_override_editor_status_follows_runtime_palette_and_keeps_error_tone(qtb
         editor.help_label.styleSheet()
     )
     editor._show_error("Invalid override")
-    assert "#b91c1c" in editor.status_label.styleSheet()
+    assert theme_colors(light).error.foreground.name() in (
+        editor.status_label.styleSheet()
+    )
 
     dark = _theme_palette(base="#111827", alternate="#1f2937", text="#f8fafc")
     editor.setPalette(dark)
 
-    assert "#fca5a5" in editor.status_label.styleSheet()
+    assert theme_colors(dark).error.foreground.name() in (
+        editor.status_label.styleSheet()
+    )
 
 
 def test_data_dependent_threshold_accepts_raw_integer_intensity(qtbot):

@@ -11,7 +11,6 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QProgressBar,
     QScrollArea,
     QSizePolicy,
@@ -29,7 +28,15 @@ from napari_vipp.installer.frontend import (
     TrackChoice,
 )
 from napari_vipp.ui.compute_setup_style import SetupDisclosureButton, setup_stylesheet
+from napari_vipp.ui.design import apply_text_role, install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
+from napari_vipp.ui.setup_presentation import (
+    INSTALLATION_STAGES,
+    SetupElapsed,
+    SetupLogPanel,
+    StableSetupLog,
+    measured_progress,
+)
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
 
 
@@ -78,6 +85,7 @@ class GpuSetupDialog(QDialog):
         self.setModal(False)
         self.resize(720, 650)
         self.setMinimumSize(560, 380)
+        install_window_policy(self, profile="chooser")
         self._tone = "info"
         self._updating_theme = False
         self._backend = backend
@@ -117,7 +125,12 @@ class GpuSetupDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(6)
+        self.progress.setMinimumHeight(12)
+        self.stage_label = _plain_label()
+        apply_text_role(self.stage_label, "section")
+        self.task_progress = _plain_label()
+        apply_text_role(self.task_progress, "secondary")
+        self.elapsed = SetupElapsed()
         self.work_note = _plain_label(
             "Your current VIPP window and workflows stay open. When setup "
             "finishes, Open VIPP with GPU starts a new window. Save and reopen "
@@ -126,11 +139,10 @@ class GpuSetupDialog(QDialog):
         self.work_note.setObjectName("ComputeMuted")
         self.details_button = SetupDisclosureButton("Technical details")
         self.details_button.toggled.connect(self._show_details)
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
+        self.details = StableSetupLog()
         self.details.setMaximumBlockCount(500)
         self.details.setFont(path_font)
-        self.details.setFixedHeight(180)
+        self.details.setMaximumHeight(300)
         self.details.hide()
         self.log_path = _plain_label()
         self.log_path.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -172,7 +184,15 @@ class GpuSetupDialog(QDialog):
         status_layout = QVBoxLayout(self.status_widget)
         status_layout.setContentsMargins(18, 16, 18, 16)
         status_layout.setSpacing(10)
-        for widget in (self.heading, self.message, self.status, self.progress):
+        for widget in (
+            self.heading,
+            self.message,
+            self.stage_label,
+            self.status,
+            self.progress,
+            self.task_progress,
+            self.elapsed,
+        ):
             status_layout.addWidget(widget)
         content_layout.addWidget(self.status_widget)
 
@@ -217,6 +237,8 @@ class GpuSetupDialog(QDialog):
         log_layout.addWidget(log_help)
         log_layout.addWidget(self.details)
         log_layout.addWidget(self.log_path)
+        self.activity = SetupLogPanel()
+        log_layout.addWidget(self.activity)
         details_layout.addWidget(self.details_widget)
         self.details_widget.hide()
         content_layout.addWidget(details_card)
@@ -286,7 +308,7 @@ class GpuSetupDialog(QDialog):
             self.action_button.setText("Try again")
             self.action_button.setEnabled(True)
             self.close_button.setEnabled(True)
-            self.details.setPlainText(f"{type(exc).__name__}: {exc}")
+            self.details.set_snapshot(f"{type(exc).__name__}: {exc}")
             self._update_optional_rows()
             self._refresh_style()
 
@@ -383,6 +405,23 @@ class GpuSetupDialog(QDialog):
             else ""
         )
         self.status.setText(state.status_message)
+        stage = next(
+            (
+                f"Stage {index + 1} of {len(INSTALLATION_STAGES)} · {label}"
+                for index, (key, label) in enumerate(INSTALLATION_STAGES)
+                if key == state.installation_stage
+            ),
+            "",
+        )
+        self.stage_label.setText(stage)
+        self.stage_label.setVisible(bool(stage) and busy)
+        self.task_progress.setText(measured_progress(state))
+        self.task_progress.setVisible(busy)
+        self.elapsed.update_timing(
+            phase=state.installation_stage or state.progress_stage,
+            started=state.installation_started_at,
+            finished=state.installation_finished_at,
+        )
         self._update_optional_rows()
         self.progress.setVisible(busy)
         if state.progress_fraction is None:
@@ -422,7 +461,7 @@ class GpuSetupDialog(QDialog):
             InstallerScreen.CANCELLED,
             InstallerScreen.FAILED,
         }:
-            self.details.setPlainText(state.technical_details[-32000:])
+            self.details.set_snapshot(state.technical_details[-32000:])
         self.log_path.setText(f"Setup log: {state.log_path}" if state.log_path else "")
         self.log_path.setVisible(
             bool(state.log_path) and self.details_button.isChecked()
@@ -431,7 +470,7 @@ class GpuSetupDialog(QDialog):
             QTimer.singleShot(0, self.close)
 
     def _append_console(self, text: str) -> None:
-        self.details.appendPlainText(text[-32000:].rstrip("\r\n"))
+        self.activity.output.appendPlainText(text[-32000:].rstrip("\r\n"))
 
     def _update_optional_rows(self) -> None:
         for label in (self.message, self.location, self.size_label, self.status):
@@ -448,7 +487,13 @@ class GpuSetupDialog(QDialog):
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)
         if (
-            event.type() in {QEvent.PaletteChange, QEvent.StyleChange}
+            event.type()
+            in {
+                QEvent.PaletteChange,
+                QEvent.StyleChange,
+                QEvent.FontChange,
+                QEvent.ApplicationFontChange,
+            }
             and hasattr(self, "scroll_area")
             and not self._updating_theme
         ):
@@ -464,7 +509,7 @@ class GpuSetupDialog(QDialog):
         parent = self.parentWidget()
         palette = QWidget.palette(parent if parent is not None else self)
         stylesheet = setup_stylesheet(
-            palette, dialog_name=self.objectName(), tone=self._tone
+            palette, dialog_name=self.objectName(), tone=self._tone, font_widget=self
         )
         self.scroll_area.setStyleSheet(stylesheet)
         self.footer_widget.setStyleSheet(stylesheet)

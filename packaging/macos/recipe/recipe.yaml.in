@@ -37,7 +37,9 @@ outputs:
         - centrosome ==1.3.4
         - dask-core >=2025.2
         - fast-simplification >=0.2.0,<0.3
-        - czifile >=2026.8.16,<2027
+        # This reader's installed Python metadata accepts imagecodecs 2026.8.16.
+        # Requalify both architectures before changing the pair.
+        - czifile ==2026.10.14
         - imagecodecs >=2026.8.16,<2027
         - liffile >=2026.7.14,<2027
         - matplotlib-base >=3.7,<4

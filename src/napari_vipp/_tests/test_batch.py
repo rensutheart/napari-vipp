@@ -6,6 +6,7 @@ import os
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -2433,12 +2434,12 @@ def test_no_replace_fallback_cleans_failed_exclusive_claim(
     def fail_claim_initialization(*_args, **_kwargs):
         raise OSError("simulated claim initialization failure")
 
-    monkeypatch.setattr(batch_module.os, "link", unsupported_hard_link)
-    monkeypatch.setattr(
-        batch_module.os,
-        failing_call,
-        fail_claim_initialization,
-    )
+    # Patch only the module's OS calls. A process-wide fstat replacement also
+    # fails pytest's own capture/IO, obscuring the exclusive-claim assertion.
+    batch_os = SimpleNamespace(**vars(os))
+    batch_os.link = unsupported_hard_link
+    setattr(batch_os, failing_call, fail_claim_initialization)
+    monkeypatch.setattr(batch_module, "os", batch_os)
 
     with pytest.raises(OSError, match="claim initialization failure"):
         batch_module._promote_no_replace(source, destination)

@@ -62,6 +62,28 @@ napari / npe2
 
 `test_architecture.py` enforces the first two rules.
 
+## Shared presentation policy
+
+`ui/design.py` owns font-relative text roles, the 4/8/12/16/24 spacing scale,
+content metrics and a constructor-safe first-show screen envelope. Use scoped
+`type_style` declarations inside existing semantic theme refreshes; use
+`apply_text_role` for standalone labels. Derive text from the unroled host font,
+not the previously styled label, so repeated font/theme changes cannot enlarge
+it repeatedly. Explicit requested fonts remain the base where napari polish
+would otherwise replace them.
+
+Window fitting runs once and never owns later user geometry. Responsive
+layouts, scrolling and fixed reachable action footers remain the window's
+responsibility. Native/portable inspector height-for-width, per-axis constraints,
+saved-state restoration and no-horizontal-scroll tests remain required.
+
+`ui/dialog_buttons.py` keeps action/dismiss/stop roles and platform order,
+without turning a focused action into an implicit Return default. Deliberate
+caller defaults remain deliberate. `ui/setup_presentation.py` displays only
+authoritative counts, separates total/stage elapsed time and preserves manual
+log reading position; it must never infer installation success from output text.
+These helpers do not change scientific parameters, cache keys or approvals.
+
 ## Graph wire routing
 
 `_graph.py` protects the connected cards' interiors separately from other

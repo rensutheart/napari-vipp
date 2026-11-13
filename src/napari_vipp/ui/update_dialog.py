@@ -30,6 +30,7 @@ from napari_vipp.core.update_install import (
     managed_update_target,
 )
 from napari_vipp.core.updates import RELEASES_URL, installer_asset
+from napari_vipp.ui.design import apply_text_role, install_window_policy
 from napari_vipp.ui.dialog_buttons import DialogButtonBox as QDialogButtonBox
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.update_download import UpdateDownloadController
@@ -64,11 +65,7 @@ class _WrappedLabel(QLabel):
 
 
 def _bold(label, *, scale=1):
-    font = label.font()
-    font.setBold(True)
-    if scale != 1 and font.pointSizeF() > 0:
-        font.setPointSizeF(font.pointSizeF() * scale)
-    label.setFont(font)
+    apply_text_role(label, "title" if scale >= 1.3 else "section")
 
 
 class UpdateDialog(QDialog):
@@ -82,6 +79,7 @@ class UpdateDialog(QDialog):
         target_provider=None,
     ):
         super().__init__(parent)
+        install_window_policy(self, profile="compact")
         self.controller = controller
         self.open_url = open_url or (lambda url: QDesktopServices.openUrl(QUrl(url)))
         self.target_provider = target_provider or managed_update_target
@@ -268,6 +266,9 @@ class UpdateDialog(QDialog):
         self.scroll.viewport().installEventFilter(self)
         controller.changed.connect(self.refresh)
         self.transfer.changed.connect(self._transfer_changed)
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
+            button.setDefault(False)
         self.refresh()
 
     def showEvent(self, event):  # noqa: N802
@@ -373,7 +374,8 @@ class UpdateDialog(QDialog):
         managed = target is not None
         self.update_section.setVisible(
             (bool(offer) or c.available)
-            and not self.transfer.busy and self.transfer.phase != "opened"
+            and not self.transfer.busy
+            and self.transfer.phase != "opened"
         )
         self.update_button.setVisible(bool(offer) and managed)
         self.update_button.setEnabled(

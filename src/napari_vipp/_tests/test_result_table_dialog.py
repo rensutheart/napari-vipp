@@ -16,6 +16,7 @@ from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.result_table_dialog import (
     ResultTableDialog,
     ResultTableModel,
+    ResultTablePanel,
     choose_table_export_target,
 )
 
@@ -174,6 +175,38 @@ def test_result_table_dialog_exposes_complete_table_and_header_sorting(qtbot):
     dialog.resize(420, 300)
     assert dialog.width() >= 420
     assert dialog.table_view.horizontalScrollBarPolicy() != Qt.ScrollBarAlwaysOff
+
+
+@pytest.mark.parametrize("viewer", [ResultTableDialog, ResultTablePanel])
+def test_result_table_column_layout_defaults_to_fit_and_is_reversible(qtbot, viewer):
+    table = TableData(
+        ("ID", "A longer description", "z"),
+        ((2, "A value with more characters", 9), (1, "Another value", 7)),
+    )
+    widget = viewer()
+    qtbot.addWidget(widget)
+    widget.set_table(table, title="Measurements", default_export_name="objects.csv")
+    widget.show()
+    header = widget.table_view.horizontalHeader()
+
+    assert widget.column_layout.currentData() == "fit"
+    fitted = [header.sectionSize(i) for i in range(3)]
+    assert fitted[0] < 160 and fitted[2] < 160
+    assert fitted[1] > max(fitted[0], fitted[2])
+
+    widget.column_layout.setCurrentIndex(widget.column_layout.findData("equal"))
+    widths = [header.sectionSize(i) for i in range(3)]
+    assert widths == [widths[0]] * 3
+    assert header.sectionResizeMode(0) == header.Interactive
+    header.resizeSection(0, widths[0] + 25)
+    assert header.sectionSize(0) == widths[0] + 25
+
+    widget.column_layout.setCurrentIndex(widget.column_layout.findData("fit"))
+    assert [header.sectionSize(i) for i in range(3)] == fitted
+    assert widget.model.table is table
+    assert table.rows == (
+        (2, "A value with more characters", 9), (1, "Another value", 7)
+    )
 
 
 def test_result_table_dialog_presents_stale_action_and_theme(qtbot):

@@ -40,6 +40,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 
 
@@ -94,8 +95,12 @@ class _PackageWorker(QRunnable):
             error = f"{type(exc).__name__}: {exc}"
         cancelled = self.cancel_event.is_set()
         result = _TaskResult(
-            self.task_id, self.generation, self.kind,
-            None if cancelled else value, error, cancelled,
+            self.task_id,
+            self.generation,
+            self.kind,
+            None if cancelled else value,
+            error,
+            cancelled,
         )
         try:
             self.signals.finished.emit(result)
@@ -193,6 +198,7 @@ class ReproducibilityDialog(QDialog):
         self, parent=None, *, workflow=None, manifest_path=None, title="VIPP analysis"
     ):
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         if (workflow is None) == (manifest_path is None):
             raise ValueError("Choose one workflow snapshot or archived batch manifest.")
         self._workflow = copy.deepcopy(workflow)
@@ -223,8 +229,10 @@ class ReproducibilityDialog(QDialog):
         fields = QFormLayout()
         fields.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.title_edit = QLineEdit(str(title))
+        self.title_edit.setAccessibleName("Reproducibility report title")
         self.title_edit.setPlaceholderText("VIPP analysis")
         self.notes_edit = QPlainTextEdit()
+        self.notes_edit.setAccessibleName("Optional shared report notes")
         self.notes_edit.setPlaceholderText("Optional context; included when shared.")
         self.notes_edit.setMaximumHeight(80)
         fields.addRow("Report title", self.title_edit)
@@ -262,6 +270,8 @@ class ReproducibilityDialog(QDialog):
         layout.addWidget(self.status_label)
         buttons = QHBoxLayout()
         self.prepare_button = QPushButton("Prepare report")
+        self.prepare_button.setAutoDefault(False)
+        self.prepare_button.setDefault(False)
         self.export_button = QPushButton("Export package…")
         self.export_button.setEnabled(False)
         self.close_button = QPushButton("Close")
@@ -469,14 +479,18 @@ class ReproducibilityDialog(QDialog):
     @Slot()
     def export_package(self):
         if (
-            self._closed or self._active_task is not None
-            or self._prepared_package is None or not self.review_checkbox.isChecked()
+            self._closed
+            or self._active_task is not None
+            or self._prepared_package is None
+            or not self.review_checkbox.isChecked()
         ):
             return
         reviewed_package = self._prepared_package
         reviewed_generation = self._generation
         path, _selected_filter = QFileDialog.getSaveFileName(
-            self, "Export reproducibility package", "vipp-reproducibility-package.zip",
+            self,
+            "Export reproducibility package",
+            "vipp-reproducibility-package.zip",
             "Reproducibility package (*.zip)",
         )
         if not path:
@@ -484,7 +498,8 @@ class ReproducibilityDialog(QDialog):
         # A nested file dialog can dispatch other application events. Recheck
         # review state afterward rather than authorizing a replacement snapshot.
         if (
-            self._closed or self._active_task is not None
+            self._closed
+            or self._active_task is not None
             or self._prepared_package is not reviewed_package
             or self._generation != reviewed_generation
             or not self.review_checkbox.isChecked()
@@ -499,7 +514,8 @@ class ReproducibilityDialog(QDialog):
             return
         self._active_kind = "export"
         self._active_task = self._tasks.start(
-            self._generation, "export",
+            self._generation,
+            "export",
             {"package": self._prepared_package, "path": target, "overwrite": False},
         )
         self.status_label.setText(

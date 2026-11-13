@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.metadata import AxisDeclaration
+from napari_vipp.ui.design import SPACE_SM, SPACE_XS, type_style
 from napari_vipp.ui.palette_roles import theme_colors
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ class AxisInterpretationControl(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(SPACE_XS)
         layout.addWidget(self.mode_combo)
         layout.addWidget(self.advanced_edit)
         layout.addWidget(self.notice_label)
@@ -119,9 +120,7 @@ class AxisInterpretationControl(QWidget):
         try:
             parent = self.parentWidget()
             palette = (
-                QWidget.palette(parent)
-                if parent is not None
-                else QWidget.palette(self)
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
             )
             warning = theme_colors(palette).warning
             self.notice_label.setStyleSheet(
@@ -129,7 +128,8 @@ class AxisInterpretationControl(QWidget):
                 f" color: {warning.foreground.name()};"
                 f" background: {warning.surface.name()};"
                 f" border: 1px solid {warning.border.name()};"
-                " border-radius: 4px; padding: 5px;"
+                f" border-radius: 4px; padding: {SPACE_SM}px;"
+                f" {type_style(self.notice_label, 'body')}"
                 " }"
             )
         finally:
@@ -326,8 +326,7 @@ class AxisInterpretationControl(QWidget):
             declaration = AxisDeclaration.from_value(raw_value)
         except ValueError:
             self._show_notice(
-                "Axis mapping not applied. Complete a mapping such as "
-                "QYX -> ZYX."
+                "Axis mapping not applied. Complete a mapping such as QYX -> ZYX."
             )
             return
         self._committed_text = declaration.display_text

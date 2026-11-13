@@ -1103,9 +1103,39 @@ def hysteresis_threshold(
         resolved_spatial_ndim,
     )
 
+    # Match scikit-image's low and high comparisons, including their
+    # different scalar types at float32 rounding boundaries.
+    low_boundary = np.clip(low, a_min=None, a_max=high)
+
     def threshold_block(block: np.ndarray) -> np.ndarray:
-        values = block.astype(np.float32, copy=False)
-        return filters.apply_hysteresis_threshold(values, low, high)
+        if not block.size:
+            # Preserve the reference's empty-block behavior.
+            return filters.apply_hysteresis_threshold(
+                block.astype(np.float32, copy=False), low, high
+            )
+        pixels = block.reshape(-1) if block.flags.c_contiguous else block.flat
+        result = np.empty(block.shape, dtype=bool)
+        mask = result.reshape(-1)
+        chunks = range(0, block.size, _THRESHOLD_CHUNK_SIZE)
+        for start in chunks:
+            span = slice(start, start + _THRESHOLD_CHUNK_SIZE)
+            values = pixels[span].astype(np.float32, copy=False)
+            np.greater(values, low_boundary, out=mask[span])
+
+        # Label the complete spatial block so connectivity crosses chunk
+        # boundaries. Mark seeded components without SciPy's weighted sum,
+        # which converts an entire Boolean volume to float64 weights.
+        labels, count = ndi.label(result)
+        components = labels.reshape(-1)
+        has_seed = np.zeros(count + 1, dtype=bool)
+        for start in chunks:
+            span = slice(start, start + _THRESHOLD_CHUNK_SIZE)
+            values = pixels[span].astype(np.float32, copy=False)
+            has_seed[components[span][values > high]] = True
+        for start in chunks:
+            span = slice(start, start + _THRESHOLD_CHUNK_SIZE)
+            mask[span] = has_seed[components[span]]
+        return result
 
     return _apply_spatial_blocks(
         arr,

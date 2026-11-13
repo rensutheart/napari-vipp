@@ -562,7 +562,9 @@ def test_real_managed_current_without_shortcuts_retains_ownership_launcher(
         progress=lambda _event: None,
         cancellation=threading.Event(),
     )
-    assert prepared.kind is TargetKind.CURRENT
+    assert prepared.kind is TargetKind.CURRENT, (
+        prepared.reason, prepared.technical_details
+    )
     assert prepared.launcher == launcher
     assert checked == [scripts / "python.exe"]
     assert prepared.launcher != root / "Scripts/vipp-app.exe"

@@ -71,9 +71,12 @@ from napari_vipp.ui.batch_resume import BatchResumeActions
 from napari_vipp.ui.batch_setup import BatchSetupPresentation
 from napari_vipp.ui.batch_table_style import apply_batch_table_style
 from napari_vipp.ui.bulk_selection import BulkSelectionControls
+from napari_vipp.ui.design import type_style
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import custom_paint_colors, theme_colors
 from napari_vipp.ui.toolbar_controls import ToolbarCommandButton, toolbar_icon
+
+_COMMAND_PADDING = {"compact": "4px 8px", "comfortable": "8px 12px"}
 
 
 class BatchActivityLabel(QLabel):
@@ -129,7 +132,9 @@ class BatchWorkflowTabBar(QTabBar):
 
 
 class BatchWorkflowWorkspace(
-    BatchSetupPresentation, BatchCheckProgressPresentation, BatchOverridePresentation,
+    BatchSetupPresentation,
+    BatchCheckProgressPresentation,
+    BatchOverridePresentation,
     BatchResumeActions,
     BatchReproductionPresentation,
 ):
@@ -647,15 +652,21 @@ class BatchWorkflowWorkspace(
             f"background: {colors.alternate_surface.name()};"
             f"border-top: 1px solid {colors.border.name()}; }}"
             "QPushButton#BatchPrimaryAction { font-weight: bold; "
-            f"border: 1px solid {accent}; padding: 6px 12px; }}"
+            f"border: 1px solid {accent};"
+            f" padding: {_COMMAND_PADDING['comfortable']}; }}"
             "QPushButton#BatchStopAction { "
             f"color: {tones.error.foreground.name()}; "
-            f"border: 1px solid {tones.error.accent.name()}; padding: 6px 10px; }}"
+            f"border: 1px solid {tones.error.accent.name()};"
+            f" padding: {_COMMAND_PADDING['comfortable']}; }}"
         )
         for heading in self.findChildren(QLabel, "BatchPageHeading"):
-            heading.setStyleSheet(f"font-weight: bold; color: {colors.text.name()};")
+            heading.setStyleSheet(
+                f"{type_style(self, 'section')} color: {colors.text.name()};"
+            )
         for label in (self.config_name_label, self.footer_elapsed_label):
-            label.setStyleSheet(f"color: {colors.muted_text.name()};")
+            label.setStyleSheet(
+                f"{type_style(self, 'secondary')} color: {colors.muted_text.name()};"
+            )
         self.item_details.setStyleSheet(
             f"QTextBrowser {{ background: {colors.alternate_surface.name()}; "
             f"color: {colors.text.name()}; border: 1px solid {colors.border.name()}; "
@@ -666,10 +677,12 @@ class BatchWorkflowWorkspace(
         )
         self._show_item_details()
         self.config_row.setStyleSheet(
-            "QPushButton { padding: 2px 5px; }"
+            f"QPushButton {{ padding: {_COMMAND_PADDING['compact']}; }}"
             "QPushButton#BatchMoreButton::menu-indicator { image: none; width: 0; }"
         )
-        self.items_command_row.setStyleSheet("QPushButton { padding: 5px 8px; }")
+        self.items_command_row.setStyleSheet(
+            f"QPushButton {{ padding: {_COMMAND_PADDING['compact']}; }}"
+        )
         for button, kind in self._batch_command_icons:
             button.setIcon(toolbar_icon(kind, self.palette()))
         for index, kind in enumerate(("setup", "checklist", "batch", "activity")):
@@ -924,7 +937,9 @@ class BatchWorkflowWorkspace(
             and not self._reproduction_table_active
         )
         self.load_overrides_button.setEnabled(
-            not busy and inventory is None and self.parameter_override_editor.configured
+            not busy
+            and inventory is None
+            and self.parameter_override_editor.configured
             and not self._reproduction_table_active
         )
         has_current = display is not None and bool(display.items)
@@ -1015,7 +1030,8 @@ class BatchWorkflowWorkspace(
         if self._resume_source_path is not None:
             self.run_recap_label.setTextFormat(Qt.PlainText)
             self.run_recap_label.setText(
-                "Saved-run continuation · " + self._resume_source_path.name
+                "Saved-run continuation · "
+                + self._resume_source_path.name
                 + "\nUsing the archive's workflow and settings; the open workflow "
                 "is unchanged."
             )
@@ -1421,7 +1437,8 @@ class BatchWorkflowWorkspace(
                     check = self._reproduction_check()
                     checks = (
                         "Verified"
-                        if check is not None and check.can_run
+                        if check is not None
+                        and check.can_run
                         and item.reproduction_status == "matched"
                         else "Not verified"
                     )
@@ -1610,7 +1627,8 @@ class BatchWorkflowWorkspace(
         if accepted is False:
             self.show_workspace_activity(
                 "The output node is no longer available in this workflow. "
-                "Check batch again.", state="warning"
+                "Check batch again.",
+                state="warning",
             )
             return
         # Hide the retained workspace; rejecting it discards its unsaved settings.
@@ -1623,8 +1641,10 @@ class BatchWorkflowWorkspace(
 
     def _item_check_changed(self, item) -> None:
         if (
-            self._rendering_items or self._check_rows is not None
-            or item.column() != 0 or self._reproduction_table_active
+            self._rendering_items
+            or self._check_rows is not None
+            or item.column() != 0
+            or self._reproduction_table_active
         ):
             return
         position = int(item.data(Qt.UserRole))
@@ -1939,7 +1959,9 @@ class BatchWorkflowWorkspace(
     def _open_selected_overrides(self, _checked=False, *, current_only=False) -> None:
         editor = self.parameter_override_editor
         if (
-            not editor.configured or self._run_in_progress or self._checking_plan
+            not editor.configured
+            or self._run_in_progress
+            or self._checking_plan
             or self._reproduction_table_active
         ):
             return

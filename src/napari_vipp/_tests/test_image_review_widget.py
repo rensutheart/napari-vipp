@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from napari.components import ViewerModel
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QDialog, QPushButton
 
@@ -93,6 +94,75 @@ def test_node_card_and_inspector_open_same_outputless_window(review_widget):
     next(button for button in buttons if button.text() == "Open review…").click()
     assert widget._image_reviews.windows[key] is window
     assert scientific_workflow_hash(serialize_workflow(widget.pipeline)) == before
+
+
+def test_2d_review_source_after_multichannel_tab_needs_no_tab_switch(
+    qtbot, monkeypatch,
+):
+    """Cover the C01 transition with the actual example and napari model."""
+    from napari_vipp.ui import image_review
+
+    monkeypatch.setattr(image_review, "ImageReviewWindow", _ReviewWindow)
+    viewer = ViewerModel()
+    widget = VippWidget(viewer, defer_initial_run=True, initial_compute_mode="cpu")
+    widget._discard_incomplete_startup_on_close = True
+    qtbot.addWidget(widget)
+
+    def wait_for_tab():
+        qtbot.waitUntil(lambda: not widget._workflow_tab_switch_block_reason())
+
+    def assert_preview(node_id, shape):
+        def has_preview():
+            layer = widget._active_viewer_layer()
+            return (
+                layer is not None and layer.visible
+                and layer.metadata.get("node_id") == node_id
+                and layer._data_view.shape == shape
+            )
+
+        qtbot.waitUntil(has_preview)
+        assert np.ptp(widget._active_viewer_layer()._data_view) > 0
+
+    widget.load_example_workflow("label-cleanup")
+    wait_for_tab()
+    multichannel_index = widget._workflow_tabs.current_index
+    assert_preview("input", (96, 128))
+    assert viewer.dims.ndim == 4
+    viewer.dims.ndisplay = 3
+    assert_preview("input", (12, 96, 128))
+    viewer.dims.ndisplay = 2
+    wait_for_tab()
+    widget.load_example_workflow("review-channels-2d")
+    wait_for_tab()
+    review_index = widget._workflow_tabs.current_index
+    assert_preview("input", (80, 104))
+    assert viewer.dims.ndim == 2
+    assert not viewer.dims.not_displayed
+
+    def unexpected_execution(*_args, **_kwargs):
+        pytest.fail("Review and retained tab switches must not rerun the workflow")
+
+    monkeypatch.setattr(widget, "run_pipeline", unexpected_execution)
+    node = next(
+        node for node in widget.pipeline.nodes.values()
+        if node.operation_id == "review_images"
+    )
+    widget.graph_view.select_node(node.id)
+    review = widget._image_reviews.open_review(node.id)
+    assert review is not None and len(review.inputs) == 2
+    assert review.close()
+    assert widget._image_reviews._context(node.id) not in widget._image_reviews.windows
+    widget.graph_view.select_node("input")
+    assert_preview("input", (80, 104))
+    assert widget._workflow_tabs.current_index == review_index
+    assert not viewer.dims.not_displayed
+
+    wait_for_tab()
+    assert widget._activate_workflow_tab(multichannel_index)
+    wait_for_tab()
+    assert widget._activate_workflow_tab(review_index)
+    assert_preview("input", (80, 104))
+    assert not viewer.dims.not_displayed
 
 
 @pytest.mark.parametrize("mode", ("Off", "Slice", "MIP"))

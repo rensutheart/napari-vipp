@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -55,6 +56,7 @@ from napari_vipp.core.result_plots import (
 from napari_vipp.core.statistics import StatisticsRecipe
 from napari_vipp.core.tables import TableData
 from napari_vipp.ui.bulk_selection import BulkSelectionControls
+from napari_vipp.ui.design import apply_text_role, install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.iconography import interface_icon, palette_branch_color
 from napari_vipp.ui.palette_roles import theme_colors
@@ -278,6 +280,7 @@ class ResultsWorkspaceDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self._window_controls = WorkspaceWindowController(self)
         self.setObjectName("VippResultsWorkspace")
         self.setWindowTitle("Results Workspace — VIPP")
@@ -326,9 +329,7 @@ class ResultsWorkspaceDialog(QDialog):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
         title = _label("Results Workspace", bold=True)
-        font = title.font()
-        font.setPointSize(font.pointSize() + 3)
-        title.setFont(font)
+        apply_text_role(title, "title")
         heading_row = QHBoxLayout()
         heading_row.addWidget(title, 1)
         self.source_label = _label("Connect a measurement table to get started.")
@@ -419,9 +420,10 @@ class ResultsWorkspaceDialog(QDialog):
         self.connection_bar.setAccessibleName(
             "Workflow, data, statistics and plot connections"
         )
-        row = QHBoxLayout(self.connection_bar)
+        row = QGridLayout(self.connection_bar)
         row.setContentsMargins(10, 8, 10, 10)
-        row.setSpacing(10)
+        row.setHorizontalSpacing(0)
+        row.setVerticalSpacing(4)
         self.workflow_selector = _combo("Workflow")
         self.data_selector = _combo("Data source")
         self.summary_selector = _combo("Statistics node")
@@ -455,7 +457,6 @@ class ResultsWorkspaceDialog(QDialog):
             "Add a Plot Results node connected to the selected Statistics node, "
             "or to the data source when Statistics node is None — use input data."
         )
-        self.connection_groups = []
         self.connection_labels = []
         self.connection_arrows = []
         for index, (caption, combo, button) in enumerate(
@@ -466,39 +467,37 @@ class ResultsWorkspaceDialog(QDialog):
                 ("Plot", self.plot_selector, self.add_plot_button),
             )
         ):
+            # Keep selectors and buttons directly in one grid row. A nested
+            # layout can enforce its own minimum before the grid has settled,
+            # shifting a selector sideways or vertically into another item.
+            column = 6 * index
             if index:
                 arrow = _ConnectionArrow(combo, self.connection_bar)
                 self.connection_arrows.append(arrow)
-                row.addWidget(arrow)
-            group = QWidget(self.connection_bar)
-            group.setMinimumWidth(0)
-            group.setMaximumWidth(340 if button is None else 378)
-            group_layout = QVBoxLayout(group)
-            group_layout.setContentsMargins(0, 0, 0, 0)
-            group_layout.setSpacing(4)
+                row.setColumnMinimumWidth(column - 3, 10)
+                row.addWidget(arrow, 0, column - 2, 2, 1)
+                row.setColumnMinimumWidth(column - 1, 10)
             label = _label(caption, bold=True)
             label.setWordWrap(False)
             self.connection_labels.append(label)
-            group_layout.addWidget(label)
+            row.addWidget(label, 0, column, 1, 3 if button is not None else 1)
             if combo is self.data_selector:
                 self.data_source_label = label
-            # A shared-height field row keeps all selectors aligned even when
-            # native + buttons are taller than the native combo boxes. A bare
-            # nested layout caps its height and stretches the heading instead.
-            fields_row = QWidget(group)
-            fields = QHBoxLayout(fields_row)
-            fields.setContentsMargins(0, 0, 0, 0)
-            fields.setSpacing(5)
+            # A native minimumSizeHint can be wider than the compact grid
+            # column. Let the selection display shrink without overlapping.
+            combo.setMinimumWidth(95)
             combo.setMaximumWidth(340)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            fields.addWidget(combo, 1)
+            # Native styles can give layout items different insets from their
+            # actual widgets. Center the visible controls, not those insets.
+            combo.setAttribute(Qt.WA_LayoutUsesWidgetRect)
+            row.addWidget(combo, 1, column, Qt.AlignVCenter)
             if button is not None:
                 button.setFixedWidth(28)
-                fields.addWidget(button)
-            group_layout.addWidget(fields_row, 1)
-            self.connection_groups.append(group)
-            row.addWidget(group, 1)
-        row.addStretch(0)
+                button.setAttribute(Qt.WA_LayoutUsesWidgetRect)
+                row.setColumnMinimumWidth(column + 1, 5)
+                row.addWidget(button, 1, column + 2, Qt.AlignVCenter)
+            row.setColumnStretch(column, 1)
         layout.addWidget(self.connection_bar)
         self.workflow_selector.currentIndexChanged.connect(self._workflow_selected)
         self.workflow_selector.activated.connect(self._workflow_activated)
@@ -990,9 +989,7 @@ class ResultsWorkspaceDialog(QDialog):
         )
         if self.plotted_panel.minimumHeight() != minimum_table_height:
             self.plotted_panel.setMinimumHeight(minimum_table_height)
-        table_height = max(
-            minimum_table_height, 96, min(180, round(available * 0.25))
-        )
+        table_height = max(minimum_table_height, 96, min(180, round(available * 0.25)))
         if self.plotted_panel.maximumHeight() != table_height:
             self.plotted_panel.setMaximumHeight(table_height)
         if self.point_label.toolTip():
@@ -1605,7 +1602,6 @@ class ResultsWorkspaceDialog(QDialog):
                 f"background: {colors.alternate_surface.name()};"
                 f"border: 1px solid {colors.info.accent.name()};"
                 "border-radius: 0; }"
-                "QFrame#WorkspaceConnections > QWidget, "
                 "QFrame#WorkspaceConnections QLabel { background: transparent; }"
             )
             for arrow in self.connection_arrows:

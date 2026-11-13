@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from html import escape
+from pathlib import PurePosixPath, PureWindowsPath
 
 import numpy as np
-from qtpy.QtCore import QEvent, QLocale, QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QEvent, QLocale, QRect, QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QAction, QValidator
 from qtpy.QtWidgets import (
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -22,6 +25,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOptionSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -29,10 +34,18 @@ from qtpy.QtWidgets import (
 from napari_vipp.core.io import MICROSCOPE_FILE_FILTER
 from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_interpretation import AxisInterpretationControl
+from napari_vipp.ui.design import (
+    SPACE_SM,
+    SPACE_XS,
+    apply_text_role,
+    content_width,
+    type_style,
+)
 from napari_vipp.ui.file_sources import (
     SourceLoadPhase,
     SourceLoadProgress,
     SourceLoadProgressUnit,
+    source_io_progress_detail,
 )
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.reader_support import ReaderSupportControl
@@ -134,6 +147,13 @@ class _ResettableSpinBoxMixin:
     """Add a parameter-default action without replacing standard edit actions."""
 
     _default_value: float | int | None = None
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange) and getattr(
+            self, "_vipp_metric_entry", False
+        ):
+            _fit_numeric_entry(self)
 
     def setDefaultValue(self, value: float | int) -> None:  # noqa: N802
         self._default_value = value
@@ -244,6 +264,47 @@ def _configure_numeric_spin_box(box: QSpinBox | QDoubleSpinBox) -> None:
     editor = box.lineEdit()
     editor.setAlignment(Qt.AlignCenter)
     editor.setTextMargins(0, 0, 0, 0)
+    _fit_numeric_entry(box)
+
+
+def _fit_numeric_entry(box: QSpinBox | QDoubleSpinBox) -> None:
+    """Fit native range/precision chrome and the actual current display text."""
+    if getattr(box, "_vipp_metric_entry_sizing", False):
+        return
+    box._vipp_metric_entry = True
+    box._vipp_metric_entry_sizing = True
+    try:
+        bounds = getattr(box, "_vipp_entry_width_bounds", None)
+        if bounds is not None:
+            minimum, maximum = bounds
+            box.setMinimumWidth(minimum)
+            box.setMaximumWidth(maximum)
+            return
+        if box.property("vippCompactParameterEntry"):
+            # Qt's range-based sizeHint and napari's 70px *content* minimum
+            # make short slider entries needlessly wide. Use a shared compact
+            # text allowance plus actual native button/frame chrome instead.
+            # A long current value still grows the entry, without changing its
+            # range, precision or any scientific value.
+            option = QStyleOptionSpinBox()
+            box.initStyleOption(option)
+            option.rect = QRect(0, 0, 512, max(box.height(), box.sizeHint().height()))
+            editor = box.style().subControlRect(
+                QStyle.CC_SpinBox, option, QStyle.SC_SpinBoxEditField, box
+            )
+            chrome = max(0, option.rect.width() - editor.width())
+            text_width = max(
+                box.fontMetrics().horizontalAdvance("-0.000"),
+                box.fontMetrics().horizontalAdvance(box.text()),
+            )
+            box.setFixedWidth(max(70, text_width + chrome + SPACE_SM))
+            return
+        box.setMinimumWidth(0)
+        box.setMinimumWidth(
+            max(70, box.sizeHint().width(), content_width(box, box.text(), padding=24))
+        )
+    finally:
+        box._vipp_metric_entry_sizing = False
 
 
 class ParameterControl(QWidget):
@@ -269,11 +330,12 @@ class ParameterControl(QWidget):
         else:
             self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
+        self.value_box.setProperty("vippCompactParameterEntry", True)
+        self.value_box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.value_box.setDefaultValue(spec.default)
         if getattr(spec, "odd_only", False):
             self.value_box.setToolTip("Odd whole numbers only (for example 3, 5, 7).")
         _configure_numeric_spin_box(self.value_box)
-        self.value_box.setMinimumWidth(74)
         slider_height = max(int(self.slider.sizeHint().height()), 14)
         self.slider.setMinimumHeight(slider_height)
         self.setMinimumHeight(
@@ -332,7 +394,8 @@ class ParameterControl(QWidget):
                         self._to_slider(bounds.minimum), self._to_slider(bounds.maximum)
                     )
                     self.slider.setSingleStep(
-                        1 if getattr(self.spec, "odd_only", False)
+                        1
+                        if getattr(self.spec, "odd_only", False)
                         else max(int(bounds.step), 1)
                     )
                 self.slider.setValue(self._bounded_slider_value(current))
@@ -354,6 +417,7 @@ class ParameterControl(QWidget):
                 self.slider.setValue(self._bounded_slider_value(current))
                 self.value_box.setValue(float(current))
 
+        _fit_numeric_entry(self.value_box)
         if emit:
             self.valueChanged.emit(self.value())
 
@@ -361,9 +425,11 @@ class ParameterControl(QWidget):
         mapped = self._from_slider(value)
         with QSignalBlocker(self.value_box):
             self.value_box.setValue(mapped)
+        _fit_numeric_entry(self.value_box)
         self.valueChanged.emit(self.value())
 
     def _on_box_changed(self, value) -> None:
+        _fit_numeric_entry(self.value_box)
         if self._bounds.expandable and not self._value_in_slider_bounds(value):
             self.set_bounds(self._bounds, value, emit=False)
             self.valueChanged.emit(self.value())
@@ -411,13 +477,9 @@ class ParameterControl(QWidget):
             span = maximum - minimum
             fraction = float(np.clip(value, 0, 1000)) / 1000.0
             if minimum > 0.0 and span > 0.0:
-                mapped = minimum * np.exp(
-                    fraction * np.log(maximum / minimum)
-                )
+                mapped = minimum * np.exp(fraction * np.log(maximum / minimum))
             else:
-                mapped = minimum + np.expm1(
-                    fraction * np.log1p(max(span, 0.0))
-                )
+                mapped = minimum + np.expm1(fraction * np.log1p(max(span, 0.0)))
             if self._is_integer and getattr(self.spec, "odd_only", False):
                 return self._odd_slider_value(mapped)
             return int(round(mapped)) if self._is_integer else mapped
@@ -533,7 +595,6 @@ class NumericEntryControl(QWidget):
             self.value_box.setDecimals(bounds.decimals)
         self.value_box.setDefaultValue(spec.default)
         _configure_numeric_spin_box(self.value_box)
-        self.value_box.setMinimumWidth(100)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -544,6 +605,11 @@ class NumericEntryControl(QWidget):
 
     def value(self):
         return self.value_box.value()
+
+    def set_entry_width_bounds(self, minimum: int, maximum: int) -> None:
+        """Keep an explicit layout width range through native restyling."""
+        self.value_box._vipp_entry_width_bounds = (minimum, maximum)
+        _fit_numeric_entry(self.value_box)
 
     def set_bounds(
         self,
@@ -574,6 +640,7 @@ class NumericEntryControl(QWidget):
                 self.value_box.setRange(float(minimum), float(maximum))
                 self.value_box.setSingleStep(float(bounds.step))
                 self.value_box.setValue(current)
+        _fit_numeric_entry(self.value_box)
         if emit:
             self.valueChanged.emit(self.value())
 
@@ -780,9 +847,7 @@ class BoolControl(QWidget):
         if label_height < 0:
             label_height = self.inline_label.sizeHint().height()
         return (
-            margins.top()
-            + margins.bottom()
-            + max(label_height, checkbox_hint.height())
+            margins.top() + margins.bottom() + max(label_height, checkbox_hint.height())
         )
 
     def value(self):
@@ -801,6 +866,66 @@ class BoolControl(QWidget):
             self.valueChanged.emit(self.value())
 
 
+class _SourceProgressLabel(QLabel):
+    """Reserve the wrapped text's height even when the dock is compressed."""
+
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setTextFormat(Qt.PlainText)
+        self.setWordWrap(True)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        if text == self.text():
+            return
+        super().setText(text)
+        self._reserve_wrapped_height()
+
+    def setWordWrap(self, enabled: bool) -> None:  # noqa: N802
+        if enabled == self.wordWrap():
+            return
+        super().setWordWrap(enabled)
+        self._reserve_wrapped_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self._reserve_wrapped_height()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._reserve_wrapped_height()
+
+    def _reserve_wrapped_height(self) -> None:
+        width = self.width()
+        if width <= 0 or getattr(self, "_reserving_wrapped_height", False):
+            return
+        self._reserving_wrapped_height = True
+        try:
+            minimum = self.minimumHeight()
+            height = max(0, self.heightForWidth(width))
+            # QLabel clamps heightForWidth to its explicit minimum. A result
+            # equal to an old wrapped minimum can therefore hide a shrink.
+            # Clear it only for that ambiguous measurement, then restore the
+            # native wrapping height before returning to the event loop.
+            if height == minimum and minimum > self.fontMetrics().height():
+                self.setMinimumHeight(0)
+                height = max(0, self.heightForWidth(width))
+            if height != self.minimumHeight():
+                self.setMinimumHeight(height)
+        finally:
+            self._reserving_wrapped_height = False
+
+
+class _SourceProgressAmount(_SourceProgressLabel):
+    def minimumSizeHint(self):  # noqa: N802
+        # Let a narrow dock reach the stacked layout even when the count is
+        # currently shown on one line.
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+
 class SourceLoadStatusControl(QWidget):
     """Generation-gated source progress with one-shot cancellation."""
 
@@ -816,29 +941,55 @@ class SourceLoadStatusControl(QWidget):
         SourceLoadPhase.VERIFY: "Verifying source revision",
     }
     _QT_PROGRESS_MAXIMUM = 1_000
+    _MIN_INLINE_BAR_WIDTH = 72
+    _FILE_ACTIONS = {
+        "Hashing source bytes": "Checking source contents",
+        "Hashing source file": "Checking file contents",
+        "Discovering source files": "Finding source files",
+        "Source identity complete": "Source contents checked",
+        "Materializing image data": "Preparing image data",
+        "Image data materialized": "Image data prepared",
+    }
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, display: bool = True):
         super().__init__(parent)
+        self.setObjectName("VippSourceLoadStatus")
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setAccessibleName("Image source load")
+        self._display = display
         self._active_run_id: int | None = None
         self._latest_run_id = -1
         self._cancel_requested_for: int | None = None
         self._has_status = False
 
-        self.label = QLabel()
-        self.label.setWordWrap(True)
+        self.heading = _SourceProgressLabel("Loading image source")
+        self.phase_label = _SourceProgressLabel()
+        apply_text_role(self.phase_label, "section")
+        self.label = _SourceProgressLabel()
+        self.amount_label = _SourceProgressAmount()
+        self.amount_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.amount_label.hide()
         self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setObjectName("VippSourceLoadProgress")
+        self.progress_bar.setAccessibleName("Image loading progress")
+        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setTextVisible(False)
         self.cancel_button = QPushButton("Cancel load")
-        self.cancel_button.setMaximumWidth(104)
+        self.cancel_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
 
-        progress_row = QHBoxLayout()
-        progress_row.setContentsMargins(0, 0, 0, 0)
-        progress_row.addWidget(self.progress_bar, 1)
-        progress_row.addWidget(self.cancel_button)
-        layout = QFormLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addRow(self.label)
-        layout.addRow(progress_row)
+        header = QHBoxLayout()
+        header.addWidget(self.heading, 1)
+        header.addWidget(self.cancel_button, 0, Qt.AlignTop)
+        self._progress_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self._progress_row.addWidget(self.progress_bar, 1, Qt.AlignVCenter)
+        self._progress_row.addWidget(self.amount_label)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        layout.setSpacing(SPACE_XS)
+        layout.addLayout(header)
+        layout.addWidget(self.phase_label)
+        layout.addWidget(self.label)
+        layout.addLayout(self._progress_row)
 
         self.cancel_button.clicked.connect(self._request_cancel)
         self.hide()
@@ -851,7 +1002,14 @@ class SourceLoadStatusControl(QWidget):
     def has_status(self) -> bool:
         return self._has_status
 
-    def begin(self, run_id: int, message: str = "Inspecting source.") -> bool:
+    def begin(
+        self,
+        run_id: int,
+        message: str = "",
+        *,
+        title: str = "Loading image source",
+        phase: SourceLoadPhase = SourceLoadPhase.INSPECT,
+    ) -> bool:
         """Activate a newer load generation and reject stale starts."""
 
         run_id = int(run_id)
@@ -861,12 +1019,16 @@ class SourceLoadStatusControl(QWidget):
         self._active_run_id = run_id
         self._cancel_requested_for = None
         self._has_status = True
-        self.label.setText(str(message))
+        self.heading.setText(title)
+        self.phase_label.setText(self._PHASE_LABELS[phase])
+        self._set_detail(message)
+        self._set_amount("")
         self.progress_bar.setRange(0, 0)
-        self.progress_bar.setFormat("Inspecting")
+        self.progress_bar.setFormat(self.phase_label.text())
         self.cancel_button.setText("Cancel load")
         self.cancel_button.setEnabled(True)
-        self.show()
+        if self._display:
+            self.show()
         return True
 
     def update_progress(self, progress: SourceLoadProgress) -> bool:
@@ -877,16 +1039,15 @@ class SourceLoadStatusControl(QWidget):
         if self._cancel_requested_for == progress.run_id:
             return False
         phase_label = self._PHASE_LABELS[progress.phase]
-        message = str(progress.message).strip()
         item_suffix = (
-            f" ({progress.item_index}/{progress.item_total})"
+            f" · Item {progress.item_index} of {progress.item_total}"
             if progress.item_total > 1
             else ""
         )
-        self.label.setText(f"{phase_label}{item_suffix}. {message}".strip())
+        self.phase_label.setText(f"{phase_label}{item_suffix}")
+        self._set_detail(progress.message, compact=True)
         self._set_progress_bar(progress, phase_label)
         self._has_status = True
-        self.show()
         return True
 
     def finish(
@@ -903,23 +1064,26 @@ class SourceLoadStatusControl(QWidget):
             return False
         self._active_run_id = None
         self.cancel_button.setEnabled(False)
+        self._set_amount("")
         if cancelled:
-            self.label.setText("Source load cancelled at a safe checkpoint.")
+            self.phase_label.setText("Cancelled")
+            self._set_detail("Source load cancelled at a safe checkpoint.")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("Cancelled")
         elif error:
-            self.label.setText(f"Source load failed: {error}")
+            self.phase_label.setText("Source load failed")
+            self._set_detail(error)
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("Failed")
         else:
-            self.label.setText("Source loaded and verified.")
+            self.phase_label.setText("Source loaded and verified")
+            self._set_detail("")
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(1)
             self.progress_bar.setFormat("Complete")
         self._has_status = True
-        self.show()
         return True
 
     def clear(self) -> None:
@@ -928,7 +1092,9 @@ class SourceLoadStatusControl(QWidget):
         self._active_run_id = None
         self._cancel_requested_for = None
         self._has_status = False
-        self.label.clear()
+        self.phase_label.clear()
+        self._set_detail("")
+        self._set_amount("")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
         self.cancel_button.setEnabled(False)
@@ -941,12 +1107,34 @@ class SourceLoadStatusControl(QWidget):
         self._cancel_requested_for = run_id
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText("Cancelling…")
-        self.label.setText(
-            "Cancelling source load at the next safe I/O checkpoint…"
-        )
+        self.phase_label.setText("Cancelling load")
+        self._set_detail("Waiting for the next safe I/O checkpoint.")
+        self._set_amount("")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFormat("Cancelling")
         self.cancelRequested.emit(run_id)
+
+    def _set_detail(self, message: str, *, compact: bool = False) -> None:
+        raw = str(message).strip()
+        detail = raw
+        if compact:
+            step, detail = source_io_progress_detail(raw)
+            action, separator, path = detail.partition(": ")
+            if separator and path and action in self._FILE_ACTIONS:
+                # Parse path syntax, not the host OS: do not split a drive
+                # letter, UNC share, or a colon in a POSIX filename.
+                windows = PureWindowsPath(path)
+                name = (
+                    windows.name
+                    if windows.drive or path.startswith("\\")
+                    else PurePosixPath(path).name
+                )
+                detail = " · ".join(filter(None, (self._FILE_ACTIONS[action], name)))
+            detail = " · ".join(filter(None, (step, detail)))
+        self.label.setText(detail)
+        self.label.setVisible(bool(detail))
+        # Force escaped tooltip text; Qt otherwise guesses HTML from filenames.
+        self.label.setToolTip(f"<qt>{escape(raw)}</qt>" if detail != raw else "")
 
     def _set_progress_bar(
         self,
@@ -956,6 +1144,7 @@ class SourceLoadStatusControl(QWidget):
         if not progress.determinate:
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat(phase_label)
+            self._set_amount("")
             return
         total = max(int(progress.total), 1)
         current = min(max(int(progress.current), 0), total)
@@ -964,11 +1153,53 @@ class SourceLoadStatusControl(QWidget):
         self.progress_bar.setRange(0, maximum)
         self.progress_bar.setValue(scaled)
         if progress.unit is SourceLoadProgressUnit.BYTES:
-            self.progress_bar.setFormat(
-                f"{_human_bytes(current)} / {_human_bytes(total)}"
-            )
+            amount = f"{_human_bytes(current)} / {_human_bytes(total)}"
         else:
-            self.progress_bar.setFormat(f"{current} / {total}")
+            amount = f"{current} / {total}"
+        self.progress_bar.setFormat(amount)
+        self._set_amount(amount)
+
+    def _set_amount(self, text: str) -> None:
+        self.amount_label.setText(text)
+        self.amount_label.setVisible(bool(text))
+        self.progress_bar.setAccessibleDescription(text)
+        self._sync_progress_row()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self._sync_progress_row()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange) and hasattr(
+            self, "_progress_row"
+        ):
+            self._sync_progress_row()
+
+    def _sync_progress_row(self) -> None:
+        margins = self.layout().contentsMargins()
+        width = self.contentsRect().width() - margins.left() - margins.right()
+        amount = self.amount_label.text()
+        label = self.amount_label
+        chrome = label.contentsMargins()
+        amount_width = (
+            label.fontMetrics().horizontalAdvance(amount)
+            + chrome.left()
+            + chrome.right()
+            + 2 * label.margin()
+        )
+        required = amount_width + SPACE_SM + self._MIN_INLINE_BAR_WIDTH
+        inline = not amount or width >= required
+        # QLabel's preferred width can be smaller than the rendered text on
+        # some styles. Reserve the measured width only while the amount sits
+        # beside the bar; a stacked label must be free to shrink and wrap.
+        label.setMinimumWidth(amount_width if inline and amount else 0)
+        self._progress_row.setDirection(
+            QBoxLayout.LeftToRight if inline else QBoxLayout.TopToBottom
+        )
+        self._progress_row.setSpacing(SPACE_SM if inline else SPACE_XS)
+        label.setWordWrap(not inline)
 
 
 class ImageSourceControl(QWidget):
@@ -991,6 +1222,7 @@ class ImageSourceControl(QWidget):
         sample_names: list[str],
         series_options: list[tuple[int, str]] | None = None,
         source_summary: str = "",
+        show_load_status: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -1001,9 +1233,9 @@ class ImageSourceControl(QWidget):
         self.sample_combo = QComboBox()
         self.path_edit = QLineEdit()
         self.path_button = QPushButton("File...")
-        self.path_button.setMaximumWidth(64)
+        self.path_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.zarr_button = QPushButton("Zarr...")
-        self.zarr_button.setMaximumWidth(64)
+        self.zarr_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self.series_combo = QComboBox()
         self.binding_combo = QComboBox()
         self.binding_combo.addItems(["single item", "collection"])
@@ -1020,7 +1252,10 @@ class ImageSourceControl(QWidget):
         )
         self.source_summary = QLabel()
         self.source_summary.setWordWrap(True)
-        self.source_load_status = SourceLoadStatusControl()
+        self._show_load_status = show_load_status
+        self.source_load_status = SourceLoadStatusControl(
+            self, display=show_load_status
+        )
         self.source_load_status.cancelRequested.connect(
             self.sourceLoadCancelRequested.emit
         )
@@ -1028,9 +1263,10 @@ class ImageSourceControl(QWidget):
         self.reader_support.retryRequested.connect(self.sourceReaderRetryRequested.emit)
         self._memory_repair_presentation = ImageSourceMemoryRepairPresentation()
         self.memory_repair_panel = QWidget()
+        self.memory_repair_panel.setObjectName("VippSourceMemoryRepair")
         memory_repair_layout = QVBoxLayout(self.memory_repair_panel)
-        memory_repair_layout.setContentsMargins(8, 6, 8, 6)
-        memory_repair_layout.setSpacing(6)
+        memory_repair_layout.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        memory_repair_layout.setSpacing(SPACE_SM)
         self.memory_repair_label = QLabel()
         self.memory_repair_label.setWordWrap(True)
         self.memory_repair_label.setMinimumWidth(0)
@@ -1040,7 +1276,9 @@ class ImageSourceControl(QWidget):
         )
         self.memory_repair_button = QPushButton("Add fitted Crop Stack")
         self.memory_repair_dismiss_button = QPushButton("Dismiss")
-        self.memory_repair_dismiss_button.setMaximumWidth(70)
+        self.memory_repair_dismiss_button.setSizePolicy(
+            QSizePolicy.Maximum, QSizePolicy.Fixed
+        )
         memory_repair_actions = QWidget()
         memory_repair_actions.setMinimumWidth(0)
         memory_repair_actions.setSizePolicy(
@@ -1049,7 +1287,7 @@ class ImageSourceControl(QWidget):
         )
         memory_repair_actions_layout = QHBoxLayout(memory_repair_actions)
         memory_repair_actions_layout.setContentsMargins(0, 0, 0, 0)
-        memory_repair_actions_layout.setSpacing(6)
+        memory_repair_actions_layout.setSpacing(SPACE_SM)
         memory_repair_actions_layout.addWidget(self.memory_repair_button, 1)
         memory_repair_actions_layout.addWidget(self.memory_repair_dismiss_button)
         memory_repair_layout.addWidget(self.memory_repair_label)
@@ -1064,9 +1302,9 @@ class ImageSourceControl(QWidget):
         self.resolution_panel = QWidget()
         resolution_layout = QVBoxLayout(self.resolution_panel)
         resolution_layout.setContentsMargins(0, 0, 0, 0)
-        resolution_layout.setSpacing(4)
+        resolution_layout.setSpacing(SPACE_XS)
         self.resolution_heading_label = QLabel("Resolution")
-        self.resolution_heading_label.setStyleSheet("font-weight: 600;")
+        self.resolution_heading_label.setStyleSheet(type_style(self, "section"))
         self.analysis_resolution_label = QLabel()
         self.analysis_resolution_label.setWordWrap(True)
         self.pyramid_levels_label = QLabel()
@@ -1171,7 +1409,8 @@ class ImageSourceControl(QWidget):
         self.form_layout.addRow(self.source_summary)
         self.form_layout.addRow(self._source_representation_home)
         self.form_layout.addRow(self.memory_repair_panel)
-        self.form_layout.addRow(self.source_load_status)
+        if self._show_load_status:
+            self.form_layout.addRow(self.source_load_status)
         self.form_layout.addRow(self.reader_support)
         self.reader_support.layoutChanged.connect(self._sync_reader_support_row)
 
@@ -1197,24 +1436,16 @@ class ImageSourceControl(QWidget):
         self.viewer_display_combo.currentIndexChanged.connect(
             self._on_viewer_display_changed
         )
-        self.preview_reload_button.clicked.connect(
-            self.previewReloadRequested.emit
-        )
-        self.memory_repair_button.clicked.connect(
-            self.sourceCropRepairRequested.emit
-        )
-        self.memory_repair_dismiss_button.clicked.connect(
-            self._dismiss_memory_repair
-        )
+        self.preview_reload_button.clicked.connect(self.previewReloadRequested.emit)
+        self.memory_repair_button.clicked.connect(self.sourceCropRepairRequested.emit)
+        self.memory_repair_dismiss_button.clicked.connect(self._dismiss_memory_repair)
         self._apply_theme_style()
 
     def set_compact_form_mode(self, compact: bool) -> None:
         """Stack source labels above fields without rebuilding any controls."""
 
         compact = bool(compact)
-        self.form_layout.setFieldGrowthPolicy(
-            QFormLayout.AllNonFixedFieldsGrow
-        )
+        self.form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         current_policy = self.form_layout.rowWrapPolicy()
         if compact:
             if current_policy != QFormLayout.WrapAllRows:
@@ -1254,6 +1485,8 @@ class ImageSourceControl(QWidget):
         if not self._applying_theme_style and event.type() in (
             QEvent.PaletteChange,
             QEvent.StyleChange,
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
         ):
             self._apply_theme_style()
 
@@ -1274,9 +1507,7 @@ class ImageSourceControl(QWidget):
         try:
             parent = self.parentWidget()
             palette = (
-                QWidget.palette(parent)
-                if parent is not None
-                else QWidget.palette(self)
+                QWidget.palette(parent) if parent is not None else QWidget.palette(self)
             )
             colors = theme_colors(palette)
             resolution_parent = self.resolution_panel.parentWidget()
@@ -1286,15 +1517,14 @@ class ImageSourceControl(QWidget):
                 else QWidget.palette(self.resolution_panel)
             )
             resolution_colors = theme_colors(resolution_palette)
-            self.source_summary.setStyleSheet(
-                f"color: {colors.muted_text.name()};"
-            )
+            self.resolution_heading_label.setStyleSheet(type_style(self, "section"))
+            self.source_summary.setStyleSheet(f"color: {colors.muted_text.name()};")
             self.pyramid_levels_label.setStyleSheet(
                 f"color: {resolution_colors.muted_text.name()};"
             )
             warning = colors.warning
             self.memory_repair_panel.setStyleSheet(
-                "QWidget {"
+                "QWidget#VippSourceMemoryRepair {"
                 f" background: {warning.surface.name()};"
                 f" border: 1px solid {warning.border.name()};"
                 " border-radius: 4px;"
@@ -1341,9 +1571,7 @@ class ImageSourceControl(QWidget):
         if not isinstance(host, QWidget):
             raise TypeError("source representation host must be a QWidget")
         if host.layout() is None:
-            raise ValueError(
-                "source representation host must already have a layout"
-            )
+            raise ValueError("source representation host must already have a layout")
         ancestor: QWidget | None = host
         while ancestor is not None:
             if ancestor is self.resolution_panel:
@@ -1513,11 +1741,13 @@ class ImageSourceControl(QWidget):
     def begin_source_load(
         self,
         run_id: int,
-        message: str = "Inspecting source.",
+        message: str = "",
+        *,
+        phase: SourceLoadPhase = SourceLoadPhase.INSPECT,
     ) -> bool:
         """Begin progress for a new source-load generation."""
 
-        accepted = self.source_load_status.begin(run_id, message)
+        accepted = self.source_load_status.begin(run_id, message, phase=phase)
         if accepted:
             self.reader_support.set_source(self.path_edit.text(), "")
         self._sync_rows()
@@ -1585,9 +1815,7 @@ class ImageSourceControl(QWidget):
         """Show derived resolution facts without changing ``value()``."""
 
         if not isinstance(presentation, ImageSourceResolutionPresentation):
-            raise TypeError(
-                "presentation must be an ImageSourceResolutionPresentation"
-            )
+            raise TypeError("presentation must be an ImageSourceResolutionPresentation")
         self._resolution_presentation = presentation
         shape = _shape_text(presentation.analysis_shape)
         axes = str(presentation.analysis_axes).strip()
@@ -1595,9 +1823,7 @@ class ImageSourceControl(QWidget):
         analysis_text = f"Level 0 · {axis_prefix}{shape} · fixed processing data"
         if presentation.analysis_window_bounds:
             axis_names = (
-                tuple(axes)
-                if len(axes) == len(presentation.analysis_shape)
-                else ()
+                tuple(axes) if len(axes) == len(presentation.analysis_shape) else ()
             )
             cropped_bounds = tuple(
                 (index, int(start), int(stop))
@@ -1611,8 +1837,7 @@ class ImageSourceControl(QWidget):
                 if int(start) != 0 or int(stop) != int(size)
             )
             bounds_text = ", ".join(
-                f"{axis_names[index] if axis_names else f'axis {index}'} "
-                f"{start}:{stop}"
+                f"{axis_names[index] if axis_names else f'axis {index}'} {start}:{stop}"
                 for index, start, stop in cropped_bounds
             )
             if not bounds_text:
@@ -1633,8 +1858,7 @@ class ImageSourceControl(QWidget):
         viewer_choice = str(presentation.viewer_choice).strip().casefold()
         requested_level = (
             viewer_choice.partition(":")[2]
-            if viewer_choice.startswith("preview:")
-            and viewer_choice != "preview:auto"
+            if viewer_choice.startswith("preview:") and viewer_choice != "preview:auto"
             else ""
         )
         detail = str(presentation.preview_detail).strip()
@@ -1680,8 +1904,7 @@ class ImageSourceControl(QWidget):
                     start=1,
                 ):
                     self.viewer_display_combo.addItem(
-                        f"Presentation preview — L{level} · "
-                        f"{_shape_text(level_shape)}",
+                        f"Presentation preview — L{level} · {_shape_text(level_shape)}",
                         f"preview:{level}",
                     )
             selected = self.viewer_display_combo.findData(viewer_choice)
@@ -1728,10 +1951,11 @@ class ImageSourceControl(QWidget):
             self._source_representation_home,
             resolution_visible and self._source_representation_host is None,
         )
-        self._set_form_row_visible(
-            self.source_load_status,
-            file_mode and self.source_load_status.has_status,
-        )
+        if self._show_load_status:
+            self._set_form_row_visible(
+                self.source_load_status,
+                file_mode and self.source_load_status.has_status,
+            )
         self._set_form_row_visible(
             self.memory_repair_panel,
             file_mode and self._memory_repair_presentation.visible,

@@ -60,6 +60,17 @@ def model_window(qtbot, monkeypatch):
         window.shutdown()
 
 
+def _show_at_review_size(window, qtbot, width, height):
+    # First show fits the actual screen, including a small offscreen CI screen.
+    # Model the user's later resize so each case tests its requested width.
+    window.show()
+    qtbot.waitUntil(lambda: window.pane_splitter.height() > 0)
+    QApplication.processEvents()
+    window.resize(width, height)
+    qtbot.waitUntil(lambda: window.width() == width)
+    QApplication.processEvents()
+
+
 def test_independent_wrappers_readonly_buffers_and_main_viewer_isolation(model_window):
     data = np.arange(20, dtype=np.float32).reshape(4, 5)
     original = data.copy()
@@ -376,8 +387,7 @@ def test_pending_keeps_last_complete_panes_visible_without_geometry_collapse(
     data = np.zeros((3, 4, 5))
     records = []
     window = model_window((_input(data, "zyx"),), callback=records.append)
-    window.show()
-    qtbot.waitUntil(lambda: window.pane_splitter.height() > 0)
+    _show_at_review_size(window, qtbot, 1280, 760)
     geometry = window.pane_splitter.geometry()
     layers = [tuple(pane.viewer.layers) for pane in window.panes]
     recipe = window.settings
@@ -388,6 +398,9 @@ def test_pending_keeps_last_complete_panes_visible_without_geometry_collapse(
     assert not window.sidebar_scroll.isEnabled()
     assert not window.orientation_controls.isEnabled()
     assert "not current" in window.status_label.text()
+    assert window.status_label.heightForWidth(window.status_label.width()) <= (
+        window.status_label.height()
+    )
     window._set_style("a", "opacity", 0.3)
     window._set_general("mode", "overlay")
     window._choose_orientation("oblique")
@@ -412,10 +425,7 @@ def test_routine_upstream_status_never_resizes_review_panes(model_window, qtbot,
 
     window = model_window((_input(np.zeros((3, 4, 5)), "zyx"),))
     window.setStyleSheet(get_stylesheet("dark", extra_variables={"font_size": "12pt"}))
-    window.resize(width, 820)
-    window.show()
-    qtbot.waitUntil(lambda: window.pane_splitter.height() > 0)
-    QApplication.processEvents()
+    _show_at_review_size(window, qtbot, width, 820)
     geometry = window.pane_splitter.geometry()
     for message in (REVIEW_STALE_MESSAGE, REVIEW_UPDATING_MESSAGE):
         window.set_pending(message)
@@ -752,8 +762,7 @@ def test_readonly_status_shares_the_orientation_row(model_window, qtbot, theme, 
     data = np.zeros((3, 4, 5), np.float32)
     window = model_window((_input(data, "zyx"),), settings={"ndisplay": 3})
     window.setStyleSheet(get_stylesheet(theme, extra_variables={"font_size": "12pt"}))
-    window.resize(width, 760)
-    window.show()
+    _show_at_review_size(window, qtbot, width, 760)
     qtbot.waitUntil(lambda: window.status_label.width() > 0)
     row = window.status_label.parentWidget()
     assert row is window.orientation_controls.parentWidget()
@@ -860,8 +869,7 @@ def test_mockup_layout_owns_top_pane_bottom_and_right_controls(
 ):
     data = np.zeros((3, 4, 5, 6), np.float32)
     window = model_window((_input(data, "tzyx"), _input(data, "tzyx")))
-    window.resize(width, 760)
-    window.show()
+    _show_at_review_size(window, qtbot, width, 760)
     qtbot.waitUntil(lambda: window.navigation_bar.width() > 0)
     assert window.width() == width
     for widget in (
@@ -926,8 +934,7 @@ def test_pane_cards_contain_header_canvas_footer_under_native_theme(
         )
     )
     window.setStyleSheet(get_stylesheet(theme, extra_variables={"font_size": "12pt"}))
-    window.resize(width, 760)
-    window.show()
+    _show_at_review_size(window, qtbot, width, 760)
     qtbot.waitUntil(lambda: window.panes[0].footer.width() > 0)
     assert window.width() == width
     assert window.scale_bar_check.geometry().right() < window.top_toolbar.width()
@@ -1428,6 +1435,7 @@ def test_2d_inputs_disable_unavailable_volume_presets(model_window):
     assert not window.orientation_buttons["xz"].isEnabled()
     assert not window.orientation_buttons["yz"].isEnabled()
     assert not window.orientation_buttons["oblique"].isEnabled()
+    assert "3D review requires explicit" not in window.status_label.text()
     assert all(
         controls["group"].isHidden()
         for controls in window._navigation_controls.values()
@@ -1791,6 +1799,389 @@ def test_native_canvas_dimension_button_uses_rgb_adapter_gate(model_window):
     assert "voxel alpha is not supported" in alpha_window.status_label.text()
 
 
+def test_reduced_volume_preview_uses_one_calibrated_grid_and_restores_full_slices(
+    model_window, monkeypatch
+):
+    monkeypatch.setattr(
+        image_review,
+        "renderer_volume_limits",
+        lambda: SimpleNamespace(
+            max_texture_axis=None, max_texture_bytes=192, admit=None
+        ),
+    )
+    shape = (2, 4, 6, 8)
+    raw = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    rgb = np.arange(np.prod(shape) * 3, dtype=np.uint8).reshape((*shape, 3))
+    a, b = (_input(raw, "tzyx", scale=2), _input(rgb, "tzyx", scale=2))
+    window = model_window((a, b))
+    transitions = []
+    for viewer in window.viewers:
+        viewer.dims.events.ndisplay.connect(
+            lambda event, pane=viewer: transitions.append(
+                (pane.dims.ndisplay, len(pane.layers))
+            )
+        )
+    window._navigate_axis("t", 1)
+    window.viewers[1].dims.ndisplay = 3
+    assert transitions == [(3, 0), (3, 0)]
+    assert window.settings["ndisplay"] == 3
+    assert "Reduced 3D preview" in window.status_label.text()
+    assert "Z/Y/X steps 1/2/2" in window.status_label.text()
+    assert window.inputs == (a, b)
+    window.viewers[1].dims.roll()
+    window.viewers[1].dims.transpose()
+    assert all(viewer.dims.order == (0, 1, 2, 3) for viewer in window.viewers)
+    for pane in window.panes:
+        assert pane.viewer.dims.point[0] == a.scale[0]
+        assert len(pane.layers["b"]) == 3
+        for layer, original in zip(
+            [*pane.layers["a"], *pane.layers["b"]],
+            [raw, *(rgb[..., c] for c in range(3))],
+            strict=True,
+        ):
+            assert tuple(layer.scale) == (2, 2, 4, 4)
+            assert tuple(layer.translate) == a.translate
+            assert np.shares_memory(layer.data, original)
+            assert not layer.data.flags.writeable
+            np.testing.assert_array_equal(layer.data, original[:, :, ::2, ::2])
+    transitions.clear()
+    window.viewers[0].dims.ndisplay = 2
+    assert transitions == [(2, 0), (2, 0)]
+    assert "Reduced 3D preview" not in window.status_label.text()
+    for pane in window.panes:
+        assert len(pane.layers["b"]) == 1
+        for key, original in (("a", raw), ("b", rgb)):
+            layer = pane.layers[key][0]
+            assert layer.data.shape == original.shape
+            assert tuple(layer.scale) == a.scale
+            assert np.shares_memory(layer.data, original)
+    assert raw.flags.writeable and rgb.flags.writeable
+
+
+def test_mask_keeps_native_r8_or_mixed_pair_stays_in_full_resolution_2d(
+    model_window, monkeypatch
+):
+    requests = []
+
+    def admit(xyz, bytes_per_voxel):
+        requests.append((xyz, bytes_per_voxel))
+        return bytes_per_voxel == 1
+
+    monkeypatch.setattr(
+        image_review,
+        "renderer_volume_limits",
+        lambda: SimpleNamespace(
+            max_texture_axis=None, max_texture_bytes=1024, admit=admit
+        ),
+    )
+    mask = np.ones((4, 6, 8), dtype=bool)
+    dense = mask.copy()
+    dense[:, 1::2, :] = False
+    scalar = np.zeros_like(mask, dtype=np.float32)
+    occupancy = _input(mask, "zyx", kind="binary mask")
+    paired_masks = model_window(
+        (occupancy, _input(dense, "zyx", kind="binary mask")),
+        settings={"ndisplay": 3},
+    )
+    assert requests == [((8, 6, 4), 1)] * 2
+    for pane in paired_masks.panes:
+        assert pane.viewer.dims.ndisplay == 3
+        for key, original in (("a", mask), ("b", dense)):
+            layer = pane.layers[key][0]
+            assert layer.data.shape == original.shape
+            assert layer.data.dtype == np.uint8
+            assert np.shares_memory(layer.data, original)
+            np.testing.assert_array_equal(layer.data, original)
+    window = model_window((occupancy, _input(scalar, "zyx")), settings={"ndisplay": 3})
+    assert ((8, 6, 4), 4) in requests
+    assert requests[-1] == ((1, 1, 1), 4)
+    assert [shape for shape, size in requests if size == 1] == [(8, 6, 4)] * 3
+    assert window.settings["ndisplay"] == 3
+    assert window.dim_combo.currentData() == 2
+    assert not window.dim_combo.model().item(0).isEnabled()
+    assert "Mask and label grids are kept at full resolution." in (
+        window.status_label.text()
+    )
+    window.viewers[1].dims.ndisplay = 3
+    for pane in window.panes:
+        assert pane.viewer.dims.ndisplay == 2
+        assert pane.layers["a"][0].data.shape == mask.shape
+        assert pane.layers["a"][0].data.dtype == bool
+        assert pane.layers["b"][0].data.shape == scalar.shape
+
+
+@pytest.mark.parametrize(("budget", "step"), ((192, 2), (1024, 1)))
+def test_mixed_intensity_and_labels_use_calibrated_3d_without_sampling_ids(
+    model_window,
+    monkeypatch,
+    budget,
+    step,
+):
+    requests = []
+
+    def admit(xyz, bytes_per_voxel):
+        requests.append((xyz, bytes_per_voxel))
+        return True
+
+    monkeypatch.setattr(
+        image_review,
+        "renderer_volume_limits",
+        lambda: SimpleNamespace(
+            max_texture_axis=None,
+            max_texture_bytes=budget,
+            admit=admit,
+        ),
+    )
+    shape = (2, 4, 6, 8)
+    raw = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    labels = np.zeros(shape, np.int32)
+    labels[1, 1, 1, 1] = (1 << 29) + 7  # A coarse stride would omit this ID.
+    translation = (5, 7, 11, 13)
+
+    def calibrated(data, kind=None, name="Image"):
+        image = _input(data, "tzyx", kind=kind, name=name, scale=2)
+        axes = tuple(
+            replace(axis, translation=origin)
+            for axis, origin in zip(image.axes, translation, strict=True)
+        )
+        return prepare_review_input(data, replace(image.state, axes=axes), name)
+
+    a = calibrated(raw, name="Intensity")
+    b = calibrated(labels, "label image", "Labels")
+    window = model_window((a, b))
+    assert ((8, 6, 4), 1) in requests  # Actual native label encoding, not int32.
+    assert ((8 // step, 6 // step, 4), 4) in requests
+    assert window.orientation_buttons["oblique"].isEnabled()
+    window._navigate_axis("t", 1)
+    window._choose_orientation("oblique")
+    assert window.settings["ndisplay"] == 3
+    if step > 1:
+        assert "A: Z/Y/X steps 1/2/2" in window.status_label.text()
+        assert "B: full-resolution labels" in window.status_label.text()
+    else:
+        assert "Native analysis resolution" in window.status_label.text()
+
+    original_layers = []
+    for pane in window.panes:
+        assert pane.viewer.dims.ndisplay == 3
+        assert pane.viewer.dims.point[0] == translation[0] + a.scale[0]
+        intensity, categorical = pane.layers["a"][0], pane.layers["b"][0]
+        original_layers.extend((intensity, categorical))
+        assert np.shares_memory(intensity.data, raw)
+        assert np.shares_memory(categorical.data, labels)
+        assert not intensity.data.flags.writeable
+        assert not categorical.data.flags.writeable
+        assert categorical.data.dtype == np.int32 and not categorical.editable
+        assert tuple(intensity.scale) == (2, 2, 2 * step, 2 * step)
+        assert tuple(categorical.scale) == (2, 2, 2, 2)
+        assert tuple(intensity.translate) == tuple(categorical.translate) == translation
+        np.testing.assert_array_equal(intensity.data, raw[:, :, ::step, ::step])
+        np.testing.assert_array_equal(categorical.data, labels)
+
+    new_raw, new_labels = raw + 10, labels.copy()
+    new_labels[1, 2, 3, 5] = (1 << 30) + 1
+    window.update_inputs(
+        (
+            calibrated(new_raw, name="Updated intensity"),
+            calibrated(new_labels, "label image", "Updated labels"),
+        )
+    )
+    for index, pane in enumerate(window.panes):
+        assert pane.layers["a"][0] is original_layers[index * 2]
+        assert pane.layers["b"][0] is original_layers[index * 2 + 1]
+        np.testing.assert_array_equal(
+            pane.layers["a"][0].data, new_raw[:, :, ::step, ::step]
+        )
+        np.testing.assert_array_equal(pane.layers["b"][0].data, new_labels)
+
+    window.viewers[0].dims.ndisplay = 2
+    assert "Reduced 3D preview" not in window.status_label.text()
+    for pane in window.panes:
+        assert pane.viewer.dims.point[0] == translation[0] + a.scale[0]
+        for key, expected in (("a", new_raw), ("b", new_labels)):
+            layer = pane.layers[key][0]
+            assert tuple(layer.scale) == (2, 2, 2, 2)
+            assert tuple(layer.translate) == translation
+            np.testing.assert_array_equal(layer.data, expected)
+    assert raw.flags.writeable and labels.flags.writeable
+
+
+def test_exact_label_texture_refusal_is_visible_in_2d_without_a_3d_attempt(
+    model_window,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        image_review,
+        "renderer_volume_limits",
+        lambda: SimpleNamespace(
+            max_texture_axis=7,
+            max_texture_bytes=4096,
+            admit=None,
+        ),
+    )
+    labels = np.full((4, 6, 8), 100_000, dtype=np.uint32)
+    window = model_window((_input(labels, "zyx", kind="label image"),))
+    assert not window.orientation_buttons["oblique"].isEnabled()
+    assert window.settings["ndisplay"] == 2
+    assert "Input A's full-resolution labels cannot fit." in window.status_label.text()
+    assert "Use full-resolution 2D slices." in window.status_label.text()
+    for pane in window.panes:
+        np.testing.assert_array_equal(pane.layers["a"][0].data, labels)
+
+
+def test_owned_3d_allocation_notice_is_persistent_and_does_not_reload_layers(
+    model_window,
+    monkeypatch,
+):
+    class Notifications:
+        def __init__(self):
+            self.callbacks = []
+
+        def connect(self, callback):
+            self.callbacks.append(callback)
+
+        def disconnect(self, callback):
+            self.callbacks.remove(callback)
+
+        def emit(self, notification):
+            for callback in tuple(self.callbacks):
+                callback(notification)
+
+    notifications = Notifications()
+    scenes, classified = {}, []
+    owned, unrelated = object(), object()
+
+    def classify(notification, canvases):
+        classified.append((notification, canvases))
+        return notification is owned
+
+    monkeypatch.setattr(
+        image_review, "renderer_error_notifications", lambda: notifications
+    )
+    monkeypatch.setattr(image_review, "scene_canvas", lambda qt: scenes.get(id(qt)))
+    monkeypatch.setattr(image_review, "is_3d_texture_allocation_failure", classify)
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape((3, 4, 5))
+    publications = []
+    window = model_window((_input(data, "zyx"),), callback=publications.append)
+    canvases = tuple(object() for _ in window.panes)
+    scenes.update(
+        (id(pane.qt_viewer), canvas)
+        for pane, canvas in zip(window.panes, canvases, strict=True)
+    )
+    notice = "OpenGL could not allocate the 3D preview."
+    assert len(notifications.callbacks) == 1
+    notifications.emit(owned)
+    assert not classified and notice not in window.status_label.text()
+
+    window._choose_orientation("oblique")
+    recipe = window.settings
+    snapshots = []
+    reloads = []
+    for pane in window.panes:
+        layer = pane.layers["a"][0]
+        camera = viewer_camera(pane.viewer)
+        snapshots.append((layer, layer.data, camera.center, camera.zoom))
+        layer.events.set_data.connect(lambda _event: reloads.append(True))
+    published_before = tuple(publications)
+    notifications.emit(unrelated)
+    assert notice not in window.status_label.text()
+    notifications.emit(owned)
+    notifications.emit(owned)
+    assert classified == [(unrelated, canvases), (owned, canvases)]
+    assert notice in window.status_label.text()
+    assert "Switch to 2D slices; results are unchanged." in window.status_label.text()
+    assert not reloads and window.settings == recipe and window._current
+    assert tuple(publications) == published_before
+    for pane, snapshot in zip(window.panes, snapshots, strict=True):
+        layer, values, center, zoom = snapshot
+        assert pane.viewer.dims.ndisplay == 3
+        assert pane.layers["a"][0] is layer and layer.data is values
+        camera = viewer_camera(pane.viewer)
+        assert camera.center == center and camera.zoom == zoom
+
+    window._set_style("a", "opacity", 0.25)
+    assert notice in window.status_label.text()
+    window.set_pending("Pending test update")
+    assert "Pending test update" in window.status_label.text()
+    assert notice in window.status_label.text()
+    window.set_current(True)
+    assert notice in window.status_label.text()
+    window.viewers[1].dims.ndisplay = 2
+    assert notice not in window.status_label.text()
+    notifications.emit(owned)
+    assert len(classified) == 2
+    for pane in window.panes:
+        assert pane.viewer.dims.ndisplay == 2
+        np.testing.assert_array_equal(pane.layers["a"][0].data, data)
+    window._choose_orientation("oblique")
+    assert notice not in window.status_label.text()
+    window.shutdown()
+    assert not notifications.callbacks
+
+
+def test_shared_intensity_preview_rechecks_nonmonotonic_texture_admission(
+    model_window,
+    monkeypatch,
+):
+    requests = []
+
+    def admit(xyz, bytes_per_voxel):
+        requests.append((xyz, bytes_per_voxel))
+        # A hypothetical driver accepts the full uint16 volume but refuses
+        # this particular smaller row layout. The float32 preview accepts it.
+        return (xyz, bytes_per_voxel) != ((4, 3, 3), 2)
+
+    monkeypatch.setattr(
+        image_review,
+        "renderer_volume_limits",
+        lambda: SimpleNamespace(
+            max_texture_axis=None,
+            max_texture_bytes=512,
+            admit=admit,
+        ),
+    )
+    raw = np.arange(3 * 6 * 8, dtype=np.uint16).reshape((3, 6, 8))
+    wider_dtype = raw.astype(np.float32)
+    window = model_window(
+        (_input(raw, "zyx"), _input(wider_dtype, "zyx")),
+        settings={"ndisplay": 3},
+    )
+    assert ((8, 6, 3), 2) in requests
+    assert ((4, 3, 3), 2) in requests
+    assert ((2, 3, 2), 2) in requests and ((2, 3, 2), 4) in requests
+    for pane in window.panes:
+        assert pane.viewer.dims.ndisplay == 3
+        for key, data in (("a", raw), ("b", wider_dtype)):
+            layer = pane.layers[key][0]
+            assert tuple(layer.scale) == (2, 2, 4)
+            np.testing.assert_array_equal(layer.data, data[::2, ::2, ::4])
+
+
+def test_live_reduced_volume_updates_keep_wrappers_and_refuse_grid_changes(
+    model_window, monkeypatch
+):
+    monkeypatch.setattr(
+        image_review,
+        "renderer_volume_limits",
+        lambda: SimpleNamespace(
+            max_texture_axis=None, max_texture_bytes=192, admit=None
+        ),
+    )
+    data = np.arange(4 * 6 * 8, dtype=np.float32).reshape(4, 6, 8)
+    window = model_window((_input(data, "zyx"),), settings={"ndisplay": 3})
+    wrappers = [pane.layers["a"][0] for pane in window.panes]
+    revised = data + 1
+    window.update_inputs((_input(revised, "zyx"),))
+    for pane, layer in zip(window.panes, wrappers, strict=True):
+        assert pane.layers["a"][0] is layer
+        assert tuple(layer.scale) == (1, 2, 2)
+        assert np.shares_memory(layer.data, revised)
+        np.testing.assert_array_equal(layer.data, revised[:, ::2, ::2])
+    with pytest.raises(ValueError, match="different 3D preview grid"):
+        window.update_inputs((_input(revised.astype(np.uint8), "zyx"),))
+    assert all(np.shares_memory(layer.data, revised) for layer in wrappers)
+
+
 def test_detached_json_and_external_settings_do_not_emit(model_window):
     changes = []
     window = model_window(
@@ -1821,6 +2212,73 @@ def test_stale_snapshot_unavailable_close_disconnects(model_window):
     assert viewer_camera(right).zoom == before
     assert len(left.layers) == len(right.layers) == 0
     window.shutdown()
+
+
+def test_shutdown_stops_owned_slicers_before_closing_canvases(
+    model_window, monkeypatch
+):
+    window = model_window((_input(np.zeros((4, 5))),))
+    slicers = [pane.viewer._layer_slicer for pane in window.panes]
+    slicer_type = type(slicers[0])
+    original_shutdown = slicer_type.shutdown
+    original_submit = slicer_type.submit
+    operations = []
+
+    def stop(slicer):
+        if slicer in slicers:
+            operations.append((slicers.index(slicer), "stop slicing"))
+        original_shutdown(slicer)
+
+    def submit(slicer, *args, **kwargs):
+        assert slicer not in slicers or not window._closing
+        return original_submit(slicer, *args, **kwargs)
+
+    def close(qt_viewer):
+        index = next(
+            i for i, pane in enumerate(window.panes) if pane.qt_viewer is qt_viewer
+        )
+        pane = window.panes[index]
+        operations.append((index, "close canvas"))
+        assert not pane.viewer.layers and not pane.layers
+        # A trailing dimensions event must not schedule new slicing work.
+        pane.viewer.dims.events.point()
+        return QWidget.close(qt_viewer)
+
+    monkeypatch.setattr(slicer_type, "shutdown", stop)
+    monkeypatch.setattr(slicer_type, "submit", submit)
+    monkeypatch.setattr(_ModelOnlyQtViewer, "close", close)
+    for index, pane in enumerate(window.panes):
+        pane.viewer.layers.events.removed.connect(
+            lambda event, i=index: operations.append((i, "remove layer"))
+        )
+
+    window.shutdown()
+    window.shutdown()
+    assert operations == [
+        (index, step)
+        for index in range(2)
+        for step in ("stop slicing", "remove layer", "close canvas")
+    ]
+
+
+def test_shutdown_attempts_other_pane_if_canvas_close_raises(model_window, monkeypatch):
+    window = model_window((_input(np.zeros((3, 4, 5), dtype=bool), "zyx"),))
+    first, second = window.panes
+    closed = []
+
+    def close(qt_viewer):
+        closed.append(qt_viewer)
+        if qt_viewer is first.qt_viewer:
+            raise RuntimeError("cannot close this canvas")
+        return QWidget.close(qt_viewer)
+
+    monkeypatch.setattr(_ModelOnlyQtViewer, "close", close)
+    assert window._mask_display_data
+    with pytest.raises(RuntimeError, match="cannot close this canvas"):
+        window.shutdown()
+    assert closed == [first.qt_viewer, second.qt_viewer]
+    assert all(not pane.layers and not pane.viewer.layers for pane in window.panes)
+    assert not window._mask_display_data
 
 
 def test_volume_reset_preserves_buffers(model_window):

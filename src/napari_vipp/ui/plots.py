@@ -107,6 +107,10 @@ def cap_colocalization_scatter_density_for_display(
 class HistogramPlot(QWidget):
     """Compact histogram display for the selected node output."""
 
+    _FRAME_INSET = 8
+    _MINIMUM_HEIGHT = 120
+    _MINIMUM_DATA_HEIGHT = 76
+
     markerChanged = Signal(str, float)
     gestureStarted = Signal()
     gestureFinished = Signal()
@@ -135,7 +139,7 @@ class HistogramPlot(QWidget):
         self._drag_start_x: float | None = None
         self._drag_moved = False
         self._gesture_active = False
-        self.setMinimumHeight(120)
+        self._sync_minimum_height()
         self.setMouseTracking(True)
 
     def set_plot_labels(
@@ -155,6 +159,7 @@ class HistogramPlot(QWidget):
         self._title = str(title).strip()
         self._x_axis_label = str(x_axis_label).strip()
         self._y_axis_label = str(y_axis_label).strip()
+        self._sync_minimum_height()
         self._clear_hover()
         self.update()
 
@@ -228,6 +233,7 @@ class HistogramPlot(QWidget):
         else:
             self._x_min_label = _format_histogram_label(x_range[0])
             self._x_max_label = _format_histogram_label(x_range[1])
+        self._sync_minimum_height()
         self.update()
 
     def paintEvent(self, event):  # noqa: N802
@@ -235,7 +241,7 @@ class HistogramPlot(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        rect = self.rect().adjusted(8, 8, -8, -8)
+        rect = self._frame_rect()
         colors = custom_paint_colors(self.palette())
         painter.fillRect(rect, colors.surface)
         painter.setPen(QPen(colors.border, 1))
@@ -318,7 +324,15 @@ class HistogramPlot(QWidget):
         if event.type() in {QEvent.Hide, QEvent.UngrabMouse}:
             self._cancel_marker_drag()
             self._clear_hover()
-        return super().event(event)
+        result = super().event(event)
+        if event.type() in {
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+            QEvent.Show,
+        } and hasattr(self, "_y_axis_label"):
+            self._sync_minimum_height()
+        return result
 
     def _clear_hover(self) -> None:
         if self._hovered_bin is not None:
@@ -434,9 +448,7 @@ class HistogramPlot(QWidget):
         metrics = painter.fontMetrics()
 
         if self._title:
-            title_font = painter.font()
-            title_font.setBold(True)
-            painter.setFont(title_font)
+            painter.setFont(self._title_font())
             title_metrics = painter.fontMetrics()
             title_rect = QRect(
                 plot_rect.left(),
@@ -456,7 +468,6 @@ class HistogramPlot(QWidget):
 
         painter.setPen(colors.muted_text)
         # Range ticks and the scientific x-axis label share one compact band.
-        # This keeps the data region useful in a 120 px-high docked inspector.
         if self._x_min_label or self._x_max_label:
             baseline = plot_rect.bottom() + metrics.ascent() + 3
             painter.drawText(plot_rect.left(), baseline, self._x_min_label)
@@ -607,25 +618,45 @@ class HistogramPlot(QWidget):
             return float(np.log1p(shifted_value) / np.log1p(shifted_maximum))
         return float((value - minimum) / (maximum - minimum))
 
-    def _plot_rect(self) -> QRect:
-        rect = self.rect().adjusted(8, 8, -8, -8)
+    def _frame_rect(self) -> QRect:
+        inset = self._FRAME_INSET
+        return self.rect().adjusted(inset, inset, -inset, -inset)
+
+    def _title_font(self) -> QFont:
+        font = QFont(self.font())
+        font.setBold(True)
+        return font
+
+    def _vertical_text_bands(self) -> tuple[int, int]:
         metrics = self.fontMetrics()
-        # Reserve a small deliberate gap below the title so the first bars do
-        # not visually collide with its glyphs.  The plot remains compact at
-        # the inspector's 120 px minimum height.
-        title_height = metrics.height() + 8 if self._title else 0
-        bottom_band_height = (
+        title_height = (
+            QFontMetrics(self._title_font()).height() + 8 if self._title else 0
+        )
+        axis_height = (
             metrics.height() + 3
             if self._x_min_label or self._x_max_label or self._x_axis_label
             else 0
         )
-        y_axis_width = metrics.height() + 5 if self._y_axis_label else 0
-        return rect.adjusted(
-            10 + y_axis_width,
-            title_height,
-            -8,
-            -bottom_band_height,
+        return title_height, axis_height
+
+    def _sync_minimum_height(self) -> None:
+        top, bottom = self._vertical_text_bands()
+        data_height = max(
+            self._MINIMUM_DATA_HEIGHT,
+            self.fontMetrics().horizontalAdvance(self._y_axis_label) + 4,
         )
+        height = max(
+            self._MINIMUM_HEIGHT,
+            2 * self._FRAME_INSET + top + data_height + bottom,
+        )
+        if height != self.minimumHeight():
+            # Preserve the drawable area; a short inspector can scroll.
+            self.setMinimumHeight(height)
+
+    def _plot_rect(self) -> QRect:
+        top, bottom = self._vertical_text_bands()
+        y_axis_width = self.fontMetrics().height() + 5 if self._y_axis_label else 0
+        return self._frame_rect().adjusted(10 + y_axis_width, top, -8, -bottom)
 
     def _marker_at_point(self, point) -> str | None:
         if not self._draggable_markers or self._x_range is None:

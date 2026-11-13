@@ -67,10 +67,18 @@ def add_dialog_buttons(
     buttons = (*stops, *actions, dismiss)
     if len({id(button) for button in buttons}) != len(buttons):
         raise ValueError("A dialog button must appear in only one role.")
+    # Return in an editor must not silently promote an Export/Apply button.
+    # A caller can still deliberately opt into Return with setDefault(True).
+    for button in actions:
+        button.setAutoDefault(False)
+        button.setProperty("vippActionRole", "action")
     dismiss.setAutoDefault(False)
+    dismiss.setDefault(False)
+    dismiss.setProperty("vippActionRole", "dismiss")
     for button in stops:
         button.setAutoDefault(False)
         button.setDefault(False)
+        button.setProperty("vippActionRole", "stop")
         layout.addWidget(button)
     dismiss_first = dialog_button_layout(platform) in (
         _layout_number(QDialogButtonBox.MacLayout),

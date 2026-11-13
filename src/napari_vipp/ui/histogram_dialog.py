@@ -39,6 +39,7 @@ from napari_vipp.ui.controls import (
     ParameterBounds,
     ParameterControl,
 )
+from napari_vipp.ui.design import install_window_policy
 from napari_vipp.ui.dialog_buttons import add_dialog_buttons
 from napari_vipp.ui.palette_roles import theme_colors
 from napari_vipp.ui.plots import (
@@ -103,6 +104,7 @@ class HistogramDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        install_window_policy(self, profile="workspace")
         self.setObjectName("VippHistogramDialog")
         self.setAttribute(Qt.WA_WindowPropagation, True)
         self.setWindowTitle("Histogram")
