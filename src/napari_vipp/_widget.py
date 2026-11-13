@@ -4730,15 +4730,15 @@ class VippWidget(QWidget):
             usable_width
         )
 
-    @staticmethod
+    @classmethod
     def _set_inspector_form_stacked(
-        form: QFormLayout, stacked: bool, *, available_width: int = 0
+        cls, form: QFormLayout, stacked: bool, *, available_width: int = 0
     ) -> None:
         """Change form geometry in place so controls keep signals and state."""
 
         parent = form.parentWidget()
         form_width = available_width or (parent.contentsRect().width() if parent else 0)
-        stacked = stacked or VippWidget._inspector_form_needs_stacking(form, form_width)
+        stacked = stacked or cls._inspector_form_needs_stacking(form, form_width)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(
             QFormLayout.WrapAllRows if stacked else QFormLayout.DontWrapRows
@@ -25506,8 +25506,6 @@ class VippWidget(QWidget):
         # Rescale adds a compact reset action, so keep the capped spin box and
         # reset button adjacent and leave any spare width after both controls.
         layout.setStretch(0, 0)
-        widget.value_box.setMinimumWidth(112)
-        widget.value_box.setMaximumWidth(122)
         widget.value_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         widget.value_box.lineEdit().setTextMargins(0, 0, 0, 0)
         widget.value_box.setStyleSheet(
@@ -25515,6 +25513,7 @@ class VippWidget(QWidget):
             "QSpinBox::up-button, QDoubleSpinBox::up-button { width: 18px; }"
             "QSpinBox::down-button, QDoubleSpinBox::down-button { width: 18px; }"
         )
+        widget.set_entry_width_bounds(112, 122)
 
     def _rescale_axes_visible_specs(self, node_id: str) -> tuple[ParameterSpec, ...]:
         node = self.pipeline.nodes[node_id]
@@ -45734,7 +45733,7 @@ class VippWidget(QWidget):
         if self._closing:
             return
         notice = self._volume_preview_notice
-        if self.viewer.dims.ndisplay != 3:
+        if getattr(getattr(self.viewer, "dims", None), "ndisplay", 2) != 3:
             notice.hide()
             return
         message = ""

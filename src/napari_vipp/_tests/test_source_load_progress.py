@@ -354,18 +354,28 @@ def test_source_progress_amount_stacks_only_until_there_is_room(qtbot) -> None:
     def amount_bounds():
         return _bounds_within(control, control.amount_label)
 
-    qtbot.waitUntil(lambda: bar_bounds().bottom() < amount_bounds().top())
+    qtbot.waitUntil(
+        lambda: bar_bounds().bottom() < amount_bounds().top()
+        and control.rect().contains(amount_bounds())
+    )
     assert control.rect().contains(bar_bounds())
     assert control.rect().contains(amount_bounds())
     assert bar_bounds().width() >= 220
     assert control.amount_label.text() == "775.0 MiB / 2.0 GiB"
+    assert control.amount_label.minimumWidth() == 0
 
     host.setFixedWidth(420)
-    qtbot.waitUntil(lambda: bar_bounds().right() < amount_bounds().left())
+    qtbot.waitUntil(
+        lambda: bar_bounds().right() < amount_bounds().left()
+        and control.rect().contains(amount_bounds())
+    )
     assert control.rect().contains(bar_bounds())
     assert control.rect().contains(amount_bounds())
     assert abs(bar_bounds().center().y() - amount_bounds().center().y()) <= 1
     assert control.amount_label.text() == "775.0 MiB / 2.0 GiB"
+    assert control.amount_label.minimumWidth() >= (
+        control.amount_label.fontMetrics().horizontalAdvance(control.amount_label.text())
+    )
 
 
 def test_source_progress_reclaims_graph_space_after_wrapping(qtbot) -> None:

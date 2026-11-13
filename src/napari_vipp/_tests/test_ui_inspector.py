@@ -4,7 +4,7 @@ from math import ceil
 
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
+from qtpy.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPalette, QPixmap
 from qtpy.QtWidgets import QApplication, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from napari_vipp.core.pipeline import NODE_LIBRARY, NODE_LIBRARY_BY_ID
@@ -744,6 +744,31 @@ def test_inspector_section_summary_does_not_force_a_wide_dock(qtbot):
     assert section.summary_label.isVisible()
 
 
+def _section_header_widths(section):
+    """Measure fit from polished fonts, not from the widths assigned by layout."""
+    button = section.title_button
+    unwrapped, _ = button._label_layout(10_000)
+    title_width = (
+        ceil(unwrapped.lineAt(0).naturalTextWidth())
+        + button.iconSize().width()
+        + button._ICON_TEXT_GAP
+        + button._HORIZONTAL_PADDING
+    )
+    summary = section.summary_label
+    summary_width = ceil(
+        QFontMetricsF(summary.font(), summary).horizontalAdvance(summary.text())
+    )
+    header_layout = section.header.layout()
+    margins = header_layout.contentsMargins()
+    chrome_width = (
+        margins.left()
+        + margins.right()
+        + 2 * header_layout.spacing()  # Title, summary, and idle disclosure.
+        + section.toggle_button.minimumWidth()
+    )
+    return title_width, summary_width, chrome_width
+
+
 @pytest.mark.parametrize(
     ("title", "summary"),
     (("Displayed output", "Aligned image"), ("Histograms", "Output · intensity")),
@@ -766,29 +791,23 @@ def test_inspector_section_titles_use_available_width(
     host.resize(440, 260)
     host.show()
     qtbot.waitExposed(host)
-    QApplication.processEvents()
 
     button = section.title_button
-    unwrapped, _ = button._label_layout(10_000)
-    text_width = ceil(unwrapped.lineAt(0).naturalTextWidth())
-    chrome_width = (
-        button.iconSize().width()
-        + button._ICON_TEXT_GAP
-        + button._HORIZONTAL_PADDING
-    )
-    assert button.width() >= text_width + chrome_width
+    title_width, summary_width, chrome_width = _section_header_widths(section)
+    # A fixed 440 px does not necessarily fit both strings (e.g. DejaVu Sans
+    # at 16 pt). Exercise the same fit boundaries at each platform's font.
+    wide_width = title_width + summary_width + chrome_width + 2
+    host.resize(wide_width, 260)
+    QApplication.processEvents()
+    assert button.width() >= title_width
+    assert section.summary_label.contentsRect().width() >= summary_width
     layout, _ = button._label_layout(button.width())
     assert layout.lineCount() == 1, (title, button.width(), button.font().toString())
     assert section.summary_label.displayText() == summary
     assert following.geometry().top() > section.geometry().bottom()
 
     wide_height = section.header.height()
-    header_chrome_width = (
-        host.width() - button.width() - section.summary_label.width()
-    )
-    wide_title_width = button.width()
-    summary_width = section.summary_label.fontMetrics().horizontalAdvance(summary)
-    host.resize(wide_title_width + header_chrome_width + summary_width // 2, 260)
+    host.resize(title_width + chrome_width + summary_width // 2, 260)
     QApplication.processEvents()
     layout, _ = button._label_layout(button.width())
     assert layout.lineCount() == 1
@@ -797,7 +816,7 @@ def test_inspector_section_titles_use_available_width(
     assert section.header.height() == wide_height
     assert following.geometry().top() > section.geometry().bottom()
 
-    host.resize(wide_title_width + header_chrome_width - 28, 260)
+    host.resize(title_width + chrome_width - 28, 260)
     QApplication.processEvents()
     layout, _ = button._label_layout(button.width())
     assert layout.lineCount() > 1
@@ -807,7 +826,7 @@ def test_inspector_section_titles_use_available_width(
     assert following.geometry().top() > section.geometry().bottom()
     assert section.header.rect().contains(section.toggle_button.geometry())
 
-    host.resize(440, 260)
+    host.resize(wide_width, 260)
     QApplication.processEvents()
     layout, _ = button._label_layout(button.width())
     assert layout.lineCount() == 1
@@ -845,6 +864,10 @@ def test_long_section_title_wraps_and_releases_height_on_widen(qtbot, base, text
     host.setFont(QFont("Sans Serif", 16))
     section.refresh_theme()  # Match the inspector's appearance update.
     qtbot.waitUntil(lambda: title_button.font().pointSizeF() > default_font)
+    title_width, summary_width, chrome_width = _section_header_widths(section)
+    wide_width = title_width + summary_width + chrome_width + 2
+    host.resize(wide_width, 220)
+    QApplication.processEvents()
     margins = section.header.layout().contentsMargins()
     qtbot.waitUntil(
         lambda: (
@@ -854,6 +877,8 @@ def test_long_section_title_wraps_and_releases_height_on_widen(qtbot, base, text
     )
     wide_height = section.header.height()
     large_font = title_button.font()
+    assert title_button.width() >= title_width
+    assert section.summary_label.contentsRect().width() >= summary_width
     assert section.summary_label.displayText() == "3 values"
 
     host.resize(220, 220)
@@ -883,7 +908,7 @@ def test_long_section_title_wraps_and_releases_height_on_widen(qtbot, base, text
     assert section.header.height() == narrow_height
     assert following.geometry().top() > section.geometry().bottom()
 
-    host.resize(520, 220)
+    host.resize(wide_width, 220)
     qtbot.waitUntil(lambda: section.header.height() < narrow_height)
     assert section.header.height() == wide_height
     assert title_button.font() == large_font

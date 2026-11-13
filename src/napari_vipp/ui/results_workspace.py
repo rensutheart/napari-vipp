@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -419,9 +420,10 @@ class ResultsWorkspaceDialog(QDialog):
         self.connection_bar.setAccessibleName(
             "Workflow, data, statistics and plot connections"
         )
-        row = QHBoxLayout(self.connection_bar)
+        row = QGridLayout(self.connection_bar)
         row.setContentsMargins(10, 8, 10, 10)
-        row.setSpacing(10)
+        row.setHorizontalSpacing(10)
+        row.setVerticalSpacing(4)
         self.workflow_selector = _combo("Workflow")
         self.data_selector = _combo("Data source")
         self.summary_selector = _combo("Statistics node")
@@ -466,39 +468,38 @@ class ResultsWorkspaceDialog(QDialog):
                 ("Plot", self.plot_selector, self.add_plot_button),
             )
         ):
+            column = 2 * index
             if index:
                 arrow = _ConnectionArrow(combo, self.connection_bar)
                 self.connection_arrows.append(arrow)
-                row.addWidget(arrow)
-            group = QWidget(self.connection_bar)
-            group.setMinimumWidth(0)
-            group.setMaximumWidth(340 if button is None else 378)
-            group_layout = QVBoxLayout(group)
-            group_layout.setContentsMargins(0, 0, 0, 0)
-            group_layout.setSpacing(4)
+                row.addWidget(arrow, 0, column - 1, 2, 1)
             label = _label(caption, bold=True)
             label.setWordWrap(False)
             self.connection_labels.append(label)
-            group_layout.addWidget(label)
+            row.addWidget(label, 0, column)
             if combo is self.data_selector:
                 self.data_source_label = label
-            # A shared-height field row keeps all selectors aligned even when
-            # native + buttons are taller than the native combo boxes. A bare
-            # nested layout caps its height and stretches the heading instead.
-            fields_row = QWidget(group)
+            # One grid row sizes all field groups from the tallest control.
+            # Separate per-group vertical layouts can allocate unequal heights.
+            fields_row = QWidget(self.connection_bar)
+            fields_row.setMaximumWidth(340 if button is None else 378)
             fields = QHBoxLayout(fields_row)
+            fields.setSizeConstraint(QLayout.SetMinimumSize)
             fields.setContentsMargins(0, 0, 0, 0)
             fields.setSpacing(5)
             combo.setMaximumWidth(340)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            fields.addWidget(combo, 1)
+            # Native styles can give layout items different insets from their
+            # actual widgets. Center the visible controls, not those insets.
+            combo.setAttribute(Qt.WA_LayoutUsesWidgetRect)
+            fields.addWidget(combo, 1, Qt.AlignVCenter)
             if button is not None:
                 button.setFixedWidth(28)
-                fields.addWidget(button)
-            group_layout.addWidget(fields_row, 1)
-            self.connection_groups.append(group)
-            row.addWidget(group, 1)
-        row.addStretch(0)
+                button.setAttribute(Qt.WA_LayoutUsesWidgetRect)
+                fields.addWidget(button, 0, Qt.AlignVCenter)
+            self.connection_groups.append(fields_row)
+            row.addWidget(fields_row, 1, column)
+            row.setColumnStretch(column, 1)
         layout.addWidget(self.connection_bar)
         self.workflow_selector.currentIndexChanged.connect(self._workflow_selected)
         self.workflow_selector.activated.connect(self._workflow_activated)

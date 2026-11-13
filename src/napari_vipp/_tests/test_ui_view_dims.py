@@ -17,13 +17,13 @@ from napari_vipp.ui.view_dims import (
 def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
     parent = QWidget()
     qtbot.addWidget(parent)
-    parent.resize(1162, 60)
+    parent.resize(1412, 80)
     parent.setFont(QFont("Arial", points))
     # Exercise the app theme's general purpose input minimum as well as
     # deliberately unequal axis chrome (labels, numeric ranges and fields).
     parent.setStyleSheet("QSpinBox { min-width: 70px; padding: 4px 8px; }")
     bar = ViewDimsBar(parent)
-    bar.resize(1150, 42)
+    bar.resize(1400, 56)
     axes = (
         ViewDimAxis("time", "T", 0, 12, 3),
         ViewDimAxis("depth", "Z", 1, 1024, 512),
@@ -32,14 +32,15 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
     bar.set_axes(axes)
     parent.show()
 
-    for width in (1150, 980, 1150):
-        bar.resize(width, 42)
+    for width in (1400, 1250, 1400):
+        bar.resize(width, 56)
         assert bar._responsive_mode == "full"
-        bar.layout().activate()
-        for control in bar._controls:
-            control.layout().activate()
-        lengths = [control.slider.width() for control in bar._controls]
-        assert max(lengths) - min(lengths) <= 1, lengths
+
+        def matched_tracks():
+            lengths = [control.slider.width() for control in bar._controls]
+            assert min(lengths) >= 120 and max(lengths) - min(lengths) <= 1, lengths
+
+        qtbot.waitUntil(matched_tracks)
 
     fields = [control.spin for control in bar._controls]
     widths = [field.width() for field in fields]
@@ -47,12 +48,12 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
     for field in fields:
         field.setValue(field.maximum())
         editor = field.lineEdit()
-        assert (
-            editor.contentsRect().width()
+        qtbot.waitUntil(
+            lambda editor=editor: editor.contentsRect().width()
             >= editor.fontMetrics().horizontalAdvance(editor.text()) + 4
         )
     assert [field.width() for field in fields] == widths
-    bar.resize(530, 42)
+    bar.resize(530, 56)
     assert bar._responsive_mode == "compact"
     bar.layout().activate()
     for control in bar._controls:
@@ -213,7 +214,6 @@ def test_large_font_narrow_view_dimensions_keep_all_axes_in_the_full_menu(qtbot)
     parent.setFont(QFont("Arial", 16))
     layout = QVBoxLayout(parent)
     bar = ViewDimsBar()
-    bar.setMaximumWidth(240)
     layout.addWidget(bar)
     axes = (
         ViewDimAxis("time", "T", step_axis=0, size=12, value=3),
@@ -228,6 +228,12 @@ def test_large_font_narrow_view_dimensions_keep_all_axes_in_the_full_menu(qtbot)
 
     for points in (16, 9, 16):
         parent.setFont(QFont("Arial", points))
+        # Use a dock with space for its launcher but not the three additional
+        # inline fields. Glyphs are not the same width on every platform.
+        qtbot.waitUntil(lambda: bar.menu_button.fontMetrics().height() > 0)
+        button_width = bar.menu_button.minimumSizeHint().width()
+        margins = bar.layout().contentsMargins()
+        bar.setMaximumWidth(button_width + margins.left() + margins.right() + 12)
         # Repeated presentation refreshes must not re-show any inline control
         # while the complete menu fallback is still the selected mode.
         bar.set_axes(axes)
@@ -236,7 +242,9 @@ def test_large_font_narrow_view_dimensions_keep_all_axes_in_the_full_menu(qtbot)
         assert all(control.isHidden() for control in bar._controls)
         assert bar.title_label.isHidden()
         assert not bar.menu_button.isHidden()
-        assert bar.menu_button.width() >= bar.menu_button.minimumSizeHint().width()
+        qtbot.waitUntil(
+            lambda: bar.menu_button.width() >= bar.menu_button.minimumSizeHint().width()
+        )
 
     bar._populate_menu()
     controls = bar.menu.actions()[0].defaultWidget().findChildren(ViewDimAxisControl)

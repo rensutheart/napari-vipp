@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ import pytest
 from app_model import Action, Application
 from app_model.backends.qt import QModelMenu
 from app_model.types import ToggleRule
+from npe2 import PluginManifest
 from qtpy.compat import isalive
 from qtpy.QtCore import QEvent, Qt
 from qtpy.QtWidgets import QApplication, QDockWidget, QMainWindow, QVBoxLayout, QWidget
@@ -45,6 +47,25 @@ class _Connections:
 class _Dock(QDockWidget):
     def inner_widget(self):
         return self.widget()
+
+
+def _stub_vipp_widget_creator(monkeypatch, creator):
+    from napari.plugins import _npe2
+
+    path = Path(__file__).resolve().parents[1] / "napari.yaml"
+    manifest = PluginManifest.from_file(path)
+    (contribution,) = manifest.contributions.widgets
+    original = type(contribution).get_callable
+
+    def get_callable(widget, *args, **kwargs):
+        if widget is contribution:
+            return creator
+        return original(widget, *args, **kwargs)
+
+    # Keep napari's real contribution lookup: older napari returns two fields,
+    # while newer napari also returns the widget's dock defaults.
+    monkeypatch.setattr(_npe2.pm, "iter_widgets", lambda: iter((contribution,)))
+    monkeypatch.setattr(type(contribution), "get_callable", get_callable)
 
 
 def _dock_case(qtbot):
@@ -307,10 +328,7 @@ def test_viewer_without_vipp_does_not_restore_another_viewers_pending_dock(
     second_dock.hide()
     # The second viewer creates its first editor only when its action runs.
     # Returning None isolates that command from OpenGL and startup imports.
-    monkeypatch.setattr(
-        "napari._qt._qplugins._qnpe2.get_widget_contribution",
-        lambda *_args: (lambda: None, "VIPP Workflow"),
-    )
+    _stub_vipp_widget_creator(monkeypatch, lambda: None)
     install_plugin_dock_restorer(first_owner, first_dock, first_window, _Connections())
     first_dock.showMinimized()
     active_viewer[0] = first_viewer
@@ -364,7 +382,6 @@ def test_actual_popup_mouse_selection_restores_the_owning_dock(
 
 def test_canonical_direct_dock_is_reused_by_napari_plugin_api(qtbot, monkeypatch):
     from napari._qt.qt_main_window import Window
-    from napari.plugins import _npe2
 
     _window, dock, owner = _dock_case(qtbot)
     host = SimpleNamespace(_wrapped_dock_widgets={VIPP_DOCK_NAME: dock})
@@ -373,11 +390,7 @@ def test_canonical_direct_dock_is_reused_by_napari_plugin_api(qtbot, monkeypatch
         def __init__(self):
             pytest.fail("The existing direct editor must be reused.")
 
-    monkeypatch.setattr(
-        _npe2,
-        "get_widget_contribution",
-        lambda *_args: (NewEditor, "VIPP Workflow"),
-    )
+    _stub_vipp_widget_creator(monkeypatch, NewEditor)
 
     returned_dock, returned_widget = Window.add_plugin_dock_widget(
         host, "napari-vipp", "VIPP Workflow"

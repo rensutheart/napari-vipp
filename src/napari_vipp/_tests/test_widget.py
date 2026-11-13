@@ -8383,26 +8383,23 @@ def test_view_dims_bar_responsive_modes(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    # The responsive bar uses the actual dock/widget width as its upper bound,
-    # so keep the host and the child in sync just as Qt's layout does in napari.
-    widget.resize(1012, widget.height())
-    widget.view_dims_bar.resize(1000, 32)
-    widget.view_dims_bar.sync_responsive_mode()
-    assert widget.view_dims_bar.menu_button.isHidden()
-    assert not _view_dim_control(widget, "Z").slider.isHidden()
-
-    widget.resize(612, widget.height())
-    widget.view_dims_bar.resize(600, 32)
-    widget.view_dims_bar.sync_responsive_mode()
-    assert not widget.view_dims_bar.menu_button.isHidden()
-    assert _view_dim_control(widget, "Z").slider.isHidden()
-    assert not _view_dim_control(widget, "Z").spin.isHidden()
-
-    widget.resize(272, widget.height())
-    widget.view_dims_bar.resize(260, 32)
-    widget.view_dims_bar.sync_responsive_mode()
-    assert not widget.view_dims_bar.menu_button.isHidden()
-    assert _view_dim_control(widget, "Z").isHidden()
+    bar = widget.view_dims_bar
+    widget.show()
+    # Size the host, not a hidden child whose parent still has unlaid-out
+    # geometry. Allow native font metrics and the real layout to settle.
+    for width, mode in ((1400, "full"), (600, "compact"), (180, "menu")):
+        widget.setFixedWidth(width)
+        qtbot.waitUntil(
+            lambda width=width, mode=mode: bar.isVisible()
+            and width - 24 <= bar.width() <= width
+            and bar._responsive_mode == mode
+        )
+        control = _view_dim_control(widget, "Z")
+        assert bar.menu_button.isHidden() == (mode == "full")
+        assert control.isHidden() == (mode == "menu")
+        if mode != "menu":
+            assert control.slider.isHidden() == (mode == "compact")
+            assert not control.spin.isHidden()
 
 
 def test_view_dims_bar_maps_rescaled_axis_values_to_viewer_steps(qtbot):
@@ -9433,6 +9430,8 @@ def test_rescale_axes_uses_numeric_entry_without_sliders(qtbot):
     widget.graph_view.select_node(node.id)
 
     x_scale = widget._parameter_widgets["x_scale"]
+    x_scale.value_box.ensurePolished()
+    QApplication.sendEvent(x_scale.value_box, QEvent(QEvent.StyleChange))
     assert not hasattr(x_scale, "slider")
     assert x_scale.layout().spacing() == 3
     assert x_scale.value_box.minimumWidth() == 112

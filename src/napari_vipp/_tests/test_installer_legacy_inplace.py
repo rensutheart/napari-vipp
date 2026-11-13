@@ -24,6 +24,10 @@ from napari_vipp.installer import legacy_inplace as legacy
 from napari_vipp.installer.models import ComputeTrack
 from napari_vipp.installer.ownership import OwnershipRecord, write_ownership_record
 
+# A .pth path is interpreted by this host's Python. Keep Windows backslashes
+# on Windows without creating a literal directory name containing one on POSIX.
+_PYWIN32_LIBRARY_LINE = os.fsencode(os.path.join("win32", "lib")) + b"\n"
+
 
 @pytest.fixture
 def managed(tmp_path, monkeypatch):
@@ -470,8 +474,9 @@ def _standard_pywin32_layout(
         bootstrap = (description * (772 // len(description) + 1))[:772]
     if pth is None:
         pth = (
-            b"# Standard Windows pywin32 startup search paths\n"
-            b"win32\nwin32\\lib\npythonwin\nimport pywin32_bootstrap\n"
+            b"# Standard Windows pywin32 startup search paths\nwin32\n"
+            + _PYWIN32_LIBRARY_LINE
+            + b"pythonwin\nimport pywin32_bootstrap\n"
         )
     content = {"pywin32.pth": pth, "win32/lib/pywin32_bootstrap.py": bootstrap}
     content.update(additional_files or {})
@@ -547,7 +552,7 @@ def test_nested_pywin32_bootstrap_requires_exact_owned_small_source(managed, dam
 @pytest.mark.parametrize(
     "pth",
     [
-        b"win32\nimport pywin32_bootstrap\nwin32\\lib\npythonwin\n",
+        b"win32\nimport pywin32_bootstrap\n" + _PYWIN32_LIBRARY_LINE + b"pythonwin\n",
         b"win32\npythonwin\nimport pywin32_bootstrap\n",
     ],
 )
@@ -602,7 +607,10 @@ def test_two_pywin32_owned_bootstrap_sources_are_still_ambiguous(managed):
 def test_pywin32_search_path_must_be_a_direct_environment_directory(managed):
     owned, _, _ = _standard_pywin32_layout(
         managed,
-        pth=b"private-archive.zip\nwin32\\lib\nimport pywin32_bootstrap\n",
+        pth=(
+            b"private-archive.zip\n" + _PYWIN32_LIBRARY_LINE
+            + b"import pywin32_bootstrap\n"
+        ),
         additional_files={"private-archive.zip": b"not a ZIP; never opened"},
     )
     before = _file_hashes(owned[0].managed_root)

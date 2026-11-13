@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from qtpy.QtCore import QEvent, QRect, QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QEvent, QRect, QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtGui import QAction, QIcon, QPainter, QPalette
 from qtpy.QtWidgets import (
     QHBoxLayout,
@@ -73,10 +73,10 @@ class ViewDimAxisControl(QWidget):
         self.spin.setButtonSymbols(QSpinBox.NoButtons)
         self.spin.setAlignment(Qt.AlignCenter)
         self.spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        # The app theme's general input minimum is too large for an index.
-        self.spin.setStyleSheet(
-            "QSpinBox { min-width: 0px; padding-left: 4px; padding-right: 4px; }"
-        )
+        self._metric_refresh = QTimer(self)
+        self._metric_refresh.setSingleShot(True)
+        self._metric_refresh.timeout.connect(self._refresh_spin_geometry)
+        self.spin.installEventFilter(self)
         self.range_label = QLabel("/0")
         self.range_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self._trailing_space = QSpacerItem(0, 0, QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -101,9 +101,25 @@ class ViewDimAxisControl(QWidget):
         ) and hasattr(self, "range_label"):
             self._apply_palette_styles()
             self._fit_axis_metrics()
+            self._metric_refresh.start(0)
             parent = self.parentWidget()
             if isinstance(parent, ViewDimsBar):
                 parent.sync_responsive_mode()
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.spin and event.type() in (
+            QEvent.Polish, QEvent.Show, QEvent.StyleChange, QEvent.FontChange,
+        ):
+            self._metric_refresh.start(0)
+        return super().eventFilter(watched, event)
+
+    def _refresh_spin_geometry(self) -> None:
+        # Native/style-sheet polish can overwrite the explicit minimum width.
+        # Reapply the measured bounds once after Qt has polished the editor.
+        self._fit_axis_metrics()
+        parent = self.parentWidget()
+        if isinstance(parent, ViewDimsBar):
+            parent.sync_responsive_mode()
 
     def _apply_palette_styles(self) -> None:
         if self._applying_palette_styles:
@@ -111,6 +127,13 @@ class ViewDimAxisControl(QWidget):
         self._applying_palette_styles = True
         colors = custom_paint_colors(self.palette())
         try:
+            # Define the frame as well as padding. Leaving a partly styled
+            # spin box's frame to the native style can retain a large minimum
+            # edit-field inset (including a one-pixel editor on macOS).
+            self.spin.setStyleSheet(
+                "QSpinBox { min-width: 0px; padding-left: 4px; padding-right: 4px;"
+                f" border: 1px solid {colors.border.name()}; border-radius: 3px; }}"
+            )
             self.label.setStyleSheet(
                 f"{type_style(self.label, 'section')} color: {colors.text.name()};"
             )
@@ -141,7 +164,7 @@ class ViewDimAxisControl(QWidget):
             for value in range(10)
         )
         chrome = max(0, option.rect.width() - field.width())
-        spin.setFixedWidth(
+        target = (
             len(spin.textFromValue(spin.maximum())) * digit
             + chrome
             + margins.left()
@@ -149,6 +172,8 @@ class ViewDimAxisControl(QWidget):
             + SPACE_SM
             + SPACE_XS
         )
+        if spin.minimumWidth() != target or spin.maximumWidth() != target:
+            spin.setFixedWidth(target)
 
     def inline_width(self) -> int:
         """Width of the label, position and limit, excluding the slider."""

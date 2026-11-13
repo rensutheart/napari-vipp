@@ -15,6 +15,7 @@ from qtpy.QtGui import (
 from qtpy.QtWidgets import QDialog, QDialogButtonBox, QStyle, QWidget
 
 import napari_vipp.ui.dialog_buttons as dialog_buttons
+from napari_vipp.ui.design import body_point_size
 from napari_vipp.ui.dialogs import ExampleWorkflowDialog
 from napari_vipp.ui.example_guidance import ExampleGuidance
 from napari_vipp.ui.examples import EXAMPLE_WORKFLOWS, ExampleWorkflowSpec
@@ -451,7 +452,10 @@ def test_chooser_title_survives_inherited_napari_font_rule(qtbot, qapp):
     qtbot.addWidget(dialog)
     dialog.show()
     qapp.processEvents()
-    assert dialog.title_label.font().pointSizeF() >= 16
+    # The title follows the host font, not a platform-specific default size.
+    assert dialog.title_label.font().pointSizeF() == pytest.approx(
+        body_point_size(dialog.title_label) + 4.0
+    )
     assert dialog.title_label.font().bold()
     assert dialog.title_label.font().pointSizeF() > (
         dialog.details_label.font().pointSizeF()
@@ -545,8 +549,12 @@ def test_chooser_details_wrap_and_scroll_at_narrow_and_large_font_sizes(
         dialog = ExampleWorkflowDialog()
         qtbot.addWidget(dialog)
         dialog.select_example("racc-colocalization")
-        dialog.resize(width, 820)
         dialog.show()
+        qapp.processEvents()
+        # First show fits the platform screen. Exercise an explicit resize,
+        # as a user would after opening the dialog, at the requested width.
+        dialog.resize(width, 820)
+        qtbot.waitUntil(lambda: dialog.width() == width)
         qapp.processEvents()
 
         placeholder = dialog.filter_edit.palette().color(QPalette.PlaceholderText)

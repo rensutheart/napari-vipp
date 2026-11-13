@@ -274,6 +274,12 @@ def _fit_numeric_entry(box: QSpinBox | QDoubleSpinBox) -> None:
     box._vipp_metric_entry = True
     box._vipp_metric_entry_sizing = True
     try:
+        bounds = getattr(box, "_vipp_entry_width_bounds", None)
+        if bounds is not None:
+            minimum, maximum = bounds
+            box.setMinimumWidth(minimum)
+            box.setMaximumWidth(maximum)
+            return
         if box.property("vippCompactParameterEntry"):
             # Qt's range-based sizeHint and napari's 70px *content* minimum
             # make short slider entries needlessly wide. Use a shared compact
@@ -599,6 +605,11 @@ class NumericEntryControl(QWidget):
 
     def value(self):
         return self.value_box.value()
+
+    def set_entry_width_bounds(self, minimum: int, maximum: int) -> None:
+        """Keep an explicit layout width range through native restyling."""
+        self.value_box._vipp_entry_width_bounds = (minimum, maximum)
+        _fit_numeric_entry(self.value_box)
 
     def set_bounds(
         self,
@@ -1170,14 +1181,25 @@ class SourceLoadStatusControl(QWidget):
         margins = self.layout().contentsMargins()
         width = self.contentsRect().width() - margins.left() - margins.right()
         amount = self.amount_label.text()
-        amount_width = self.amount_label.fontMetrics().horizontalAdvance(amount)
+        label = self.amount_label
+        chrome = label.contentsMargins()
+        amount_width = (
+            label.fontMetrics().horizontalAdvance(amount)
+            + chrome.left()
+            + chrome.right()
+            + 2 * label.margin()
+        )
         required = amount_width + SPACE_SM + self._MIN_INLINE_BAR_WIDTH
         inline = not amount or width >= required
+        # QLabel's preferred width can be smaller than the rendered text on
+        # some styles. Reserve the measured width only while the amount sits
+        # beside the bar; a stacked label must be free to shrink and wrap.
+        label.setMinimumWidth(amount_width if inline and amount else 0)
         self._progress_row.setDirection(
             QBoxLayout.LeftToRight if inline else QBoxLayout.TopToBottom
         )
         self._progress_row.setSpacing(SPACE_SM if inline else SPACE_XS)
-        self.amount_label.setWordWrap(not inline)
+        label.setWordWrap(not inline)
 
 
 class ImageSourceControl(QWidget):
