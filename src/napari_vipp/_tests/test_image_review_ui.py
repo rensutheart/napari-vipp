@@ -60,6 +60,17 @@ def model_window(qtbot, monkeypatch):
         window.shutdown()
 
 
+def _show_at_review_size(window, qtbot, width, height):
+    # First show fits the actual screen, including a small offscreen CI screen.
+    # Model the user's later resize so each case tests its requested width.
+    window.show()
+    qtbot.waitUntil(lambda: window.pane_splitter.height() > 0)
+    QApplication.processEvents()
+    window.resize(width, height)
+    qtbot.waitUntil(lambda: window.width() == width)
+    QApplication.processEvents()
+
+
 def test_independent_wrappers_readonly_buffers_and_main_viewer_isolation(model_window):
     data = np.arange(20, dtype=np.float32).reshape(4, 5)
     original = data.copy()
@@ -376,8 +387,7 @@ def test_pending_keeps_last_complete_panes_visible_without_geometry_collapse(
     data = np.zeros((3, 4, 5))
     records = []
     window = model_window((_input(data, "zyx"),), callback=records.append)
-    window.show()
-    qtbot.waitUntil(lambda: window.pane_splitter.height() > 0)
+    _show_at_review_size(window, qtbot, 1280, 760)
     geometry = window.pane_splitter.geometry()
     layers = [tuple(pane.viewer.layers) for pane in window.panes]
     recipe = window.settings
@@ -388,6 +398,9 @@ def test_pending_keeps_last_complete_panes_visible_without_geometry_collapse(
     assert not window.sidebar_scroll.isEnabled()
     assert not window.orientation_controls.isEnabled()
     assert "not current" in window.status_label.text()
+    assert window.status_label.heightForWidth(window.status_label.width()) <= (
+        window.status_label.height()
+    )
     window._set_style("a", "opacity", 0.3)
     window._set_general("mode", "overlay")
     window._choose_orientation("oblique")
@@ -412,10 +425,7 @@ def test_routine_upstream_status_never_resizes_review_panes(model_window, qtbot,
 
     window = model_window((_input(np.zeros((3, 4, 5)), "zyx"),))
     window.setStyleSheet(get_stylesheet("dark", extra_variables={"font_size": "12pt"}))
-    window.resize(width, 820)
-    window.show()
-    qtbot.waitUntil(lambda: window.pane_splitter.height() > 0)
-    QApplication.processEvents()
+    _show_at_review_size(window, qtbot, width, 820)
     geometry = window.pane_splitter.geometry()
     for message in (REVIEW_STALE_MESSAGE, REVIEW_UPDATING_MESSAGE):
         window.set_pending(message)
@@ -752,8 +762,7 @@ def test_readonly_status_shares_the_orientation_row(model_window, qtbot, theme, 
     data = np.zeros((3, 4, 5), np.float32)
     window = model_window((_input(data, "zyx"),), settings={"ndisplay": 3})
     window.setStyleSheet(get_stylesheet(theme, extra_variables={"font_size": "12pt"}))
-    window.resize(width, 760)
-    window.show()
+    _show_at_review_size(window, qtbot, width, 760)
     qtbot.waitUntil(lambda: window.status_label.width() > 0)
     row = window.status_label.parentWidget()
     assert row is window.orientation_controls.parentWidget()
@@ -860,8 +869,7 @@ def test_mockup_layout_owns_top_pane_bottom_and_right_controls(
 ):
     data = np.zeros((3, 4, 5, 6), np.float32)
     window = model_window((_input(data, "tzyx"), _input(data, "tzyx")))
-    window.resize(width, 760)
-    window.show()
+    _show_at_review_size(window, qtbot, width, 760)
     qtbot.waitUntil(lambda: window.navigation_bar.width() > 0)
     assert window.width() == width
     for widget in (
@@ -926,8 +934,7 @@ def test_pane_cards_contain_header_canvas_footer_under_native_theme(
         )
     )
     window.setStyleSheet(get_stylesheet(theme, extra_variables={"font_size": "12pt"}))
-    window.resize(width, 760)
-    window.show()
+    _show_at_review_size(window, qtbot, width, 760)
     qtbot.waitUntil(lambda: window.panes[0].footer.width() > 0)
     assert window.width() == width
     assert window.scale_bar_check.geometry().right() < window.top_toolbar.width()
