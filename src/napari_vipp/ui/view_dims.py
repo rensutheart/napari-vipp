@@ -70,8 +70,8 @@ class ViewDimAxisControl(QWidget):
         self.slider.setSingleStep(1)
         self.slider.setPageStep(1)
         self.spin = QSpinBox()
-        self.spin.setButtonSymbols(QSpinBox.NoButtons)
         self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.lineEdit().setTextMargins(SPACE_XS, 0, SPACE_XS, 0)
         self.spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self._metric_refresh = QTimer(self)
         self._metric_refresh.setSingleShot(True)
@@ -127,12 +127,16 @@ class ViewDimAxisControl(QWidget):
         self._applying_palette_styles = True
         colors = custom_paint_colors(self.palette())
         try:
-            # Define the frame as well as padding. Leaving a partly styled
-            # spin box's frame to the native style can retain a large minimum
-            # edit-field inset (including a one-pixel editor on macOS).
+            # A styled QSpinBox with NoButtons collapses its edit field to
+            # one pixel on Qt 6.12. Keep the native subcontrol path, but give
+            # the step buttons no painted area or mouse hit target.
             self.spin.setStyleSheet(
-                "QSpinBox { min-width: 0px; padding-left: 4px; padding-right: 4px;"
+                "QSpinBox { min-width: 0px; padding: 0;"
                 f" border: 1px solid {colors.border.name()}; border-radius: 3px; }}"
+                "QSpinBox::up-button, QSpinBox::down-button,"
+                "QSpinBox::up-arrow, QSpinBox::down-arrow {"
+                " width: 0px; height: 0px; margin: 0; padding: 0; border: none;"
+                " image: none; }"
             )
             self.label.setStyleSheet(
                 f"{type_style(self.label, 'section')} color: {colors.text.name()};"

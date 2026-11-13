@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QPoint, Qt, QTimer
 from qtpy.QtGui import QColor, QFont, QPalette
-from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QLabel, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
 
 from napari_vipp import _widget
 from napari_vipp.ui.view_dims import (
@@ -48,10 +48,18 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
     for field in fields:
         field.setValue(field.maximum())
         editor = field.lineEdit()
-        qtbot.waitUntil(
-            lambda editor=editor: editor.contentsRect().width()
-            >= editor.fontMetrics().horizontalAdvance(editor.text()) + 4
+        margins = editor.textMargins()
+        assert editor.contentsRect().width() - margins.left() - margins.right() >= (
+            editor.fontMetrics().horizontalAdvance(editor.text()) + 4
         )
+        # The stylesheet must preserve a usable edit field without adding
+        # mouse targets for buttons (including under Qt's stylesheet engine).
+        option = QStyleOptionSpinBox()
+        field.initStyleOption(option)
+        for button in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown):
+            assert field.style().subControlRect(
+                QStyle.CC_SpinBox, option, button, field
+            ).isEmpty()
     assert [field.width() for field in fields] == widths
     bar.resize(530, 56)
     assert bar._responsive_mode == "compact"
@@ -88,6 +96,37 @@ def test_view_dimension_control_synchronizes_values_and_emits_semantic_axis(qtbo
 
     assert control.slider.value() == 1
     assert captured == [(2, 1)]
+
+
+def test_view_dimension_entry_stays_arrowless_and_keyboard_editable(qtbot):
+    control = ViewDimAxisControl()
+    qtbot.addWidget(control)
+    control.set_axis(ViewDimAxis("depth", "Z", step_axis=2, size=1024, value=20))
+    control.show()
+    spin = control.spin
+    editor = spin.lineEdit()
+    option = QStyleOptionSpinBox()
+    spin.initStyleOption(option)
+    for edge in (0, spin.width() - 1):
+        for height in (spin.height() // 4, 3 * spin.height() // 4):
+            pos = QPoint(edge, height)
+            assert spin.style().hitTestComplexControl(
+                QStyle.CC_SpinBox, option, pos, spin
+            ) not in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown)
+            qtbot.mouseClick(spin, Qt.LeftButton, pos=pos)
+    assert spin.value() == control.slider.value() == 20
+
+    emitted = []
+    control.value_changed.connect(lambda *args: emitted.append(args))
+    editor.setFocus()
+    editor.selectAll()
+    qtbot.keyClicks(editor, "512")
+    qtbot.keyClick(editor, Qt.Key_Return)
+    assert spin.value() == control.slider.value() == 512
+    assert emitted[-1] == (2, 512)
+    qtbot.keyClick(editor, Qt.Key_Up)
+    assert spin.value() == control.slider.value() == 513
+    assert emitted[-1] == (2, 513)
 
 
 def test_view_dimensions_menu_builds_full_controls_and_forwards_values(qtbot):

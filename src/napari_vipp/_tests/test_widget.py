@@ -8387,13 +8387,20 @@ def test_view_dims_bar_responsive_modes(qtbot):
     widget.show()
     # Size the host, not a hidden child whose parent still has unlaid-out
     # geometry. Allow native font metrics and the real layout to settle.
-    for width, mode in ((1400, "full"), (600, "compact"), (180, "menu")):
+    for width, mode in (
+        (1400, "full"),
+        (600, "compact"),
+        (180, "menu"),
+        (1400, "full"),
+    ):
         widget.setFixedWidth(width)
-        qtbot.waitUntil(
-            lambda width=width, mode=mode: bar.isVisible()
-            and width - 24 <= bar.width() <= width
-            and bar._responsive_mode == mode
-        )
+
+        def resized(width=width, mode=mode):
+            assert bar.isVisible()
+            assert width - 24 <= bar.width() <= width, (width, bar.width())
+            assert bar._responsive_mode == mode, (width, bar._responsive_mode)
+
+        qtbot.waitUntil(resized)
         control = _view_dim_control(widget, "Z")
         assert bar.menu_button.isHidden() == (mode == "full")
         assert control.isHidden() == (mode == "menu")

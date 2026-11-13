@@ -422,7 +422,7 @@ class ResultsWorkspaceDialog(QDialog):
         )
         row = QGridLayout(self.connection_bar)
         row.setContentsMargins(10, 8, 10, 10)
-        row.setHorizontalSpacing(10)
+        row.setHorizontalSpacing(0)
         row.setVerticalSpacing(4)
         self.workflow_selector = _combo("Workflow")
         self.data_selector = _combo("Data source")
@@ -457,7 +457,6 @@ class ResultsWorkspaceDialog(QDialog):
             "Add a Plot Results node connected to the selected Statistics node, "
             "or to the data source when Statistics node is None — use input data."
         )
-        self.connection_groups = []
         self.connection_labels = []
         self.connection_arrows = []
         for index, (caption, combo, button) in enumerate(
@@ -468,37 +467,36 @@ class ResultsWorkspaceDialog(QDialog):
                 ("Plot", self.plot_selector, self.add_plot_button),
             )
         ):
-            column = 2 * index
+            # Keep selectors and buttons directly in one grid row. A nested
+            # layout can enforce its own minimum before the grid has settled,
+            # shifting a selector sideways or vertically into another item.
+            column = 6 * index
             if index:
                 arrow = _ConnectionArrow(combo, self.connection_bar)
                 self.connection_arrows.append(arrow)
-                row.addWidget(arrow, 0, column - 1, 2, 1)
+                row.setColumnMinimumWidth(column - 3, 10)
+                row.addWidget(arrow, 0, column - 2, 2, 1)
+                row.setColumnMinimumWidth(column - 1, 10)
             label = _label(caption, bold=True)
             label.setWordWrap(False)
             self.connection_labels.append(label)
-            row.addWidget(label, 0, column)
+            row.addWidget(label, 0, column, 1, 3 if button is not None else 1)
             if combo is self.data_selector:
                 self.data_source_label = label
-            # One grid row sizes all field groups from the tallest control.
-            # Separate per-group vertical layouts can allocate unequal heights.
-            fields_row = QWidget(self.connection_bar)
-            fields_row.setMaximumWidth(340 if button is None else 378)
-            fields = QHBoxLayout(fields_row)
-            fields.setSizeConstraint(QLayout.SetMinimumSize)
-            fields.setContentsMargins(0, 0, 0, 0)
-            fields.setSpacing(5)
+            # A native minimumSizeHint can be wider than the compact grid
+            # column. Let the selection display shrink without overlapping.
+            combo.setMinimumWidth(95)
             combo.setMaximumWidth(340)
             combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             # Native styles can give layout items different insets from their
             # actual widgets. Center the visible controls, not those insets.
             combo.setAttribute(Qt.WA_LayoutUsesWidgetRect)
-            fields.addWidget(combo, 1, Qt.AlignVCenter)
+            row.addWidget(combo, 1, column, Qt.AlignVCenter)
             if button is not None:
                 button.setFixedWidth(28)
                 button.setAttribute(Qt.WA_LayoutUsesWidgetRect)
-                fields.addWidget(button, 0, Qt.AlignVCenter)
-            self.connection_groups.append(fields_row)
-            row.addWidget(fields_row, 1, column)
+                row.setColumnMinimumWidth(column + 1, 5)
+                row.addWidget(button, 1, column + 2, Qt.AlignVCenter)
             row.setColumnStretch(column, 1)
         layout.addWidget(self.connection_bar)
         self.workflow_selector.currentIndexChanged.connect(self._workflow_selected)
@@ -1604,7 +1602,6 @@ class ResultsWorkspaceDialog(QDialog):
                 f"background: {colors.alternate_surface.name()};"
                 f"border: 1px solid {colors.info.accent.name()};"
                 "border-radius: 0; }"
-                "QFrame#WorkspaceConnections > QWidget, "
                 "QFrame#WorkspaceConnections QLabel { background: transparent; }"
             )
             for arrow in self.connection_arrows:
