@@ -11,7 +11,7 @@ VIPP 0.16.0a8 improves the workflow editor, recovery, and 3D viewing, and adds f
 
 ## 3D viewing and large images
 
-- **Viewer graphics** shows the active OpenGL renderer and lets you choose Auto, GPU, or CPU for the next standalone launch. It is separate from workflow **Compute**.
+- **Viewer graphics** shows the active OpenGL renderer and lets you choose Auto, GPU, or CPU for the next standalone Windows launch. CPU mode needs software OpenGL support. This setting is separate from workflow **Compute**.
 - Large intensity volumes can use a reduced 3D preview when needed; masks, labels and analysis results are not downsampled. If a full-resolution layer cannot be displayed in 3D, VIPP reports the problem and offers a 2D route. Review Images improves 3D and oblique navigation.
 - Hysteresis Threshold avoids a full-volume float64 temporary while preserving thresholds, connectivity and the output mask.
 

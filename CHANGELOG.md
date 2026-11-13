@@ -31,8 +31,8 @@
   Fall back to a small typo or name abbreviation only when there is no direct
   match, so searching for **Otsu** no longer shows unrelated nodes.
 - Add **Viewer graphics** to the toolbar settings. See the active OpenGL
-  renderer and choose Auto, GPU, or CPU for the next standalone launch,
-  independently of workflow compute.
+  renderer and choose Auto, GPU, or CPU for the next standalone Windows launch,
+  independently of workflow compute. CPU needs software OpenGL support.
 - Check the renderer before displaying large 3D results. Keep binary masks
   full-resolution and use a labeled, reduced 3D preview for large intensity
   volumes when needed, without changing workflow data or outputs.
