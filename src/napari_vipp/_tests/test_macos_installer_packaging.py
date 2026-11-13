@@ -315,6 +315,21 @@ def test_macos_recipe_psygnal_constraint_matches_embedded_wheel_metadata():
         assert not conda_requirement.specifier.contains(version)
 
 
+def test_macos_recipe_keeps_czifile_compatible_with_the_codec_floor():
+    recipe = (REPO_ROOT / "packaging/macos/recipe/recipe.yaml.in").read_text(
+        encoding="utf-8"
+    )
+    specs = (
+        Requirement(line.strip().removeprefix("- "))
+        for line in recipe.splitlines()
+        if line.strip().startswith(("- czifile ", "- imagecodecs "))
+    )
+    requirements = {spec.name: spec.specifier for spec in specs}
+
+    assert str(requirements["czifile"]) == "==2026.10.14"
+    assert requirements["imagecodecs"].contains("2026.8.16")
+
+
 def test_macos_recipe_supplies_every_direct_wheel_dependency():
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"

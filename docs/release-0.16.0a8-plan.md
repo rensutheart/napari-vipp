@@ -26,9 +26,12 @@ out of the release. Follow the [release runbook](release-runbook.md) and
   changed update/rollback and launch journey with disposable managed fixtures,
   not the user's installed environments. EXE version output alone is not
   lifecycle proof.
-- **macOS:** carry only unchanged constructor/installer behavior, dependencies
-  and platform assumptions. Audit new separate unsigned/unnotarized native
-  arm64 and x86_64 packages from the exact tag.
+- **macOS:** the bundled CZI reader is pinned to the previously qualified
+  `czifile 2026.10.14` so the solver cannot pair a newer reader requiring
+  `imagecodecs>=2026.11.11` with `imagecodecs 2026.8.16`. Both architectures
+  must pass fresh installed dependency, launch and reader checks. Audit the
+  separate unsigned/unnotarized native arm64 and x86_64 packages from the exact
+  tag. Carry only unchanged installer mechanics and platform assumptions.
 
 ## Publication
 

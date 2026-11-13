@@ -21,6 +21,7 @@ changed:
   workflow_serializers_and_working_copy_storage: false
   gpu_compute_providers_and_dispatch: false
   macos_installer_runtime: false
+  macos_bundled_czi_reader_constraint: true
   dependencies_toolchain: false
   publication_workflows: false
 carried_forward:
