@@ -8,6 +8,7 @@ import numpy as np
 from qtpy.QtCore import QEvent, QRect, QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtGui import QAction, QIcon, QPainter, QPalette
 from qtpy.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -300,8 +301,49 @@ class ViewDimsBar(QWidget):
         self.menu_button.setMenu(self.menu)
         self._layout.addWidget(self.menu_button)
         self._layout.addStretch()
+        self._font_host: QWidget | None = None
+        self._launcher_font_refresh = QTimer(self)
+        self._launcher_font_refresh.setSingleShot(True)
+        self._launcher_font_refresh.timeout.connect(self._refresh_launcher_font)
+        self._watch_launcher_font_host()
         self._apply_palette_styles()
+        self._refresh_launcher_font()
         self.setHidden(True)
+
+    def event(self, event):
+        handled = super().event(event)
+        if event.type() == QEvent.ParentChange and hasattr(
+            self, "_launcher_font_refresh"
+        ):
+            self._watch_launcher_font_host()
+            self._launcher_font_refresh.start(0)
+        return handled
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self._font_host and event.type() in (
+            QEvent.FontChange, QEvent.ApplicationFontChange,
+        ):
+            self._launcher_font_refresh.start(0)
+        return super().eventFilter(watched, event)
+
+    def _watch_launcher_font_host(self) -> None:
+        host = self.parentWidget()
+        if host is self._font_host:
+            return
+        if self._font_host is not None:
+            self._font_host.removeEventFilter(self)
+        self._font_host = host
+        if host is not None:
+            host.installEventFilter(self)
+
+    def _refresh_launcher_font(self) -> None:
+        # Scoped widget styles can block propagation of Qt font changes from
+        # the dock. Mirror the host only after its FontChange is delivered.
+        host = self._font_host
+        font = host.font() if host is not None else QApplication.font()
+        self.menu_button.setFont(font)
+        self.menu_button.updateGeometry()
+        self.sync_responsive_mode()
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
@@ -314,6 +356,10 @@ class ViewDimsBar(QWidget):
         ) and hasattr(self, "title_label"):
             self._apply_palette_styles()
             self.sync_responsive_mode()
+            if hasattr(self, "_launcher_font_refresh") and event.type() in (
+                QEvent.FontChange, QEvent.ApplicationFontChange,
+            ):
+                self._launcher_font_refresh.start(0)
 
     def _apply_palette_styles(self) -> None:
         if self._applying_palette_styles:
@@ -334,7 +380,7 @@ class ViewDimsBar(QWidget):
             button = "QToolButton#ViewDimensionsMenuButton"
             right, left = (8, 24) if self.isRightToLeft() else (24, 8)
             self.menu_button.setStyleSheet(
-                f"{button} {{ {type_style(self.menu_button, 'body')}"
+                f"{button} {{ font-weight: 400;"
                 f" color: {colors.text.name()};"
                 f" background: {colors.surface.name()};"
                 f" border: 1px solid {colors.border.name()}; border-radius: 4px;"

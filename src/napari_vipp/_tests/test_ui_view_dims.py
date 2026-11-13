@@ -32,41 +32,50 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
     bar.set_axes(axes)
     parent.show()
 
-    for width in (1400, 1250, 1400):
-        bar.resize(width, 56)
-        assert bar._responsive_mode == "full"
+    fields = [control.spin for control in bar._controls]
 
-        def matched_tracks():
+    def settled_layout(mode, expected_widths=None):
+        assert bar._responsive_mode == mode
+        for control in bar._controls:
+            assert not control._metric_refresh.isActive()
+            field = control.spin
+            assert field.minimumWidth() == field.maximumWidth() == field.width()
+        if mode == "full":
             lengths = [control.slider.width() for control in bar._controls]
             assert min(lengths) >= 120 and max(lengths) - min(lengths) <= 1, lengths
+        if expected_widths is not None:
+            assert [field.width() for field in fields] == expected_widths
 
-        qtbot.waitUntil(matched_tracks)
+    for width in (1400, 1250, 1400):
+        bar.resize(width, 56)
+        qtbot.waitUntil(lambda: settled_layout("full"))
 
-    fields = [control.spin for control in bar._controls]
     widths = [field.width() for field in fields]
     assert widths[2] < widths[0] < widths[1] < 80
     for field in fields:
         field.setValue(field.maximum())
-        editor = field.lineEdit()
-        margins = editor.textMargins()
-        assert editor.contentsRect().width() - margins.left() - margins.right() >= (
-            editor.fontMetrics().horizontalAdvance(editor.text()) + 4
-        )
-        # The stylesheet must preserve a usable edit field without adding
-        # mouse targets for buttons (including under Qt's stylesheet engine).
-        option = QStyleOptionSpinBox()
-        field.initStyleOption(option)
-        for button in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown):
-            assert field.style().subControlRect(
-                QStyle.CC_SpinBox, option, button, field
-            ).isEmpty()
-    assert [field.width() for field in fields] == widths
-    bar.resize(530, 56)
-    assert bar._responsive_mode == "compact"
-    bar.layout().activate()
-    for control in bar._controls:
-        control.layout().activate()
-    assert [field.width() for field in fields] == widths
+
+    def assert_editors_fit():
+        for field in fields:
+            editor = field.lineEdit()
+            margins = editor.textMargins()
+            available = editor.contentsRect().width() - margins.left() - margins.right()
+            text_width = editor.fontMetrics().horizontalAdvance(editor.text())
+            assert available >= text_width + 4
+            # Preserve the native edit field without adding arrow targets.
+            option = QStyleOptionSpinBox()
+            field.initStyleOption(option)
+            for button in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown):
+                assert field.style().subControlRect(
+                    QStyle.CC_SpinBox, option, button, field
+                ).isEmpty()
+
+    qtbot.waitUntil(lambda: settled_layout("full", widths))
+    assert_editors_fit()
+    for width, mode in ((530, "compact"), (1400, "full")):
+        bar.resize(width, 56)
+        qtbot.waitUntil(lambda mode=mode: settled_layout(mode, widths))
+        assert_editors_fit()
 
 
 def test_widget_module_reexports_extracted_view_dimension_controls():
@@ -262,28 +271,44 @@ def test_large_font_narrow_view_dimensions_keep_all_axes_in_the_full_menu(qtbot)
     emitted = []
     bar.value_changed.connect(lambda *value: emitted.append(value))
     bar.set_axes(axes)
-    parent.resize(950, 250)
+    parent.resize(180, 250)
     parent.show()
+    button = bar.menu_button
+
+    def menu_caption_ready(points):
+        assert bar._responsive_mode == "menu"
+        assert button.text() == "View dimensions"
+        assert button.font().pointSizeF() == points
+        assert not bar._launcher_font_refresh.isActive()
+
+    def required_button_width():
+        return max(button.sizeHint().width(), button.minimumSizeHint().width())
 
     for points in (16, 9, 16):
+        parent.setFixedWidth(180)
         parent.setFont(QFont("Arial", points))
-        # Use a dock with space for its launcher but not the three additional
-        # inline fields. Glyphs are not the same width on every platform.
-        qtbot.waitUntil(lambda: bar.menu_button.fontMetrics().height() > 0)
-        button_width = bar.menu_button.minimumSizeHint().width()
-        margins = bar.layout().contentsMargins()
-        bar.setMaximumWidth(button_width + margins.left() + margins.right() + 12)
+        # Budget a real dock for the menu-only caption, not the shorter
+        # compact caption or its size before the requested font takes effect.
+        qtbot.waitUntil(lambda points=points: menu_caption_ready(points))
+        margins = (layout.contentsMargins(), bar.layout().contentsMargins())
+        insets = sum(margin.left() + margin.right() for margin in margins)
+        parent.setFixedWidth(required_button_width() + insets + 12)
         # Repeated presentation refreshes must not re-show any inline control
         # while the complete menu fallback is still the selected mode.
         bar.set_axes(axes)
         bar.set_axes(axes)
-        qtbot.waitUntil(lambda: bar._responsive_mode == "menu")
-        assert all(control.isHidden() for control in bar._controls)
-        assert bar.title_label.isHidden()
-        assert not bar.menu_button.isHidden()
-        qtbot.waitUntil(
-            lambda: bar.menu_button.width() >= bar.menu_button.minimumSizeHint().width()
-        )
+
+        def launcher_fits(points=points):
+            menu_caption_ready(points)
+            assert all(control.isHidden() for control in bar._controls)
+            assert bar.title_label.isHidden()
+            assert button.isVisible()
+            assert bar.contentsRect().contains(button.geometry())
+            assert button.width() >= required_button_width()
+            text_width = button.fontMetrics().horizontalAdvance(button.text())
+            assert button.width() >= text_width + 26  # indicator and trailing space
+
+        qtbot.waitUntil(launcher_fits)
 
     bar._populate_menu()
     controls = bar.menu.actions()[0].defaultWidget().findChildren(ViewDimAxisControl)
@@ -298,6 +323,39 @@ def test_large_font_narrow_view_dimensions_keep_all_axes_in_the_full_menu(qtbot)
     assert all(not control.slider.isHidden() for control in controls)
     assert controls[2].spin.maximumWidth() < controls[1].spin.maximumWidth()
     assert emitted == []
+
+
+def test_view_dimension_launcher_tracks_new_font_host(qtbot, qapp):
+    original = QFont(qapp.font())
+    first, second = QWidget(), QWidget()
+    for host in (first, second):
+        qtbot.addWidget(host)
+        host.resize(225, 100)
+        host.show()
+    bar = ViewDimsBar(first)
+    bar.resize(213, 40)
+    bar.set_axes((ViewDimAxis("z", "Z", 0, 12, 5),))
+    button = bar.menu_button
+
+    def font_is_current(points):
+        assert button.font().pointSizeF() == points
+        assert not bar._launcher_font_refresh.isActive()
+
+    try:
+        for points in (16, 9, 16):
+            qapp.setFont(QFont("Arial", points))
+            qtbot.waitUntil(lambda points=points: font_is_current(points))
+        second.setFont(QFont("Arial", 13))
+        bar.setParent(second)
+        bar.show()
+        qtbot.waitUntil(lambda: font_is_current(13))
+        first.setFont(QFont("Arial", 11))
+        assert not bar._launcher_font_refresh.isActive()
+        font_is_current(13)
+        second.setFont(QFont("Arial", 15))
+        qtbot.waitUntil(lambda: font_is_current(15))
+    finally:
+        qapp.setFont(original)
 
 
 def _theme_palette(*, base: str, alternate: str, text: str) -> QPalette:
