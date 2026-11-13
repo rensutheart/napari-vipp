@@ -34,7 +34,8 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
 
     fields = [control.spin for control in bar._controls]
 
-    def settled_layout(mode, expected_widths=None):
+    def settled_layout(width, mode, expected_widths=None):
+        assert bar.width() == width
         assert bar._responsive_mode == mode
         for control in bar._controls:
             assert not control._metric_refresh.isActive()
@@ -48,7 +49,7 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
 
     for width in (1400, 1250, 1400):
         bar.resize(width, 56)
-        qtbot.waitUntil(lambda: settled_layout("full"))
+        qtbot.waitUntil(lambda width=width: settled_layout(width, "full"))
 
     widths = [field.width() for field in fields]
     assert widths[2] < widths[0] < widths[1] < 80
@@ -70,12 +71,54 @@ def test_view_dimensions_tracks_match_and_fields_fit_the_range(qtbot, points):
                     QStyle.CC_SpinBox, option, button, field
                 ).isEmpty()
 
-    qtbot.waitUntil(lambda: settled_layout("full", widths))
+    qtbot.waitUntil(lambda: settled_layout(1400, "full", widths))
     assert_editors_fit()
-    for width, mode in ((530, "compact"), (1400, "full")):
-        bar.resize(width, 56)
-        qtbot.waitUntil(lambda mode=mode: settled_layout(mode, widths))
-        assert_editors_fit()
+
+    # Choose a width with physical room for the native compact controls, but
+    # insufficient room for their sliders. Do not assume a host font or ask
+    # the implementation for its breakpoints. The hidden launcher's full
+    # caption is a conservative bound on its shorter compact caption.
+    launcher = bar.menu_button
+    assert launcher.text() == "View dimensions"
+    launcher_width = max(
+        launcher.sizeHint().width(), launcher.minimumSizeHint().width()
+    )
+    controls = bar._controls
+    layout = bar.layout()
+    margins = layout.contentsMargins()
+    common_width = margins.left() + margins.right() + len(controls) * layout.spacing()
+    common_width += sum(
+        control.label.width()
+        + control.spin.width()
+        + control.range_label.width()
+        + 2 * control.layout().spacing()
+        for control in controls
+    )
+    compact_lower = common_width + launcher_width
+    full_lower = common_width + bar.title_label.width() + sum(
+        control.slider.minimumWidth() for control in controls
+    )
+    assert full_lower - compact_lower >= 4 * layout.spacing()
+    compact_width = (compact_lower + full_lower) // 2
+    bar.resize(compact_width, 56)
+    qtbot.waitUntil(lambda: settled_layout(compact_width, "compact", widths))
+    assert launcher.text() == "Show sliders" and launcher.isVisible()
+    assert not bar.title_label.isVisible()
+    compact_row = [launcher, *controls]
+    assert all(item.isVisible() for item in compact_row)
+    assert all(bar.contentsRect().contains(item.geometry()) for item in compact_row)
+    assert all(
+        left.geometry().right() < right.geometry().left()
+        for left, right in zip(compact_row, compact_row[1:], strict=False)
+    )
+    assert all(
+        control.spin.isVisible() and control.slider.isHidden() for control in controls
+    )
+    assert_editors_fit()
+
+    bar.resize(1400, 56)
+    qtbot.waitUntil(lambda: settled_layout(1400, "full", widths))
+    assert_editors_fit()
 
 
 def test_widget_module_reexports_extracted_view_dimension_controls():
