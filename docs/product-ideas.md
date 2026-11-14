@@ -189,8 +189,9 @@ a stretch candidate; the broader concepts below are not core 0.16 gates.
 - full plate/well/field browsing and broader HCS traversal after SourceItem;
 - model-backed segmentation such as Cellpose, StarDist, or ilastik through
   isolated optional dependencies and exact model provenance;
-- Apple acceleration after a time-boxed provider study, with CPU retained as
-  the honest fallback until admission passes;
+- [Apple GPU functionality](apple-gpu-functionality-proposal.md) through a
+  staged existing-library study for selected nodes, with CPU retained as the
+  honest fallback until scientific and performance admission passes;
 - stitching and mosaics;
 - [richer tracking and mitochondrial analysis](#richer-tracking-and-mitochondrial-analysis)
   beyond the current basic tracking capability;
