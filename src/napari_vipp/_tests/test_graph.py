@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from qtpy.QtCore import QMimeData, QPoint, QPointF, QRect, QRectF, Qt
-from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPalette
+from qtpy.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, QRectF, Qt
+from qtpy.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QFocusEvent,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPalette,
+)
 from qtpy.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from napari_vipp._graph import (
@@ -37,6 +47,175 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     view.resize(980, 520)
     view.build_graph(pipeline.nodes.values(), pipeline.connections)
     return view, pipeline
+
+
+@pytest.fixture
+def pannable_view(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    view.scene.setSceneRect(-500, -500, 4_000, 4_000)
+    view.horizontalScrollBar().setValue(1_600)
+    view.verticalScrollBar().setValue(1_600)
+    assert _canvas_scroll_position(view) == (1_600, 1_600)
+    assert view.itemAt(view.viewport().rect().center()) is None
+    return view
+
+
+def _canvas_scroll_position(view):
+    return view.horizontalScrollBar().value(), view.verticalScrollBar().value()
+
+
+def _send_canvas_mouse(view, event_type, pos, button, buttons):
+    viewport = view.viewport()
+    event = QMouseEvent(
+        event_type,
+        QPointF(pos),
+        QPointF(pos),
+        QPointF(viewport.mapToGlobal(pos)),
+        button,
+        buttons,
+        Qt.NoModifier,
+    )
+    QApplication.sendEvent(viewport, event)
+
+
+def test_busy_canvas_needs_its_own_press_to_pan(pannable_view):
+    view = pannable_view
+    view.set_node_processing("gaussian", True)
+    pos = view.viewport().rect().center() + QPoint(65, 30)
+    start_scroll = _canvas_scroll_position(view)
+    # An ordinary hover or a drag entering from another widget isn't a pan.
+    for buttons in (Qt.NoButton, Qt.LeftButton, Qt.MiddleButton):
+        _send_canvas_mouse(view, QEvent.MouseMove, pos, Qt.NoButton, buttons)
+        assert _canvas_scroll_position(view) == start_scroll
+
+
+@pytest.mark.parametrize("move_buttons", (Qt.NoButton, Qt.MiddleButton))
+def test_busy_canvas_cancels_a_pan_if_its_press_is_no_longer_held(
+    pannable_view, move_buttons
+):
+    view = pannable_view
+    start = view.viewport().rect().center()
+    start_scroll = _canvas_scroll_position(view)
+    _send_canvas_mouse(
+        view, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton
+    )
+    assert view.cursor().shape() == Qt.ClosedHandCursor
+    view.set_node_processing("gaussian", True)
+    # The original release was not delivered to the viewport.
+    _send_canvas_mouse(
+        view, QEvent.MouseMove, start + QPoint(65, 30), Qt.NoButton, move_buttons
+    )
+    assert _canvas_scroll_position(view) == start_scroll
+    assert view.cursor().shape() == Qt.ArrowCursor
+    _send_canvas_mouse(
+        view, QEvent.MouseMove, start + QPoint(70, 40), Qt.NoButton, Qt.LeftButton
+    )
+    assert _canvas_scroll_position(view) == start_scroll
+
+
+@pytest.mark.parametrize("interruption", ("lost grab", "hidden viewport"))
+def test_interrupted_canvas_pan_requires_a_new_press(pannable_view, interruption):
+    view = pannable_view
+    start = view.viewport().rect().center()
+    _send_canvas_mouse(
+        view, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton
+    )
+    assert view.cursor().shape() == Qt.ClosedHandCursor
+    if interruption == "lost grab":
+        QApplication.sendEvent(view.viewport(), QEvent(QEvent.UngrabMouse))
+    else:
+        view.hide()
+        view.show()
+
+    # Qt can recenter on show; the move afterward must not pan.
+    start_scroll = _canvas_scroll_position(view)
+    _send_canvas_mouse(
+        view, QEvent.MouseMove, start + QPoint(65, 30), Qt.NoButton, Qt.LeftButton
+    )
+    assert _canvas_scroll_position(view) == start_scroll
+    assert view.cursor().shape() == Qt.ArrowCursor
+
+
+@pytest.mark.parametrize("button", (Qt.LeftButton, Qt.MiddleButton))
+def test_canvas_pan_moves_only_until_its_own_button_is_released(pannable_view, button):
+    view = pannable_view
+    start = view.viewport().rect().center()
+    x, y = _canvas_scroll_position(view)
+    _send_canvas_mouse(view, QEvent.MouseButtonPress, start, button, button)
+    # A release of a different button does not end this drag.
+    other_button = Qt.MiddleButton if button == Qt.LeftButton else Qt.LeftButton
+    _send_canvas_mouse(view, QEvent.MouseButtonRelease, start, other_button, button)
+    end = start + QPoint(65, 30)
+    _send_canvas_mouse(view, QEvent.MouseMove, end, Qt.NoButton, button)
+    assert _canvas_scroll_position(view) == (x - 65, y - 30)
+
+    _send_canvas_mouse(view, QEvent.MouseButtonRelease, end, button, Qt.NoButton)
+    _send_canvas_mouse(
+        view, QEvent.MouseMove, end + QPoint(20, 10), Qt.NoButton, Qt.NoButton
+    )
+    assert _canvas_scroll_position(view) == (x - 65, y - 30)
+    assert view.cursor().shape() == Qt.ArrowCursor
+
+
+def test_canvas_pan_stops_when_focus_moves_to_another_control(pannable_view):
+    view = pannable_view
+    start = view.viewport().rect().center()
+    start_scroll = _canvas_scroll_position(view)
+    _send_canvas_mouse(
+        view, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton
+    )
+    assert view.cursor().shape() == Qt.ClosedHandCursor
+
+    # A control outside the canvas, such as an inspector slider, takes focus.
+    QApplication.sendEvent(view, QFocusEvent(QEvent.FocusOut, Qt.MouseFocusReason))
+    _send_canvas_mouse(
+        view, QEvent.MouseMove, start + QPoint(65, 30), Qt.NoButton, Qt.LeftButton
+    )
+    assert _canvas_scroll_position(view) == start_scroll
+    assert view.cursor().shape() == Qt.ArrowCursor
+
+
+def test_palette_drop_cannot_continue_an_interrupted_canvas_pan(qtbot, pannable_view):
+    view = pannable_view
+    start = view.viewport().rect().center()
+    start_scroll = _canvas_scroll_position(view)
+    _send_canvas_mouse(
+        view, QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton
+    )
+    assert view.cursor().shape() == Qt.ClosedHandCursor
+
+    position = start + QPoint(65, 30)
+    mime = QMimeData()
+    mime.setData(OPERATION_MIME, b"gaussian_blur")
+    enter = QDragEnterEvent(
+        position, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier
+    )
+    QApplication.sendEvent(view.viewport(), enter)
+    assert enter.isAccepted()
+    drop = QDropEvent(
+        QPointF(position), Qt.CopyAction, mime, Qt.NoButton, Qt.NoModifier
+    )
+    with qtbot.waitSignal(view.node_create_requested) as signal:
+        QApplication.sendEvent(view.viewport(), drop)
+    assert signal.args == ["gaussian_blur", view.mapToScene(position)]
+
+    _send_canvas_mouse(
+        view, QEvent.MouseMove, position + QPoint(20, 10), Qt.NoButton, Qt.LeftButton
+    )
+    assert _canvas_scroll_position(view) == start_scroll
+    assert view.cursor().shape() == Qt.ArrowCursor
+
+
+def test_canvas_resize_does_not_shift_scene_under_the_pointer(pannable_view):
+    view = pannable_view
+    point_before = view.mapToScene(QPoint(0, 0))
+
+    # Other parts of the UI can grow when they show progress or more controls.
+    view.resize(view.width() - 140, view.height() - 70)
+
+    assert view.mapToScene(QPoint(0, 0)) == point_before
 
 
 @pytest.mark.parametrize("dark", (False, True))
