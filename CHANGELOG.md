@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.0a9 - 2026-11-18
+
 - Skip the untouched startup workflow in recovery, even after the starter
   preview has loaded. Edited workflows are still checkpointed.
 - Keep the workflow canvas still on hover, including while a node calculates.
