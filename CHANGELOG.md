@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep Crop selection and preview updates from interrupting napari layer-list
+  changes, and reuse the unchanged source image while adjusting margins.
+
 ## 0.16.0a8 - 2026-11-13
 
 - Scroll past inspector sliders, number boxes and closed drop-downs without

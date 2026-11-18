@@ -35770,6 +35770,89 @@ def test_crop_selection_defers_napari_layer_model_mutation(qtbot, monkeypatch):
     assert widget._active_viewer_layer().metadata["napari_vipp_kind"] == "crop_source"
 
 
+def test_crop_selection_keeps_complete_layer_transition_guarded(qtbot, monkeypatch):
+    from napari._qt.containers.qt_layer_list import QtLayerList
+
+    image = np.arange(6 * 8 * 10, dtype=np.float32).reshape(6, 8, 10)
+    viewer = ViewerModel()
+    viewer.add_image(image, name="Crop selection source", metadata={"axes": "ZYX"})
+    qt_layer_list = QtLayerList(viewer.layers)
+    qtbot.addWidget(qt_layer_list)
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs.get("input") is not None
+        and widget._active_pipeline_run_id is None,
+        timeout=10_000,
+    )
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    assert widget.pipeline.outputs.get(crop.id) is not None
+    widget._select_node("gaussian")
+    qtbot.waitUntil(lambda: bool(widget._owned_inspect_layers()), timeout=5_000)
+
+    crop_inspect_publications = []
+    publish_generated_layer = widget._set_or_add_generated_layer
+
+    def record_generated_layer(*args, **kwargs):
+        metadata = kwargs.get("metadata", {})
+        if (
+            metadata.get("napari_vipp_kind") == "inspect"
+            and metadata.get("node_id") == crop.id
+        ):
+            crop_inspect_publications.append(metadata)
+        return publish_generated_layer(*args, **kwargs)
+
+    monkeypatch.setattr(widget, "_set_or_add_generated_layer", record_generated_layer)
+    apply_surface = widget._apply_selected_viewer_surface
+    surface_guards = []
+
+    def record_surface_guard(*, select_layer):
+        surface_guards.append(widget._selected_viewer_refresh_in_progress)
+        return apply_surface(select_layer=select_layer)
+
+    monkeypatch.setattr(widget, "_apply_selected_viewer_surface", record_surface_guard)
+    source_model = qt_layer_list.model().sourceModel()
+    row_transitions = []
+    for operation, signal in (
+        ("insert", source_model.rowsAboutToBeInserted),
+        ("remove", source_model.rowsAboutToBeRemoved),
+        ("move", source_model.rowsAboutToBeMoved),
+    ):
+        signal.connect(
+            lambda *_args, operation=operation: row_transitions.append(
+                (operation, widget._selected_viewer_refresh_in_progress)
+            )
+        )
+
+    widget.graph_view._handle_node_press(crop.id, Qt.NoModifier)
+    qtbot.waitUntil(
+        lambda: bool(widget._owned_crop_presentation_layers("crop_source"))
+        and bool(widget._owned_crop_presentation_layers("crop_roi"))
+        and widget._primed_diagnostic_node_id != crop.id
+        and not widget.histograms_section.isBusy(),
+        timeout=5_000,
+    )
+    source_layer = widget._owned_crop_presentation_layers("crop_source")[0]
+    roi_layer = widget._owned_crop_presentation_layers("crop_roi")[0]
+    for _ in range(3):
+        widget._refresh_selected_viewer_now(crop.id, select_layer=True)
+
+    assert crop_inspect_publications == []
+    assert surface_guards and all(surface_guards)
+    assert {operation for operation, _guard in row_transitions} >= {"insert", "remove"}
+    assert all(guard for _operation, guard in row_transitions)
+    assert widget._owned_inspect_layers() == []
+    assert widget._owned_crop_presentation_layers("crop_source") == [source_layer]
+    assert widget._owned_crop_presentation_layers("crop_roi") == [roi_layer]
+    assert source_layer.visible and roi_layer.visible
+    assert widget._active_viewer_layer() is source_layer
+    assert not widget.histograms_section.isBusy()
+
+
 def test_responsive_crop_real_viewer_tracks_noncanonical_display_plane(qtbot):
     data = np.zeros((2, 8, 3, 10, 6), dtype=np.float32)
     state = image_state_from_array(
@@ -35912,6 +35995,93 @@ def test_responsive_crop_real_viewer_tracks_plane_when_dims_are_unlinked(qtbot):
     assert np.allclose(roi_layer.edge_width, [1.25])
     assert np.all(np.asarray(roi_layer.face_color)[:, 3] > 0)
     widget._crop_draft_timer.stop()
+
+
+def test_responsive_crop_source_skips_unchanged_data_publication(qtbot, monkeypatch):
+    data = np.arange(6 * 8 * 10, dtype=np.float32).reshape(6, 8, 10)
+    viewer = ViewerModel()
+    viewer.add_image(data, name="ZYX source", metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._debounce_timer.stop()
+    source_layer = widget._owned_crop_presentation_layers("crop_source")[0]
+    data_property = type(source_layer).data
+    publications = []
+
+    def record_data_publication(layer, value):
+        if layer is source_layer:
+            publications.append(value)
+        data_property.fset(layer, value)
+
+    monkeypatch.setattr(
+        type(source_layer),
+        "data",
+        property(data_property.fget, record_data_publication, data_property.fdel),
+    )
+
+    for _ in range(5):
+        assert widget._ensure_crop_source_layer(crop.id) is source_layer
+
+    assert publications == []
+
+    replacement = data + 1_000
+    widget.pipeline.outputs["input"] = replacement
+    widget.pipeline.node_outputs["input"] = [replacement]
+
+    assert widget._ensure_crop_source_layer(crop.id) is source_layer
+    assert len(publications) == 1
+    np.testing.assert_array_equal(source_layer.data, replacement)
+
+    assert widget._ensure_crop_source_layer(crop.id) is source_layer
+    assert len(publications) == 1
+
+def test_responsive_crop_roi_skips_unchanged_graphics_properties(qtbot, monkeypatch):
+    data = np.zeros((6, 8, 10), dtype=np.float32)
+    viewer = ViewerModel()
+    viewer.add_image(data, name="ZYX source", metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", crop.id)
+    widget._debounce_timer.stop()
+    roi_layer = widget._owned_crop_presentation_layers("crop_roi")[0]
+    initial_face = np.asarray(roi_layer.data[0]).copy()
+    assignments = []
+
+    def record_property_assignment(name):
+        original = getattr(type(roi_layer), name)
+
+        def assign(layer, value):
+            if layer is roi_layer:
+                assignments.append(name)
+            original.fset(layer, value)
+
+        return property(original.fget, assign, original.fdel)
+
+    for name in ("data", "opacity", "blending", "scale", "translate"):
+        monkeypatch.setattr(type(roi_layer), name, record_property_assignment(name))
+
+    for _ in range(5):
+        widget._update_crop_roi_presentation(crop.id)
+
+    assert assignments == []
+
+    widget._parameter_widgets["top"].slider.setValue(2)
+    widget._crop_draft_timer.stop()
+
+    assert widget._owned_crop_presentation_layers("crop_roi")[0] is roi_layer
+    assert assignments == ["data"]
+    assert widget.pipeline.nodes[crop.id].params["top"] == 0
+    assert not np.array_equal(np.asarray(roi_layer.data[0]), initial_face)
+    assert np.min(np.asarray(roi_layer.data[0])[:, 1]) == pytest.approx(1.5)
+
+    assignments.clear()
+    widget._update_crop_roi_presentation(crop.id)
+    assert assignments == []
 
 
 def test_responsive_crop_reused_layers_follow_changed_calibration(qtbot):
