@@ -3727,11 +3727,11 @@ class VippWidget(QWidget):
         if not defer_initial_run:
             self.run_initial_pipeline_once()
 
-    def run_initial_pipeline_once(self) -> bool:
+    def run_initial_pipeline_once(self, *, starter_sample: str | None = None) -> bool:
         """Evaluate and record the initial workflow at most once.
 
         Launchers can construct the editor with ``defer_initial_run=True``,
-        apply a startup profile or source selection, and then call this method.
+        then call this method with their optional bundled starter sample.
         Returning a boolean makes duplicate startup callbacks harmless and easy
         to detect.  Normal interactive recalculation continues to use
         :meth:`run_pipeline` directly.
@@ -3745,15 +3745,37 @@ class VippWidget(QWidget):
             return False
         # Recovery candidates are separate, unopened working copies. Their
         # presence must not suppress this new editor's starter calculation.
+        initial_session = self._workflow_tabs.current
+        is_startup_session = (
+            initial_session is not None
+            and initial_session.session_id == self._startup_workflow_session_id
+            and initial_session.path is None
+            and not initial_session.title_is_custom
+        )
+        unmodified_starter = (
+            is_startup_session
+            and self._startup_recovery_fingerprint(self._current_history_snapshot())
+            == self._startup_recovery_baseline
+        )
+        if starter_sample is not None and unmodified_starter:
+            self.pipeline.nodes["input"].params.update(
+                source_mode="sample", sample_name=starter_sample
+            )
+            # Record the launcher-supplied change before run_pipeline
+            # autosaves. A deferred run is not consent to rebaseline edits.
+            self._set_startup_recovery_baseline(self._current_history_snapshot())
         self._initial_pipeline_run_started = True
         self.run_pipeline()
         self._sync_history_actions()
-        initial_session = self._workflow_tabs.current
-        if initial_session is not None:
-            initial_session.mark_clean(
-                self._current_history_snapshot(),
-                persistence_token=self._workflow_tab_persistence_token(),
-            )
+        if (
+            initial_session is not None
+            and initial_session is self._workflow_tabs.current
+        ):
+            if unmodified_starter:
+                initial_session.mark_clean(
+                    self._current_history_snapshot(),
+                    persistence_token=self._workflow_tab_persistence_token(),
+                )
             self._store_workflow_tab_runtime(initial_session)
             self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._initial_pipeline_run_completed = True
@@ -6228,18 +6250,19 @@ class VippWidget(QWidget):
             self._active_source_load_id is not None
             and self.source_load_banner.active_run_id == self._active_source_load_id
         )
-        self.pipeline_activity_group.setVisible(busy and not source_busy)
+        # Remove the outgoing contents first. Qt can lay out each visibility
+        # change immediately; showing both at once can briefly wrap the message.
+        if busy:
+            self.status_label.hide()
+            self.status_actions.set_active(False)
+        else:
+            self.pipeline_activity_group.hide()
         base = "Run activity"
         narrow = self._toolbar_layout_mode == "narrow"
         if not narrow:
             self.run_activity_button.setText(f"{base} · 1" if busy else base)
         else:
             self.run_activity_button.setText("")
-        # While work is active, the operation/progress strip is the primary
-        # status. Hiding the older message prevents duplicate status copy and
-        # leaves enough room for long node names at every dock width.
-        self.status_label.setVisible(not busy)
-        self.status_actions.set_active(not busy)
         self.pipeline_busy_label.setMinimumWidth(0 if narrow else 80)
         self.pipeline_busy_label.setMaximumWidth(160 if narrow else 300)
         self.pipeline_busy_bar.setMinimumWidth(80 if narrow else 96)
@@ -6251,53 +6274,45 @@ class VippWidget(QWidget):
             if busy
             else ("Show current and recent activity, total pipeline time, and workers.")
         )
+        if busy:
+            self.pipeline_activity_group.setVisible(not source_busy)
+        else:
+            self.status_label.show()
+            self.status_actions.set_active(True)
         self._reserve_status_toolbar_height()
 
     def _reserve_status_toolbar_height(self) -> None:
-        """Keep progress controls from changing the bottom toolbar's height."""
+        """Reserve one row for progress without capping wrapped status messages."""
         toolbar = getattr(self, "status_toolbar_widget", None)
         activity_layout = getattr(self, "pipeline_activity_layout", None)
         if toolbar is None or activity_layout is None:
             return
 
-        activity_controls = (
-            self.pipeline_busy_label,
-            self.pipeline_busy_bar,
-            self.pipeline_cancel_button,
-        )
-        control_height = max(
-            max(control.sizeHint().height(), control.minimumSizeHint().height())
-            for control in activity_controls
-        )
-        activity_margins = activity_layout.contentsMargins()
-        activity_height = (
-            control_height
-            + activity_margins.top()
-            + activity_margins.bottom()
-            + 2  # the activity card's one-pixel border on each edge
-        )
-        adjacent_height = max(
-            self.cache_status_label.sizeHint().height(),
-            self.run_activity_button.sizeHint().height(),
-        )
-        status_height = 0
-        if toolbar.isVisible() and not self.status_label.isHidden():
-            status_width = max(self.status_label.width(), 1)
-            if self.status_label.hasHeightForWidth():
-                status_height = self.status_label.heightForWidth(status_width)
-            else:
-                status_height = self.status_label.sizeHint().height()
-        layout_margins = self.status_toolbar_layout.contentsMargins()
-        reserved_height = (
-            max(activity_height, adjacent_height, status_height)
-            + layout_margins.top()
-            + layout_margins.bottom()
-        )
-        if toolbar.minimumHeight() != reserved_height:
-            # Minimum-only is intentional: routine progress cannot resize the
-            # row, while a genuinely long warning or actionable error can still
-            # wrap without being clipped.
-            toolbar.setMinimumHeight(reserved_height)
+        def control_height(control: QWidget) -> int:
+            hint = max(control.sizeHint().height(), control.minimumSizeHint().height())
+            return max(control.minimumHeight(), min(hint, control.maximumHeight()))
+
+        def vertical_insets(widget: QWidget, layout: QHBoxLayout) -> int:
+            widget.ensurePolished()
+            frame = widget.contentsMargins()
+            contents = layout.contentsMargins()
+            return frame.top() + frame.bottom() + contents.top() + contents.bottom()
+
+        # The hidden activity card's layout ignores its children, so reserve
+        # their heights directly, plus the actual styled frame and layout insets.
+        activity_height = max(
+            control_height(self.pipeline_busy_label),
+            control_height(self.pipeline_busy_bar),
+            control_height(self.pipeline_cancel_button),
+        ) + vertical_insets(self.pipeline_activity_group, activity_layout)
+        reserved_height = max(
+            activity_height,
+            control_height(self.cache_status_label),
+            control_height(self.run_activity_button),
+        ) + vertical_insets(toolbar, self.status_toolbar_layout)
+        # Let Qt wrap a visible message at its allocated width. An idle label's
+        # old width while switching modes must not drive the row's minimum.
+        toolbar.setMinimumHeight(reserved_height)
         # Hiding the status label and revealing the activity card changes this
         # nested row's size hint.  Explicitly invalidate both layouts so the
         # outer vertical layout does not reuse the idle hint for one frame (or,
@@ -10640,6 +10655,8 @@ class VippWidget(QWidget):
             persistence_token=persistence_token,
         )
         self._workflow_tabs.add(session)
+        self._startup_workflow_session_id = session.session_id
+        self._set_startup_recovery_baseline(snapshot)
 
         # The constructor's temporary adapter predates the session id. Replace
         # it before the first run so callbacks can never target another tab
@@ -10652,7 +10669,9 @@ class VippWidget(QWidget):
         self._store_workflow_tab_runtime(session)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
 
-    def _workflow_tab_persistence_token(self) -> str:
+    def _workflow_tab_persistence_token(
+        self, *, ignore_view_state: bool = False
+    ) -> str:
         """Fingerprint state that a workflow save may persist outside history."""
         batch_values = None
         dialog = self._active_collection_batch_dialog
@@ -10661,22 +10680,45 @@ class VippWidget(QWidget):
                 batch_values = dialog.values()
             except Exception:
                 batch_values = {"workspace": "unavailable"}
+        metadata = self._workflow_metadata()
+        if ignore_view_state:
+            # The viewer records display profiles even when the starter's
+            # automatic preview was only viewed, not edited as a recipe.
+            inspector = metadata["vipp"]["inspector"]
+            for key in ("selected_node_id", "right_panel_visible", "display_profiles"):
+                inspector.pop(key, None)
         return canonical_digest(
             {
-                "metadata": self._workflow_metadata(),
+                "metadata": metadata,
                 "batch_workspace": batch_values,
             }
         )
+
+    def _startup_recovery_fingerprint(self, snapshot: WorkflowHistorySnapshot):
+        return (
+            snapshot.workflow,
+            self._workflow_tab_persistence_token(ignore_view_state=True),
+        )
+
+    def _set_startup_recovery_baseline(self, snapshot: WorkflowHistorySnapshot) -> None:
+        self._startup_recovery_baseline = self._startup_recovery_fingerprint(snapshot)
+        self._startup_recovery_unchanged = True
 
     def _sync_current_workflow_tab_state(self) -> None:
         """Capture dirty/editor state and refresh its tab marker immediately."""
         session = self._workflow_tabs.current
         if session is None or session.pipeline is not self.pipeline:
             return
+        snapshot = self._current_history_snapshot()
         session.capture_editor_snapshot(
-            self._current_history_snapshot(),
+            snapshot,
             persistence_token=self._workflow_tab_persistence_token(),
         )
+        if session.session_id == self._startup_workflow_session_id:
+            self._startup_recovery_unchanged = (
+                self._startup_recovery_fingerprint(snapshot)
+                == self._startup_recovery_baseline
+            )
         try:
             index = self._workflow_tabs.index_of(session.session_id)
             self.workflow_tab_bar.refresh_session(index, session)
@@ -10693,6 +10735,13 @@ class VippWidget(QWidget):
         for session in self._workflow_tabs:
             if not session.pipeline.nodes:
                 continue  # A truly blank canvas has no persisted recipe to lose.
+            if (
+                session.session_id == self._startup_workflow_session_id
+                and session.path is None
+                and not session.title_is_custom
+                and self._startup_recovery_unchanged
+            ):
+                continue  # The application can recreate this starter on launch.
             editor = session.editor_snapshot
             if session.pipeline is self.pipeline:
                 document = serialize_workflow(
@@ -10736,7 +10785,9 @@ class VippWidget(QWidget):
                     "dirty": session.dirty,
                 }
             )
-        return tabs, active if any(t["tab_id"] == active for t in tabs) else ""
+        if not any(tab["tab_id"] == active for tab in tabs):
+            active = tabs[0]["tab_id"] if tabs else ""
+        return tabs, active
 
     def _restore_recovery_workspace(self, checkpoint):
         """Open verified copies in fresh tabs, without ordinary auto-run loading."""
@@ -37757,7 +37808,6 @@ class VippWidget(QWidget):
         worker.signals.finished.connect(self._on_background_pipeline_finished)
         completion_loop = None
         completion_observed = False
-        completion_graph_center = None
         if execute_synchronously and isinstance(
             self._pipeline_thread_pool,
             QThreadPool,
@@ -37769,9 +37819,6 @@ class VippWidget(QWidget):
             # adapters used by embedders/tests own their own dispatch semantics
             # and must never be waited as though they were a live Qt pool.
             completion_loop = QEventLoop(self)
-            completion_graph_center = self.graph_view.mapToScene(
-                self.graph_view.viewport().rect().center()
-            )
 
             def finish_wait(_result: object) -> None:
                 nonlocal completion_observed
@@ -37797,12 +37844,9 @@ class VippWidget(QWidget):
             self._finish_pipeline_processing_timing(timing_key)
             raise
         if completion_loop is not None and not completion_observed:
+            # The canvas keeps its origin across layout resizes. Restoring an
+            # old center here would override navigation made during the wait.
             completion_loop.exec()
-        if completion_graph_center is not None:
-            # Processing pending Qt layout events can resize the graph viewport.
-            # Preserve the scene location the user was inspecting across this
-            # responsive synchronous handoff.
-            self._restore_graph_view_center(completion_graph_center)
 
     def _on_background_pipeline_worker_started(self, payload: object) -> None:
         recorder = self._interaction_latency_recorder

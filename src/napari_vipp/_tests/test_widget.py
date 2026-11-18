@@ -17,7 +17,16 @@ import numpy as np
 import pytest
 import tifffile
 from napari.components import ViewerModel
-from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, QSize, Qt, QTimer
+from qtpy.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QTimer,
+)
 from qtpy.QtGui import (
     QAction,
     QCloseEvent,
@@ -4857,9 +4866,15 @@ def test_node_code_bypassed_crop_is_an_exact_alias_without_operation_call(qtbot)
 def test_undo_redo_restores_deleted_node_and_connections(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
-    qtbot.addWidget(widget)
+    qtbot.addWidget(
+        widget, before_close_func=VippWidget._permit_incomplete_startup_discard
+    )
+    # Let the parent lay out the canvas before measuring its view. Directly
+    # resizing the child would be undone when the calculation processes events.
+    widget.resize(1_100, 650)
+    widget.show()
+    qtbot.waitExposed(widget)
     widget.graph_view.select_node("gaussian")
-    widget.graph_view.resize(800, 420)
     widget.graph_view.set_zoom_percent(150)
     widget.graph_view.centerOn(QPointF(240, 90))
     zoom_before = widget.graph_view.zoom_percent
@@ -16794,6 +16809,47 @@ def test_graph_focus_button_recenters_canvas_and_preserves_zoom(qtbot):
     assert widget.status_label.text() == "Centered workflow graph."
 
 
+def test_small_calculation_does_not_restore_view_over_user_navigation(
+    qtbot, monkeypatch
+):
+    widget = VippWidget(
+        _Viewer(np.ones((8, 8), dtype=np.float32)), defer_initial_run=True
+    )
+    qtbot.addWidget(widget)
+    widget._permit_incomplete_startup_discard()
+    widget._compute_mode = ComputeMode.AUTO
+    widget.resize(1_100, 650)
+    widget.show()
+    qtbot.waitExposed(widget)
+    view = widget.graph_view
+    view.centerOn(view.sceneRect().bottomRight())
+    before = view.mapToScene(QPoint())
+    navigated_to = []
+
+    pool = widget._pipeline_thread_pool
+    start_worker = pool.start
+
+    def start_after_user_navigation(worker):
+        def navigate_and_start():
+            try:
+                # Exercise real navigation while the synchronous run's Qt
+                # event loop is already servicing responsive UI actions.
+                widget.graph_focus_button.click()
+                navigated_to.append(view.mapToScene(QPoint()))
+            finally:
+                start_worker(worker)
+
+        QTimer.singleShot(0, navigate_and_start)
+
+    monkeypatch.setattr(pool, "start", start_after_user_navigation)
+    widget.run_pipeline(force_sync=True)
+
+    assert "gaussian" in widget.pipeline.outputs
+    assert len(navigated_to) == 1
+    assert navigated_to[0] != before
+    assert view.mapToScene(QPoint()) == navigated_to[0]
+
+
 def test_graph_wheel_zoom_can_report_beyond_slider_range(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -24670,31 +24726,63 @@ def test_toolbar_busy_footer_elides_long_status_without_clipping(
 
 
 @pytest.mark.parametrize("width", (1400, 900, 640))
+@pytest.mark.parametrize("styled_insets", (False, True))
 def test_status_toolbar_height_is_stable_when_progress_appears(
     qtbot,
     width,
+    styled_insets,
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     _show_toolbar_at_width(widget, qtbot, width)
     widget.resize(width, 700)
+    toolbar = widget.status_toolbar_widget
+    if styled_insets:
+        # Embedded hosts and themes can add padding around the bottom row.
+        toolbar.setContentsMargins(0, 7, 0, 3)
+        widget.pipeline_activity_group.setContentsMargins(2, 3, 2, 2)
+    widget._reserve_status_toolbar_height()
     QApplication.processEvents()
 
-    idle_height = widget.status_toolbar_widget.height()
-    assert idle_height >= widget.status_toolbar_widget.minimumHeight()
-    assert widget.status_toolbar_widget.maximumHeight() > idle_height
+    class HeightRecorder(QObject):
+        def __init__(self):
+            super().__init__()
+            self.heights = []
+
+        def eventFilter(self, obj, event):  # noqa: N802
+            if event.type() == QEvent.Resize:
+                self.heights.append(event.size().height())
+            return super().eventFilter(obj, event)
+
+    idle_height = toolbar.height()
+    idle_graph_height = widget.splitter.height()
+    assert idle_height >= toolbar.minimumHeight()
+    assert toolbar.maximumHeight() > idle_height
+    recorder = HeightRecorder()
+    toolbar.installEventFilter(recorder)
 
     widget._set_pipeline_busy(True, "gaussian")
+    QApplication.processEvents()
+    assert toolbar.height() == idle_height
+    assert widget.splitter.height() == idle_graph_height
+
     widget.pipeline_busy_bar.setRange(0, 100)
     widget.pipeline_busy_bar.setValue(48)
     QApplication.processEvents()
+    assert toolbar.height() == idle_height
+    assert widget.splitter.height() == idle_graph_height
 
-    assert widget.status_toolbar_widget.height() == idle_height
+    widget._set_pipeline_busy(True, "gaussian", cancelable=False)
+    QApplication.processEvents()
+    assert toolbar.height() == idle_height
+    assert widget.splitter.height() == idle_graph_height
 
     widget._set_pipeline_busy(False)
     QApplication.processEvents()
 
-    assert widget.status_toolbar_widget.height() == idle_height
+    assert toolbar.height() == idle_height
+    assert widget.splitter.height() == idle_graph_height
+    assert set(recorder.heights) <= {idle_height}
 
 
 def test_status_toolbar_baseline_does_not_clip_wrapped_actionable_error(qtbot):

@@ -327,10 +327,12 @@ class _FakeVippWidget:
         self.pipeline = SimpleNamespace(nodes={"input": _FakeNode()})
         self.graph_view = _FakeGraphView()
         self.initial_run_count = 0
+        self.initial_starter_sample = None
         self.instances.append(self)
 
-    def run_initial_pipeline_once(self) -> bool:
+    def run_initial_pipeline_once(self, *, starter_sample=None) -> bool:
         self.initial_run_count += 1
+        self.initial_starter_sample = starter_sample
         return self.initial_run_count == 1
 
 
@@ -348,10 +350,7 @@ def test_standalone_app_defers_configures_and_runs_initial_workflow_once():
         "defer_initial_run": True,
         "initial_compute_mode": "cpu",
     }
-    assert widget.pipeline.nodes["input"].params == {
-        "source_mode": "sample",
-        "sample_name": "VIPP synthetic volume",
-    }
+    assert widget.initial_starter_sample == "VIPP synthetic volume"
     assert widget.initial_run_count == 1
     assert widget.graph_view.selected == ["input"]
 

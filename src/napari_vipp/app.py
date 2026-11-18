@@ -141,13 +141,7 @@ def _construct_vipp_widget(widget_type, viewer, profile: LaunchProfile):
 
 def _configure_initial_workflow(widget) -> None:
     """Configure and execute the bundled synthetic workflow exactly once."""
-    widget.pipeline.nodes["input"].params.update(
-        {
-            "source_mode": "sample",
-            "sample_name": "VIPP synthetic volume",
-        }
-    )
-    widget.run_initial_pipeline_once()
+    widget.run_initial_pipeline_once(starter_sample="VIPP synthetic volume")
     widget.graph_view.select_node("input")
 
 

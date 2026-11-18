@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Skip the untouched startup workflow in recovery, even after the starter
+  preview has loaded. Edited workflows are still checkpointed.
+- Keep the workflow canvas still on hover, including while a node calculates.
+  Panning requires a drag started on the canvas; palette drops, inspector
+  edits and automatic layout resizing do not move the view.
+- Keep the status bar the same height when calculation progress appears
+  and clears, while still allowing long warnings and errors to wrap.
+
 ## 0.16.0a8 - 2026-11-13
 
 - Scroll past inspector sliders, number boxes and closed drop-downs without

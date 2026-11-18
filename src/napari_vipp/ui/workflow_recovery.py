@@ -297,7 +297,10 @@ class _Save(QRunnable):
         store, tabs, active, reason, sequence, signals = self.args
         result, error = None, ""
         try:
-            result = store.checkpoint(tabs, active, reason=reason)
+            if tabs:
+                result = store.checkpoint(tabs, active, reason=reason)
+            else:
+                store.clear_checkpoint()
         except Exception:
             error = "Recovery copy could not be saved. Check disk space and the folder."
         signals.done.emit(sequence, result, error)
@@ -370,7 +373,7 @@ class WorkflowRecoveryController(QObject):
         self.timer.stop()
         try:
             tabs, active, digest = self._capture()
-            if not tabs or digest == self._digest:
+            if digest == self._digest or (not tabs and self.last_checkpoint is None):
                 self._pending = False
                 return
         except Exception:
@@ -395,7 +398,11 @@ class WorkflowRecoveryController(QObject):
         else:
             self.last_checkpoint = result
             self._digest = self._submitted_digest
-            self.summary = f"Recovery checkpoint · {result.created_utc}"
+            self.summary = (
+                f"Recovery checkpoint · {result.created_utc}"
+                if result is not None
+                else "Recovery ready · no workflows to recover"
+            )
         if self._pending:
             self.timer.start()
 
@@ -412,7 +419,13 @@ class WorkflowRecoveryController(QObject):
         self._writing = False
         try:
             tabs, active, digest = self._capture()
-            result = self.store.checkpoint(tabs, active, reason=reason)
+            if tabs:
+                result = self.store.checkpoint(tabs, active, reason=reason)
+            elif required:
+                raise ValueError("No workflows to protect.")
+            else:
+                self.store.clear_checkpoint()
+                result = None
         except Exception as error:
             self.summary = "Recovery checkpoint failed · no edit was applied"
             if required:
@@ -424,7 +437,11 @@ class WorkflowRecoveryController(QObject):
         self.last_checkpoint = result
         self._digest = digest
         self._pending = False
-        self.summary = f"Recovery checkpoint · {result.created_utc}"
+        self.summary = (
+            f"Recovery checkpoint · {result.created_utc}"
+            if result is not None
+            else "Recovery ready · no workflows to recover"
+        )
         return result
 
     def offer_once(self):
@@ -720,8 +737,10 @@ class WorkflowRecoveryController(QObject):
         try:
             replacement = RecoveryStore(Path(selected).absolute())
             tabs, active, digest = self._capture()
-            checkpoint = replacement.checkpoint(
-                tabs, active, reason="recovery folder changed"
+            checkpoint = (
+                replacement.checkpoint(tabs, active, reason="recovery folder changed")
+                if tabs
+                else None
             )
         except Exception:
             if "replacement" in locals():
@@ -748,7 +767,11 @@ class WorkflowRecoveryController(QObject):
         settings = QSettings("napari-vipp", "napari-vipp")
         settings.setValue("workflow/recovery-root-v1", str(Path(selected).absolute()))
         settings.sync()
-        self.summary = f"Recovery checkpoint · {checkpoint.created_utc}"
+        self.summary = (
+            f"Recovery checkpoint · {checkpoint.created_utc}"
+            if checkpoint is not None
+            else "Recovery ready · no workflows to recover"
+        )
 
     def close(self):
         if self.closed:

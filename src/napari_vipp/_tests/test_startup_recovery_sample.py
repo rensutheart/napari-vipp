@@ -1,6 +1,7 @@
 """The real standalone starter remains independent of an interrupted recipe."""
 
 import numpy as np
+import pytest
 from napari.components import ViewerModel
 
 from napari_vipp._widget import VippWidget
@@ -10,6 +11,92 @@ from napari_vipp.core.operations import gaussian_blur, otsu_threshold
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
 from napari_vipp.core.workflow_recovery import RecoveryStore
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+def test_unchanged_starter_is_not_checkpointed(qtbot, standalone):
+    widget = VippWidget(
+        ViewerModel(), defer_initial_run=True, initial_compute_mode=ComputeMode.CPU
+    )
+    qtbot.addWidget(widget)
+    widget._discard_incomplete_startup_on_close = True
+    controller = widget._workflow_recovery
+    startup = widget._workflow_tabs.current
+
+    if standalone:
+        _configure_initial_workflow(widget)
+        qtbot.waitUntil(
+            lambda: widget.graph_view.node_has_thumbnail("input")
+            and not widget._workflow_tab_switch_block_reason(),
+            timeout=10_000,
+        )
+    else:
+        widget.run_initial_pipeline_once()
+    # Selecting a node is not a change to the starter recipe.
+    widget.graph_view.select_node("gaussian")
+    controller.autosave()
+    assert controller._pool.waitForDone(5000)
+    assert widget._capture_recovery_workspace() == ([], "")
+    assert not list(controller.store.directory.glob("generation-*.json"))
+    assert controller.checkpoint_now("no edits") is None
+
+    widget.pipeline.nodes["gaussian"].params["sigma"] = 2.0
+    tabs, active = widget._capture_recovery_workspace()
+    assert active == startup.session_id
+    assert [tab["tab_id"] for tab in tabs] == [startup.session_id]
+    assert tabs[0]["dirty"]
+    saved = controller.checkpoint_now("edited starter", required=True)
+    gaussian = next(
+        n for n in saved.tabs[0]["workflow"]["nodes"] if n["id"] == "gaussian"
+    )
+    assert gaussian["params"]["sigma"] == 2.0
+    widget.pipeline.nodes["gaussian"].params["sigma"] = 1.2
+    controller.autosave()
+    qtbot.waitUntil(
+        lambda: not controller._writing and controller.last_checkpoint is None,
+        timeout=5_000,
+    )
+    observer = RecoveryStore(controller.store.root)
+    controller.store.close(clean=False)
+    try:
+        assert observer.recoverable() == []
+        assert observer.issues == ()
+    finally:
+        observer.close()
+
+
+def test_untouched_active_starter_does_not_hide_another_untitled_tab(qtbot):
+    widget = VippWidget(
+        ViewerModel(), defer_initial_run=True, initial_compute_mode=ComputeMode.CPU
+    )
+    qtbot.addWidget(widget)
+    widget._discard_incomplete_startup_on_close = True
+    startup = widget._workflow_tabs.current
+    other = widget._workflow_tabs.create_blank(make_current=False)
+    # This separate user-created tab shares the title, not the startup origin.
+    other.rename(startup.title)
+    other.mark_dirty()
+    assert widget._workflow_tabs.current is startup
+
+    checkpoint = widget._workflow_recovery.checkpoint_now(required=True)
+    assert checkpoint.active_id == other.session_id
+    assert [tab["tab_id"] for tab in checkpoint.tabs] == [other.session_id]
+
+
+def test_deferred_startup_does_not_replace_or_hide_prior_edits(qtbot):
+    widget = VippWidget(
+        ViewerModel(), defer_initial_run=True, initial_compute_mode=ComputeMode.CPU
+    )
+    qtbot.addWidget(widget)
+    widget._discard_incomplete_startup_on_close = True
+    widget.pipeline.nodes["gaussian"].params["sigma"] = 2.0
+
+    _configure_initial_workflow(widget)
+
+    assert widget.pipeline.nodes["input"].params["sample_name"] == ""
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == 2.0
+    tabs, active = widget._capture_recovery_workspace()
+    assert [(tab["tab_id"], tab["dirty"]) for tab in tabs] == [(active, True)]
 
 
 def test_standalone_starter_and_recovered_source_with_real_interrupted_copy(
