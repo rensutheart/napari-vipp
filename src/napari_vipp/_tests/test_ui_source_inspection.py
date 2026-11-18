@@ -12,7 +12,10 @@ from napari_vipp.core.source_inspection import (
     SourceInspectionProgress,
     SourceInspectionProgressUnit,
 )
-from napari_vipp.core.source_resolution import SourceItemResolutionError
+from napari_vipp.core.source_resolution import (
+    SourceItemResolutionError,
+    SourceReaderMismatchError,
+)
 from napari_vipp.ui import source_inspection as ui_source_inspection
 from napari_vipp.ui.source_inspection import (
     SourceInspectionWorker,
@@ -173,17 +176,30 @@ def test_inspection_worker_stops_when_progress_is_superseded(
     assert outcomes[0].stale
 
 
+@pytest.mark.parametrize(
+    ("exception", "expected_code"),
+    [
+        (
+            SourceItemResolutionError("Missing saved item."),
+            ImageSourceErrorCode.CONTRACT_MISMATCH,
+        ),
+        (
+            SourceReaderMismatchError("Different reader."),
+            ImageSourceErrorCode.READER_MISMATCH,
+        ),
+    ],
+)
 def test_inspection_worker_preserves_structured_contract_error(
     tmp_path,
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
+    exception,
+    expected_code,
 ) -> None:
     monkeypatch.setattr(
         ui_source_inspection,
         "inspect_local_source_item",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            SourceItemResolutionError("Saved item is missing.")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception),
     )
     worker = SourceInspectionWorker(_spec(tmp_path / "missing.npz"))
     outcomes = []
@@ -193,6 +209,6 @@ def test_inspection_worker_preserves_structured_contract_error(
 
     assert len(outcomes) == 1
     assert not outcomes[0].cancelled
-    assert outcomes[0].source_error.code is ImageSourceErrorCode.CONTRACT_MISMATCH
+    assert outcomes[0].source_error.code is expected_code
     assert outcomes[0].source_error.item == "volume"
-    assert "Saved item is missing" in outcomes[0].error
+    assert str(exception) in outcomes[0].error

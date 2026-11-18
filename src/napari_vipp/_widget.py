@@ -14,7 +14,7 @@ import textwrap
 import threading
 import traceback
 import weakref
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -276,7 +276,12 @@ from napari_vipp.core.io import (
     validate_local_image_source_path,
     write_ome_zarr_analysis_dataset,
 )
-from napari_vipp.core.io.errors import as_image_source_error
+from napari_vipp.core.io.errors import (
+    READER_REFRESH_HINT,
+    ImageSourceError,
+    ImageSourceErrorCode,
+    as_image_source_error,
+)
 from napari_vipp.core.meshes import MeshState, is_mesh_data, save_mesh_output
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
@@ -7499,6 +7504,7 @@ class VippWidget(QWidget):
         severity: MessageSeverity | str = MessageSeverity.NEUTRAL,
         actionable: bool = False,
         detail: str = "",
+        refresh_sources: Callable[[], None] | None = None,
     ) -> None:
         """Show one app-level VIPP message with explicit visual priority."""
         self.status_label.show_message(
@@ -7506,8 +7512,50 @@ class VippWidget(QWidget):
             severity=severity,
             actionable=actionable,
             detail=detail,
+            refresh_sources=refresh_sources,
         )
         self._reserve_status_toolbar_height()
+
+    def _set_source_error_status(
+        self,
+        text: str,
+        error: Exception | None,
+        *,
+        actionable: bool = True,
+        allow_refresh: bool = True,
+    ) -> None:
+        """Only an actual reader mismatch offers to change the saved binding."""
+        if actionable and error is not None:
+            source_error = (
+                error
+                if isinstance(error, ImageSourceError)
+                else as_image_source_error(error)
+            )
+            if source_error.code is ImageSourceErrorCode.READER_MISMATCH:
+                if not allow_refresh:
+                    self._set_status(
+                        "The image reader has changed. Check the batch sources, "
+                        "then preview the intended sample again.",
+                        severity=MessageSeverity.ERROR,
+                        actionable=True,
+                        detail=source_error.detail,
+                    )
+                    return
+                owner = self._current_workflow_session_id()
+
+                def refresh() -> None:
+                    if self._workflow_tab_is_active(owner):
+                        self.refresh_button.click()
+
+                self._set_status(
+                    f"The image reader has changed. {READER_REFRESH_HINT}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                    detail=source_error.detail,
+                    refresh_sources=refresh,
+                )
+                return
+        self._set_status(text, severity=MessageSeverity.ERROR, actionable=actionable)
 
     def _set_pipeline_error_status(
         self,
@@ -18520,6 +18568,7 @@ class VippWidget(QWidget):
         message: str,
         *,
         graph_may_be_partial: bool = False,
+        source_error: Exception | None = None,
     ) -> None:
         """Reject a requested representative without claiming it is displayed."""
         requested = self._interactive_collection_batch_requested_index
@@ -18563,10 +18612,16 @@ class VippWidget(QWidget):
             if self._compute_runtime_quarantined_reason
             else ""
         )
-        self._set_status(
-            prefix + f"Representative preview failed: {message}",
-            severity=MessageSeverity.ERROR,
-            actionable=True,
+        text = prefix + f"Representative preview failed: {message}"
+        if source_error is None or prefix:
+            self._set_status(text, severity=MessageSeverity.ERROR, actionable=True)
+            return
+        # A failed navigation may have restored another representative. Never
+        # offer a rebind against that other sample on the failed item's behalf.
+        self._set_source_error_status(
+            text,
+            source_error,
+            allow_refresh=self._interactive_collection_batch_index == failed_index,
         )
 
     def _mark_interactive_collection_batch_stale(
@@ -28356,10 +28411,8 @@ class VippWidget(QWidget):
         if control is not None:
             control.reader_support.set_source(str(path), error.display_text)
         self.pipeline.set_node_execution_error(node.id, error.display_text)
-        self._set_status(
-            f"Image source inspection error: {error.display_text}",
-            severity=MessageSeverity.ERROR,
-            actionable=True,
+        self._set_source_error_status(
+            f"Image source inspection error: {error.display_text}", error
         )
         return None
 
@@ -28519,10 +28572,9 @@ class VippWidget(QWidget):
             if continue_pending:
                 self._queue_source_work_continuation()
             else:
-                self._set_status(
+                self._set_source_error_status(
                     f"Image source inspection error: {message}",
-                    severity=MessageSeverity.ERROR,
-                    actionable=True,
+                    result.source_error,
                 )
             return
 
@@ -36552,14 +36604,11 @@ class VippWidget(QWidget):
             self._abandon_background_pipeline_run()
             if self._active_pipeline_run_id is None:
                 self._set_pipeline_busy(False)
-            self._set_status(
-                f"Source error: {exc}",
-                severity=MessageSeverity.ERROR,
-                actionable=True,
-            )
+            self._set_source_error_status(f"Source error: {exc}", exc)
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 str(exc),
+                source_error=exc,
             )
             return
 
@@ -37383,9 +37432,9 @@ class VippWidget(QWidget):
             continue_pending = bool(self._source_load_pending)
             self._source_load_pending = False
             suffix = "; retrying latest source edit" if continue_pending else ""
-            self._set_status(
+            self._set_source_error_status(
                 f"Image source error: {result.error}{suffix}",
-                severity=MessageSeverity.ERROR,
+                result.source_error,
                 actionable=not continue_pending,
             )
             if continue_pending:
@@ -37399,6 +37448,7 @@ class VippWidget(QWidget):
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     result.error,
+                    source_error=result.source_error,
                 )
             return
         try:
@@ -37411,9 +37461,9 @@ class VippWidget(QWidget):
             continue_pending = bool(self._source_load_pending)
             self._source_load_pending = False
             suffix = "; retrying latest source edit" if continue_pending else ""
-            self._set_status(
+            self._set_source_error_status(
                 f"Image source error: {exc}{suffix}",
-                severity=MessageSeverity.ERROR,
+                exc,
                 actionable=not continue_pending,
             )
             if continue_pending:
@@ -37427,6 +37477,7 @@ class VippWidget(QWidget):
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     str(exc),
+                    source_error=exc,
                 )
             return
         self._prune_file_source_payload_cache()

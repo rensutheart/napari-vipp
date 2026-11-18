@@ -24,7 +24,10 @@ from napari_vipp.core.source_inspection import (
     inspect_local_source_item,
 )
 from napari_vipp.core.source_items import SourceItem
-from napari_vipp.core.source_resolution import SourceItemResolutionError
+from napari_vipp.core.source_resolution import (
+    SourceItemResolutionError,
+    SourceReaderMismatchError,
+)
 
 
 class StaleSourceInspectionGeneration(OperationCancelled):
@@ -274,7 +277,9 @@ def _inspection_source_error(
     error: Exception,
     spec: SourceInspectionWorkerSpec,
 ) -> ImageSourceError:
-    if isinstance(error, SourceItemResolutionError):
+    if isinstance(error, SourceItemResolutionError) and not isinstance(
+        error, SourceReaderMismatchError
+    ):
         return ImageSourceError(
             ImageSourceErrorCode.CONTRACT_MISMATCH,
             str(error),

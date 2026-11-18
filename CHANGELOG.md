@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- When a saved image reader has changed, the workflow warning now offers
+  **Refresh file sources** to reload with the current reader.
+
 ## 0.16.0a9 - 2026-11-18
 
 - Skip the untouched startup workflow in recovery, even after the starter
