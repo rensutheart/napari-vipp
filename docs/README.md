@@ -36,6 +36,7 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 - [Release notes](../CHANGELOG.md)
 - [Release runbook](release-runbook.md)
+- [0.16.0a9 recovery, canvas and Crop patch](release-0.16.0a9-plan.md)
 - [0.16.0a8 UI and Windows updater release](release-0.16.0a8-plan.md)
 - [0.16.0a7 startup, recovery and path-saving patch](release-0.16.0a7-plan.md)
 - [0.16.0a6 performance release plan](release-0.16.0a6-plan.md)

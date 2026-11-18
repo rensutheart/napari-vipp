@@ -1,6 +1,40 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-11-13
+Last reviewed: 2026-11-18
+
+## 0.16.0a9 qualification declaration
+
+The [release plan](release-0.16.0a9-plan.md) covers both bug-fix branches since
+public a8, not just the version change. This declares gates, not completed proof.
+
+```yaml
+tier: alpha
+previous_public_tag: v0.16.0a8
+changed:
+  startup_recovery_orchestration: true
+  canvas_input_and_viewport_presentation: true
+  footer_layout_and_progress: true
+  crop_viewer_layer_transitions: true
+  documentation: true
+  workflow_schema_and_serializer: false
+  scientific_kernels_and_compute_dispatch: false
+  gpu_providers_and_runtime_pins: false
+  windows_installer: false
+  macos_installer: false
+  dependencies_toolchain: false
+  packaging_and_publication_workflows: false
+carried_forward:
+  unchanged_working_copy_storage_and_schema: v0.16.0a8
+  unchanged_gpu_algorithms_admission_and_runtime: v0.16.0a8
+  unchanged_installer_engines_and_runtime_build_pins: v0.16.0a8
+```
+
+Require focused recovery/launcher/graph/Crop/status regressions, actual native
+synthetic interaction proof, candidate and exact final-main CI, and exact
+artifact/source/hash audits. Carry-forward excludes the newly changed journeys.
+Cold recovered Crop publication and its parameter-bound refresh are part of
+these gates; a cached selection smoke alone does not qualify them. Check nested
+UI-only reconciliation and display-error cleanup without extra calculation.
 
 ## 0.16.0a8 qualification declaration
 

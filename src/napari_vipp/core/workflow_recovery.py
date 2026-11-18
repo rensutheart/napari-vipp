@@ -309,6 +309,8 @@ def _absolute(value: object, name: str) -> str:
 
 
 def _tabs(tabs: object, active_id: object) -> list[dict[str, Any]]:
+    if type(tabs) is list and not tabs and type(active_id) is str and active_id == "":
+        return []  # A committed empty workspace supersedes older recipes.
     if type(tabs) is not list or not 1 <= len(tabs) <= MAX_TABS:
         raise RecoveryError(f"Recovery needs between 1 and {MAX_TABS} tabs.")
     _json_bytes(tabs, maximum=MAX_GENERATION_BYTES)
@@ -555,6 +557,13 @@ class RecoveryStore:
                 raise RecoveryError(
                     "Could not checkpoint; the last valid recovery is kept."
                 ) from exc
+
+    def clear_checkpoint(self) -> None:
+        """Supersede an old copy without writing anything for a new workspace."""
+        with self._mutex:
+            self._assert_open()
+            if self._records:
+                self.checkpoint([], "", reason="no workflows to recover")
 
     def recoverable(self) -> list[RecoveryCheckpoint]:
         """Return one newest verified generation per dead, undisposed instance."""
@@ -901,6 +910,8 @@ class RecoveryStore:
                         canonical = _tabs(value["tabs"], value["active_id"])
                         if canonical != value["tabs"]:
                             raise RecoveryError("Recovery generation is not canonical.")
+                        if not canonical:
+                            return None
                         return self._checkpoint(
                             value, record, fallback=bool(manifest_index or record_index)
                         )
@@ -912,6 +923,12 @@ class RecoveryStore:
                 raise
             except (OSError, ValueError, RecoveryError) as exc:
                 failures.append(exc)
+        if failures and all(isinstance(exc, FileNotFoundError) for exc in failures):
+            # An interruption before any checkpoint can leave only the lease.
+            # A stray generation or other evidence is not an empty workspace.
+            with os.scandir(directory) as entries:
+                if all(entry.name == "lease.lock" for entry in entries):
+                    return None
         if failures:
             raise RecoveryError("No valid committed recovery generation is available.")
         return None

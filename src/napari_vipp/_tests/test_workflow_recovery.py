@@ -97,6 +97,42 @@ def test_live_instances_and_current_instance_are_never_offered(tmp_path, tab):
         second.close()
 
 
+def test_interrupted_session_without_any_checkpoint_is_not_a_recovery_problem(tmp_path):
+    empty = RecoveryStore(tmp_path)
+    empty.clear_checkpoint()
+    assert {path.name for path in empty.directory.iterdir()} == {"lease.lock"}
+    empty.close(clean=False)
+    observer = RecoveryStore(tmp_path)
+    try:
+        assert observer.recoverable() == []
+        assert observer.issues == ()
+    finally:
+        observer.close()
+
+
+def test_clearing_own_checkpoint_does_not_touch_other_interrupted_recipes(
+    tmp_path, tab
+):
+    older = RecoveryStore(tmp_path)
+    other_checkpoint = _save(older, tab)
+    older.close(clean=False)
+    current = RecoveryStore(tmp_path)
+    original = _save(current, tab)
+    current.clear_checkpoint()
+    current.close(clean=False)
+    observer = RecoveryStore(tmp_path)
+    try:
+        assert [entry.checkpoint_id for entry in observer.recoverable()] == [
+            other_checkpoint.checkpoint_id
+        ]
+        assert observer.issues == ()
+        # The usual retention rules still protect the previous generation.
+        previous = current.directory / f"generation-{original.generation:010d}.json"
+        assert previous.is_file()
+    finally:
+        observer.close()
+
+
 def test_real_process_lock_survives_pid_metadata_and_releases_on_abnormal_exit(
     tmp_path, tab
 ):

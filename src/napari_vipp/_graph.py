@@ -2920,7 +2920,9 @@ class PipelineGraphView(QGraphicsView):
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        # Progress bars and inspector layout changes can resize the view.
+        # Keep the visible origin still; only deliberate zoom follows the mouse.
+        self.setResizeAnchor(QGraphicsView.NoAnchor)
         self.setBackgroundBrush(QColor(graph_theme(self.palette()).canvas))
         self.setAcceptDrops(True)
         self._proxies: dict[str, NodeProxy] = {}
@@ -2979,7 +2981,7 @@ class PipelineGraphView(QGraphicsView):
             | None
         ) = None
         self._connection_dragging = False
-        self._panning = False
+        self._pan_button = Qt.NoButton
         self._pan_start = QPoint()
         self._pan_h_value = 0
         self._pan_v_value = 0
@@ -3024,6 +3026,8 @@ class PipelineGraphView(QGraphicsView):
 
     def changeEvent(self, event):  # noqa: N802
         super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and not self.isActiveWindow():
+            self._stop_panning()
         if event.type() in {
             QEvent.PaletteChange,
             QEvent.ApplicationPaletteChange,
@@ -3067,6 +3071,7 @@ class PipelineGraphView(QGraphicsView):
         preserve_view: bool = False,
     ) -> None:
         preserved_center = self.mapToScene(self.viewport().rect().center())
+        self._stop_panning()
         self._cancel_background_wire_routes()
         preserved_transform = QTransform(self.transform())
         preserved_base_transform = QTransform(self._base_transform)
@@ -4876,6 +4881,7 @@ class PipelineGraphView(QGraphicsView):
             current.set_image_drop_target(True)
 
     def dragEnterEvent(self, event):  # noqa: N802
+        self._stop_panning()
         if event.mimeData().hasFormat(OPERATION_MIME):
             event.acceptProposedAction()
             return
@@ -4931,6 +4937,7 @@ class PipelineGraphView(QGraphicsView):
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):  # noqa: N802
+        self._stop_panning()
         if event.mimeData().hasFormat(OPERATION_MIME):
             operation_id = bytes(event.mimeData().data(OPERATION_MIME)).decode()
             scene_pos = self.mapToScene(_point_from_event(event))
@@ -5093,7 +5100,17 @@ class PipelineGraphView(QGraphicsView):
             return
         super().wheelEvent(event)
 
+    def viewportEvent(self, event):  # noqa: N802
+        if event.type() in {QEvent.UngrabMouse, QEvent.Hide}:
+            self._stop_panning()
+        return super().viewportEvent(event)
+
+    def focusOutEvent(self, event):  # noqa: N802
+        self._stop_panning()
+        super().focusOutEvent(event)
+
     def mousePressEvent(self, event):  # noqa: N802
+        self._stop_panning()
         pos = _point_from_event(event)
         background_click = self.itemAt(pos) is None
         if event.button() == Qt.LeftButton:
@@ -5175,15 +5192,19 @@ class PipelineGraphView(QGraphicsView):
             return
         if event.button() == Qt.LeftButton and background_click:
             self._clear_node_selection()
-        if event.button() in (Qt.MiddleButton, Qt.RightButton) or (
+        if event.button() == Qt.MiddleButton or (
             event.button() == Qt.LeftButton and background_click
         ):
-            self._start_panning(pos)
+            self._start_panning(pos, event.button())
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
+        # A release can be missed if the original drag was interrupted.
+        # Only movement with its initiating button still held may pan.
+        if self._pan_button != Qt.NoButton and not (event.buttons() & self._pan_button):
+            self._stop_panning()
         if self._pending_tunnel_source is not None:
             if event.buttons() & Qt.LeftButton:
                 self.update_pending_tunnel_reroute(
@@ -5192,7 +5213,7 @@ class PipelineGraphView(QGraphicsView):
                 )
             event.accept()
             return
-        if self._panning:
+        if self._pan_button != Qt.NoButton:
             pos = _point_from_event(event)
             delta = pos - self._pan_start
             self.horizontalScrollBar().setValue(self._pan_h_value - delta.x())
@@ -5209,19 +5230,17 @@ class PipelineGraphView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._pan_button != Qt.NoButton:
+            if event.button() == self._pan_button:
+                self._stop_panning()
+                event.accept()
+                return
+            if not (event.buttons() & self._pan_button):
+                self._stop_panning()
         if self._pending_tunnel_source is not None and event.button() == Qt.LeftButton:
             self.release_tunnel_reroute(
                 self.mapToScene(_point_from_event(event)),
             )
-            event.accept()
-            return
-        if self._panning and event.button() in (
-            Qt.LeftButton,
-            Qt.MiddleButton,
-            Qt.RightButton,
-        ):
-            self._panning = False
-            self.setCursor(Qt.ArrowCursor)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -5645,12 +5664,17 @@ class PipelineGraphView(QGraphicsView):
                 global_pos,
             )
 
-    def _start_panning(self, pos: QPoint) -> None:
-        self._panning = True
+    def _start_panning(self, pos: QPoint, button: Qt.MouseButton) -> None:
+        self._pan_button = button
         self._pan_start = QPoint(pos)
         self._pan_h_value = self.horizontalScrollBar().value()
         self._pan_v_value = self.verticalScrollBar().value()
         self.setCursor(Qt.ClosedHandCursor)
+
+    def _stop_panning(self) -> None:
+        if getattr(self, "_pan_button", Qt.NoButton) != Qt.NoButton:
+            self._pan_button = Qt.NoButton
+            self.unsetCursor()
 
     def _input_port_at(self, scene_pos: QPointF) -> PortItem | None:
         for item in self.scene.items(scene_pos):
