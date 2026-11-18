@@ -35941,6 +35941,315 @@ def test_crop_selection_keeps_complete_layer_transition_guarded(qtbot, monkeypat
     assert not widget.histograms_section.isBusy()
 
 
+def test_cold_recovered_crop_result_publication_keeps_layer_transition_guarded(
+    qtbot, monkeypatch, tmp_path
+):
+    import traceback
+
+    from napari._qt.containers.qt_layer_list import QtLayerList
+
+    from napari_vipp.core.workflow_recovery import RecoveryStore
+
+    image = np.arange(6 * 8 * 10, dtype=np.float32).reshape(6, 8, 10)
+    source = tmp_path / "recovered-crop.tif"
+    tifffile.imwrite(source, image, metadata={"axes": "ZYX"})
+    authored = PrototypePipeline()
+    authored.nodes["input"].params.update(
+        source_mode="file path", file_path=str(source)
+    )
+    crop = authored.add_node("crop_stack")
+    authored.set_param(crop.id, "top", 2)
+    assert authored.connect("input", crop.id).success
+    assert authored.connect(crop.id, "gaussian").success
+    recipe = save_workflow(tmp_path / "crop.vipp.json", authored)
+    source_bytes, recipe_bytes = source.read_bytes(), recipe.read_bytes()
+    document = serialize_workflow(
+        authored,
+        metadata={"vipp": {"inspector": {"selected_node_id": crop.id}}},
+        compute_request=ComputeRequest(mode=ComputeMode.CPU),
+    )
+    tab = {
+        "tab_id": "cold-crop-tab",
+        "title": "Edited Crop",
+        "path": str(recipe),
+        "base_dir": str(tmp_path),
+        "workflow": document,
+        "dirty": True,
+    }
+    store = RecoveryStore(tmp_path / "interrupted")
+    checkpoint = store.checkpoint([tab], tab["tab_id"], "edited Crop")
+    store.close(clean=False)
+
+    viewer = ViewerModel()
+    viewer.add_image(
+        np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5),
+        name="Starter source",
+        metadata={"axes": "ZYX"},
+    )
+    layer_list = QtLayerList(viewer.layers)
+    qtbot.addWidget(layer_list)
+    widget = VippWidget(viewer, initial_compute_mode=ComputeMode.CPU)
+    qtbot.addWidget(widget)
+    widget._should_run_pipeline_in_background = lambda *_args, **_kwargs: False
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs.get("input") is not None
+        and not widget._workflow_tab_switch_block_reason(),
+        timeout=10_000,
+    )
+    assert widget._owned_inspect_layers()
+
+    publication_depth = 0
+    cache_restore_during_publication = []
+    runs_during_publication = []
+    refresh_surfaces = widget._refresh_node_presentation_surfaces
+    restore_cache = widget._restore_selected_output_for_interactive_cache
+    run_pipeline = widget.run_pipeline
+
+    def track_publication(*args, **kwargs):
+        nonlocal publication_depth
+        publication_depth += 1
+        try:
+            return refresh_surfaces(*args, **kwargs)
+        finally:
+            publication_depth -= 1
+
+    def track_cache_restore(node_id):
+        if publication_depth:
+            cache_restore_during_publication.append(node_id)
+        return restore_cache(node_id)
+
+    def track_run(*args, **kwargs):
+        if publication_depth:
+            runs_during_publication.append((args, kwargs))
+        return run_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(
+        widget, "_refresh_node_presentation_surfaces", track_publication
+    )
+    monkeypatch.setattr(
+        widget, "_restore_selected_output_for_interactive_cache", track_cache_restore
+    )
+    monkeypatch.setattr(widget, "run_pipeline", track_run)
+    source_creations = []
+    crop_inspect_publications = []
+    add_layer = widget._add_managed_viewer_layer
+    publish_generated = widget._set_or_add_generated_layer
+
+    def track_source_creation(data, **kwargs):
+        metadata = kwargs.get("metadata", {})
+        if metadata.get("napari_vipp_kind") == "crop_source":
+            source_creations.append(metadata["node_id"])
+        return add_layer(data, **kwargs)
+
+    def track_generated(*args, **kwargs):
+        metadata = kwargs.get("metadata", {})
+        if (
+            metadata.get("napari_vipp_kind") == "inspect"
+            and metadata.get("node_id") == crop.id
+        ):
+            crop_inspect_publications.append(metadata)
+        return publish_generated(*args, **kwargs)
+
+    monkeypatch.setattr(widget, "_add_managed_viewer_layer", track_source_creation)
+    monkeypatch.setattr(widget, "_set_or_add_generated_layer", track_generated)
+    row_transitions = []
+
+    def record_transition(operation):
+        if widget._selected_node_id == crop.id:
+            row_transitions.append(
+                {
+                    "operation": operation,
+                    "selected": widget._selected_node_id,
+                    "guarded": widget._selected_viewer_refresh_in_progress,
+                    "suspension": widget._viewer_layer_change_suspension,
+                    "existing_roles": [
+                        (layer.name, layer.metadata.get("napari_vipp_kind"))
+                        for layer in viewer.layers
+                    ],
+                    "vipp_stack": [
+                        (frame.name, frame.lineno)
+                        for frame in traceback.extract_stack()
+                        if frame.filename.replace("\\", "/").endswith(
+                            "/napari_vipp/_widget.py"
+                        )
+                    ],
+                }
+            )
+
+    model = layer_list.model().sourceModel()
+    for operation, signal in (
+        ("insert", model.rowsAboutToBeInserted),
+        ("remove", model.rowsAboutToBeRemoved),
+    ):
+        signal.connect(lambda *_args, operation=operation: record_transition(operation))
+
+    widget._restore_recovery_workspace(checkpoint)
+    assert widget.pipeline.outputs.get(crop.id) is None
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs.get(crop.id) is not None
+        and widget._active_source_load_id is None
+        and widget._active_pipeline_run_id is None
+        and len(widget._owned_crop_presentation_layers("crop_source")) == 1
+        and len(widget._owned_crop_presentation_layers("crop_roi")) == 1,
+        timeout=10_000,
+    )
+    source_layer = widget._owned_crop_presentation_layers("crop_source")[0]
+    roi_layer = widget._owned_crop_presentation_layers("crop_roi")[0]
+    assert source_creations == [crop.id]
+    assert crop_inspect_publications == []
+    assert row_transitions and any(
+        row["operation"] == "insert" for row in row_transitions
+    )
+    unguarded_rows = [
+        row
+        for row in row_transitions
+        if not row["guarded"] or row["suspension"] <= 0
+    ]
+    assert not unguarded_rows, json.dumps(unguarded_rows, indent=2)
+    assert widget._owned_inspect_layers() == []
+    assert source_layer.visible and roi_layer.visible
+    assert widget._active_viewer_layer() is source_layer
+    np.testing.assert_array_equal(source_layer.data, image)
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], image[:, 2:, :])
+    np.testing.assert_allclose(source_layer.scale, (1, 1, 1))
+    np.testing.assert_allclose(source_layer.translate, (0, 0, 0))
+    assert widget.pipeline.nodes[crop.id].params["top"] == 2
+    assert widget._workflow_tabs.current.path is None
+    assert widget._workflow_tabs.current.dirty
+
+    outputs = dict(widget.pipeline.outputs)
+    for _ in range(3):
+        widget._refresh_node_presentation_surfaces({crop.id}, thumbnails=False)
+    assert source_creations == [crop.id]
+    assert widget._owned_crop_presentation_layers("crop_source") == [source_layer]
+    assert widget._owned_crop_presentation_layers("crop_roi") == [roi_layer]
+    assert all(
+        widget.pipeline.outputs[node_id] is value
+        for node_id, value in outputs.items()
+    )
+    assert cache_restore_during_publication == []
+    assert runs_during_publication == []
+    assert source.read_bytes() == source_bytes
+    assert recipe.read_bytes() == recipe_bytes
+
+
+def test_selected_result_publication_skips_cache_restore_and_scientific_run(
+    qtbot, monkeypatch
+):
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    widget.run_pipeline(force_sync=True)
+    cache_restores, runs = [], []
+    monkeypatch.setattr(
+        widget, "_restore_selected_output_for_interactive_cache", cache_restores.append
+    )
+    monkeypatch.setattr(
+        widget, "run_pipeline", lambda *args, **kwargs: runs.append((args, kwargs))
+    )
+    outputs = dict(widget.pipeline.outputs)
+    scientific_hash = scientific_workflow_hash(serialize_workflow(widget.pipeline))
+
+    widget._refresh_node_presentation_surfaces({crop.id}, thumbnails=False)
+
+    assert cache_restores == []
+    assert runs == []
+    assert all(
+        widget.pipeline.outputs[node_id] is value
+        for node_id, value in outputs.items()
+    )
+    assert (
+        scientific_workflow_hash(serialize_workflow(widget.pipeline))
+        == scientific_hash
+    )
+    widget._refresh_selected_viewer_now(crop.id, select_layer=True)
+    assert cache_restores == [crop.id]
+    assert runs == []
+
+
+def test_selected_result_display_error_propagates_after_transition_cleanup(
+    qtbot, monkeypatch
+):
+    widget = VippWidget(_Viewer(), initial_compute_mode=ComputeMode.CPU)
+    qtbot.addWidget(widget)
+    widget._selected_node_id = "gaussian"
+    cached = widget.pipeline.outputs["gaussian"]
+    execution = dict(widget.pipeline.node_execution_states)
+    failure = ReferenceError("cold Crop display failed")
+    reports = []
+
+    def fail_display():
+        assert widget._selected_viewer_refresh_in_progress
+        assert widget._viewer_layer_change_suspension > 0
+        widget._selected_viewer_dims_refresh_pending = True
+        raise failure
+
+    monkeypatch.setattr(widget, "_inspect_selected_node", fail_display)
+    monkeypatch.setattr(
+        widget,
+        "_report_result_display_error",
+        lambda error, **kwargs: reports.append((error, kwargs)),
+    )
+    with pytest.raises(ReferenceError, match="cold Crop display failed"):
+        widget._refresh_node_presentation_surfaces({"gaussian"}, thumbnails=False)
+    assert widget._refresh_node_presentation_surfaces_safely({"gaussian"}) is failure
+    assert not widget._selected_viewer_refresh_in_progress
+    assert not widget._selected_viewer_dims_refresh_pending
+    assert widget._viewer_layer_change_suspension == 0
+    assert widget.pipeline.outputs["gaussian"] is cached
+    assert widget.pipeline.node_execution_states == execution
+    assert reports == []
+
+    # Ordinary delayed selection still contains/reports its display-only error.
+    assert widget._refresh_selected_viewer_now("gaussian", select_layer=True)
+    assert reports == [(failure, {"result_calculated": False})]
+    assert not widget._selected_viewer_refresh_in_progress
+
+
+def test_nested_selected_result_publication_reconciles_latest_surface_without_run(
+    qtbot, monkeypatch
+):
+    widget, crop, image = _responsive_crop_widget(qtbot)
+    widget.run_pipeline(force_sync=True)
+    source_layer = widget._owned_crop_presentation_layers("crop_source")[0]
+    replacement = image + 1_000
+    cache_restores, runs = [], []
+
+    def publish_during_cache_restore(node_id):
+        cache_restores.append(node_id)
+        assert len(cache_restores) == 1
+        assert widget._selected_viewer_refresh_in_progress
+        # Model a synchronous worker result delivered inside the outer
+        # selection refresh. Only the queued UI-only handoff may publish it.
+        widget.pipeline.outputs["input"] = replacement
+        widget.pipeline.node_outputs["input"] = [replacement]
+        widget.pipeline.outputs[crop.id] = replacement
+        widget.pipeline.node_outputs[crop.id] = [replacement]
+        widget._refresh_node_presentation_surfaces({crop.id}, thumbnails=False)
+
+    monkeypatch.setattr(
+        widget,
+        "_restore_selected_output_for_interactive_cache",
+        publish_during_cache_restore,
+    )
+    monkeypatch.setattr(
+        widget, "run_pipeline", lambda *args, **kwargs: runs.append((args, kwargs))
+    )
+    widget._refresh_selected_viewer_now(crop.id, select_layer=True)
+    assert cache_restores == [crop.id]
+    qtbot.waitUntil(
+        lambda: np.array_equal(source_layer.data, replacement), timeout=5_000
+    )
+
+    assert widget._owned_crop_presentation_layers("crop_source") == [source_layer]
+    assert len(widget._owned_crop_presentation_layers("crop_roi")) == 1
+    assert not widget._selected_viewer_refresh_in_progress
+    assert not widget._selected_viewer_dims_refresh_pending
+    assert cache_restores == [crop.id]
+    assert runs == []
+    np.testing.assert_array_equal(
+        image, np.arange(6 * 8 * 10, dtype=np.uint16).reshape(6, 8, 10)
+    )
+
+
 def test_responsive_crop_real_viewer_tracks_noncanonical_display_plane(qtbot):
     data = np.zeros((2, 8, 3, 10, 6), dtype=np.float32)
     state = image_state_from_array(

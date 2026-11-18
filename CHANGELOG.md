@@ -13,6 +13,8 @@
   and clears, while still allowing long warnings and errors to wrap.
 - Keep Crop selection and preview updates from interrupting napari layer-list
   changes, and reuse the unchanged source image while adjusting margins.
+- Guard the first recovered Crop result and its outline as well as cached
+  selections. Defer nested display updates without starting another calculation.
 
 ## 0.16.0a8 - 2026-11-13
 

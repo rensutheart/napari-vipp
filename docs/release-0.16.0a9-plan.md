@@ -18,6 +18,9 @@ Follow the [release runbook](release-runbook.md) and
   re-entry, reuse an unchanged source image/ROI presentation, and publish real
   image/calibration changes. Exercise selection, margin edits, dimension changes,
   other-node selection and actual napari layer-list ownership.
+  Include cold recovered results and parameter-bound refreshes, not only cached
+  selection. Keep terminal display errors actionable and nested reconciliation
+  UI-only: no additional cache restore or scientific run.
 
 Run focused automated regressions and one new isolated native synthetic smoke
 of these changed journeys. Do not change installed environments, global settings,

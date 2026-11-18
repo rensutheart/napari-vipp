@@ -22939,6 +22939,7 @@ class VippWidget(QWidget):
         node_id: str,
         *,
         select_layer: bool,
+        restore_interactive_cache: bool = True,
     ) -> None:
         """Publish selection layers after the originating Qt input event returns."""
 
@@ -22952,6 +22953,7 @@ class VippWidget(QWidget):
                 node_id,
                 select_layer=select_layer,
                 session_id=session_id,
+                restore_interactive_cache=restore_interactive_cache,
             ),
         )
 
@@ -22962,6 +22964,7 @@ class VippWidget(QWidget):
         *,
         select_layer: bool,
         session_id: str | None = None,
+        restore_interactive_cache: bool = True,
     ) -> None:
         """Apply the newest queued selection presentation, ignoring stale work."""
 
@@ -22986,12 +22989,14 @@ class VippWidget(QWidget):
                     node_id,
                     select_layer=select_layer,
                     session_id=session_id,
+                    restore_interactive_cache=restore_interactive_cache,
                 ),
             )
             return
         dims_changed = self._refresh_selected_viewer_now(
             node_id,
             select_layer=select_layer,
+            restore_interactive_cache=restore_interactive_cache,
         )
         if dims_changed and not self._closing and node_id == self._selected_node_id:
             self._on_dims_changed()
@@ -23001,10 +23006,21 @@ class VippWidget(QWidget):
         node_id: str,
         *,
         select_layer: bool,
+        restore_interactive_cache: bool = True,
+        propagate_errors: bool = False,
     ) -> bool:
         """Synchronize viewer layers outside a graph mouse-press callback."""
 
         if self._selected_viewer_refresh_in_progress:
+            if not restore_interactive_cache:
+                # A synchronous cache restore can publish newer results inside
+                # a selection refresh. Reconcile them after the outer layer
+                # transaction, without asking for another cache restore/run.
+                self._schedule_selected_viewer_refresh(
+                    node_id,
+                    select_layer=select_layer,
+                    restore_interactive_cache=False,
+                )
             return False
         display_error = None
         self._selected_viewer_refresh_in_progress = True
@@ -23018,7 +23034,8 @@ class VippWidget(QWidget):
                     self._apply_selected_viewer_surface(select_layer=select_layer)
                     if node_id:
                         self._update_crop_roi_presentation(node_id)
-                        self._restore_selected_output_for_interactive_cache(node_id)
+                        if restore_interactive_cache:
+                            self._restore_selected_output_for_interactive_cache(node_id)
         except Exception as exc:
             # A delayed selection callback must not leak a display-only
             # failure into Qt's exception handler or strand its inspector.
@@ -23028,8 +23045,27 @@ class VippWidget(QWidget):
             dims_changed = self._selected_viewer_dims_refresh_pending
             self._selected_viewer_dims_refresh_pending = False
         if display_error is not None:
+            if propagate_errors:
+                raise display_error
             self._report_result_display_error(display_error, result_calculated=False)
         return dims_changed
+
+    def _refresh_selected_viewer_after_result(self) -> None:
+        """Publish accepted results without requesting more scientific work."""
+
+        selected_id = self._selected_node_id
+        dims_changed = self._refresh_selected_viewer_now(
+            selected_id,
+            select_layer=True,
+            restore_interactive_cache=False,
+            propagate_errors=True,
+        )
+        if (
+            dims_changed
+            and not self._closing
+            and selected_id == self._selected_node_id
+        ):
+            self._on_dims_changed()
 
     def _refresh_selected_inspector_after_selection(
         self,
@@ -24768,7 +24804,10 @@ class VippWidget(QWidget):
         selected_affected = self._selected_node_id in affected
         if selected_affected:
             self._clear_output_histogram_cache()
-            self._inspect_selected_node()
+            # Cold source/result publication must be as atomic as a cached
+            # node selection. In particular, Crop's source insertion can emit
+            # dims events before napari's layer model has finished inserting.
+            self._refresh_selected_viewer_after_result()
             self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
@@ -29955,7 +29994,14 @@ class VippWidget(QWidget):
                     emit=False,
                 )
             self._update_crop_roi_summary(node.id)
-            self._update_crop_roi_presentation(node.id)
+            # Bounds refresh can run before terminal viewer publication. Do
+            # not insert an ROI into napari's layer model from that path; the
+            # complete source/ROI transaction runs after this callback returns.
+            self._schedule_selected_viewer_refresh(
+                node.id,
+                select_layer=False,
+                restore_interactive_cache=False,
+            )
         if node.operation_id == "gaussian_blur_3d":
             changed = (
                 self._sync_gaussian_blur_3d_xy_lock(
@@ -37061,7 +37107,7 @@ class VippWidget(QWidget):
             if selected_data is not None and not is_table_data(selected_data):
                 # Inspecting the selected node replaces or refreshes this layer. Do
                 # not first copy the previously inspected volume only to replace it.
-                self._inspect_selected_node()
+                self._refresh_selected_viewer_after_result()
             else:
                 self._refresh_inspection_layer_if_active()
                 self._inspect_selected_node()

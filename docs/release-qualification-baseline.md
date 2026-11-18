@@ -32,6 +32,9 @@ carried_forward:
 Require focused recovery/launcher/graph/Crop/status regressions, actual native
 synthetic interaction proof, candidate and exact final-main CI, and exact
 artifact/source/hash audits. Carry-forward excludes the newly changed journeys.
+Cold recovered Crop publication and its parameter-bound refresh are part of
+these gates; a cached selection smoke alone does not qualify them. Check nested
+UI-only reconciliation and display-error cleanup without extra calculation.
 
 ## 0.16.0a8 qualification declaration
 

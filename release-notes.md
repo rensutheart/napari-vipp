@@ -28,6 +28,9 @@ VIPP 0.16.0a9 is a focused alpha bug-fix release for workflow recovery, canvas n
 ## More reliable Crop previews
 
 - Crop selection guards the complete viewer-layer transition so dimensions and layer-list events cannot re-enter an unfinished update.
+- The same guard covers a recovered Crop when its source and calculated results first become available.
+- Parameter-bound refreshes defer their outline update until the current callback ends, keeping source-image and ROI publication together.
+- New results delivered during an active display update are reconciled afterward without requesting another cache restore or scientific calculation.
 - Adjusting Crop margins reuses the unchanged source image instead of publishing it again unnecessarily.
 - Unchanged ROI graphics properties are retained; actual data, geometry and calibration changes still update.
 - A selected Crop uses its source image and ROI directly, avoiding a temporary Inspect layer that would immediately be removed.
