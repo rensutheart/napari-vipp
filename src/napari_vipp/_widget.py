@@ -23004,32 +23004,31 @@ class VippWidget(QWidget):
     ) -> bool:
         """Synchronize viewer layers outside a graph mouse-press callback."""
 
-        dims_changed = False
-        if node_id:
-            display_error = None
-            self._selected_viewer_refresh_in_progress = True
-            try:
-                self._inspect_selected_node()
-            except Exception as exc:
-                # A delayed selection callback must not leak a display-only
-                # failure into Qt's exception handler or strand its inspector.
-                # Preserve the cached result and report it after flag cleanup.
-                display_error = exc
-            finally:
-                self._selected_viewer_refresh_in_progress = False
-                dims_changed = self._selected_viewer_dims_refresh_pending
-                self._selected_viewer_dims_refresh_pending = False
-            if display_error is not None:
-                self._report_result_display_error(
-                    display_error, result_calculated=False
-                )
-                return dims_changed
-            if self._closing or node_id != self._selected_node_id:
-                return dims_changed
-        self._apply_selected_viewer_surface(select_layer=select_layer)
-        if node_id:
-            self._update_crop_roi_presentation(node_id)
-            self._restore_selected_output_for_interactive_cache(node_id)
+        if self._selected_viewer_refresh_in_progress:
+            return False
+        display_error = None
+        self._selected_viewer_refresh_in_progress = True
+        try:
+            # Layer-list changes can emit dimensions events before napari's
+            # Qt model has finished inserting, moving or removing rows.
+            with self._suspend_viewer_layer_change_handling():
+                if node_id:
+                    self._inspect_selected_node()
+                if not self._closing and node_id == self._selected_node_id:
+                    self._apply_selected_viewer_surface(select_layer=select_layer)
+                    if node_id:
+                        self._update_crop_roi_presentation(node_id)
+                        self._restore_selected_output_for_interactive_cache(node_id)
+        except Exception as exc:
+            # A delayed selection callback must not leak a display-only
+            # failure into Qt's exception handler or strand its inspector.
+            display_error = exc
+        finally:
+            self._selected_viewer_refresh_in_progress = False
+            dims_changed = self._selected_viewer_dims_refresh_pending
+            self._selected_viewer_dims_refresh_pending = False
+        if display_error is not None:
+            self._report_result_display_error(display_error, result_calculated=False)
         return dims_changed
 
     def _refresh_selected_inspector_after_selection(
@@ -34783,12 +34782,15 @@ class VippWidget(QWidget):
         else:
             try:
                 layer.metadata.update(metadata)
-                layer.data = presentation_data
-                if scale is not None:
+                # Crop margins do not change the source image.
+                if getattr(layer, "data", None) is not presentation_data:
+                    layer.data = presentation_data
+                if scale is not None and tuple(layer.scale) != tuple(scale):
                     layer.scale = scale
-                if translate is not None:
+                if translate is not None and tuple(layer.translate) != tuple(translate):
                     layer.translate = translate
-                layer.visible = True
+                if not layer.visible:
+                    layer.visible = True
             except Exception:
                 return None
         _set_layer_axis_labels(layer, metadata)
@@ -35189,16 +35191,36 @@ class VippWidget(QWidget):
                 layer = None
         elif layer is not None:
             try:
-                layer.data = faces
-                layer.edge_color = edge_colors
-                layer.face_color = face_colors
-                layer.edge_width = edge_width
-                layer.opacity = opacity
-                layer.blending = blending
-                layer.metadata.update(metadata)
-                layer.scale = scale
-                layer.translate = translate
-                layer.visible = True
+                from napari.utils.colormaps.standardize_color import transform_color
+
+                with self._suspend_crop_presentation():
+                    current_faces = layer.data
+                    if len(current_faces) != len(faces) or any(
+                        not np.array_equal(current, face)
+                        for current, face in zip(current_faces, faces, strict=True)
+                    ):
+                        layer.data = faces
+                    if not np.array_equal(
+                        layer.edge_color, transform_color(edge_colors)
+                    ):
+                        layer.edge_color = edge_colors
+                    if not np.array_equal(
+                        layer.face_color, transform_color(face_colors)
+                    ):
+                        layer.face_color = face_colors
+                    if not np.all(np.asarray(layer.edge_width) == edge_width):
+                        layer.edge_width = edge_width
+                    if layer.opacity != opacity:
+                        layer.opacity = opacity
+                    if layer.blending != blending:
+                        layer.blending = blending
+                    layer.metadata.update(metadata)
+                    if tuple(layer.scale) != scale:
+                        layer.scale = scale
+                    if tuple(layer.translate) != translate:
+                        layer.translate = translate
+                    if not layer.visible:
+                        layer.visible = True
             except Exception:
                 self._remove_layer(layer)
                 layer = None
@@ -45623,21 +45645,32 @@ class VippWidget(QWidget):
             return
         title = self._node_title(node_id)
         self._remember_cache_node(node_id)
-        self._set_or_add_generated_layer(
-            self._inspect_layer_name,
-            data,
-            metadata={
-                "napari_vipp_kind": "inspect",
-                "node_id": node_id,
-                "output_port": output_port,
-                "vipp_image_state": self._node_state_dict(
-                    node_id,
-                    output_port,
-                    state=state,
-                ),
-            },
-            role="inspect",
+        node = self.pipeline.nodes.get(node_id)
+        crop_preview = (
+            node_id == self._selected_node_id
+            and node is not None
+            and node.operation_id == "crop_stack"
+            and not self.pipeline.node_is_bypassed(node_id)
         )
+        if not crop_preview:
+            # A selected Crop uses its source image and ROI as the viewer
+            # surface. Publishing an Inspect layer here would immediately
+            # remove it again during the same selection transition.
+            self._set_or_add_generated_layer(
+                self._inspect_layer_name,
+                data,
+                metadata={
+                    "napari_vipp_kind": "inspect",
+                    "node_id": node_id,
+                    "output_port": output_port,
+                    "vipp_image_state": self._node_state_dict(
+                        node_id,
+                        output_port,
+                        state=state,
+                    ),
+                },
+                role="inspect",
+            )
         if not self._selected_viewer_refresh_in_progress:
             self._apply_selected_viewer_surface(select_layer=True)
         self._sync_inspect_display_reset_ui()

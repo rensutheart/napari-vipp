@@ -9,6 +9,8 @@
   edits and automatic layout resizing do not move the view.
 - Keep the status bar the same height when calculation progress appears
   and clears, while still allowing long warnings and errors to wrap.
+- Keep Crop selection and preview updates from interrupting napari layer-list
+  changes, and reuse the unchanged source image while adjusting margins.
 
 ## 0.16.0a8 - 2026-11-13
 
