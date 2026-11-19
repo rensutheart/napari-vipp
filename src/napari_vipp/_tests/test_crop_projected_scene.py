@@ -331,11 +331,15 @@ def test_live_draft_moves_box_not_pixels_or_scientific_result(scene, qtbot):
     assert _corners(outline) == _world_box(((0, 6), (3, 8), (0, 10)))
     np.testing.assert_array_equal(data, original)
 
+    context.projection_mode = "none"
     widget.viewer.dims.ndisplay = 2
+    widget.viewer.dims.set_point(0, 14)
     qtbot.waitUntil(lambda: outline.rectangle is not None)
+    assert str(context.projection_mode) == "none"
     assert outline.box is None and outline.rectangle[2]
     assert outline.rectangle[0] is context
     np.testing.assert_array_equal(context.data, original)
+    np.testing.assert_array_equal(context._slice.image.raw, original[2])
     assert _rect(outline) == _world_box(((0, 6), (3, 8), (0, 10)), (1, 2))
 
     # Widen the crop against the ORIGINAL input while the slider is held.
@@ -431,13 +435,15 @@ def test_slider_press_value_change_before_pressed_is_a_single_draft(scene, qtbot
 
 
 def test_orthogonal_2d_plane_and_excluded_non_z_axis(scene, qtbot):
-    widget, crop, _data = scene
+    widget, crop, data = scene
     outline, dims = widget._crop_canvas_outline, widget.viewer.dims
     qtbot.waitUntil(lambda: outline.rectangle is not None)
     for parameter, value in (("left", 2), ("top", 1), ("z_start", 1)):
         widget._parameter_widgets[parameter].slider.setValue(value)
     widget._commit_crop_draft(schedule_run=False)
     widget.run_pipeline()
+    source_layer = outline.rectangle[0]
+    source_layer.projection_mode = "none"
     dims.order = (2, 0, 1)  # ZY plane: the X coordinate controls retention.
     dims.set_point(2, 30)  # X=0 excluded by left=2.
     expected = _world_box(((1, 6), (1, 8), (2, 10)), (0, 1))
@@ -448,8 +454,12 @@ def test_orthogonal_2d_plane_and_excluded_non_z_axis(scene, qtbot):
             and not outline.rectangle[2]
         )
     )
+    assert str(source_layer.projection_mode) == "none"
+    np.testing.assert_array_equal(source_layer._slice.image.raw, data[:, :, 0])
     dims.set_point(2, 38)
     qtbot.waitUntil(lambda: outline.rectangle[2])
+    assert str(source_layer.projection_mode) == "none"
+    np.testing.assert_array_equal(source_layer._slice.image.raw, data[:, :, 2])
 
 
 @pytest.mark.parametrize("axes", ["YX", "QYX"])
@@ -630,9 +640,12 @@ def test_exact_window_context_draws_full_source_world_coordinates(scene, qtbot):
     np.testing.assert_allclose(layer.translate, [12, 26, 42])
     assert _corners(outline) == _world_box(bounds)
     assert widget.pipeline.input_data_for_node(crop) is exact
+    layer.projection_mode = "none"
     widget.viewer.dims.ndisplay = 2
     widget.viewer.dims.set_point(0, 14)
     qtbot.waitUntil(lambda: outline.rectangle is not None)
+    assert str(layer.projection_mode) == "none"
     assert outline.rectangle[0] is layer and outline.rectangle[2]
     assert _rect(outline) == _world_box(bounds, (1, 2))
     np.testing.assert_array_equal(layer.data, window)
+    np.testing.assert_array_equal(layer._slice.image.raw, window[1])
