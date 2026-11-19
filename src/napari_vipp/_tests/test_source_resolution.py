@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from napari_vipp.core.io import ImageSeriesInfo, SourceInspection
+from napari_vipp.core.io.errors import ImageSourceErrorCode, as_image_source_error
 from napari_vipp.core.metadata import (
     AxisDeclaration,
     AxisMetadata,
@@ -16,6 +17,7 @@ from napari_vipp.core.source_identity import capture_local_source_bundle
 from napari_vipp.core.source_items import MetadataAvailability
 from napari_vipp.core.source_resolution import (
     SourceItemResolutionError,
+    SourceReaderMismatchError,
     axis_tokens,
     resolve_source_item,
     source_item_with_axis_declaration,
@@ -316,7 +318,15 @@ def test_saved_item_still_rejects_changed_scientific_axis_metadata(tmp_path):
         )
 
 
-def test_saved_item_refuses_reader_change(tmp_path):
+@pytest.mark.parametrize(
+    ("format_name", "reader", "version"),
+    [
+        ("fixture-format", "fixture-reader", "2.0"),
+        ("fixture-format", "replacement-reader", "1.2.3"),
+        ("replacement-format", "fixture-reader", "1.2.3"),
+    ],
+)
+def test_saved_item_refuses_reader_change(tmp_path, format_name, reader, version):
     source = tmp_path / "source.fake"
     source.write_bytes(b"stable bytes")
     bundle = capture_local_source_bundle(source)
@@ -329,12 +339,26 @@ def test_saved_item_refuses_reader_change(tmp_path):
     saved = resolve_source_item(bundle, inspection, item_key="scene-a")
     changed = SourceInspection(
         str(source),
-        "fixture-format",
-        (replace(_series(0, "scene-a", state=state), reader_version="2.0"),),
+        format_name,
+        (replace(inspection.series[0], reader_key=reader, reader_version=version),),
     )
 
-    with pytest.raises(SourceItemResolutionError, match="reader implementation"):
+    with pytest.raises(SourceReaderMismatchError) as caught:
         verify_saved_source_item(saved, bundle, changed, image_state=state)
+
+    error = as_image_source_error(caught.value)
+    assert error.code is ImageSourceErrorCode.READER_MISMATCH
+    assert "saved fixture-reader 1.2.3" in error.detail
+    assert f"current {reader} {version}" in error.detail
+    if format_name != inspection.format:
+        assert f"({inspection.format})" in error.detail
+        assert f"({format_name})" in error.detail
+    assert error.remediation == (
+        "Refresh file sources to reload with the current reader."
+    )
+    assert (
+        verify_saved_source_item(saved, bundle, inspection, image_state=state) is saved
+    )
 
 
 def test_axis_token_parser_preserves_multicharacter_tokens():

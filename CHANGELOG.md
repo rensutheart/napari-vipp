@@ -5,6 +5,8 @@
 - Add **Open Recent** to the three-dot Workflow actions menu. Reopen the ten
   latest successfully opened or saved workflows by full path, newest first.
   Keep the history between launches and clear it without deleting files.
+- When a saved image reader has changed, the workflow warning now offers
+  **Refresh file sources** to reload with the current reader.
 
 ## 0.16.0a9 - 2026-11-18
 

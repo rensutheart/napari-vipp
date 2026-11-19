@@ -17,6 +17,7 @@ from napari_vipp.core.source_identity import SourceChangedError
 
 _CONTEXT_ATTRIBUTE = "_vipp_image_source_context"
 _MAX_DISPLAY_DETAIL = 4000
+READER_REFRESH_HINT = "Refresh file sources to reload with the current reader."
 
 
 class ImageSourceErrorCode(StrEnum):
@@ -28,6 +29,7 @@ class ImageSourceErrorCode(StrEnum):
     SOURCE_NOT_FOUND = "source_not_found"
     CORRUPT_SOURCE = "corrupt_source"
     CONTRACT_MISMATCH = "contract_mismatch"
+    READER_MISMATCH = "reader_mismatch"
     SOURCE_CHANGED = "source_changed"
     CANCELLED = "cancelled"
     MEMORY_PREFLIGHT = "memory_preflight"
@@ -181,6 +183,11 @@ def _classification(
     *,
     source_path: str | Path,
 ) -> tuple[ImageSourceErrorCode, str]:
+    # source_resolution imports the io model; defer until that package is loaded.
+    from napari_vipp.core.source_resolution import SourceReaderMismatchError
+
+    if isinstance(error, SourceReaderMismatchError):
+        return ImageSourceErrorCode.READER_MISMATCH, READER_REFRESH_HINT
     text = _exception_detail(error).casefold()
     class_name = type(error).__name__.casefold()
 
