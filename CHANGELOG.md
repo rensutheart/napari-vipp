@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Use a live crop-bounds schematic in the Inspector on Windows with Intel
+  hardware OpenGL or an unrecognised viewer renderer. This avoids the extra
+  source and outline layers when selecting Crop Stack. The viewer shows the
+  calculated crop; its pixels, calibration and compute settings are unchanged.
+
 ## 0.16.0a9 - 2026-11-18
 
 - Skip the untouched startup workflow in recovery, even after the starter

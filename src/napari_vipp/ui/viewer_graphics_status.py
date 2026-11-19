@@ -67,6 +67,22 @@ class ViewerGraphicsStatus:
         return self.renderer.partition("/PCIe/")[0].strip() or self.renderer
 
 
+def windows_crop_needs_bounds_preview(status: ViewerGraphicsStatus | None) -> bool:
+    """Choose Crop's presentation only, using the *active* Windows GL renderer."""
+    if not status or not status.renderer.strip():
+        return True
+    if status._renderer_type == "Software OpenGL":
+        return False
+    description = f"{status.renderer} {status.vendor}".casefold()
+    if "intel" in description:
+        return True
+    # Unknown Windows drivers take the conservative path. Do not infer the
+    # display adapter from the GPU available for scientific computation.
+    return not any(
+        name in description for name in ("nvidia", "radeon", "amd", "ati technologies")
+    )
+
+
 def _owned_canvas_widget(viewer):
     window = getattr(viewer, "window", None)
     with warnings.catch_warnings():
