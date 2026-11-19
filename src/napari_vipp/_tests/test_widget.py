@@ -34242,6 +34242,140 @@ def _responsive_crop_widget(qtbot):
     return widget, crop, data
 
 
+def test_guarded_crop_preview_keeps_drafts_out_of_the_result(qtbot, monkeypatch):
+    """A crop selection must not even transiently create native overlay layers."""
+    monkeypatch.setattr(VippWidget, "_crop_uses_bounds_preview", lambda self: True)
+    attempted = []
+    for method in ("add_image", "add_shapes"):
+        original = getattr(_Viewer, method)
+
+        def observe(viewer, data, *, _original=original, **kwargs):
+            kind = (kwargs.get("metadata") or {}).get("napari_vipp_kind")
+            if kind in {"crop_source", "crop_roi"}:
+                attempted.append(kind)
+            return _original(viewer, data, **kwargs)
+
+        monkeypatch.setattr(_Viewer, method, observe)
+
+    widget, crop, data = _responsive_crop_widget(qtbot)
+    original_pixels = data.copy()
+    expected_hash = scientific_workflow_hash(serialize_workflow(widget.pipeline))
+    initial_output = widget.pipeline.outputs[crop.id]
+    assert initial_output is not None
+    qtbot.waitUntil(lambda: any(
+        layer.metadata.get("node_id") == crop.id and layer.visible
+        for layer in widget._owned_inspect_layers()
+    ))
+    assert "crop_bounds_preview" in widget._parameter_widgets
+    assert CROP_ROI_LINE_WIDTH_SCALE_PARAM not in widget._parameter_widgets
+    widget.viewer.dims.ndisplay = 3
+    _open_crop_top_draft(widget, 2)
+    summary = widget._parameter_widgets["crop_roi_summary"].text()
+    assert "Draft ROI" in summary and "Y 3–8 of 8" in summary
+    diagram = widget._parameter_widgets["crop_bounds_preview"]
+    assert "Y 3–8 of 8" in diagram.accessibleDescription()
+    assert (
+        scientific_workflow_hash(serialize_workflow(widget.pipeline)) == expected_hash
+    )
+    assert widget.pipeline.outputs[crop.id] is initial_output
+    np.testing.assert_array_equal(
+        widget._owned_inspect_layers()[0].data, original_pixels
+    )
+
+    widget._parameter_widgets["top"].slider.sliderReleased.emit()
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+    expected = original_pixels[:, 2:, :]
+    qtbot.waitUntil(lambda: any(
+        layer.visible and layer.metadata.get("node_id") == crop.id
+        and np.array_equal(layer.data, expected)
+        for layer in widget._owned_inspect_layers()
+    ))
+    np.testing.assert_array_equal(widget.pipeline.outputs[crop.id], expected)
+    np.testing.assert_array_equal(data, original_pixels)
+    assert widget.pipeline.nodes[crop.id].params["top"] == 2
+    assert "Applied ROI" in widget._parameter_widgets["crop_roi_summary"].text()
+
+    widget._select_node("input")
+    assert "crop_bounds_preview" not in widget._parameter_widgets
+    widget.graph_view._handle_node_press(crop.id, Qt.NoModifier)
+    qtbot.waitUntil(lambda: any(
+        layer.visible and layer.metadata.get("node_id") == crop.id
+        for layer in widget._owned_inspect_layers()
+    ))
+    assert "crop_bounds_preview" in widget._parameter_widgets
+    assert not widget._owned_crop_presentation_layers()
+    assert attempted == []
+
+
+def test_guarded_crop_waiting_for_result_clears_previous_inspect(qtbot, monkeypatch):
+    """A prior node's image must not stand in for unavailable Crop output."""
+    monkeypatch.setattr(VippWidget, "_crop_uses_bounds_preview", lambda self: True)
+    widget, crop, _data = _responsive_crop_widget(qtbot)
+    widget._select_node("input")
+    qtbot.waitUntil(lambda: any(
+        layer.visible and layer.metadata.get("node_id") == "input"
+        for layer in widget._owned_inspect_layers()
+    ))
+    # Keep this first presentation genuinely cold. Result arrival is tested above.
+    widget.pipeline._clear_cached_output(crop.id)
+    monkeypatch.setattr(
+        widget, "_restore_selected_output_for_interactive_cache", lambda _node_id: None
+    )
+    widget._select_node(crop.id)
+    widget._refresh_selected_viewer_now(crop.id, select_layer=True)
+    assert widget.pipeline.outputs[crop.id] is None
+    assert not any(layer.visible for layer in widget._owned_inspect_layers())
+    assert not widget._owned_crop_presentation_layers()
+
+
+@pytest.mark.parametrize("with_pin", [False, True])
+def test_crop_refresh_does_not_reorder_an_already_ordered_scene(
+    qtbot, monkeypatch, with_pin
+):
+    monkeypatch.setattr(VippWidget, "_crop_uses_bounds_preview", lambda self: False)
+    widget, crop, _ = _responsive_crop_widget(qtbot)
+    if with_pin:
+        widget.pin_node("input")
+    previews = [
+        widget.viewer.add_image(
+            np.zeros((4, 5), dtype=np.uint8),
+            name=f"Source preview {idx}",
+            metadata={"napari_vipp_kind": "source_preview", "node_id": f"input{idx}"},
+        )
+        for idx in (1, 2)
+    ]
+    widget._refresh_selected_viewer_now(crop.id, select_layer=True)
+    layers = widget.viewer.layers
+    original = list(layers)
+    assert original[:2] == previews
+    assert all(not preview.visible for preview in previews)
+    (source,) = widget._owned_crop_presentation_layers("crop_source")
+    (outline,) = widget._owned_crop_presentation_layers("crop_roi")
+    assert original.index(source) < original.index(outline)
+    assert source.visible and outline.visible
+    if with_pin:
+        assert any(
+            layer.metadata.get("napari_vipp_kind") == "pinned" for layer in layers
+        )
+    moved = []
+    move = layers.move
+
+    def record_move(source_at, target_at):
+        before = tuple(layers)
+        result = move(source_at, target_at)
+        if before != tuple(layers):
+            moved.append((source_at, target_at))
+        return result
+
+    monkeypatch.setattr(layers, "move", record_move)
+    for _ in range(3):
+        widget._refresh_selected_viewer_now(crop.id, select_layer=True)
+    assert list(layers) == original
+    # A move and immediate undo of that move is not a no-op for a graphics driver.
+    assert moved == []
+
+
 def test_crop_roi_line_thickness_is_separate_persisted_and_viewer_only(
     qtbot,
     monkeypatch,

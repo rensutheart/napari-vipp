@@ -7,6 +7,11 @@
   Keep the history between launches and clear it without deleting files.
 - When a saved image reader has changed, the workflow warning now offers
   **Refresh file sources** to reload with the current reader.
+- Restore live Crop Stack outlines over the input on Windows with Intel or
+  unrecognised graphics. Dragging a margin moves the orange rectangle in 2D
+  slices and projections, or the wireframe in 3D. The input remains visible
+  outside the outline. Grabbing a slider at a nonzero margin no longer
+  commits an extra pixel before release.
 
 ## 0.16.0a9 - 2026-11-18
 
