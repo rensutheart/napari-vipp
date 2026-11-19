@@ -23,6 +23,8 @@
   over 3D input on that route, with a compact bounds schematic in the inspector.
 - Keep the uncut input visible while editing margins. Colour the 2D outline
   red when the displayed slice or projection misses the retained region.
+- Follow the current slice request on older supported napari versions instead
+  of classifying Crop outlines from a stale completed view during view changes.
 - Move only the proposed Crop bounds during a held slider drag; apply the
   scientific crop on release. A press at a nonzero margin no longer commits
   an extra initial pixel or splits the edit history.

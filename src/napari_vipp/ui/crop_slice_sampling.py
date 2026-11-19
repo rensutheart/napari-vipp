@@ -8,10 +8,10 @@ import numpy as np
 def crop_intersects_slice(layer, dims, hidden_intervals) -> bool | None:
     """Intersect local, half-open voxel ranges; never read the image or project it.
 
-    On older napari versions use the already computed layer slice. On current
-    versions derive it from today's dims: a point, thickness or axis-order
-    callback can arrive before the layer has finished drawing its next slice.
-    Both routes use napari's calibrated world-to-data transform.
+    Derive the request from today's dims whenever napari exposes a slice-input
+    factory: a point, thickness or axis-order callback can arrive before the
+    layer has finished drawing its next slice. Both factory APIs use napari's
+    calibrated world-to-data transform; only older APIs fall back to the cache.
     """
     if not hidden_intervals:
         return True
@@ -19,6 +19,8 @@ def crop_intersects_slice(layer, dims, hidden_intervals) -> bool | None:
         slicing = getattr(layer, "_slicing_state", None)
         if hasattr(slicing, "_slice_indices") and hasattr(slicing, "make_slice_input"):
             sample = slicing._slice_indices(slicing.make_slice_input(dims), dims)
+        elif callable(make_slice_input := getattr(layer, "_make_slice_input", None)):
+            sample = make_slice_input(dims).data_slice(layer._data_to_world.inverse)
         else:
             sample = layer._data_slice
         project = str(getattr(layer, "projection_mode", "none")).lower() != "none"

@@ -12,6 +12,218 @@ from napari_vipp.core.batch import scientific_workflow_hash
 from napari_vipp.core.metadata import AxisMetadata
 from napari_vipp.core.source_window import ExactSourceWindowData, SourceWindowIdentity
 from napari_vipp.core.workflow import serialize_workflow
+from napari_vipp.ui.crop_slice_sampling import crop_intersects_slice
+
+
+class _ShapeOnlyCropData:
+    def __init__(self, shape):
+        self.shape = shape
+
+    def __array__(self, *args, **kwargs):
+        raise AssertionError("Crop retention must not materialize image pixels")
+
+    def __getitem__(self, key):
+        raise AssertionError("Crop retention must not slice image pixels")
+
+
+class _LegacyCropSliceLayer:
+    """Expose the legacy factory, but never expose the new slicing-state API."""
+
+    def __init__(self, layer, stale_slice):
+        self._layer = layer
+        self._stale_slice = stale_slice
+        self.data = _ShapeOnlyCropData(layer.data.shape)
+        self.cached_reads = 0
+        self.factory_calls = 0
+
+    @property
+    def _data_slice(self):
+        self.cached_reads += 1
+        return self._stale_slice
+
+    @property
+    def _data_to_world(self):
+        return self._layer._data_to_world
+
+    @property
+    def projection_mode(self):
+        return self._layer.projection_mode
+
+    def _make_slice_input(self, dims):
+        self.factory_calls += 1
+        factory = getattr(self._layer, "_make_slice_input", None)
+        if callable(factory):
+            return factory(dims)
+        # Exercise the old API shape with real calibrated napari slice inputs
+        # on current napari too; do not reimplement its transform/slice maths.
+        return self._layer._slicing_state.make_slice_input(dims)
+
+
+@pytest.mark.parametrize(
+    "shape, translation, order, point, left, right, projection, hidden, expected",
+    [
+        pytest.param(
+            (6, 8, 10),
+            (10, 20, 30),
+            (0, 1, 2),
+            (14, 20, 30),
+            (0, 0, 0),
+            (0, 0, 0),
+            "none",
+            ((0, 2, 5),),
+            True,
+            id="retained-calibrated-point",
+        ),
+        pytest.param(
+            (6, 8, 10),
+            (10, 20, 30),
+            (0, 1, 2),
+            (10, 20, 30),
+            (0, 0, 0),
+            (0, 0, 0),
+            "none",
+            ((0, 2, 5),),
+            False,
+            id="excluded-calibrated-point",
+        ),
+        pytest.param(
+            (6, 8, 10),
+            (0, 20, 30),
+            (0, 1, 2),
+            (0, 20, 30),
+            (0, 0, 0),
+            (4, 0, 0),
+            "max",
+            ((0, 2, 5),),
+            True,
+            id="right-slab-includes-exact-upper-sample",
+        ),
+        pytest.param(
+            (6, 8, 10),
+            (0, 20, 30),
+            (0, 1, 2),
+            (0, 20, 30),
+            (0, 0, 0),
+            (3.2, 0, 0),
+            "max",
+            ((0, 2, 5),),
+            False,
+            id="right-slab-excludes-noninteger-upper-sample",
+        ),
+        pytest.param(
+            (6, 8, 10),
+            (0, 20, 30),
+            (0, 1, 2),
+            (8, 20, 30),
+            (4, 0, 0),
+            (0, 0, 0),
+            "max",
+            ((0, 2, 3),),
+            True,
+            id="left-slab-uses-calibrated-margin",
+        ),
+        pytest.param(
+            (6, 8, 10),
+            (10, 20, 30),
+            (2, 0, 1),
+            (10, 20, 38),
+            (0, 0, 0),
+            (0, 0, 0),
+            "none",
+            ((2, 2, 10),),
+            True,
+            id="orthogonal-retained-x-point",
+        ),
+        pytest.param(
+            (6, 8, 10),
+            (10, 20, 30),
+            (2, 0, 1),
+            (10, 20, 30),
+            (0, 0, 0),
+            (0, 0, 0),
+            "none",
+            ((2, 2, 10),),
+            False,
+            id="orthogonal-excluded-x-point",
+        ),
+        pytest.param(
+            (4, 5, 6),
+            (12, 26, 42),
+            (0, 1, 2),
+            (14, 26, 42),
+            (0, 0, 0),
+            (0, 0, 0),
+            "none",
+            ((0, 0, 4),),
+            True,
+            id="translated-exact-window-local-point",
+        ),
+    ],
+)
+def test_legacy_crop_sampling_uses_fresh_calibrated_request(
+    shape, translation, order, point, left, right, projection, hidden, expected
+):
+    viewer = ViewerModel()
+    layer = viewer.add_image(
+        np.zeros(shape, dtype="uint8"), scale=(2, 3, 4), translate=translation
+    )
+    dims = viewer.dims
+    dims.ndisplay = 3
+    stale = layer._data_slice  # The completed volume request has no hidden plane.
+    legacy = _LegacyCropSliceLayer(layer, stale)
+    assert getattr(legacy, "_slicing_state", None) is None
+
+    dims.ndisplay = 2
+    dims.order = order
+    dims.point = point
+    dims.margin_left = left
+    dims.margin_right = right
+    layer.projection_mode = projection
+    cached_input = layer._slice_input
+    data = layer.data
+
+    # Both the current API and the legacy factory must follow the same live
+    # point/slab/order; neither may use the saved completed 3D slice request.
+    assert crop_intersects_slice(layer, dims, hidden) is expected
+    assert crop_intersects_slice(legacy, dims, hidden) is expected
+    assert legacy.factory_calls == 1 and legacy.cached_reads == 0
+    assert legacy._stale_slice is stale
+    assert layer._slice_input is cached_input and layer.data is data
+
+
+def test_translated_slab_retention_matches_actual_napari_render():
+    viewer = ViewerModel()
+    data = np.arange(6 * 8 * 10, dtype="uint16").reshape(6, 8, 10)
+    layer = viewer.add_image(data, scale=(2, 3, 4), translate=(10, 20, 30))
+    dims = viewer.dims
+    dims.ndisplay = 3
+    legacy = _LegacyCropSliceLayer(layer, layer._data_slice)
+    dims.ndisplay = 2
+    dims.point = (10, 20, 30)
+    dims.margin_right = (4, 0, 0)
+    layer.projection_mode = "max"
+
+    slicing = getattr(layer, "_slicing_state", None)
+    if hasattr(slicing, "_slice_indices") and hasattr(slicing, "make_slice_input"):
+        sample = slicing._slice_indices(slicing.make_slice_input(dims), dims)
+    else:
+        sample = layer._make_slice_input(dims).data_slice(layer._data_to_world.inverse)
+    measured = (sample.point[0], sample.margin_left[0], sample.margin_right[0])
+    raw = layer._slice.image.raw
+    if np.isclose(sample.margin_left[0], 0):
+        np.testing.assert_allclose(measured, (0, 0, 2))
+        assert not layer._slice.empty
+        np.testing.assert_array_equal(raw, data[:3].max(axis=0))
+        retained = True
+    else:
+        # Legacy napari translates slab widths too and renders an empty slice.
+        np.testing.assert_allclose(measured, (0, -5, -3))
+        assert layer._slice.empty
+        np.testing.assert_array_equal(raw, np.zeros((1, 1), dtype=data.dtype))
+        retained = False
+    assert crop_intersects_slice(layer, dims, ((0, 2, 5),)) is retained
+    assert crop_intersects_slice(legacy, dims, ((0, 2, 5),)) is retained
+    assert legacy.factory_calls == 1 and legacy.cached_reads == 0
 
 
 class _RecordingOutline:
@@ -41,7 +253,7 @@ class _RecordingOutline:
 
 
 @pytest.fixture
-def scene(qtbot, monkeypatch):
+def scene(qtbot, monkeypatch, request):
     monkeypatch.setattr(_widget, "CropCanvasOutline", _RecordingOutline)
     monkeypatch.setattr(_widget.VippWidget, "_crop_uses_bounds_preview", lambda _: True)
     data = np.arange(6 * 8 * 10, dtype=np.uint16).reshape(6, 8, 10)
@@ -51,7 +263,7 @@ def scene(qtbot, monkeypatch):
         name="Calibrated volume",
         metadata={"axes": "ZYX"},
         scale=(2, 3, 4),
-        translate=(10, 20, 30),
+        translate=getattr(request, "param", (10, 20, 30)),
     )
     widget = _widget.VippWidget(viewer)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
@@ -149,18 +361,19 @@ def test_live_draft_moves_box_not_pixels_or_scientific_result(scene, qtbot):
     assert _corners(outline) == _world_box(((0, 6), (1, 8), (0, 10)))
 
 
+@pytest.mark.parametrize("scene", [(0, 20, 30)], indirect=True)
 def test_excluded_slice_and_projected_slab_have_different_retention(scene, qtbot):
     widget, crop, data = scene
     outline, dims = widget._crop_canvas_outline, widget.viewer.dims
     qtbot.waitUntil(lambda: outline.rectangle is not None)
     source_layer = outline.rectangle[0]
-    # Commit Z [2, 5), then show slice zero (world Z=10).
+    # Commit Z [2, 5), then show slice zero (world Z=0, scale=2).
     for parameter, value in (("z_start", 2), ("z_end", 1)):
         widget._parameter_widgets[parameter].slider.setValue(value)
     widget._commit_crop_draft(schedule_run=False)
     widget.run_pipeline()
     source_layer.projection_mode = "none"
-    dims.set_point(0, 10)
+    dims.set_point(0, 0)
     qtbot.waitUntil(lambda: not outline.rectangle[2])
     np.testing.assert_array_equal(source_layer.data, data)
     np.testing.assert_array_equal(widget.pipeline.outputs[crop], data[2:5])
@@ -181,7 +394,7 @@ def test_excluded_slice_and_projected_slab_have_different_retention(scene, qtbot
     dims.margin_right = (3.2, 0.0, 0.0)
     qtbot.waitUntil(lambda: not outline.rectangle[2])
     np.testing.assert_array_equal(source_layer._slice.image.raw, data[0:2].max(axis=0))
-    dims.set_point(0, 14)
+    dims.set_point(0, 4)
     qtbot.waitUntil(lambda: outline.rectangle[2])
     source_layer.projection_mode = "none"
     np.testing.assert_array_equal(widget.pipeline.outputs[crop], data[2:5])

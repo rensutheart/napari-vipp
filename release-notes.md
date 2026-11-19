@@ -26,6 +26,7 @@ VIPP 0.16.0a10 is an alpha patch for reopening recent workflows, recovering from
 - The guarded route shows an orange rectangle over a 2D slice or projection, and a wireframe over the 3D input volume, with a compact inspector bounds schematic.
 - The uncut input stays visible around the proposed bounds so you can see what will be removed.
 - In 2D, a red outline means the displayed slice or projection misses the retained region.
+- Older supported napari versions now use the current slice request for Crop outline colouring, rather than a stale completed view during slice, thickness or axis changes.
 - Rotation, zoom, view changes and selection updates keep the outline registered to the image; leaving Crop hides it.
 - A held slider drag changes only the proposed bounds. Releasing applies the scientific crop; it does not copy the preview into the result.
 - Grabbing a slider at a nonzero margin no longer commits an extra first pixel or splits the edit into two history steps.
