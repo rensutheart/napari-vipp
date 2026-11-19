@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- Use a live crop-bounds schematic in the Inspector on Windows with Intel
-  hardware OpenGL or an unrecognised viewer renderer. This avoids the extra
-  source and outline layers when selecting Crop Stack. The viewer shows the
-  calculated crop; its pixels, calibration and compute settings are unchanged.
+- Restore live Crop Stack outlines over the input on Windows with Intel or
+  unrecognised graphics. Dragging a margin moves the orange rectangle in 2D
+  slices and projections, or the wireframe in 3D. The input remains visible
+  outside the outline. Grabbing a slider at a nonzero margin no longer
+  commits an extra pixel before release.
 
 ## 0.16.0a9 - 2026-11-18
 

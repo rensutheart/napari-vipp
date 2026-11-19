@@ -45,6 +45,10 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [Release qualification baseline](release-qualification-baseline.md)
 - [Crop Stack on Intel Iris Xe](benchmarks/crop-preview-windows-2026-11-19.md):
   native 2D/3D selection, draft bounds, and exact calibrated output on Windows.
+- [Live 3D crop box on Intel Iris Xe](benchmarks/crop-live-outline-windows-2026-11-19.md):
+  on-volume edge registration while dragging, rotating and zooming.
+- [Crop outlines in 2D slices and MIPs](benchmarks/crop-slice-mip-windows-2026-11-19.md):
+  full-input display, held-slider behavior and switching between 2D and 3D on Intel.
 - [Windows installer field acceptance](windows-installer-field-acceptance.md)
 - [Workspace window qualification](workspace-window-qualification.md): native
   controls, independent Windows ownership, retained state and session lifetime.
