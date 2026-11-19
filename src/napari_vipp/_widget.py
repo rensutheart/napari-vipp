@@ -14,11 +14,12 @@ import textwrap
 import threading
 import traceback
 import weakref
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
+from itertools import product
 from numbers import Integral
 from pathlib import Path
 from time import monotonic
@@ -276,7 +277,12 @@ from napari_vipp.core.io import (
     validate_local_image_source_path,
     write_ome_zarr_analysis_dataset,
 )
-from napari_vipp.core.io.errors import as_image_source_error
+from napari_vipp.core.io.errors import (
+    READER_REFRESH_HINT,
+    ImageSourceError,
+    ImageSourceErrorCode,
+    as_image_source_error,
+)
 from napari_vipp.core.meshes import MeshState, is_mesh_data, save_mesh_output
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
@@ -552,6 +558,9 @@ from napari_vipp.ui.controls import (
 from napari_vipp.ui.controls import (
     _configure_numeric_spin_box as _configure_numeric_spin_box,
 )
+from napari_vipp.ui.crop_bounds_preview import CropBoundsPreview
+from napari_vipp.ui.crop_canvas_outline import CropCanvasOutline
+from napari_vipp.ui.crop_slice_sampling import crop_intersects_slice
 from napari_vipp.ui.design import (
     SPACE_SM,
     SPACE_XS,
@@ -816,7 +825,10 @@ from napari_vipp.ui.viewer_graphics import (
     viewer_graphics_availability,
     viewer_graphics_startup,
 )
-from napari_vipp.ui.viewer_graphics_status import query_viewer_graphics
+from napari_vipp.ui.viewer_graphics_status import (
+    query_viewer_graphics,
+    windows_crop_needs_bounds_preview,
+)
 from napari_vipp.ui.volume_preview_napari import (
     VOLUME_PREVIEW_METADATA,
     add_managed_scalar_layer,
@@ -2719,12 +2731,19 @@ class VippWidget(QWidget):
             "QToolButton::menu-indicator { image: none; width: 0px; }"
         )
         self.workflow_actions_menu_button.setToolTip(
-            "Workflow actions: open an example, save workflow as, or export."
+            "Workflow actions: open recent workflows or examples, save as, or export."
         )
         self.workflow_actions_menu_button.setAccessibleName("Workflow actions")
         self.workflow_actions_menu = QMenu(self.workflow_actions_menu_button)
         self.workflow_actions_menu.setObjectName("VippWorkflowActionsMenu")
         self.workflow_actions_menu.setAccessibleName("Workflow actions")
+        self.recent_workflows_menu = QMenu("Open Recent", self.workflow_actions_menu)
+        self.recent_workflows_menu.setObjectName("VippRecentWorkflowsMenu")
+        self.recent_workflows_menu.setAccessibleName("Open recent workflows")
+        self.recent_workflows_menu.setToolTipsVisible(True)
+        self.recent_workflows_menu.aboutToShow.connect(
+            self._populate_recent_workflows_menu
+        )
         self.workflow_actions_menu.aboutToShow.connect(
             self._populate_workflow_actions_menu
         )
@@ -3683,6 +3702,14 @@ class VippWidget(QWidget):
         self._selected_viewer_refresh_in_progress = False
         self._selected_viewer_dims_refresh_pending = False
         self._crop_presentation_suspension = 0
+        self._crop_canvas_outline = CropCanvasOutline(viewer)
+        self._crop_projection_event = None
+        self._crop_context_identity = None
+        self._crop_bounds_mode: bool | None = None
+        if os.environ.get("VIPP_SAFE_CROP_PREVIEW") == "1":
+            self._crop_bounds_mode = True
+        elif sys.platform != "win32" or getattr(viewer, "window", None) is None:
+            self._crop_bounds_mode = False
         self._workflow_tab_view_generation = 0
         self._pending_workflow_tab_view_restore = None
         # A graph click must return to Qt before secondary inspector work can
@@ -3726,6 +3753,8 @@ class VippWidget(QWidget):
         )
         if not defer_initial_run:
             self.run_initial_pipeline_once()
+        if self._crop_bounds_mode is None:
+            QTimer.singleShot(0, self._probe_crop_graphics)
 
     def run_initial_pipeline_once(self, *, starter_sample: str | None = None) -> bool:
         """Evaluate and record the initial workflow at most once.
@@ -4057,6 +4086,9 @@ class VippWidget(QWidget):
         if self._workflow_recovery is not None:
             self._workflow_recovery.close()
         self._closing = True
+        self._watch_crop_projection(None)
+        self._crop_canvas_outline.close()
+        self._crop_context_identity = None
         self._table_sources.close()
         self._results_workspace.close()
         self._result_plots.close()
@@ -6335,6 +6367,8 @@ class VippWidget(QWidget):
         open_example_action.triggered.connect(
             lambda _checked=False: self.open_example_button.click()
         )
+        self.recent_workflows_menu.setIcon(self.load_workflow_button.icon())
+        menu.addMenu(self.recent_workflows_menu)
         workspace_action = menu.addAction("Open Results Workspace…")
         workspace_action.setEnabled(
             self._results_workspace.can_open(self._selected_node_id)
@@ -7456,6 +7490,10 @@ class VippWidget(QWidget):
                 self.viewer.dims.events.ndisplay,
                 self._on_dims_changed,
             )
+            for name in ("order", "margin_left", "margin_right"):
+                signal = getattr(self.viewer.dims.events, name, None)
+                if signal is not None:
+                    self._lifecycle.connect(signal, self._on_crop_view_changed)
         except Exception:
             pass
         if (notifications := renderer_error_notifications()) is not None:
@@ -7499,6 +7537,7 @@ class VippWidget(QWidget):
         severity: MessageSeverity | str = MessageSeverity.NEUTRAL,
         actionable: bool = False,
         detail: str = "",
+        refresh_sources: Callable[[], None] | None = None,
     ) -> None:
         """Show one app-level VIPP message with explicit visual priority."""
         self.status_label.show_message(
@@ -7506,8 +7545,50 @@ class VippWidget(QWidget):
             severity=severity,
             actionable=actionable,
             detail=detail,
+            refresh_sources=refresh_sources,
         )
         self._reserve_status_toolbar_height()
+
+    def _set_source_error_status(
+        self,
+        text: str,
+        error: Exception | None,
+        *,
+        actionable: bool = True,
+        allow_refresh: bool = True,
+    ) -> None:
+        """Only an actual reader mismatch offers to change the saved binding."""
+        if actionable and error is not None:
+            source_error = (
+                error
+                if isinstance(error, ImageSourceError)
+                else as_image_source_error(error)
+            )
+            if source_error.code is ImageSourceErrorCode.READER_MISMATCH:
+                if not allow_refresh:
+                    self._set_status(
+                        "The image reader has changed. Check the batch sources, "
+                        "then preview the intended sample again.",
+                        severity=MessageSeverity.ERROR,
+                        actionable=True,
+                        detail=source_error.detail,
+                    )
+                    return
+                owner = self._current_workflow_session_id()
+
+                def refresh() -> None:
+                    if self._workflow_tab_is_active(owner):
+                        self.refresh_button.click()
+
+                self._set_status(
+                    f"The image reader has changed. {READER_REFRESH_HINT}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                    detail=source_error.detail,
+                    refresh_sources=refresh,
+                )
+                return
+        self._set_status(text, severity=MessageSeverity.ERROR, actionable=actionable)
 
     def _set_pipeline_error_status(
         self,
@@ -15574,7 +15655,36 @@ class VippWidget(QWidget):
             severity=MessageSeverity.SUCCESS,
         )
         self._results_workspace.refresh()
+        recent_paths.remember_workflow(saved)
         return True
+
+    def _populate_recent_workflows_menu(self) -> None:
+        """Refresh on hover, including history saved by another VIPP window."""
+        menu = self.recent_workflows_menu
+        menu.clear()
+        paths = recent_paths.recent_workflows()
+        if not paths:
+            empty = menu.addAction("No recent workflows yet")
+            empty.setEnabled(False)
+            return
+        for path in paths:
+            # Ampersands are literal parts of folder/file names, not mnemonics.
+            label = (
+                path.replace("&", "&&")
+                .replace("\t", "\\t")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+            )
+            action = menu.addAction(label)
+            action.setData(path)
+            action.setToolTip(path)
+            action.triggered.connect(
+                lambda _checked=False, path=path: self._open_workflow_path(path)
+            )
+        menu.addSeparator()
+        clear = menu.addAction("Clear recent workflows")
+        clear.setToolTip("Clear this list without deleting any workflow files.")
+        clear.triggered.connect(recent_paths.clear_recent_workflows)
 
     def _load_workflow_dialog(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
@@ -15772,6 +15882,8 @@ class VippWidget(QWidget):
         self._store_workflow_tab_runtime(session)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._results_workspace.refresh()
+        if bundled_example is None:
+            recent_paths.remember_workflow(loaded)
         return loaded
 
     def _choose_workflow_reproduction(self, workflow: dict) -> bool:
@@ -18520,6 +18632,7 @@ class VippWidget(QWidget):
         message: str,
         *,
         graph_may_be_partial: bool = False,
+        source_error: Exception | None = None,
     ) -> None:
         """Reject a requested representative without claiming it is displayed."""
         requested = self._interactive_collection_batch_requested_index
@@ -18563,10 +18676,16 @@ class VippWidget(QWidget):
             if self._compute_runtime_quarantined_reason
             else ""
         )
-        self._set_status(
-            prefix + f"Representative preview failed: {message}",
-            severity=MessageSeverity.ERROR,
-            actionable=True,
+        text = prefix + f"Representative preview failed: {message}"
+        if source_error is None or prefix:
+            self._set_status(text, severity=MessageSeverity.ERROR, actionable=True)
+            return
+        # A failed navigation may have restored another representative. Never
+        # offer a rebind against that other sample on the failed item's behalf.
+        self._set_source_error_status(
+            text,
+            source_error,
+            allow_refresh=self._interactive_collection_batch_index == failed_index,
         )
 
     def _mark_interactive_collection_batch_stale(
@@ -20584,6 +20703,7 @@ class VippWidget(QWidget):
             return
         # A live layer may mutate in place, so ndarray identity alone cannot
         # prove that cached presentation statistics still describe its values.
+        self._crop_context_identity = None
         self._clear_thumbnail_contrast_limit_state()
         self._clear_input_histogram_cache()
         self._clear_output_histogram_cache()
@@ -25214,8 +25334,14 @@ class VippWidget(QWidget):
             _set_palette_text_tone(note, "warning")
             self.parameter_form.addRow("Crop ROI", note)
             self._parameter_widgets["crop_roi_summary"] = note
+            if self._crop_uses_bounds_preview():
+                bounds = CropBoundsPreview(self.parameter_form_widget)
+                self.parameter_form.addRow(bounds)
+                self._parameter_widgets["crop_bounds_preview"] = bounds
             self._update_crop_roi_summary(node_id)
+            rendered = True
 
+        if node.operation_id == "crop_stack" and not self._crop_uses_bounds_preview():
             appearance_separator = QFrame()
             appearance_separator.setFrameShape(QFrame.HLine)
             appearance_separator.setFrameShadow(QFrame.Sunken)
@@ -28356,10 +28482,8 @@ class VippWidget(QWidget):
         if control is not None:
             control.reader_support.set_source(str(path), error.display_text)
         self.pipeline.set_node_execution_error(node.id, error.display_text)
-        self._set_status(
-            f"Image source inspection error: {error.display_text}",
-            severity=MessageSeverity.ERROR,
-            actionable=True,
+        self._set_source_error_status(
+            f"Image source inspection error: {error.display_text}", error
         )
         return None
 
@@ -28519,10 +28643,9 @@ class VippWidget(QWidget):
             if continue_pending:
                 self._queue_source_work_continuation()
             else:
-                self._set_status(
+                self._set_source_error_status(
                     f"Image source inspection error: {message}",
-                    severity=MessageSeverity.ERROR,
-                    actionable=True,
+                    result.source_error,
                 )
             return
 
@@ -28662,6 +28785,7 @@ class VippWidget(QWidget):
             selected is not None
             and selected.operation_id == "crop_stack"
             and not self.pipeline.node_is_bypassed(selected.id)
+            and not self._crop_uses_bounds_preview()
         )
         if not crop_active:
             # napari derives its global dimensionality from every layer in the
@@ -28672,7 +28796,10 @@ class VippWidget(QWidget):
             # graph pointer handling has finished, so the transient crop layers
             # can be retired safely and recreated from cached input next time
             # Crop Stack is selected.
-            self._discard_crop_presentation_layers()
+            if self._owned_crop_presentation_layers():
+                self._discard_crop_presentation_layers()
+        if selected is None or not self._crop_uses_canvas_context(selected.id):
+            self._clear_crop_canvas_context()
         crop_source = (
             self._ensure_crop_source_layer(selected.id)
             if crop_active and selected is not None
@@ -28692,13 +28819,26 @@ class VippWidget(QWidget):
         )
         show_preview = selected_preview is not None
 
+        hidden_previews = []
         for layer in self._owned_source_preview_layers():
+            visible = bool(show_preview and layer is selected_preview)
             try:
-                layer.visible = bool(show_preview and layer is selected_preview)
+                if layer.visible != visible:
+                    layer.visible = visible
             except Exception:
                 pass
-            if not (show_preview and layer is selected_preview):
-                self._move_layer_to_bottom(layer)
+            if not visible:
+                hidden_previews.append(layer)
+        # Moving each preview to index zero reverses their order on every
+        # refresh. Keep the existing relative order of hidden source previews.
+        layers = self.viewer.layers
+        for dest, layer in enumerate(hidden_previews):
+            try:
+                source = layers.index(layer)
+                if source != dest:
+                    layers.move(source, dest)
+            except (AttributeError, IndexError, ValueError, RuntimeError):
+                break
 
         inspect_layers = self._generated_layers_for_name(self._inspect_layer_name)
         if crop_active and inspect_layers:
@@ -28737,18 +28877,17 @@ class VippWidget(QWidget):
                 pass
 
         target = selected_preview if show_preview else crop_source
-        if show_preview and selected_preview is not None:
-            self._move_layer_to_top(selected_preview)
-        elif crop_source is not None:
-            self._move_layer_to_top(crop_source)
-        elif inspect_layers:
-            self._move_generated_layers_to_top(self._inspect_layer_name)
+        front_layers = [target] if target is not None else list(inspect_layers)
+        if target is None and inspect_layers:
             target = inspect_layers[-1]
-        self._keep_active_pin_on_top()
+        front_layers.extend(self._active_pinned_layers())
         if crop_active:
-            for layer in self._owned_crop_presentation_layers("crop_roi"):
-                if bool(getattr(layer, "visible", False)):
-                    self._move_layer_to_top(layer)
+            front_layers.extend(
+                layer
+                for layer in self._owned_crop_presentation_layers("crop_roi")
+                if getattr(layer, "visible", False)
+            )
+        self._order_viewer_foreground(front_layers)
         if select_layer and target is not None:
             self._select_only_viewer_layer(target)
             _sync_viewer_axis_labels_from_layer(self.viewer, target)
@@ -34328,9 +34467,18 @@ class VippWidget(QWidget):
         """Keep a Crop drag as a presentation draft until mouse release."""
         if self.pipeline.node_is_bypassed(node_id):
             return
-        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+        session_id = self._crop_current_session_id()
+        # Qt can send valueChanged for the press position *before* it emits
+        # sliderPressed, particularly on a nonzero handle. Opening that draft
+        # already finished the previous history group. Finishing it again
+        # here would commit the first pixel of this drag as a separate edit.
+        if (self._crop_draft_node_id, self._crop_draft_session_id) != (
+            node_id,
+            session_id,
+        ):
+            self._finish_parameter_history_group(preserve_isolated_tuning=True)
         self._active_crop_slider_scrub = (
-            self._crop_current_session_id(),
+            session_id,
             str(node_id),
             str(name),
             weakref.ref(control),
@@ -34592,12 +34740,196 @@ class VippWidget(QWidget):
         if remove_layers:
             self._discard_crop_presentation_layers()
 
+    def _probe_crop_graphics(self) -> None:
+        # One idle probe for this viewer, never a backend change. If Crop is
+        # opened before the canvas is ready its conservative choice stays put.
+        if (
+            not self._closing
+            and self._crop_bounds_mode is None
+            and not self._selected_viewer_refresh_in_progress
+            and not self.graph_view.node_press_dispatch_active()
+            and self._crop_draft_node_id is None
+        ):
+            self._crop_bounds_mode = windows_crop_needs_bounds_preview(
+                query_viewer_graphics(self.viewer)
+            )
+
+    def _crop_uses_bounds_preview(self) -> bool:
+        """Freeze the choice for this viewer; no GL probes on Crop interaction."""
+        if self._crop_bounds_mode is None:
+            self._crop_bounds_mode = True
+        return self._crop_bounds_mode
+
+    def _crop_uses_canvas_context(self, node_id: str) -> bool:
+        """Show the received input while editing Crop on a guarded Qt canvas."""
+        node = self.pipeline.nodes.get(node_id)
+        if not (
+            node
+            and node_id == self._selected_node_id
+            and node.operation_id == "crop_stack"
+            and not self.pipeline.node_is_bypassed(node_id)
+            and self._crop_uses_bounds_preview()
+            and self._crop_canvas_outline.available
+        ):
+            return False
+        shape, state = self._crop_input_shape_and_state(node_id)
+        # Selecting an editor must never materialize a lazy full dataset.
+        received = self.pipeline.input_data_for_node(node_id)
+        return (
+            isinstance(received, (np.ndarray, ExactSourceWindowData))
+            and isinstance(state, ImageState)
+            and len(shape) >= 2
+            and self._crop_margin_axis_index("left", shape, state) is not None
+            and self._crop_margin_axis_index("top", shape, state) is not None
+            and (
+                self.viewer.dims.ndisplay == 2
+                or self._crop_margin_axis_index("z_start", shape, state) is not None
+            )
+        )
+
+    def _watch_crop_projection(self, layer) -> None:
+        event = getattr(getattr(layer, "events", None), "projection_mode", None)
+        if event is self._crop_projection_event:
+            return
+        if self._crop_projection_event is not None:
+            self._crop_projection_event.disconnect(self._on_crop_view_changed)
+        self._crop_projection_event = event
+        if event is not None:
+            event.connect(self._on_crop_view_changed)
+
+    def _clear_crop_canvas_context(self) -> None:
+        self._watch_crop_projection(None)
+        self._crop_canvas_outline.clear()
+        self._crop_context_identity = None
+
+    def _publish_crop_canvas_context(self, node_id: str) -> bool:
+        """Reuse ordinary Inspect for the uncut input, never a second GL volume."""
+        if not self._crop_uses_canvas_context(node_id):
+            return False
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return False
+        state = self.pipeline.input_state_for_node(node_id)
+        if isinstance(data, ExactSourceWindowData):
+            # Display only what was read, in its true calibrated position.
+            data, state = data.data, data.window_state
+        if not isinstance(state, ImageState):
+            return False
+        context = (node_id, self._crop_current_session_id(), id(data), state)
+        if context == self._crop_context_identity and any(
+            layer.metadata.get("vipp_crop_context") == node_id
+            for layer in self._owned_inspect_layers()
+        ):
+            return True
+        with self._suspend_crop_presentation():
+            self._set_or_add_generated_layer(
+                self._inspect_layer_name,
+                data,
+                metadata={
+                    "napari_vipp_kind": "inspect",
+                    "node_id": node_id,
+                    "output_port": 0,
+                    "vipp_crop_context": node_id,
+                    "vipp_image_state": state.to_dict(),
+                    "display_rgb": _image_state_displays_as_rgb(state, data.shape),
+                    "data_kind": (
+                        "labels"
+                        if state.kind == "label image"
+                        else "mask"
+                        if data.dtype == bool
+                        else "image"
+                    ),
+                },
+                role="inspect",
+            )
+        self._crop_context_identity = context
+        return True
+
+    def _update_crop_canvas_outline(self, node_id: str) -> None:
+        """A draft changes projected geometry; never republish an image."""
+        layers = self._owned_inspect_layers()
+        layer = next(
+            (
+                item
+                for item in layers
+                if item.metadata.get("vipp_crop_context") == node_id and item.visible
+            ),
+            None,
+        )
+        if layer is None or not self._crop_uses_canvas_context(node_id):
+            self._watch_crop_projection(None)
+            self._crop_canvas_outline.clear()
+            return
+        self._watch_crop_projection(layer)
+        shape, state = self._crop_input_shape_and_state(node_id)
+        values = self._crop_effective_values(node_id)
+        # Bounds are half-open in the logical full input. Non-cropped axes
+        # span their whole extent; an unlabelled stack isn't inferred to be Z.
+        intervals = [(0, size) for size in shape]
+        crop_axes = set()
+        for first, second in (
+            ("z_start", "z_end"),
+            ("top", "bottom"),
+            ("left", "right"),
+        ):
+            i = self._crop_margin_axis_index(first, shape, state)
+            if i is None:
+                continue
+            crop_axes.add(i)
+            intervals[i] = (values[first], shape[i] - values[second])
+        # napari right-aligns each layer. Use the image's actual presentation
+        # axes (a displayed RGB component, for example, has no component axis).
+        dims = self.viewer.dims
+        indices = _state_axis_indices_for_napari_layer(state, layer.metadata)
+        rank = len(indices)
+        order = tuple(getattr(dims, "displayed", ()))
+        offset = getattr(dims, "ndim", rank) - rank
+        axes = tuple(indices[i - offset] for i in order if 0 <= i - offset < rank)
+        if len(axes) != dims.ndisplay or (len(axes) == 3 and set(axes) != crop_axes):
+            self._crop_canvas_outline.clear()
+            return
+        world_edges = (
+            tuple(
+                state.axes[i].translation + state.axes[i].scale * (edge - 0.5)
+                for edge in intervals[i]
+            )
+            for i in axes
+        )
+        corners = np.array(list(product(*world_edges)), dtype=float)
+        width = 2.0 * self._crop_roi_line_width_scale(node_id)
+        if dims.ndisplay == 3:
+            self._crop_canvas_outline.set_box(layer, corners, line_width=width)
+            return
+        received = self.pipeline.input_data_for_node(node_id)
+        window = (
+            received.identity.bounds
+            if isinstance(received, ExactSourceWindowData)
+            else None
+        )
+        hidden = []
+        for j, i in enumerate(indices):
+            if i in axes or i not in crop_axes:
+                continue
+            origin = window[i][0] if window else 0
+            first, stop = intervals[i]
+            hidden.append((j, first - origin, stop - origin))
+        retained = crop_intersects_slice(layer, dims, hidden)
+        if retained is None:
+            self._crop_canvas_outline.clear()
+        else:
+            self._crop_canvas_outline.set_rectangle(
+                layer, corners, retained=retained, line_width=width
+            )
+
     def _update_crop_roi_summary(self, node_id: str) -> None:
         note = self._parameter_widgets.get("crop_roi_summary")
+        bounds = self._parameter_widgets.get("crop_bounds_preview")
         node = self.pipeline.nodes.get(node_id)
         if not isinstance(note, QLabel) or node is None:
             return
         if self.pipeline.node_is_bypassed(node_id):
+            if isinstance(bounds, CropBoundsPreview):
+                bounds.set_bounds()
             note.setText(
                 "Bypassed: the stored ROI is inactive and the complete input is "
                 "forwarded unchanged. Clear Bypass node to apply these margins "
@@ -34606,11 +34938,14 @@ class VippWidget(QWidget):
             return
         shape, state = self._crop_input_shape_and_state(node_id)
         if len(shape) < 2:
+            if isinstance(bounds, CropBoundsPreview):
+                bounds.set_bounds()
             note.setText("Connect an image to preview the crop ROI.")
             return
         values = self._crop_effective_values(node_id)
         retained = list(shape)
         ranges: list[str] = []
+        schematic_axes = {}
         for first, second, label in (
             ("z_start", "z_end", "Z"),
             ("top", "bottom", "Y"),
@@ -34623,6 +34958,7 @@ class VippWidget(QWidget):
                 continue
             start = int(values.get(first, 0))
             end = int(values.get(second, 0))
+            schematic_axes[label.lower()] = (int(shape[axis_index]), start, end)
             retained[axis_index] -= start + end
             ranges.append(
                 f"{label} {start + 1}–{int(shape[axis_index]) - end} "
@@ -34641,6 +34977,27 @@ class VippWidget(QWidget):
             if is_draft
             else "Drag a margin to preview a new ROI."
         )
+        if isinstance(bounds, CropBoundsPreview):
+            bounds.set_bounds(**schematic_axes)
+            if self._crop_uses_canvas_context(node_id):
+                context = (
+                    "the loaded source window"
+                    if isinstance(
+                        self.pipeline.input_data_for_node(node_id),
+                        ExactSourceWindowData,
+                    )
+                    else "the input"
+                )
+                suffix = (
+                    f"The viewer shows {context}. Drag a margin to move the "
+                    "orange outline; release to apply. In 2D, red means the "
+                    "displayed slice or projection misses the retained region."
+                )
+            else:
+                suffix = (
+                    "Drag to preview the bounds here. The viewer shows the cropped "
+                    "image after calculation."
+                )
         geometry_summary = (
             f"{prefix}: {', '.join(ranges)}. Retained {axes} "
             f"{' × '.join(str(size) for size in retained)}."
@@ -34721,6 +35078,7 @@ class VippWidget(QWidget):
         return layers
 
     def _discard_crop_presentation_layers(self) -> None:
+        self._clear_crop_canvas_context()
         # Treat the source image and ROI as one transient presentation.  Layer
         # removal emits napari events synchronously; suppress VIPP's ordinary
         # live-source reaction until the complete owned group has gone.
@@ -35156,7 +35514,11 @@ class VippWidget(QWidget):
         ):
             return
         if self.pipeline.node_is_bypassed(node_id):
+            self._clear_crop_canvas_context()
             self._set_crop_presentation_layers_visible(False)
+            return
+        if self._crop_uses_bounds_preview():
+            self._update_crop_canvas_outline(node_id)
             return
         shape, state = self._crop_input_shape_and_state(node_id)
         if len(shape) < 2:
@@ -35273,7 +35635,7 @@ class VippWidget(QWidget):
         if layer is not None:
             _set_layer_axis_labels(layer, metadata)
             self._make_generated_layer_noneditable(layer)
-            self._move_layer_to_top(layer)
+            self._order_viewer_foreground([layer])
         if prior_active is not None and prior_active in self.viewer.layers:
             self._select_only_viewer_layer(prior_active)
             _sync_viewer_axis_labels_from_layer(self.viewer, prior_active)
@@ -36552,14 +36914,11 @@ class VippWidget(QWidget):
             self._abandon_background_pipeline_run()
             if self._active_pipeline_run_id is None:
                 self._set_pipeline_busy(False)
-            self._set_status(
-                f"Source error: {exc}",
-                severity=MessageSeverity.ERROR,
-                actionable=True,
-            )
+            self._set_source_error_status(f"Source error: {exc}", exc)
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 str(exc),
+                source_error=exc,
             )
             return
 
@@ -37383,9 +37742,9 @@ class VippWidget(QWidget):
             continue_pending = bool(self._source_load_pending)
             self._source_load_pending = False
             suffix = "; retrying latest source edit" if continue_pending else ""
-            self._set_status(
+            self._set_source_error_status(
                 f"Image source error: {result.error}{suffix}",
-                severity=MessageSeverity.ERROR,
+                result.source_error,
                 actionable=not continue_pending,
             )
             if continue_pending:
@@ -37399,6 +37758,7 @@ class VippWidget(QWidget):
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     result.error,
+                    source_error=result.source_error,
                 )
             return
         try:
@@ -37411,9 +37771,9 @@ class VippWidget(QWidget):
             continue_pending = bool(self._source_load_pending)
             self._source_load_pending = False
             suffix = "; retrying latest source edit" if continue_pending else ""
-            self._set_status(
+            self._set_source_error_status(
                 f"Image source error: {exc}{suffix}",
-                severity=MessageSeverity.ERROR,
+                exc,
                 actionable=not continue_pending,
             )
             if continue_pending:
@@ -37427,6 +37787,7 @@ class VippWidget(QWidget):
                 self._show_interactive_collection_batch_preview_error(
                     self._interactive_collection_batch_requested_index,
                     str(exc),
+                    source_error=exc,
                 )
             return
         self._prune_file_source_payload_cache()
@@ -39546,6 +39907,14 @@ class VippWidget(QWidget):
         # here would move the following displayed axis instead (usually T).
         return None
 
+    def _on_crop_view_changed(self, _event=None) -> None:
+        if (
+            not self._closing
+            and not self._crop_presentation_suspension
+            and self._crop_uses_canvas_context(self._selected_node_id)
+        ):
+            self._update_crop_canvas_outline(self._selected_node_id)
+
     def _on_dims_changed(self, _event=None) -> None:
         if self._closing:
             return
@@ -39561,6 +39930,16 @@ class VippWidget(QWidget):
                 self.viewer, self._active_viewer_layer()
             )
             self._report_volume_preview_status((self._active_viewer_layer(),))
+            selected = self.pipeline.nodes.get(self._selected_node_id)
+            if (
+                selected
+                and selected.operation_id == "crop_stack"
+                and self._crop_uses_bounds_preview()
+            ):
+                self._update_crop_roi_summary(selected.id)
+                self._schedule_selected_viewer_refresh(
+                    selected.id, select_layer=False, restore_interactive_cache=False
+                )
         if self._selected_viewer_refresh_in_progress:
             self._selected_viewer_dims_refresh_pending = True
             return
@@ -45660,6 +46039,15 @@ class VippWidget(QWidget):
         return True
 
     def inspect_node(self, node_id: str) -> None:
+        if self._publish_crop_canvas_context(node_id):
+            if not self._selected_viewer_refresh_in_progress:
+                self._apply_selected_viewer_surface(select_layer=True)
+                self._update_crop_roi_presentation(node_id)
+            if not self._report_volume_preview_status(self._owned_inspect_layers()):
+                self.status_label.setText(
+                    "Inspecting the Crop input and proposed bounds."
+                )
+            return
         data, state, output_port = self._node_display_payload(node_id)
         if is_transform_data(data):
             self._discard_inspect_layers()
@@ -45697,6 +46085,7 @@ class VippWidget(QWidget):
             and node is not None
             and node.operation_id == "crop_stack"
             and not self.pipeline.node_is_bypassed(node_id)
+            and not self._crop_uses_bounds_preview()
         )
         if not crop_preview:
             # A selected Crop uses its source image and ROI as the viewer
@@ -45724,14 +46113,27 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def _inspect_selected_node(self) -> None:
+        if self._publish_crop_canvas_context(self._selected_node_id):
+            return
         data, _state, _output_port = self._node_display_payload(self._selected_node_id)
         if data is not None and not is_table_data(data):
             self.inspect_node(self._selected_node_id)
             return
         layers = self._generated_layers_for_name(self._inspect_layer_name)
         metadata = getattr(layers[0], "metadata", {}) if layers else {}
-        if isinstance(metadata, dict) and metadata.get("node_id") == (
-            self._selected_node_id
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        clear_pending_crop = (
+            node is not None
+            and node.operation_id == "crop_stack"
+            and not self.pipeline.node_is_bypassed(node.id)
+            and self._crop_uses_bounds_preview()
+        )
+        if layers and (
+            clear_pending_crop
+            or (
+                isinstance(metadata, dict)
+                and metadata.get("node_id") == self._selected_node_id
+            )
         ):
             self._remember_current_inspect_display_profiles()
             self._discard_inspect_layers()
@@ -45939,6 +46341,10 @@ class VippWidget(QWidget):
         if not layers:
             return
         node_id = getattr(layers[0], "metadata", {}).get("node_id")
+        if self._publish_crop_canvas_context(node_id):
+            self._apply_selected_viewer_surface(select_layer=True)
+            self._update_crop_roi_presentation(node_id)
+            return
         if node_id in self.pipeline.outputs:
             data, state, output_port = self._node_display_payload(node_id)
             if data is None or is_table_data(data):
@@ -46012,7 +46418,12 @@ class VippWidget(QWidget):
         saved_step = self._raw_current_step()
         saved_nsteps = self._viewer_nsteps()
         output_port = int(metadata.get("output_port", 0) or 0)
-        data_kind = self._data_kind(data, metadata.get("node_id"), output_port)
+        crop_context = bool(metadata.get("vipp_crop_context"))
+        data_kind = (
+            metadata["data_kind"]
+            if crop_context
+            else self._data_kind(data, metadata.get("node_id"), output_port)
+        )
         display_kind = self._display_kind(data_kind, role)
         display_data = self._display_data(
             data,
@@ -46025,8 +46436,10 @@ class VippWidget(QWidget):
             "display_dtype": str(np.asarray(display_data).dtype),
             "display_ndim": np.asarray(display_data).ndim,
             "display_shape": tuple(np.asarray(display_data).shape),
-            "display_rgb": self._display_rgb(
-                data, metadata.get("node_id"), output_port
+            "display_rgb": (
+                metadata["display_rgb"]
+                if crop_context
+                else self._display_rgb(data, metadata.get("node_id"), output_port)
             ),
         }
         source = self.pipeline.nodes.get(metadata.get("node_id"))
@@ -46041,7 +46454,8 @@ class VippWidget(QWidget):
             return
         channel_axis_spec = (
             self._colored_channel_axis_spec(display_data, metadata)
-            if self._node_image_colormap_override(metadata.get("node_id")) is None
+            if not crop_context
+            and self._node_image_colormap_override(metadata.get("node_id")) is None
             else None
         )
         if channel_axis_spec is not None:
@@ -46126,6 +46540,8 @@ class VippWidget(QWidget):
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
         self._invalidate_generated_layer_contrast(layer)
+        if not crop_context:
+            layer.metadata.pop("vipp_crop_context", None)
         layer.metadata.update(metadata)
         layer.data = _read_only_presentation_array(display_data)
         layer.visible = True
@@ -46574,6 +46990,8 @@ class VippWidget(QWidget):
                 active_layers.append(layer)
                 continue
             self._invalidate_generated_layer_contrast(layer)
+            if not channel_metadata.get("vipp_crop_context"):
+                layer.metadata.pop("vipp_crop_context", None)
             layer.metadata.update(channel_metadata)
             layer.data = channel_data
             layer.visible = True
@@ -47620,6 +48038,24 @@ class VippWidget(QWidget):
             except Exception:
                 continue
         return layers
+
+    def _order_viewer_foreground(self, foreground: list) -> None:
+        """Keep managed layers together without detaching or cycling stable layers."""
+        layers = self.viewer.layers
+        above = None
+        for layer in reversed(foreground):
+            # napari's move inserts before a pre-move index. Work from the
+            # front down so a stable [source, pins..., ROI] costs zero events.
+            try:
+                source = layers.index(layer)
+                dest = len(layers) if above is None else layers.index(above)
+                if source + 1 != dest:
+                    layers.move(source, dest)
+                above = layer
+            except (AttributeError, IndexError, ValueError, RuntimeError):
+                # A view or plugin may have removed this layer. Removing and
+                # re-appending to repair z-order would instead recreate its GL visual.
+                return
 
     def _move_layer_to_top(self, layer) -> None:
         layers = self.viewer.layers

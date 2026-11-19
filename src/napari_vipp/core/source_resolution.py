@@ -25,6 +25,10 @@ class SourceItemResolutionError(RuntimeError):
     """A saved logical item cannot be resolved without changing its meaning."""
 
 
+class SourceReaderMismatchError(SourceItemResolutionError):
+    """The source was inspected with a different reader than the one recorded."""
+
+
 _AXIS_DECLARATION_EVIDENCE_ROUTES = (
     "Image Source",
     "saved SourceItem",
@@ -154,9 +158,15 @@ def verify_saved_source_item(
         axis_declaration=declaration,
     )
     if observed.reader != expected.reader:
-        raise SourceItemResolutionError(
-            "The recorded reader implementation or version is not the reader "
-            "that inspected this source. Rebind explicitly before continuing."
+        saved, current = expected.reader, observed.reader
+        saved_label = f"{saved.implementation} {saved.version}"
+        current_label = f"{current.implementation} {current.version}"
+        if saved.adapter_id != current.adapter_id:
+            saved_label += f" ({saved.adapter_id})"
+            current_label += f" ({current.adapter_id})"
+        raise SourceReaderMismatchError(
+            f"The image reader has changed: saved {saved_label}, "
+            f"current {current_label}."
         )
     if _verification_resolved_identity(observed.resolved) != (
         _verification_resolved_identity(expected.resolved)
@@ -520,6 +530,7 @@ def _stable_id(value: str) -> str:
 
 __all__ = [
     "SourceItemResolutionError",
+    "SourceReaderMismatchError",
     "axis_tokens",
     "resolve_source_item",
     "select_inspected_item",

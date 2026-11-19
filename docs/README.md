@@ -8,6 +8,8 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Start here
 
+- [0.16.0a10 release plan](release-0.16.0a10-plan.md): non-AI patch scope,
+  changed-domain checks and publication boundaries.
 - [Documentation ownership and migration map](documentation.md): where to edit,
   what stays here, and where the former user guides moved.
 - [Developer notes](developer-notes.md): setup, extension points, and local checks.
@@ -43,6 +45,12 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 - [0.16.0a5 non-AI release plan](release-0.16.0a5-plan.md)
 - [0.16.0a2 integration readiness](release-readiness-0.16.0a2.md)
 - [Release qualification baseline](release-qualification-baseline.md)
+- [Crop Stack on Intel Iris Xe](benchmarks/crop-preview-windows-2026-11-19.md):
+  native 2D/3D selection, draft bounds, and exact calibrated output on Windows.
+- [Live 3D crop box on Intel Iris Xe](benchmarks/crop-live-outline-windows-2026-11-19.md):
+  on-volume edge registration while dragging, rotating and zooming.
+- [Crop outlines in 2D slices and MIPs](benchmarks/crop-slice-mip-windows-2026-11-19.md):
+  full-input display, held-slider behavior and switching between 2D and 3D on Intel.
 - [Windows installer field acceptance](windows-installer-field-acceptance.md)
 - [Workspace window qualification](workspace-window-qualification.md): native
   controls, independent Windows ownership, retained state and session lifetime.
@@ -74,6 +82,9 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Current Planning
 
+- [Apple GPU functionality proposal](apple-gpu-functionality-proposal.md):
+  selected existing nodes, existing-library candidates, staged feasibility,
+  scientific admission and real-Mac performance evidence; proposed only.
 - [Tracking implementation](tracking-implementation.md): bounded one-to-one
   linking, calibrated observation evidence, ambiguity/gap review and limits.
 - [Synthetic tracking evidence](tracking-synthetic-evidence.md): independent

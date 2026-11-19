@@ -298,3 +298,36 @@ def test_status_actions_follow_replacement_and_progress_visibility(qtbot):
     assert actions.isHidden()
     strip.show_message("Done", severity="success", detail="Output info")
     assert actions.isHidden()
+
+
+def test_refresh_action_expires_with_the_warning(qtbot):
+    strip = StatusMessageStrip()
+    actions = StatusMessageActions(strip)
+    qtbot.addWidget(strip)
+    qtbot.addWidget(actions)
+    calls = []
+
+    def show_warning():
+        strip.show_message(
+            "Reader changed",
+            severity="error",
+            actionable=True,
+            refresh_sources=lambda: calls.append("refresh"),
+        )
+
+    show_warning()
+    assert not actions.refresh_button.isHidden()
+    actions.set_active(False)
+    actions.refresh_button.click()
+    assert not calls
+    actions.set_active(True)
+    actions.refresh_button.click()
+    assert calls == ["refresh"]
+    actions.dismiss_button.click()
+    actions.refresh_button.click()
+    assert calls == ["refresh"]
+    show_warning()
+    strip.show_message("Different fault", severity="error", actionable=True)
+    assert actions.refresh_button.isHidden()
+    actions.refresh_button.click()
+    assert calls == ["refresh"]

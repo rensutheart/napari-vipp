@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import StrEnum
 
 from qtpy.QtCore import QEvent, Qt, Signal
@@ -90,6 +91,7 @@ class StatusMessageStrip(QLabel):
         severity: MessageSeverity | str = MessageSeverity.NEUTRAL,
         actionable: bool = False,
         detail: str = "",
+        refresh_sources: Callable[[], None] | None = None,
     ) -> None:
         """Display concise ``text`` with optional hover/accessibility detail."""
 
@@ -102,6 +104,7 @@ class StatusMessageStrip(QLabel):
 
         self._severity = resolved_severity
         self._actionable = resolved_actionable
+        self.refresh_sources = refresh_sources if full_width_alert else None
         self.setProperty("messageSeverity", resolved_severity.value)
         self.setProperty("messageActionable", resolved_actionable)
         self.setProperty("fullWidthAlert", full_width_alert)
@@ -204,6 +207,11 @@ class StatusMessageActions(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
+        self.refresh_button = QPushButton("Refresh file sources", self)
+        self.refresh_button.setToolTip(
+            "Reload this workflow’s file sources with the current reader."
+        )
+        self.refresh_button.clicked.connect(self._refresh_sources)
         self.details_button = QPushButton("Details…", self)
         self.details_button.setAccessibleName("Show status details")
         self.details_button.setToolTip("View and copy the full technical message.")
@@ -214,6 +222,7 @@ class StatusMessageActions(QWidget):
             "Hide this message. Calculated results and node errors are unchanged."
         )
         self.dismiss_button.clicked.connect(lambda: strip.setText(""))
+        layout.addWidget(self.refresh_button)
         layout.addWidget(self.details_button)
         layout.addWidget(self.dismiss_button)
         strip.message_changed.connect(self._sync)
@@ -225,12 +234,18 @@ class StatusMessageActions(QWidget):
         self._sync()
 
     def _sync(self) -> None:
+        self.refresh_button.setVisible(self._strip.refresh_sources is not None)
         self.details_button.setVisible(bool(self._strip.toolTip()))
         self.setVisible(
             self._active
             and bool(self._strip.text())
             and self._strip.severity in (MessageSeverity.WARNING, MessageSeverity.ERROR)
         )
+
+    def _refresh_sources(self) -> None:
+        action = self._strip.refresh_sources
+        if self._active and action is not None:
+            action()
 
     def _show_details(self) -> None:
         if not self._strip.toolTip():

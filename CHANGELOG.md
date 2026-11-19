@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 0.16.0a10 - 2026-11-19
+
+- Add **Open Recent** to the three-dot Workflow actions menu. Hover to see
+  successfully opened or saved workflows by full path, newest first.
+- Remember up to ten recent workflows between launches. Missing or offline
+  paths stay in the list without probing their disks when the menu opens.
+- Reuse the normal workflow-opening safeguards for recent items. Failed and
+  cancelled opens and bundled examples do not enter the history.
+- Add **Clear recent workflows** to forget only the list, without deleting
+  workflow files or resetting last-used folders.
+- Explain a changed saved image reader with a short actionable warning;
+  keep the saved binding unchanged until the user explicitly refreshes.
+- Offer **Refresh file sources** beside that warning and show saved/current
+  reader versions in **Details**. Do not rebind another workflow tab or a
+  different batch representative from an old warning.
+- Use a guarded Crop Stack display on Windows Intel or unrecognised graphics,
+  avoiding a second image volume or a Shapes overlay in the OpenGL scene.
+- Show a live orange Crop rectangle over 2D slices/projections and a wireframe
+  over 3D input on that route, with a compact bounds schematic in the inspector.
+- Keep the uncut input visible while editing margins. Colour the 2D outline
+  red when the displayed slice or projection misses the retained region.
+- Follow the current slice request on older supported napari versions instead
+  of classifying Crop outlines from a stale completed view during view changes.
+- Move only the proposed Crop bounds during a held slider drag; apply the
+  scientific crop on release. A press at a nonzero margin no longer commits
+  an extra initial pixel or splits the edit history.
+- Keep Crop outlines aligned during view changes and hide them when leaving
+  Crop. Avoid reordering already ordered managed viewer layers on refresh.
+- Extend the existing napari compatibility checks to the new Crop helpers,
+  guarded presentation and stable-layer-order regressions.
+
+AI-assisted workflow authoring is not included; it remains work for 0.17.
+An internal Apple GPU feasibility proposal adds no runtime GPU support.
+
 ## 0.16.0a9 - 2026-11-18
 
 - Skip the untouched startup workflow in recovery, even after the starter

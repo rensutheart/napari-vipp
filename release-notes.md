@@ -1,44 +1,44 @@
-# VIPP 0.16.0a9
+# VIPP 0.16.0a10
 
-VIPP 0.16.0a9 is a focused alpha bug-fix release for workflow recovery, canvas navigation, calculation progress and Crop previews. It combines both post-a8 bug-fix branches. Unfinished assistant/MCP and proposed Apple GPU work are not included.
+VIPP 0.16.0a10 is an alpha patch for reopening recent workflows, recovering from a changed image reader, and editing Crop bounds on Windows. It combines the ready non-AI branch changes since a9. All AI workflow-authoring work remains excluded for 0.17.
 
-## Recovery that keeps meaningful work
+## Reopen recent workflows by full path
 
-- An untouched **Untitled** workflow created at startup no longer produces a new recovery entry.
-- Loading the starter preview does not count as editing the workflow.
-- Editing the starter still enables its normal recovery checkpoints, including changes made during deferred startup.
-- Existing historical recovery copies are not deleted by this change. Edited workflows and original saved files remain protected.
+- Hover over **Open Recent** in the three-dot Workflow actions menu to see your latest successfully opened or saved workflows.
+- Full paths distinguish workflows with the same filename in different folders.
+- The list holds up to ten workflows, newest first, and stays available between launches.
+- Paths on disconnected drives or offline network shares remain listed; opening the menu does not probe those locations.
+- Selecting an item follows normal workflow-opening safeguards and opens it in a new tab rather than replacing existing work.
+- Failed or cancelled opens and bundled examples do not enter recent history.
+- **Clear recent workflows** forgets only the list. It does not delete your workflow files or reset last-used folders.
 
-## A steadier workflow canvas
+## A clear action when an image reader changes
 
-- Moving the pointer over the canvas no longer continues an interrupted drag, including while a node calculates.
-- Panning requires a mouse press initiated on the canvas and the same button to remain held.
-- Releasing the button, losing mouse ownership, hiding the canvas, changing focus or dropping a node ends the previous pan gesture.
-- Palette drag-and-drop and inspector slider edits do not start a canvas pan.
-- Routine UI resizing no longer pulls the graph toward the pointer.
-- Finishing a quick calculation no longer restores an old viewport position over navigation you made while it was running.
+- A workflow saved with a different reader implementation or version now shows a short warning explaining the problem.
+- **Details** keeps the saved and current reader versions available without filling the status bar with technical text.
+- **Refresh file sources** explicitly reloads the current workflow's file sources with the current reader; the saved binding is not silently accepted or changed.
+- An old warning cannot refresh a different workflow tab. A failed batch preview that restored another representative does not offer to rebind that other sample.
+- After refreshing, check channels, axes, calibration and results: a different reader can interpret the same file differently. Collection verification remains a separate check.
 
-## Calculation progress without layout jumps
+## Live Crop bounds without another OpenGL overlay
 
-- The bottom status bar reserves the styled progress controls' height before work begins, so the canvas does not jump when progress appears or clears.
-- Switching between status messages and progress removes the outgoing content first, avoiding a brief extra wrapped row.
-- Narrow docks and host/theme padding use the same steady-height behavior.
-- Progress and Stop remain available; long warnings and actionable errors can still wrap instead of being clipped.
+- Windows Intel and unrecognised graphics use a guarded Crop display that avoids adding a second image volume or a Shapes overlay to the OpenGL scene.
+- The guarded route shows an orange rectangle over a 2D slice or projection, and a wireframe over the 3D input volume, with a compact inspector bounds schematic.
+- The uncut input stays visible around the proposed bounds so you can see what will be removed.
+- In 2D, a red outline means the displayed slice or projection misses the retained region.
+- Older supported napari versions now use the current slice request for Crop outline colouring, rather than a stale completed view during slice, thickness or axis changes.
+- Rotation, zoom, view changes and selection updates keep the outline registered to the image; leaving Crop hides it.
+- A held slider drag changes only the proposed bounds. Releasing applies the scientific crop; it does not copy the preview into the result.
+- Grabbing a slider at a nonzero margin no longer commits an extra first pixel or splits the edit into two history steps.
+- Refreshing an already ordered viewer no longer needlessly moves managed layers through the layer list.
+- Unsupported or unavailable canvas projections hide the outline rather than leaving stale geometry. The bounds schematic remains a separate, clearly labelled editing aid.
 
-## More reliable Crop previews
+## Compatibility, scope and downloads
 
-- Crop selection guards the complete viewer-layer transition so dimensions and layer-list events cannot re-enter an unfinished update.
-- The same guard covers a recovered Crop when its source and calculated results first become available.
-- Parameter-bound refreshes defer their outline update until the current callback ends, keeping source-image and ROI publication together.
-- New results delivered during an active display update are reconciled afterward without requesting another cache restore or scientific calculation.
-- Adjusting Crop margins reuses the unchanged source image instead of publishing it again unnecessarily.
-- Unchanged ROI graphics properties are retained; actual data, geometry and calibration changes still update.
-- A selected Crop uses its source image and ROI directly, avoiding a temporary Inspect layer that would immediately be removed.
+The existing napari compatibility checks now include the new Crop helpers and guarded presentation regressions. Scientific kernels, full-resolution results, CUDA providers, workflow/batch/manifest schemas, runtime dependency pins and installer engines are unchanged. Crop presentation is not scientific resampling, and this patch does not claim biological validation or every graphics-driver combination.
 
-## Compatibility and downloads
+An internal Apple GPU feasibility proposal is included as planning only. It adds no Apple GPU implementation, dependency or newly supported runtime route. macOS installers remain CPU-only.
 
-Workflow, batch-config and manifest schemas remain **6**. These fixes change UI and recovery orchestration, not scientific kernels, image results, CUDA algorithms or installer engines. Recovery still does not restore scientific caches, Undo history or in-flight work.
+Windows x86_64 and separate macOS arm64/x86_64 installers are explicitly **unsigned alpha builds**; macOS packages are also unnotarized. Use the matching checksum files, the [0.16.0a10 manual](https://rensutheart.github.io/vipp-mkdocs/0.16.0a10/), and the [release plan and qualification boundaries](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a10/docs/release-0.16.0a10-plan.md).
 
-Windows x86_64 and separate macOS arm64/x86_64 installers are explicitly **unsigned alpha builds**. macOS packages remain CPU-only and unnotarized. Use the matching checksum files and the [0.16.0a9 manual](https://rensutheart.github.io/vipp-mkdocs/0.16.0a9/). See the [release plan and qualification boundaries](https://github.com/rensutheart/napari-vipp/blob/v0.16.0a9/docs/release-0.16.0a9-plan.md).
-
-[Full source comparison: 0.16.0a8 → 0.16.0a9](https://github.com/rensutheart/napari-vipp/compare/v0.16.0a8...v0.16.0a9)
+[Full source comparison: 0.16.0a9 → 0.16.0a10](https://github.com/rensutheart/napari-vipp/compare/v0.16.0a9...v0.16.0a10)

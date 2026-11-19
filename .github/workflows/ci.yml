@@ -352,6 +352,13 @@ jobs:
           src/napari_vipp/_tests/test_ui_toolbar_controls.py
           src/napari_vipp/_tests/test_workflow_view.py
           src/napari_vipp/_tests/test_workflow_tab_crop_preview.py
+          src/napari_vipp/_tests/test_crop_bounds_preview.py
+          src/napari_vipp/_tests/test_crop_canvas_outline.py
+          src/napari_vipp/_tests/test_crop_graphics_policy.py
+          src/napari_vipp/_tests/test_crop_projected_scene.py
+          src/napari_vipp/_tests/test_widget.py::test_guarded_crop_preview_keeps_drafts_out_of_the_result
+          src/napari_vipp/_tests/test_widget.py::test_guarded_crop_waiting_for_result_clears_previous_inspect
+          src/napari_vipp/_tests/test_widget.py::test_crop_refresh_does_not_reorder_an_already_ordered_scene
           src/napari_vipp/_tests/test_widget.py::test_hidden_source_preview_cannot_replace_active_viewer_axis_labels
           src/napari_vipp/_tests/test_widget.py::test_label_pipeline_inspects_and_pins_integer_labels
           src/napari_vipp/_tests/test_widget.py::test_generated_rgb_and_rgba_hide_only_the_component_axis
