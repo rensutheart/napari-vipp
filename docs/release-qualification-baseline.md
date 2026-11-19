@@ -1,6 +1,36 @@
 # Release Qualification Baseline
 
-Last reviewed: 2026-11-18
+Last reviewed: 2026-11-19
+
+## 0.16.0a10 qualification declaration
+
+The [release plan](release-0.16.0a10-plan.md) covers the union since public a9.
+This declares required gates, not completed proof.
+
+```yaml
+tier: alpha
+previous_public_tag: v0.16.0a9
+changed:
+  recent_workflow_menu_and_settings: true
+  reader_mismatch_classification_and_explicit_refresh: true
+  crop_viewer_presentation_and_managed_layer_order: true
+  documentation_and_ci_compatibility_coverage: true
+  workflow_schema_and_serializer: false
+  scientific_kernels_and_compute_dispatch: false
+  gpu_providers_and_runtime_pins: false
+  windows_installer: false
+  macos_installer: false
+  dependencies_toolchain: false
+  packaging_and_publication_workflows: false
+carried_forward:
+  unchanged_scientific_gpu_and_installer_lifecycle: v0.16.0a9
+```
+
+Require focused tests, changed-journey native synthetic proof and the existing
+cross-platform/minimum-pinned napari matrix including the new Crop tests. Do not
+repeat unrelated GPU or installer lifecycle suites. Exact final-main, tag,
+fresh original artifacts and public content remain per-release gates. Exclude
+all AI work for 0.17; the merged Apple GPU proposal adds no runtime support.
 
 ## 0.16.0a9 qualification declaration
 

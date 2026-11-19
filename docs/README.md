@@ -8,6 +8,8 @@ only in vipp-mkdocs. This directory is for contributors and coding agents.
 
 ## Start here
 
+- [0.16.0a10 release plan](release-0.16.0a10-plan.md): non-AI patch scope,
+  changed-domain checks and publication boundaries.
 - [Documentation ownership and migration map](documentation.md): where to edit,
   what stays here, and where the former user guides moved.
 - [Developer notes](developer-notes.md): setup, extension points, and local checks.
