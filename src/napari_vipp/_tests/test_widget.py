@@ -4082,6 +4082,7 @@ def test_open_example_workflow_loads_bundled_template(qtbot):
     assert session.path is None
     assert session.title == example.title
     assert not session.dirty
+    assert recent_paths.recent_workflows() == []
 
 
 def test_loading_packaged_example_path_directly_keeps_save_destination_unbound(
@@ -4100,6 +4101,7 @@ def test_loading_packaged_example_path_directly_keeps_save_destination_unbound(
     assert session.path is None
     assert session.title == example.title
     assert not session.dirty
+    assert recent_paths.recent_workflows() == []
 
 
 def test_example_workflow_selects_source_before_background_thumbnail_run(qtbot):
@@ -25153,8 +25155,9 @@ def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, wi
     menu = widget.workflow_actions_menu
     actions = menu.actions()
     labels = [None if action.isSeparator() else action.text() for action in actions]
-    assert labels[:12] == [
+    assert labels[:13] == [
         "Open example…",
+        "Open Recent",
         "Open Results Workspace…",
         None,
         "Save workflow as…",
@@ -25167,16 +25170,17 @@ def test_toolbar_workflow_actions_are_grouped_separately_from_settings(qtbot, wi
         "Export reproducibility package…",
         "Export OME dataset…",
     ]
-    assert actions[3] is widget.save_workflow_as_action
-    assert not actions[5].isEnabled()  # Recovery status is not an action.
-    assert actions[6].isEnabled()
+    assert actions[1].menu() is widget.recent_workflows_menu
+    assert actions[4] is widget.save_workflow_as_action
+    assert not actions[6].isEnabled()  # Recovery status is not an action.
     assert actions[7].isEnabled()
+    assert actions[8].isEnabled()
     assert not actions[0].icon().isNull()
-    assert not actions[3].icon().isNull()
+    assert not actions[4].icon().isNull()
     if width == 640:
-        assert labels[12:] == [None, "Auto Arrange graph", "Tunnels…"]
+        assert labels[13:] == [None, "Auto Arrange graph", "Tunnels…"]
     else:
-        assert len(actions) == 12
+        assert len(actions) == 13
     assert not set(labels) & {
         action.text() for action in widget.settings_menu.actions()
     }
@@ -25272,6 +25276,63 @@ def test_toolbar_workflow_actions_keep_existing_handlers_and_rebuild_safely(
     assert "Leave batch mode" not in {
         action.text() for action in widget.workflow_actions_menu.actions()
     }
+
+
+def test_recent_workflow_submenu_refreshes_full_paths_and_reuses_safe_opener(
+    qtbot, monkeypatch, tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    submenu = widget.recent_workflows_menu
+    calls = []
+    monkeypatch.setattr(widget, "_open_workflow_path", calls.append)
+    for _ in range(3):
+        widget._populate_workflow_actions_menu()
+        assert widget.workflow_actions_menu.actions()[1].menu() is submenu
+    submenu.aboutToShow.emit()
+    assert [action.text() for action in submenu.actions()] == [
+        "No recent workflows yet"
+    ]
+    assert not submenu.actions()[0].isEnabled()
+
+    first = str(tmp_path / "R&D" / "workflow.json")
+    second = str(tmp_path / "another folder" / "workflow.json")
+    recent_paths.remember_workflow(first)
+    recent_paths.remember_workflow(second)
+    # History can change while the parent menu is already open.
+    submenu.aboutToShow.emit()
+    actions = submenu.actions()
+    assert [action.data() for action in actions[:2]] == [second, first]
+    assert actions[0].text() == second
+    assert actions[1].text() == first.replace("&", "&&")
+    assert actions[1].toolTip() == first
+    actions[0].trigger()
+    actions[1].trigger()
+    assert calls == [second, first]
+    actions[-1].trigger()
+    submenu.aboutToShow.emit()
+    assert recent_paths.recent_workflows() == []
+    assert submenu.actions()[0].text() == "No recent workflows yet"
+
+
+def test_recent_workflow_submenu_opens_on_hover(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _show_toolbar_at_width(widget, qtbot, 900)
+    path = str(tmp_path / "saved workflow.json")
+    recent_paths.remember_workflow(path)
+    menu = widget.workflow_actions_menu
+    submenu = widget.recent_workflows_menu
+    menu.popup(widget.workflow_actions_menu_button.mapToGlobal(QPoint(0, 30)))
+    try:
+        qtbot.waitUntil(menu.isVisible)
+        recent = next(action for action in menu.actions() if action.menu() is submenu)
+        qtbot.mouseMove(menu, menu.actionGeometry(recent).center())
+        qtbot.waitUntil(submenu.isVisible, timeout=3000)
+        assert submenu.actions()[0].data() == path
+    finally:
+        submenu.hide()
+        menu.hide()
 
 
 @pytest.mark.parametrize("theme", ("dark", "light"))
@@ -27352,6 +27413,67 @@ def test_workflow_load_directory_is_reused_by_save(qtbot, monkeypatch, tmp_path)
     assert recent_paths.recent_directory(recent_paths.WORKFLOW_DIRECTORY) == str(
         selected_dir.resolve()
     )
+
+
+def test_recent_workflow_history_records_only_successful_save_and_open(
+    qtbot, monkeypatch, tmp_path,
+):
+    from napari_vipp.ui.reproduction import ReproductionOpenCancelled
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = tmp_path / "saved.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+    assert widget._save_workflow_dialog()
+    assert recent_paths.recent_workflows() == [str(target)]
+
+    first_session = widget._workflow_tabs.current
+    opened = tmp_path / "opened.json"
+    opened.write_bytes(target.read_bytes())
+    widget.load_workflow_file(opened)
+    assert widget._workflow_tabs.current is not first_session
+    expected = [str(opened), str(target)]
+    assert recent_paths.recent_workflows() == expected
+
+    bad = tmp_path / "invalid.json"
+    bad.write_text("not a workflow", encoding="utf-8")
+    widget._open_workflow_path(bad)
+    assert "Load failed" in widget.status_label.text()
+    assert recent_paths.recent_workflows() == expected
+
+    cancelled = tmp_path / "cancelled.json"
+    cancelled.write_bytes(target.read_bytes())
+    tab_count = len(widget._workflow_tabs)
+
+    def cancel(_workflow):
+        raise ReproductionOpenCancelled()
+
+    monkeypatch.setattr(widget, "_choose_workflow_reproduction", cancel)
+    widget._open_workflow_path(cancelled)
+    assert widget.status_label.text() == "Workflow open cancelled."
+    assert len(widget._workflow_tabs) == tab_count
+    assert recent_paths.recent_workflows() == expected
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: ("", ""),
+    )
+    assert not widget._save_workflow_dialog(force_choose_path=True)
+    assert recent_paths.recent_workflows() == expected
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(tmp_path / "failed-save.json"), ""),
+    )
+
+    def fail_save(*_args, **_kwargs):
+        raise OSError("Test save failure")
+
+    monkeypatch.setattr("napari_vipp._widget.save_workflow", fail_save)
+    assert not widget._save_workflow_dialog(force_choose_path=True)
+    assert recent_paths.recent_workflows() == expected
 
 
 def test_closing_untouched_batch_workspace_leaves_single_image_mode(

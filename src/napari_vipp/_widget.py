@@ -2719,12 +2719,19 @@ class VippWidget(QWidget):
             "QToolButton::menu-indicator { image: none; width: 0px; }"
         )
         self.workflow_actions_menu_button.setToolTip(
-            "Workflow actions: open an example, save workflow as, or export."
+            "Workflow actions: open recent workflows or examples, save as, or export."
         )
         self.workflow_actions_menu_button.setAccessibleName("Workflow actions")
         self.workflow_actions_menu = QMenu(self.workflow_actions_menu_button)
         self.workflow_actions_menu.setObjectName("VippWorkflowActionsMenu")
         self.workflow_actions_menu.setAccessibleName("Workflow actions")
+        self.recent_workflows_menu = QMenu("Open Recent", self.workflow_actions_menu)
+        self.recent_workflows_menu.setObjectName("VippRecentWorkflowsMenu")
+        self.recent_workflows_menu.setAccessibleName("Open recent workflows")
+        self.recent_workflows_menu.setToolTipsVisible(True)
+        self.recent_workflows_menu.aboutToShow.connect(
+            self._populate_recent_workflows_menu
+        )
         self.workflow_actions_menu.aboutToShow.connect(
             self._populate_workflow_actions_menu
         )
@@ -6335,6 +6342,8 @@ class VippWidget(QWidget):
         open_example_action.triggered.connect(
             lambda _checked=False: self.open_example_button.click()
         )
+        self.recent_workflows_menu.setIcon(self.load_workflow_button.icon())
+        menu.addMenu(self.recent_workflows_menu)
         workspace_action = menu.addAction("Open Results Workspace…")
         workspace_action.setEnabled(
             self._results_workspace.can_open(self._selected_node_id)
@@ -15574,7 +15583,36 @@ class VippWidget(QWidget):
             severity=MessageSeverity.SUCCESS,
         )
         self._results_workspace.refresh()
+        recent_paths.remember_workflow(saved)
         return True
+
+    def _populate_recent_workflows_menu(self) -> None:
+        """Refresh on hover, including history saved by another VIPP window."""
+        menu = self.recent_workflows_menu
+        menu.clear()
+        paths = recent_paths.recent_workflows()
+        if not paths:
+            empty = menu.addAction("No recent workflows yet")
+            empty.setEnabled(False)
+            return
+        for path in paths:
+            # Ampersands are literal parts of folder/file names, not mnemonics.
+            label = (
+                path.replace("&", "&&")
+                .replace("\t", "\\t")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+            )
+            action = menu.addAction(label)
+            action.setData(path)
+            action.setToolTip(path)
+            action.triggered.connect(
+                lambda _checked=False, path=path: self._open_workflow_path(path)
+            )
+        menu.addSeparator()
+        clear = menu.addAction("Clear recent workflows")
+        clear.setToolTip("Clear this list without deleting any workflow files.")
+        clear.triggered.connect(recent_paths.clear_recent_workflows)
 
     def _load_workflow_dialog(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
@@ -15772,6 +15810,8 @@ class VippWidget(QWidget):
         self._store_workflow_tab_runtime(session)
         self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self._results_workspace.refresh()
+        if bundled_example is None:
+            recent_paths.remember_workflow(loaded)
         return loaded
 
     def _choose_workflow_reproduction(self, workflow: dict) -> bool:
